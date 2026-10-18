@@ -14,7 +14,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn retained_images(&self, keep: u32) -> Result<BTreeSet<ImmutableImage>, StoreError> {
-        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut snapshot = self.snapshot().await?;
         let mut images = BTreeSet::new();
         for root in RetentionRoot::ALL {
             for target in Self::retained_on(&mut snapshot, root, keep).await? {

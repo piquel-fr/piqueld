@@ -1,4 +1,8 @@
-//! Cached local measurements and bounded historical aggregates.
+//! Cached local measurements and bounded historical aggregates, alongside the
+//! diagnostic event history (`event`) and notification delivery (`notifications`).
+mod event;
+mod notifications;
+
 use super::{Store, StoreError, now_ms};
 use piqueld_core::observability::{ActionDuration, DaemonStats, DeploymentAnalytics, FailureCount};
 
@@ -152,8 +156,8 @@ impl Store {
         if since < 0 || until < since {
             return Err(StoreError::InvalidInput);
         }
-        let applications = super::access::scope_json(&visible.applications);
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let applications = super::auth::access::scope_json(&visible.applications);
+        let mut tx = self.snapshot().await?;
         let coverage = sqlx::query!(
             "SELECT started_at_ms,pruned_through_ms FROM history_coverage WHERE singleton=1"
         )
@@ -293,3 +297,6 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

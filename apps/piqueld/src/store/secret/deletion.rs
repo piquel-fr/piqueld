@@ -1,7 +1,6 @@
 //! Reserve cleanup under the writer lock, then release it before Docker I/O.
-use super::{EnvironmentId, NormalizedApplication, SecretSource, Store, StoreError};
+use super::{EnvironmentId, NormalizedApplication, SecretScope, SecretSource, Store, StoreError};
 use crate::store::StoredEnvironment;
-use piqueld_core::ApplicationId;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A reserved secret deletion: its token and, per environment, the Swarm
@@ -12,19 +11,11 @@ pub(crate) struct SecretDeletion {
     pub(crate) versions: BTreeMap<EnvironmentId, Vec<String>>,
 }
 
-/// Environments whose pending secret deletions a manifest must not reference.
-pub(crate) enum SecretScope<'a> {
-    /// Every environment of the application: saved configuration is shared by
-    /// all of them.
-    Application(&'a ApplicationId),
-    /// The one environment a deployment prepares.
-    Environment(&'a EnvironmentId),
-}
-
 impl Store {
     /// Rejects a manifest mounting `mounted` secrets when one of them is
-    /// currently being deleted from an environment in `scope` or from its
-    /// application's store.
+    /// currently being deleted from an environment in `scope` (every
+    /// environment of an application, whose saved configuration they share,
+    /// or the one a deployment prepares) or from its application's store.
     pub(crate) async fn check_secret_references(
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         mounted: &BTreeSet<&str>,
@@ -105,10 +96,11 @@ impl Store {
         name: &str,
         expected: i64,
     ) -> Result<SecretDeletion, StoreError> {
-        let _writer = self.writers.lock().await;
-        let app = self.get(application).await?;
+        let (_writer, mut tx) = self.begin_immediate().await?;
         let id = application.as_str();
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let app = Self::environment_on(&mut tx, id)
+            .await?
+            .ok_or(StoreError::NotFound)?;
         actor
             .require_on_environment(&mut tx, Self::SECRETS_WRITE, application)
             .await?;
@@ -167,10 +159,9 @@ impl Store {
         let deleted = sqlx::query!("DELETE FROM environment_secrets WHERE environment_id=?1 AND name=?2 AND deletion_id=?3",id,name,deletion_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if deleted > 0 {
-            let now = super::now_ms();
-            let operator = actor.operator_uid();
-            sqlx::query!("INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,'secret_deleted','Deleted secret and its runtime versions',?2,?3,?4,?5,?6)",id,name,now,actor.user_id,actor.credential_id,operator)
-                .execute(&mut *tx).await.map_err(StoreError::database)?;
+            let scope = SecretScope::Environment(application);
+            let event = ("secret_deleted", Self::SECRET_DELETED, name);
+            Self::secret_event_on(&mut tx, scope, event, actor, super::now_ms()).await?;
         }
         tx.commit().await.map_err(StoreError::database)
     }

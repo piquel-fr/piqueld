@@ -1,10 +1,11 @@
 use super::*;
 use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::store::testing::template;
 use crate::store::{Operation, OperationState};
 use piqueld_core::{
     ApplicationId, EnvironmentId, GitBranch, InstanceId, ResolutionSet, ResolvedSource,
-    ServiceName, compile_application, manifest::parse_template_toml,
+    ServiceName, compile_application,
 };
 use std::collections::BTreeMap;
 
@@ -20,25 +21,12 @@ fn image(byte: char) -> ImmutableImage {
 /// Saves the repository-backed `notes` application, so it can have
 /// previews, and returns its production environment and a preview.
 async fn production_and_preview(store: &Store) -> (EnvironmentId, EnvironmentId) {
-    let template = parse_template_toml(
-        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n\
-         [spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'\n\
+    let template = template(
+        "notes",
+        "[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'\n\
          [[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1'",
-    )
-    .unwrap();
-    let (MutationResponse::Saved(saved), _) = store
-        .accept(
-            Daemon,
-            Mutation::save(template, None, false),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("saved")
-    };
+    );
+    let saved = store.save_template(template, false).await;
     let application = ApplicationId::parse(saved.application_id).unwrap();
     let create = Mutation::Preview(PreviewMutation::Create {
         application: application.clone(),
@@ -59,20 +47,8 @@ async fn production_and_preview(store: &Store) -> (EnvironmentId, EnvironmentId)
 /// [`image`]`(byte)`.
 async fn prepare(store: &Store, environment: &EnvironmentId, byte: char) -> Operation {
     let operation = store.request_deploy(environment, None).await.unwrap();
-    store
-        .transition_operation(
-            &operation.id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
-    let application = piqueld_core::parse_toml(include_str!(
-        "../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .unwrap()
-    .normalize(ApplicationId::parse("app-notes-test").unwrap());
+    store.mark_running(&operation.id).await;
+    let application = crate::store::testing::prebuilt("app-notes-test");
     let web =
         ResolvedSource::parse_image("ghcr.io/example/notes:1.4.0", image(byte).as_str()).unwrap();
     let target = compile_application(
@@ -117,8 +93,7 @@ async fn kept(store: &Store, root: RetentionRoot, keep: u32) -> BTreeSet<Immutab
 
 #[tokio::test]
 async fn each_root_keeps_its_deployments_and_previews_keep_no_history() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let (production, preview) = production_and_preview(&store).await;
     for byte in ['a', 'b', 'c'] {
         deploy(&store, &production, byte).await;
@@ -150,10 +125,7 @@ async fn each_root_keeps_its_deployments_and_previews_keep_no_history() {
         name: piqueld_core::EnvironmentName::parse("canary").unwrap(),
         source: Some(crate::api::SourceChoice::PromoteFrom(production.clone())),
     };
-    store
-        .accept(Daemon, create, None, true, None)
-        .await
-        .unwrap();
+    store.force(create).await.unwrap();
     assert_eq!(
         kept(&store, RetentionRoot::PromotionSource, 2).await,
         images("c")

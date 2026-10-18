@@ -1,7 +1,7 @@
 //! Grant storage. Each `auth_grants` row grants one permission on one
 //! application, or on every application when `application_id` is NULL, to
 //! exactly one account, credential, or invitation.
-use super::{Store, StoreError, now_secs};
+use crate::store::{Store, StoreError, now_secs};
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Grants, Permission, Scope, Target},
@@ -63,16 +63,14 @@ impl<'a> Actor<'a> {
         match self {
             Self::Daemon => Attribution::default(),
             Self::Operator { operator, session } => Attribution {
-                user_id: None,
                 credential_id: session,
                 operator: Some(operator),
-                system: None,
+                ..Attribution::default()
             },
             Self::Account(caller) => Attribution {
                 user_id: Some(caller.user_id),
                 credential_id: Some(caller.credential_id),
-                operator: None,
-                system: None,
+                ..Attribution::default()
             },
             Self::System(system) => Attribution {
                 system: Some(system),
@@ -80,16 +78,7 @@ impl<'a> Actor<'a> {
             },
         }
     }
-}
 
-impl Attribution<'_> {
-    /// The host operator's Unix user ID, as stored in `actor_operator_uid`.
-    pub(crate) fn operator_uid(self) -> Option<u32> {
-        self.operator.map(|operator| operator.uid)
-    }
-}
-
-impl Actor<'_> {
     /// Re-reads an account caller's ID and grants; `None` for the daemon and
     /// the host operator, which are unrestricted. A host operator session
     /// that ended since authentication is `CredentialRevoked`.
@@ -154,6 +143,13 @@ impl Actor<'_> {
             .grants
             .require_change(&[permission], EnvironmentOwner::target(owner.as_ref()))
             .map_err(StoreError::Denied)
+    }
+}
+
+impl Attribution<'_> {
+    /// The host operator's Unix user ID, as stored in `actor_operator_uid`.
+    pub(crate) fn operator_uid(self) -> Option<u32> {
+        self.operator.map(|operator| operator.uid)
     }
 }
 
@@ -229,7 +225,7 @@ impl Caller<'_> {
     /// since authentication is `CredentialRevoked`.
     pub(crate) async fn load(self, db: &mut SqliteConnection) -> Result<Authority, StoreError> {
         let now = now_secs();
-        let idle = now - super::auth::SESSION_IDLE_SECS;
+        let idle = now - super::SESSION_IDLE_SECS;
         let row = sqlx::query!(
             r#"SELECT user_id,scoped AS "scoped: bool" FROM auth_credentials WHERE id=?1 AND (expires_at IS NULL OR expires_at>?2) AND (kind!='browser' OR last_used_at>?3)"#,
             self.credential_id,
@@ -283,6 +279,17 @@ impl Authority {
             Err(StoreError::Denied(piqueld_core::access::Denied::Scoped))
         } else {
             Ok(())
+        }
+    }
+
+    /// Requires an unscoped credential (see [`Self::require_unscoped`])
+    /// holding every grant in `grants`, if any: access it hands out to an
+    /// account or a new credential outlives the credential handing it out.
+    pub(crate) fn may_hand_out(&self, grants: Option<&Grants>) -> Result<(), StoreError> {
+        self.require_unscoped()?;
+        match grants {
+            Some(grants) => self.grants.may_grant(grants).map_err(StoreError::Denied),
+            None => Ok(()),
         }
     }
 }
@@ -363,9 +370,7 @@ impl Holder<'_> {
         }
         Ok(())
     }
-}
 
-impl Holder<'_> {
     /// Adds `grants` to the holder's existing grants.
     pub(crate) async fn extend(
         self,
@@ -391,7 +396,7 @@ impl Store {
         permission: AppPermission,
         environment: &EnvironmentId,
     ) -> Result<(), StoreError> {
-        let mut db = self.pool.acquire().await.map_err(StoreError::database)?;
+        let mut db = self.connection().await?;
         actor
             .require_on_environment(&mut db, permission, environment)
             .await
@@ -403,7 +408,7 @@ impl Store {
     /// # Errors
     /// Returns a revoked credential or storage errors.
     pub async fn grants(&self, actor: Actor<'_>) -> Result<Grants, StoreError> {
-        let mut db = self.pool.acquire().await.map_err(StoreError::database)?;
+        let mut db = self.connection().await?;
         Ok(actor
             .load(&mut db)
             .await?
@@ -419,7 +424,7 @@ impl Store {
 
     /// Commits a change to accounts, credentials, or grants and notifies
     /// [`Self::access_changes`].
-    pub(super) async fn commit_access_change(
+    pub(in crate::store) async fn commit_access_change(
         &self,
         tx: sqlx::Transaction<'_, sqlx::Sqlite>,
     ) -> Result<(), StoreError> {
@@ -440,11 +445,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         if let Some(caller) = Self::check_account_on(&mut tx, actor, user_id).await? {
-            caller.require_unscoped()?;
-            caller
-                .grants
-                .may_grant(grants)
-                .map_err(StoreError::Denied)?;
+            caller.may_hand_out(Some(grants))?;
         }
         let how = "by an account change";
         Self::replace_user_grants_on(&mut tx, user_id, grants, actor.attribution(), how).await?;
@@ -508,33 +509,23 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CredentialKind, NewCredential, OperationState};
     use super::*;
     use crate::api::{Actor, Mutation, MutationResponse};
+    use crate::store::testing::template;
+    use crate::store::{CredentialKind, NewCredential};
     use piqueld_core::access::{AppPermission, Preset};
 
-    /// The actor `alice`'s `session` credential records as.
+    /// The actor `alice`'s session (see `Store::seed_caller`) records as.
     fn alice() -> piqueld_core::EventActor {
         piqueld_core::EventActor::Account {
             user_id: "alice".into(),
-            credential_id: Some("session".into()),
+            credential_id: Some("alice".into()),
         }
     }
 
     /// Saves an empty application named `name`, returning its ID.
     async fn application(store: &Store, name: &str) -> ApplicationId {
-        let manifest = piqueld_core::manifest::parse_template_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
-        ))
-        .unwrap();
-        let mutation = Mutation::save(manifest, None, false);
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(Actor::Daemon, mutation, Some(0), false, None)
-            .await
-            .unwrap()
-        else {
-            panic!("saved application");
-        };
+        let saved = store.save_template(template(name, "[spec]"), false).await;
         ApplicationId::parse(saved.application_id).unwrap()
     }
 
@@ -542,8 +533,7 @@ mod tests {
     /// there, unless it was created through a scoped credential.
     #[tokio::test]
     async fn only_unscoped_creators_receive_creator_grants() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let user = piqueld_core::auth::User {
             id: "alice".into(),
@@ -573,10 +563,7 @@ mod tests {
                 .unwrap();
         }
         let create = |credential_id, name: &str| {
-            let manifest = piqueld_core::manifest::parse_template_toml(&format!(
-                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
-            ))
-            .unwrap();
+            let manifest = template(name, "[spec]");
             let actor = Actor::Account(Caller {
                 credential_id,
                 user_id: "alice",
@@ -619,31 +606,9 @@ mod tests {
     async fn operations_and_their_events_record_the_caller() {
         use crate::store::Visibility;
         use piqueld_core::observability::EventFilter;
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
-        let user = piqueld_core::auth::User {
-            id: "alice".into(),
-            username: "alice".into(),
-            display_name: String::new(),
-        };
-        store.seed_auth_user(&user, &Grants::admin()).await;
-        let credential = NewCredential {
-            id: "session".into(),
-            secret_hash: "session".into(),
-            kind: CredentialKind::Cli,
-            name: "session",
-            expires_at: None,
-            grants: None,
-        };
-        store
-            .insert_credential(&user.id, &credential)
-            .await
-            .unwrap();
-        let actor = Actor::Account(Caller {
-            credential_id: "session",
-            user_id: "alice",
-        });
+        let actor = store.seed_caller("alice", &Grants::admin()).await;
         let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
         let (MutationResponse::Operation(operation), _) =
             store.accept(actor, deploy, None, true, None).await.unwrap()
@@ -660,15 +625,7 @@ mod tests {
             .unwrap()
             .items
             .len();
-        store
-            .transition_operation(
-                &operation.operation_id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.operation_id).await;
         let id = &operation.operation_id;
         let action = store.begin_action(Some(id), "deploy", None).await;
         let action = action.unwrap();
@@ -717,31 +674,9 @@ mod tests {
     async fn environment_mutations_record_the_caller() {
         use crate::store::Visibility;
         use piqueld_core::{EnvironmentName, observability::EventFilter};
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
-        let user = piqueld_core::auth::User {
-            id: "alice".into(),
-            username: "alice".into(),
-            display_name: String::new(),
-        };
-        store.seed_auth_user(&user, &Grants::admin()).await;
-        let credential = NewCredential {
-            id: "session".into(),
-            secret_hash: "session".into(),
-            kind: CredentialKind::Cli,
-            name: "session",
-            expires_at: None,
-            grants: None,
-        };
-        store
-            .insert_credential(&user.id, &credential)
-            .await
-            .unwrap();
-        let actor = Actor::Account(Caller {
-            credential_id: "session",
-            user_id: "alice",
-        });
+        let actor = store.seed_caller("alice", &Grants::admin()).await;
         let filter = EventFilter {
             application_id: Some(blog.to_string()),
             ..EventFilter::default()
@@ -795,30 +730,11 @@ mod tests {
     /// on its own operation only; the superseded one keeps its requester.
     #[tokio::test]
     async fn superseded_operations_keep_their_caller() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let mut operations = Vec::new();
         for name in ["alice", "bob"] {
-            let user = piqueld_core::auth::User {
-                id: name.into(),
-                username: name.into(),
-                display_name: String::new(),
-            };
-            store.seed_auth_user(&user, &Grants::admin()).await;
-            let credential = NewCredential {
-                id: name.into(),
-                secret_hash: name.into(),
-                kind: CredentialKind::Cli,
-                name,
-                expires_at: None,
-                grants: None,
-            };
-            store.insert_credential(name, &credential).await.unwrap();
-            let actor = Actor::Account(Caller {
-                credential_id: name,
-                user_id: name,
-            });
+            let actor = store.seed_caller(name, &Grants::admin()).await;
             let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
             let (MutationResponse::Operation(operation), _) =
                 store.accept(actor, deploy, None, true, None).await.unwrap()
@@ -843,8 +759,7 @@ mod tests {
     /// no access.
     #[tokio::test]
     async fn deleting_an_application_revokes_tokens_left_without_grants() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let shop = application(&store, "shop").await;
         let user = piqueld_core::auth::User {
@@ -886,15 +801,7 @@ mod tests {
             panic!("deletion");
         };
         let operation = &deleted.operations[0];
-        store
-            .transition_operation(
-                &operation.operation_id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.operation_id).await;
         let operation = store.operation(&operation.operation_id).await.unwrap();
         store.finish_delete_operation(&operation).await.unwrap();
         assert!(store.credential_owner("blog-only").await.unwrap().is_none());

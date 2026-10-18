@@ -6,11 +6,7 @@ impl Store {
     /// Saves cleanup intent before attempting to stop an operation's job runs.
     pub(crate) async fn request_job_cleanup(&self, operation: &str) -> Result<(), StoreError> {
         let _writer = self.writers.lock().await;
-        Self::request_job_cleanup_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            operation,
-        )
-        .await
+        Self::request_job_cleanup_on(&mut *self.connection().await?, operation).await
     }
 
     /// Also used inside the transaction that records a terminal job failure,
@@ -46,11 +42,12 @@ impl Store {
 
     /// Clears intent only after Docker confirms the job containers have stopped.
     pub(crate) async fn finish_job_cleanup(&self, operation: &str) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
-        sqlx::query!("DELETE FROM job_cleanup WHERE operation_id=?1", operation)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "DELETE FROM job_cleanup WHERE operation_id=?1",
+            operation
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
 }
@@ -75,15 +72,7 @@ mod tests {
             .save_application(&ApplicationTemplate::from(&application), None, None)
             .await
             .unwrap();
-        store
-            .transition_operation(
-                &operation.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&operation.id).await;
 
         // A terminal failure cannot commit without its cleanup request, even
         // if the earlier request from job execution could not be persisted.

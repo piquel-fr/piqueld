@@ -6,7 +6,7 @@
 //! `link`, the SHA-256 of its predecessor's link and its own ID and fields
 //! (see [`AuditRow::link_from`]). The oldest retained row extends the newest
 //! pruned one, `audit_chain.pruned_through` with `pruned_link`.
-use super::{Attribution, Store, StoreError, now_ms, page_limit};
+use super::{Attribution, Paging, Store, StoreError, days_ago_ms, now_ms};
 use piqueld_core::api::Page;
 use piqueld_core::audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification};
 use piqueld_core::auth::HostOperator;
@@ -215,7 +215,7 @@ impl Store {
                 user_id: row.user_id.as_deref(),
                 credential_id: row.credential_id.as_deref(),
                 operator: event.operator,
-                system: None,
+                ..Attribution::default()
             };
             let (peer, username) = (row.peer.as_deref(), row.username.as_deref());
             Self::check_denial_burst_on(&mut tx, peer, actor, username, row.created_at_ms).await?;
@@ -276,7 +276,7 @@ impl Store {
     /// Returns storage errors, or [`StoreError::Corrupt`] for a half-stored
     /// anchor.
     pub async fn verify_audit(&self) -> Result<AuditVerification, StoreError> {
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         Self::verify_audit_on(&mut tx, i64::MAX).await
     }
 
@@ -345,7 +345,7 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<AuditEvent>, StoreError> {
-        let fetch = page_limit(limit)? + 1;
+        let paging = Paging::new(limit)?;
         let before = cursor
             .map(Self::event_cursor)
             .transpose()?
@@ -369,17 +369,15 @@ impl Store {
                     .push(collation);
             }
         }
-        query.push(" ORDER BY id DESC LIMIT ").push_bind(fetch);
+        query
+            .push(" ORDER BY id DESC LIMIT ")
+            .push_bind(paging.fetch);
         let mut rows = query
             .build_query_as::<AuditRow>()
             .fetch_all(&self.pool)
             .await
             .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
-            .flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id);
         let items = rows
             .into_iter()
             .map(AuditRow::into_event)
@@ -398,9 +396,7 @@ impl Store {
         if self.audit_days == 0 {
             return Ok(());
         }
-        let cutoff = now_ms().saturating_sub(
-            i64::try_from(self.audit_days.saturating_mul(86_400_000)).unwrap_or(i64::MAX),
-        );
+        let cutoff = days_ago_ms(self.audit_days);
         let (_writer, mut tx) = self.begin_immediate().await?;
         let newest = sqlx::query_scalar!(
             r#"SELECT id AS "id!" FROM audit_events WHERE created_at_ms < ?1 ORDER BY id DESC LIMIT 1"#,

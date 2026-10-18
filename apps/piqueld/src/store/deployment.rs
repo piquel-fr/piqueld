@@ -1,5 +1,5 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
-use super::{EnvironmentId, NormalizedApplication, Operation, Store, StoreError, now_ms};
+use super::{EnvironmentId, NormalizedApplication, Operation, Paging, Store, StoreError, now_ms};
 use piqueld_core::{
     api::{DeploymentView, DiagnosticView, Page, SavedApplication},
     manifest::{ApplicationTemplate, Rendering, VariableValue},
@@ -7,7 +7,7 @@ use piqueld_core::{
 use sqlx::{Sqlite, Transaction};
 use std::collections::BTreeMap;
 
-/// `deployments` row shared by the first-page and cursor page queries.
+/// `deployments` row shared by the snapshot and history page queries.
 struct DeploymentRow {
     id: String,
     manifest_json: String,
@@ -95,11 +95,7 @@ impl Store {
         &self,
         environment: &EnvironmentId,
     ) -> Result<Option<CurrentDeployment>, StoreError> {
-        Self::current_deployment_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            environment,
-        )
-        .await
+        Self::current_deployment_on(&mut *self.connection().await?, environment).await
     }
 
     /// Saves edited configuration with the next generation without creating an
@@ -273,40 +269,35 @@ impl Store {
         limit: usize,
     ) -> Result<Page<DeploymentView>, StoreError> {
         self.get(app).await?;
-        let limit_sql = super::page_limit(limit)? + 1;
-        let before = cursor
-            .map(|v| v.strip_prefix("v1:").ok_or(StoreError::InvalidInput))
-            .transpose()?;
+        let paging = Paging::new(limit)?;
+        let before = Paging::cursor(cursor)?;
         let app_id = app.as_str();
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
+        // Separate queries, so a cursor seeks `deployment_application`.
         let mut rows = if let Some(before) = before {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
-                 WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+                r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
+                 WHERE environment_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3"#,
                 app_id,
                 before,
-                limit_sql
+                paging.fetch
             )
             .fetch_all(&mut *tx)
             .await
         } else {
             sqlx::query_as!(
                 DeploymentRow,
-                "SELECT id AS \"id!\",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
-                 WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2",
+                r#"SELECT id AS "id!",manifest_json,template_json,variables_json,warnings_json,succeeded_at_ms,release_id,origin_json FROM deployments
+                 WHERE environment_id=?1 ORDER BY id DESC LIMIT ?2"#,
                 app_id,
-                limit_sql
+                paging.fetch
             )
             .fetch_all(&mut *tx)
             .await
         }
         .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
-            .flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id.clone());
         let current = Self::current_deployment_on(&mut tx, app)
             .await?
             .map(|current| current.id);
@@ -348,22 +339,22 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Operation>, StoreError> {
-        let before = cursor
-            .map(|v| {
-                v.strip_prefix("v1:")
-                    .ok_or(StoreError::InvalidInput)?
-                    .parse::<i64>()
-                    .map_err(StoreError::invalid_input)
-            })
-            .transpose()?
+        let before = Paging::cursor(cursor)?
+            .map(str::parse::<i64>)
+            .transpose()
+            .map_err(StoreError::invalid_input)?
             .unwrap_or(i64::MAX);
-        let limit_sql = super::page_limit(limit)? + 1;
-        let mut rows=sqlx::query!("SELECT attempt,outcome_json FROM deployment_attempts WHERE deployment_id=?1 AND attempt<?2 ORDER BY attempt DESC LIMIT ?3",id,before,limit_sql).fetch_all(&self.pool).await.map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|row| format!("v1:{}", row.attempt)))
-            .flatten();
+        let paging = Paging::new(limit)?;
+        let mut rows = sqlx::query!(
+            "SELECT attempt,outcome_json FROM deployment_attempts WHERE deployment_id=?1 AND attempt<?2 ORDER BY attempt DESC LIMIT ?3",
+            id,
+            before,
+            paging.fetch
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.attempt);
         let items = rows
             .into_iter()
             .map(|row| serde_json::from_str(&row.outcome_json).map_err(StoreError::corrupt))
@@ -380,7 +371,8 @@ mod tests {
     use piqueld_core::{ApplicationState, OperationState};
 
     fn empty() -> ApplicationTemplate {
-        piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='empty'\n[spec]").unwrap().normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
+        crate::store::testing::template("empty", "[spec]")
+            .normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
     }
 
     /// The environment created with a saved application, which shares its ID.
@@ -435,8 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_and_deploy_accepts_saved_only_configuration_but_cannot_reverse_deletion() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
         let id = environment(&saved);
         let application = store.get(&id).await.unwrap().application.application;
@@ -546,15 +537,7 @@ mod tests {
             .await
             .unwrap()
             .template;
-        store
-            .transition_operation(
-                &first.operation_id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&first.operation_id).await;
         let mut edited = original.to_manifest();
         edited.spec.volumes.push(piqueld_core::manifest::Volume {
             name: "later".into(),
@@ -598,8 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn failure_survives_success_and_empty_target_has_no_resources() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
         let id = environment(&saved);
         let op = store.request_deploy(&id, Some(1)).await.unwrap();
@@ -619,15 +601,7 @@ mod tests {
         assert!(
             target.services.is_empty() && target.networks.is_empty() && target.volumes.is_empty()
         );
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         store
             .transition_operation(
                 &op.id,
@@ -639,15 +613,7 @@ mod tests {
             .unwrap();
         let op = store.operation(&op.id).await.unwrap();
         store.retry_operation(&op).await.unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         store.save_prepared(&op, &target).await.unwrap();
         store.publish_prepared(&op).await.unwrap();
         store

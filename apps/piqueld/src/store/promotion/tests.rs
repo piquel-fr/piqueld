@@ -1,29 +1,16 @@
 use super::*;
 use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation, SourceChoice};
-use piqueld_core::{ApplicationId, GitBranch, TrackedBranch, manifest::parse_template_toml};
+use crate::store::testing::template;
+use piqueld_core::{ApplicationId, GitBranch, TrackedBranch};
 
 /// Saves the repository-backed application `name`, whose environments
 /// follow branches and which may have previews, and returns its ID.
 async fn application(store: &Store, name: &str) -> ApplicationId {
-    let template = parse_template_toml(&format!(
-        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n\
-         [spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/{name}.git'\nbranch='main'"
-    ))
-    .unwrap();
-    let (MutationResponse::Saved(saved), _) = store
-        .accept(
-            Daemon,
-            Mutation::save(template, None, false),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("saved")
-    };
+    let spec = format!(
+        "[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/{name}.git'\nbranch='main'"
+    );
+    let saved = store.save_template(template(name, &spec), false).await;
     ApplicationId::parse(saved.application_id).unwrap()
 }
 
@@ -74,8 +61,7 @@ fn cycle(result: Result<(), StoreError>) -> Vec<String> {
 /// environments, and environments being deleted are not.
 #[tokio::test]
 async fn sources_are_other_live_environments_without_cycles() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path().join("db")).await.unwrap();
+    let (_directory, store) = Store::temporary().await;
     let notes = application(&store, "notes").await;
     let production = EnvironmentId::default_for(&notes);
     let staging = create(&store, &notes, "staging", None).await.unwrap();
@@ -153,8 +139,7 @@ async fn sources_are_other_live_environments_without_cycles() {
 /// and connecting or disconnecting the repository leaves promotions alone.
 #[tokio::test]
 async fn a_promoted_environment_never_builds_until_it_tracks_again() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path().join("db")).await.unwrap();
+    let (_directory, store) = Store::temporary().await;
     let notes = application(&store, "notes").await;
     let production = EnvironmentId::default_for(&notes);
     let staging = create(&store, &notes, "staging", None).await.unwrap();
@@ -192,18 +177,14 @@ async fn a_promoted_environment_never_builds_until_it_tracks_again() {
     set_source(&store, &production, None).await.unwrap();
     let tracking = store.get(&production).await.unwrap().environment.source;
     assert_eq!(tracking.branch().map(TrackedBranch::branch), Some("main"));
-    store
-        .accept(Daemon, Mutation::deploy(production), None, true, None)
-        .await
-        .unwrap();
+    store.force(Mutation::deploy(production)).await.unwrap();
 }
 
 /// Deleting an environment others promote from is refused, naming them,
 /// until none does; deleting the application deletes them all.
 #[tokio::test]
 async fn deleting_a_promotion_source_needs_its_dependents_gone() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path().join("db")).await.unwrap();
+    let (_directory, store) = Store::temporary().await;
     let notes = application(&store, "notes").await;
     let staging = create(&store, &notes, "staging", None).await.unwrap();
     let canary = create(&store, &notes, "canary", Some(&staging))
@@ -212,10 +193,7 @@ async fn deleting_a_promotion_source_needs_its_dependents_gone() {
     let qa = create(&store, &notes, "qa", Some(&staging)).await.unwrap();
     let delete = |id: &EnvironmentId| Mutation::Delete { id: id.clone() };
 
-    match store
-        .accept(Daemon, delete(&staging), None, true, None)
-        .await
-    {
+    match store.force(delete(&staging)).await {
         Err(StoreError::Promotion(PromotionError::InUse { environments })) => assert_eq!(
             environments
                 .iter()
@@ -225,15 +203,9 @@ async fn deleting_a_promotion_source_needs_its_dependents_gone() {
         ),
         other => panic!("refusal expected, got {other:?}"),
     }
-    store
-        .accept(Daemon, delete(&canary), None, true, None)
-        .await
-        .unwrap();
+    store.force(delete(&canary)).await.unwrap();
     set_source(&store, &qa, None).await.unwrap();
-    store
-        .accept(Daemon, delete(&staging), None, true, None)
-        .await
-        .unwrap();
+    store.force(delete(&staging)).await.unwrap();
 
     let chained = create(&store, &notes, "review", Some(&qa)).await.unwrap();
     let (MutationResponse::Deleted(deleted), _) = store

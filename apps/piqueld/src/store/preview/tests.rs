@@ -1,18 +1,18 @@
 //! Preview lifecycle: idempotent creation without the application revision,
 //! separation from environments, and shared secret access.
-use super::*;
 use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::store::*;
 use piqueld_core::{
     GitBranch, PreviewSlot,
     access::Scope,
     api::{CreatedPreview, EnvironmentAccess, PreviewLimit, SecretAccess},
-    manifest::{PreviewLimits, SecretMount, parse_template_toml},
+    manifest::{PreviewLimits, SecretMount, ValidatedTemplate, parse_template_toml},
 };
 
 /// The `notes` application, repository-backed unless `saved`, whose `web`
 /// service mounts the stored secret `stripe`.
-fn template(saved: bool) -> ApplicationTemplate {
+fn template(saved: bool) -> ValidatedTemplate {
     let connection = if saved {
         ""
     } else {
@@ -28,31 +28,12 @@ fn template(saved: bool) -> ApplicationTemplate {
         name: "stripe".into(),
         target: "/run/secrets/stripe".into(),
     }];
-    manifest
-        .validate_template()
-        .unwrap()
-        .normalize(ApplicationId::parse("app-pending-01").unwrap())
+    manifest.validate_template().unwrap()
 }
 
 /// Saves `template(saved)` and returns its ID.
 async fn save(store: &Store, saved: bool) -> ApplicationId {
-    let (MutationResponse::Saved(saved), _) = store
-        .accept(
-            Daemon,
-            Mutation::Save {
-                application: Box::new(template(saved)),
-                expected_application_id: None,
-                deploy: false,
-            },
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("saved")
-    };
+    let saved = store.save_template(template(saved), false).await;
     ApplicationId::parse(saved.application_id).unwrap()
 }
 
@@ -76,8 +57,7 @@ async fn create(
 
 #[tokio::test]
 async fn creating_a_preview_is_idempotent_on_branch_and_slot_and_leaves_the_revision() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let application = save(&store, false).await;
 
     // Concurrent agents creating the same preview get one preview and one
@@ -288,8 +268,7 @@ async fn previews_need_a_repository_and_environment_changes_never_reach_them() {
 
 #[tokio::test]
 async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let application = save(&store, false).await;
     let preview = create(&store, &application, "feat/login", None)
         .await
@@ -297,7 +276,10 @@ async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() 
         .preview;
     let stored = store.get(&preview.id).await.unwrap();
     let rendered = stored
-        .render(&template(false), "operation-1")
+        .render(
+            &template(false).normalize(application.clone()),
+            "operation-1",
+        )
         .unwrap()
         .application;
 
@@ -337,8 +319,7 @@ async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() 
 
 #[tokio::test]
 async fn pruning_keeps_a_preview_once_the_repository_changed() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let application = save(&store, false).await;
     let preview = create(&store, &application, "feat/login", None)
         .await
@@ -473,8 +454,7 @@ async fn local_snapshots_create_previews_within_limits_and_record_their_provenan
 /// can't be a promotion source.
 #[tokio::test]
 async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let application = save(&store, false).await;
     let notes = "https://example.com/notes.git";
     let created = local(
@@ -517,7 +497,7 @@ async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
     assert!(matches!(
         accept(promoted).await,
         Err(StoreError::Promotion(
-            super::PromotionError::SourceInvalid { .. }
+            crate::store::PromotionError::SourceInvalid { .. }
         ))
     ));
 

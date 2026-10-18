@@ -1,7 +1,8 @@
 //! Runtime status writes are guarded by the operation that observed them.
 
-use super::{ApplicationState, EnvironmentId, EnvironmentStatus, Store, StoreError, now_ms};
-use serde::Deserialize;
+use super::{
+    ApplicationState, EnvironmentId, EnvironmentStatus, Store, StoreError, decode_name, now_ms,
+};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 impl Store {
@@ -10,11 +11,7 @@ impl Store {
     /// # Errors
     /// Returns a storage error or `NotFound`.
     pub async fn status(&self, id: &EnvironmentId) -> Result<EnvironmentStatus, StoreError> {
-        Self::status_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id,
-        )
-        .await
+        Self::status_on(&mut *self.connection().await?, id).await
     }
 
     /// Reads status on an existing connection or transaction.
@@ -33,10 +30,7 @@ impl Store {
         .ok_or(StoreError::NotFound)?;
         Ok(EnvironmentStatus {
             environment_id: id.clone(),
-            state: ApplicationState::deserialize(serde::de::value::StrDeserializer::<
-                serde::de::value::Error,
-            >::new(&row.state))
-            .map_err(StoreError::corrupt)?,
+            state: decode_name(&row.state)?,
             runtime_health: row.runtime_health,
             message: row.message,
             updated_at_ms: row.updated_at_ms,
@@ -70,22 +64,20 @@ impl Store {
         Ok(current.as_deref() == Some(operation_id))
     }
 
-    /// Unconditionally upserts an environment's status within `tx`; callers
-    /// are responsible for operation guards.
+    /// Unconditionally upserts an environment's status within `tx`, clearing
+    /// its message; callers are responsible for operation guards.
     pub(super) async fn write_status(
         tx: &mut Transaction<'_, Sqlite>,
-        app_id: &str,
-        state: &str,
-        message: Option<&str>,
+        id: &str,
+        state: ApplicationState,
         now: i64,
     ) -> Result<(), StoreError> {
-        sqlx::query!("INSERT INTO environment_status(environment_id,state,message,updated_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(environment_id) DO UPDATE SET state=excluded.state,message=excluded.message,updated_at_ms=excluded.updated_at_ms",app_id,state,message,now)
+        let state = state.as_str();
+        sqlx::query!("INSERT INTO environment_status(environment_id,state,message,updated_at_ms) VALUES(?1,?2,NULL,?3) ON CONFLICT(environment_id) DO UPDATE SET state=excluded.state,message=excluded.message,updated_at_ms=excluded.updated_at_ms",id,state,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         Ok(())
     }
-}
 
-impl Store {
     /// Records a meaningful observed health transition without overwriting intent progress.
     /// Health is `absent` with no services, `ready` when all converged, else
     /// `degraded`. The observation time is refreshed on every call, while a

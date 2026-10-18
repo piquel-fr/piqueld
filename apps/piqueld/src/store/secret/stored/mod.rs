@@ -2,7 +2,7 @@
 //! mount a stored secret its access list allows; values are encrypted for
 //! the application and copied into each environment's own Docker secrets.
 use super::{
-    Envelope, NormalizedApplication, SecretOwner, SecretSource, Store, StoreError,
+    Envelope, NormalizedApplication, SecretOwner, SecretScope, SecretSource, Store, StoreError,
     deletion::SecretDeletion, now_ms,
 };
 use crate::store::{Actor, Attribution};
@@ -30,11 +30,7 @@ impl Store {
         application: &ApplicationId,
     ) -> Result<Vec<StoredSecret>, StoreError> {
         self.application(application).await?;
-        Self::stored_secrets_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            application,
-        )
-        .await
+        Self::stored_secrets_on(&mut *self.connection().await?, application).await
     }
 
     /// Lists an application's stored secrets on an existing connection or transaction.
@@ -147,12 +143,11 @@ impl Store {
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        let current = existing.as_ref().map_or(0, |row| row.generation);
-        if existing.is_some_and(|row| row.deletion_id.is_some()) {
-            return Err(StoreError::SecretDeleting);
-        }
-        Self::secret_version_matches(expected, current)?;
-        if current == 0 {
+        let generation = Self::next_secret_generation(
+            existing.map(|row| (row.generation, row.deletion_id.is_some())),
+            expected,
+        )?;
+        if generation == 1 {
             let count = sqlx::query_scalar!(
                 "SELECT COUNT(*) FROM application_secrets WHERE application_id=?1",
                 id
@@ -164,7 +159,6 @@ impl Store {
                 return Err(StoreError::InvalidInput);
             }
         }
-        let generation = current.checked_add(1).ok_or(StoreError::InvalidInput)?;
         let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM application_secret_versions WHERE application_id=?1 AND available=1",id)
             .fetch_one(&mut *tx).await.map_err(StoreError::database)?;
         Self::check_secret_quota(usage.versions, usage.bytes, value.len())?;
@@ -191,12 +185,9 @@ impl Store {
         if let Some(access) = access {
             Self::write_access_on(&mut tx, application, name, access).await?;
         }
-        // History records the logical name and version, never the value.
+        let (scope, by) = (SecretScope::Application(application), actor.attribution());
         let message = format!("Stored secret version {generation}");
-        let by = actor.attribution();
-        let operator = by.operator_uid();
-        sqlx::query!("INSERT INTO events(application_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) VALUES(?1,'secret_saved',?2,?3,?4,?5,?6,?7)",id,message,name,now,by.user_id,by.credential_id,operator)
-            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        Self::secret_event_on(&mut tx, scope, ("secret_saved", &message, name), by, now).await?;
         let secret = Self::stored_secret_on(&mut tx, application, name).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(secret)
@@ -221,12 +212,10 @@ impl Store {
         Self::require_secrets_write_on(&mut tx, actor, application).await?;
         Self::stored_secret_on(&mut tx, application, name).await?;
         let description = Self::write_access_on(&mut tx, application, name, access).await?;
-        let (id, now) = (application.as_str(), now_ms());
+        let (scope, by) = (SecretScope::Application(application), actor.attribution());
         let message = format!("Allowed {description} to mount the secret");
-        let by = actor.attribution();
-        let operator = by.operator_uid();
-        sqlx::query!("INSERT INTO events(application_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) VALUES(?1,'secret_access_changed',?2,?3,?4,?5,?6,?7)",id,message,name,now,by.user_id,by.credential_id,operator)
-            .execute(&mut *tx).await.map_err(StoreError::database)?;
+        let event = ("secret_access_changed", message.as_str(), name);
+        Self::secret_event_on(&mut tx, scope, event, by, now_ms()).await?;
         let secret = Self::stored_secret_on(&mut tx, application, name).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(secret)
@@ -358,12 +347,7 @@ impl Store {
         environment: &EnvironmentView,
         app: &NormalizedApplication,
     ) -> Result<(), StoreError> {
-        Self::check_secret_access_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            environment,
-            app,
-        )
-        .await
+        Self::check_secret_access_on(&mut *self.connection().await?, environment, app).await
     }
 
     /// Reserves a stored secret for deletion and returns each environment's
@@ -452,10 +436,9 @@ impl Store {
         let deleted = sqlx::query!("DELETE FROM application_secrets WHERE application_id=?1 AND name=?2 AND deletion_id=?3",id,name,deletion_id)
             .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         if deleted > 0 {
-            let now = now_ms();
-            let operator = actor.operator_uid();
-            sqlx::query!("INSERT INTO events(application_id,kind,message,resource,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid) VALUES(?1,'secret_deleted','Deleted secret and its runtime versions',?2,?3,?4,?5,?6)",id,name,now,actor.user_id,actor.credential_id,operator)
-                .execute(&mut *tx).await.map_err(StoreError::database)?;
+            let scope = SecretScope::Application(application);
+            let event = ("secret_deleted", Self::SECRET_DELETED, name);
+            Self::secret_event_on(&mut tx, scope, event, actor, now_ms()).await?;
         }
         tx.commit().await.map_err(StoreError::database)
     }

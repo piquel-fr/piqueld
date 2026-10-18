@@ -1,6 +1,9 @@
 //! Immutable diagnostic history, independent of operation retention.
-use super::access::{Visibility, scope_json};
-use super::{ApplicationId, EnvironmentId, Store, StoreError, new_id, now_ms, page_limit};
+use crate::store::auth::access::{Visibility, scope_json};
+use crate::store::{
+    ApplicationId, EnvironmentId, Paging, Store, StoreError, days_ago_ms, decode_name, new_id,
+    now_ms,
+};
 use piqueld_core::{
     Event, EventActor,
     api::Page,
@@ -15,7 +18,7 @@ impl Store {
     /// For a failed operation it attaches a diagnostic, reusing the one already
     /// recorded for the same attempt and error code so repeated events share one
     /// occurrence ID.
-    pub(super) async fn operation_event(
+    pub(in crate::store) async fn operation_event(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
         kind: &str,
@@ -111,23 +114,17 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<Event>, StoreError> {
-        let fetch = page_limit(limit)? + 1;
+        let paging = Paging::new(limit)?;
         let cursor = cursor
             .map(Self::event_cursor)
             .transpose()?
             .unwrap_or(if filter.descending { i64::MAX } else { 0 });
-        validate_filter(filter)?;
-        let mut query = EventRow::query(filter, visible, cursor, fetch)?;
-        let mut rows = query
+        let mut rows = EventRow::query(filter, visible, cursor, paging.fetch)?
             .build_query_as::<EventRow>()
             .fetch_all(&self.pool)
             .await
             .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|r| format!("v1:{}", r.id)))
-            .flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id);
         let items = rows
             .into_iter()
             .map(EventRow::into_event)
@@ -146,9 +143,9 @@ impl Store {
         after: i64,
         limit: usize,
     ) -> Result<(Vec<Event>, i64), StoreError> {
-        let fetch = page_limit(limit)? + 1;
-        validate_filter(filter)?;
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let paging = Paging::new(limit)?;
+        let mut query = EventRow::query(filter, visible, after, paging.fetch)?;
+        let mut tx = self.snapshot().await?;
         let coverage = sqlx::query!(
             r#"SELECT pruned_through_id AS "pruned!: i64",
             (SELECT COALESCE(MAX(id),0) FROM events) AS "latest!: i64"
@@ -160,14 +157,13 @@ impl Store {
         if after > 0 && after < coverage.pruned {
             return Err(StoreError::HistoryExpired);
         }
-        let mut rows = EventRow::query(filter, visible, after, fetch)?
+        let mut rows = query
             .build_query_as::<EventRow>()
             .fetch_all(&mut *tx)
             .await
             .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
+        let more = paging.truncate(&mut rows);
         let checkpoint = match rows.last() {
             Some(row) if more => row.id,
             _ => coverage.latest.max(after),
@@ -185,9 +181,8 @@ impl Store {
     /// "42" | "v1:-1" -> InvalidInput
     /// ```
     pub(crate) fn event_cursor(cursor: &str) -> Result<i64, StoreError> {
-        cursor
-            .strip_prefix("v1:")
-            .and_then(|v| v.parse::<i64>().ok())
+        Paging::cursor(Some(cursor))?
+            .and_then(|id| id.parse::<i64>().ok())
             .filter(|id| *id >= 0)
             .ok_or(StoreError::InvalidInput)
     }
@@ -229,9 +224,8 @@ impl Store {
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
         application: Option<&EnvironmentId>,
-        actor: super::Attribution<'_>,
+        actor: crate::store::Attribution<'_>,
     ) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
         let mut diagnostic = diagnostic.clone();
         if application.is_none() {
             diagnostic.scope = EventScope::Daemon;
@@ -241,7 +235,7 @@ impl Store {
         let json = serde_json::to_string(&diagnostic).map_err(StoreError::corrupt)?;
         let now = now_ms();
         let operator = actor.operator_uid();
-        sqlx::query!(
+        self.write(sqlx::query!(
             "INSERT INTO events(scope,application_id,environment_id,kind,message,error_code,diagnostic_id,
             diagnostic_json,request_id,created_at_ms,actor_user_id,actor_credential_id,actor_operator_uid)
             SELECT ?1,(SELECT application_id FROM environments WHERE id=?2),?2,'diagnostic',?3,?4,?5,?6,?7,?8,?9,?10,?11
@@ -259,8 +253,29 @@ impl Store {
             actor.user_id,
             actor.credential_id,
             operator,
+        ))
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
+    /// Records an informational `kind` event about environment `id`, in its
+    /// application's history, outside any operation.
+    pub(in crate::store) async fn environment_event_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &str,
+        kind: &str,
+        message: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query!(
+            "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4)",
+            id,
+            kind,
+            message,
+            now
         )
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
         Ok(())
@@ -274,18 +289,17 @@ impl Store {
     /// Returns storage errors.
     pub(crate) async fn record_environment_event(
         &self,
-        actor: super::Attribution<'_>,
+        actor: crate::store::Attribution<'_>,
         application: &ApplicationId,
         environment: &EnvironmentId,
         kind: &str,
         message: &str,
         resource: &str,
     ) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
         let (application, environment) = (application.as_str(), environment.as_str());
         let now = now_ms();
         let operator = actor.operator_uid();
-        sqlx::query!(
+        self.write(sqlx::query!(
             "INSERT INTO events(application_id,environment_id,kind,message,resource,created_at_ms,
             actor_user_id,actor_credential_id,actor_operator_uid)
             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM applications WHERE id=?1)",
@@ -298,8 +312,7 @@ impl Store {
             actor.user_id,
             actor.credential_id,
             operator,
-        )
-        .execute(&self.pool)
+        ))
         .await
         .map_err(StoreError::database)?;
         Ok(())
@@ -348,7 +361,7 @@ impl Store {
         application: Option<&EnvironmentId>,
     ) {
         tracing::error!(diagnostic_id=%diagnostic.id, code=%diagnostic.code, summary=%diagnostic.summary, "control-plane failure");
-        let daemon = super::Attribution::default();
+        let daemon = crate::store::Attribution::default();
         if let Err(error) = self
             .record_diagnostic(diagnostic, None, application, daemon)
             .await
@@ -367,14 +380,8 @@ impl Store {
     /// disables pruning.
     pub(crate) async fn prune_daemon_events(&self) -> Result<(), StoreError> {
         if self.daemon_event_days > 0 {
-            self.prune_scope(
-                now_ms().saturating_sub(
-                    i64::try_from(self.daemon_event_days.saturating_mul(86_400_000))
-                        .unwrap_or(i64::MAX),
-                ),
-                EventScope::Daemon,
-            )
-            .await?;
+            let cutoff = days_ago_ms(self.daemon_event_days);
+            self.prune_scope(cutoff, EventScope::Daemon).await?;
         }
         Ok(())
     }
@@ -427,25 +434,6 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)?;
         Ok(count)
     }
-}
-
-/// Rejects inverted time ranges and malformed application or environment IDs
-/// in an event filter.
-fn validate_filter(filter: &EventFilter) -> Result<(), StoreError> {
-    if filter
-        .since_ms
-        .zip(filter.until_ms)
-        .is_some_and(|(a, b)| a > b)
-    {
-        return Err(StoreError::InvalidInput);
-    }
-    if let Some(id) = &filter.application_id {
-        ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
-    }
-    if let Some(id) = &filter.environment_id {
-        EnvironmentId::parse(id).map_err(StoreError::invalid_input)?;
-    }
-    Ok(())
 }
 
 /// Raw `events` row, decoded into an `Event` by `into_event`.
@@ -505,7 +493,8 @@ impl EventRow {
     }
 
     /// Builds a keyset-paginated event query after (or, descending, before)
-    /// `cursor`, fetching `fetch` rows that `visible` allows.
+    /// `cursor`, fetching `fetch` rows that `visible` allows. Rejects inverted
+    /// time ranges and malformed application or environment IDs.
     /// Optional predicates are assembled from fixed column names; every value is bound.
     /// Direct ordering lets `SQLite` stop after one page instead of sorting retained history.
     fn query<'a>(
@@ -514,6 +503,19 @@ impl EventRow {
         cursor: i64,
         fetch: i64,
     ) -> Result<QueryBuilder<'a, Sqlite>, StoreError> {
+        if filter
+            .since_ms
+            .zip(filter.until_ms)
+            .is_some_and(|(since, until)| since > until)
+        {
+            return Err(StoreError::InvalidInput);
+        }
+        if let Some(id) = &filter.application_id {
+            ApplicationId::parse(id).map_err(StoreError::invalid_input)?;
+        }
+        if let Some(id) = &filter.environment_id {
+            EnvironmentId::parse(id).map_err(StoreError::invalid_input)?;
+        }
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
@@ -609,11 +611,7 @@ impl EventRow {
             phase: self.phase,
             resource: self.resource,
             created_at_ms: self.created_at_ms,
-            scope: match self.scope.as_str() {
-                "daemon" => EventScope::Daemon,
-                "application" => EventScope::Application,
-                _ => return Err(StoreError::Corrupt),
-            },
+            scope: decode_name(&self.scope)?,
             action_id: self.action_id,
             retry: self
                 .retry
@@ -654,13 +652,8 @@ mod tests {
 
     #[tokio::test]
     async fn environment_events_keep_their_application_until_it_is_deleted() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
-        let app = piqueld_core::parse_toml(include_str!(
-            "../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-        ))
-        .unwrap()
-        .normalize(ApplicationId::parse("app-event-test").unwrap());
+        let (_temp, store) = Store::temporary().await;
+        let app = crate::store::testing::prebuilt("app-event-test");
         store
             .save_application(&ApplicationTemplate::from(&app), None, None)
             .await
@@ -705,8 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn history_pages_use_indexes_without_sorting_retained_events() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         for descending in [false, true] {
             for (filter, index) in [
                 (EventFilter::default(), "INTEGER PRIMARY KEY"),

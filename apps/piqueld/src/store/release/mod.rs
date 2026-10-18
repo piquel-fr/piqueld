@@ -1,7 +1,7 @@
 //! Immutable releases, recorded when a tracking environment's preparation
 //! succeeds. They belong to the application, so they outlive the environment
 //! and deployments that recorded them.
-use super::{Store, StoreError, new_id, page_limit};
+use super::{Paging, Store, StoreError, new_id};
 use piqueld_core::{
     ApplicationId, EnvironmentId, Release, ReleaseId,
     api::{Page, ReleasePromotion, ReleaseView},
@@ -9,7 +9,7 @@ use piqueld_core::{
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
-/// `releases` row shared by the first-page and cursor page queries.
+/// `releases` row shared by the listing and single-release queries.
 struct ReleaseRow {
     id: String,
     application_id: String,
@@ -171,27 +171,21 @@ impl Store {
         limit: usize,
     ) -> Result<Page<ReleaseView>, StoreError> {
         self.application(application).await?;
-        let limit_sql = page_limit(limit)? + 1;
-        let before = cursor
-            .map(|v| v.strip_prefix("v1:").ok_or(StoreError::InvalidInput))
-            .transpose()?;
+        let paging = Paging::new(limit)?;
+        let before = Paging::cursor(cursor)?;
         let application = application.as_str();
-        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut snapshot = self.snapshot().await?;
         let mut rows = sqlx::query_as!(
             ReleaseRow,
             r#"SELECT id AS "id!",application_id,content_hash,release_json,created_at_ms FROM releases WHERE application_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC LIMIT ?3"#,
             application,
             before,
-            limit_sql
+            paging.fetch
         )
         .fetch_all(&mut *snapshot)
         .await
         .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = more
-            .then(|| rows.last().map(|row| format!("v1:{}", row.id)))
-            .flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |row| row.id.clone());
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
             items.push(row.view(&mut snapshot).await?);
@@ -207,7 +201,7 @@ impl Store {
         application: &ApplicationId,
         id: &ReleaseId,
     ) -> Result<ReleaseView, StoreError> {
-        let mut snapshot = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut snapshot = self.snapshot().await?;
         let (application, id) = (application.as_str(), id.as_str());
         sqlx::query_as!(
             ReleaseRow,

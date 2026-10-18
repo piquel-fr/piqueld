@@ -1,6 +1,6 @@
 //! Durable notification conditions and delivery outbox, driven by committed events.
-use super::{Store, StoreError, new_id, now_ms};
 use crate::config::{NotificationConfig, WebhookDestination};
+use crate::store::{Paging, Store, StoreError, new_id, now_ms, seconds_ms};
 use piqueld_core::{
     Event,
     api::Page,
@@ -23,6 +23,25 @@ impl WebhookDestination {
         )
     }
 }
+
+impl NotificationConfig {
+    /// The enabled destination still configured as `name` with `fingerprint`,
+    /// which a delivery or route stored when it was made.
+    fn destination(&self, name: &str, fingerprint: &str) -> Option<&WebhookDestination> {
+        self.destinations.iter().find(|destination| {
+            destination.enabled
+                && destination.name == name
+                && destination.fingerprint() == fingerprint
+        })
+    }
+
+    /// Whether `category` notifications still go to the destination stored
+    /// as `name` with `fingerprint` (see [`Self::destination`]).
+    fn delivers(&self, category: NotificationCategory, name: &str, fingerprint: &str) -> bool {
+        self.category_enabled(category) && self.destination(name, fingerprint).is_some()
+    }
+}
+
 impl Store {
     /// Reads delivery history without destination credentials or response bodies.
     /// # Errors
@@ -32,20 +51,20 @@ impl Store {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<NotificationDelivery>, StoreError> {
-        let fetch = super::page_limit(limit)? + 1;
+        let paging = Paging::new(limit)?;
         let mut rows = sqlx::query!(
             "SELECT id AS \"id!\",event_id,destination,category,state,attempts,created_at_ms,next_attempt_ms,updated_at_ms,last_error
             FROM notification_deliveries
             WHERE ?1 IS NULL OR id<?1
             ORDER BY id DESC LIMIT ?2",
             cursor,
-            fetch,
+            paging.fetch,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)?;
-        let more = rows.len() > limit;
-        rows.truncate(limit);
+        // Delivery cursors are bare IDs, without the `v1:` prefix.
+        let more = paging.truncate(&mut rows);
         let next_cursor = more.then(|| rows.last().map(|r| r.id.clone())).flatten();
         Ok(Page {
             items: rows
@@ -81,7 +100,7 @@ impl Store {
     /// Returns absence, disabled delivery or storage errors.
     pub async fn retry_delivery(
         &self,
-        actor: super::Actor<'_>,
+        actor: crate::store::Actor<'_>,
         id: &str,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -98,12 +117,9 @@ impl Store {
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
         let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
-        if !self.notifications.category_enabled(category)
-            || !self.notifications.destinations.iter().any(|d| {
-                d.enabled
-                    && d.name == row.destination
-                    && d.fingerprint() == row.destination_fingerprint
-            })
+        if !self
+            .notifications
+            .delivers(category, &row.destination, &row.destination_fingerprint)
         {
             return Err(StoreError::InvalidInput);
         }
@@ -182,13 +198,12 @@ impl Store {
         .map_err(StoreError::database)?;
         let now = now_ms();
         for row in rows {
-            if !self.notifications.category_enabled(
-                NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?,
-            ) || !self.notifications.destinations.iter().any(|d| {
-                d.enabled
-                    && d.name == row.destination
-                    && d.fingerprint() == row.destination_fingerprint
-            }) {
+            let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
+            if !self.notifications.delivers(
+                category,
+                &row.destination,
+                &row.destination_fingerprint,
+            ) {
                 sqlx::query!(
                     "UPDATE notification_deliveries
                     SET state='cancelled',last_error='Disabled or changed by configuration',updated_at_ms=?1
@@ -207,11 +222,12 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
         for route in routes {
-            if !self.notifications.category_enabled(
-                NotificationCategory::parse(&route.category).ok_or(StoreError::Corrupt)?,
-            ) || !self.notifications.destinations.iter().any(|d| {
-                d.enabled && d.name == route.destination && d.fingerprint() == route.fingerprint
-            }) {
+            let category =
+                NotificationCategory::parse(&route.category).ok_or(StoreError::Corrupt)?;
+            if !self
+                .notifications
+                .delivers(category, &route.destination, &route.fingerprint)
+            {
                 sqlx::query!(
                     "DELETE FROM notification_routes WHERE category=?1 AND destination=?2",
                     route.category,
@@ -335,7 +351,7 @@ impl Store {
         }
         // Security events and daemon starts each notify; neither is a
         // condition that recovers.
-        if super::SecurityEvent::parse(&event.kind).is_some() {
+        if crate::store::SecurityEvent::parse(&event.kind).is_some() {
             let security = NotificationCategory::Security;
             return Self::enqueue(tx, &self.notifications, event.id, security).await;
         }
@@ -502,11 +518,9 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
                 for failure in failures {
-                    let Some(destination) = config.destinations.iter().find(|d| {
-                        d.enabled
-                            && d.name == failure.destination
-                            && d.fingerprint() == failure.destination_fingerprint
-                    }) else {
+                    let Some(destination) =
+                        config.destination(&failure.destination, &failure.destination_fingerprint)
+                    else {
                         continue;
                     };
                     if let Some(recovery) = Self::enqueue_destination(
@@ -710,12 +724,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        let threshold = i64::try_from(
-            self.notifications
-                .failure_threshold_seconds
-                .saturating_mul(1000),
-        )
-        .unwrap_or(i64::MAX);
+        let threshold = seconds_ms(self.notifications.failure_threshold_seconds);
         if let Some(condition) = sqlx::query!(
             "SELECT event_id FROM notification_conditions WHERE key=?1 AND notified=0 AND last_seen_ms-first_seen_ms>=?2",
             condition_key,
@@ -779,10 +788,7 @@ impl Store {
     ) -> Result<Option<(NotificationDelivery, WebhookDestination)>, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        let expired = now.saturating_sub(
-            i64::try_from(self.notifications.retry_window_seconds.saturating_mul(1000))
-                .unwrap_or(i64::MAX),
-        );
+        let expired = now.saturating_sub(seconds_ms(self.notifications.retry_window_seconds));
         // A recovery's retry window starts when it can first be sent, not while
         // it is waiting for acknowledgement of the original failure.
         sqlx::query!(
@@ -837,14 +843,8 @@ impl Store {
         let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
         let destination = self
             .notifications
-            .destinations
-            .iter()
-            .find(|d| {
-                d.enabled
-                    && d.name == row.destination
-                    && d.fingerprint() == row.destination_fingerprint
-                    && self.notifications.category_enabled(category)
-            })
+            .destination(&row.destination, &row.destination_fingerprint)
+            .filter(|_| self.notifications.category_enabled(category))
             .cloned()
             .ok_or(StoreError::InvalidInput)?;
         let lease = now.saturating_add(30_000);
@@ -886,12 +886,10 @@ impl Store {
         error: Option<&str>,
         delay: u64,
     ) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
         let now = now_ms();
-        let next =
-            now.saturating_add(i64::try_from(delay.saturating_mul(1000)).unwrap_or(i64::MAX));
+        let next = now.saturating_add(seconds_ms(delay));
         let state = state.as_str();
-        sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE notification_deliveries
             SET state=?1,last_error=?2,next_attempt_ms=?3,updated_at_ms=?4
             WHERE id=?5 AND state='pending'",
@@ -900,8 +898,7 @@ impl Store {
             next,
             now,
             id,
-        )
-        .execute(&self.pool)
+        ))
         .await
         .map_err(StoreError::database)?;
         Ok(())

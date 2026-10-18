@@ -1,7 +1,8 @@
 //! Behavioral tests for durable diagnostics, deletion, crash recovery and delivery policies.
-use super::*;
 use crate::api::{Mutation, MutationResponse};
 use crate::config::{DaemonConfig, WebhookDestination, WebhookKind};
+use crate::store::testing::template;
+use crate::store::*;
 use piqueld_core::observability::{
     DeliveryState, Diagnostic, EventFilter, EventScope, NotificationCategory,
 };
@@ -11,33 +12,9 @@ async fn application(store: &Store) -> Operation {
 }
 /// Saves and deploys an empty application, returning its running operation.
 async fn named_application(store: &Store, name: &str) -> Operation {
-    let manifest = piqueld_core::manifest::parse_template_toml(&format!(
-        "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[spec]"
-    ))
-    .unwrap();
-    let (MutationResponse::Saved(saved), _) = store
-        .accept(
-            crate::api::Actor::Daemon,
-            Mutation::save(manifest, None, true),
-            Some(0),
-            false,
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("saved deployment");
-    };
+    let saved = store.save_template(template(name, "[spec]"), true).await;
     let operation_id = saved.operation_id.unwrap();
-    store
-        .transition_operation(
-            &operation_id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(&operation_id).await;
     store.operation(&operation_id).await.unwrap()
 }
 fn notifications() -> DaemonConfig {
@@ -125,15 +102,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         panic!("delete");
     };
     let delete = &deleted.operations[0];
-    store
-        .transition_operation(
-            &delete.operation_id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(&delete.operation_id).await;
     store
         .finish_delete_operation(&store.operation(&delete.operation_id).await.unwrap())
         .await
@@ -179,15 +148,7 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
         store.process_notifications().await.unwrap();
         op = store.operation(&op.id).await.unwrap();
         store.retry_operation(&op).await.unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
     }
     assert_eq!(store.deliveries(None, 100).await.unwrap().items.len(), 1);
     let failed = store
@@ -265,15 +226,7 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
             .retry_operation(&store.operation(&op.id).await.unwrap())
             .await
             .unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         store
             .transition_operation(
                 &op.id,
@@ -321,15 +274,7 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
             .retry_operation(&store.operation(&op.id).await.unwrap())
             .await
             .unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         delivery
     };
     let failure = rerun(
@@ -562,8 +507,7 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
 
 #[tokio::test]
 async fn pruning_marks_stream_gaps_and_analytics_coverage() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let op = application(&store).await;
     store
         .transition_operation(
@@ -674,15 +618,7 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
         .retry_operation(&store.operation(&op.id).await.unwrap())
         .await
         .unwrap();
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(&op.id).await;
     store
         .transition_operation(
             &op.id,
@@ -757,15 +693,7 @@ async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_du
         .retry_operation(&store.operation(&op.id).await.unwrap())
         .await
         .unwrap();
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Requested,
-            OperationState::Running,
-            None,
-        )
-        .await
-        .unwrap();
+    store.mark_running(&op.id).await;
     store
         .transition_operation(
             &op.id,
@@ -829,15 +757,7 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
             .retry_operation(&store.operation(&op.id).await.unwrap())
             .await
             .unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
     }
     let (first, _) = store.claim_delivery().await.unwrap().unwrap();
     store
@@ -890,8 +810,7 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
 #[tokio::test]
 async fn visibility_limits_history_builds_and_analytics() {
     use piqueld_core::access::Scope;
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let mut ids = Vec::new();
     for name in ["blog", "shop"] {
         let op = named_application(&store, name).await;
@@ -1118,8 +1037,7 @@ async fn daemon_starts_notify_with_version_changes() {
 /// callers share no account and no address, yet count separately.
 #[tokio::test]
 async fn operator_and_anonymous_refusals_burst_separately() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let socket = |uid: Option<u32>| {
         let mut event = refused("unused");
         event.peer = None;

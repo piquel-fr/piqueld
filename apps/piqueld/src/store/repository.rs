@@ -251,14 +251,7 @@ impl Store {
         if fetched.url != wanted.url || fetched.branch != wanted.branch || wanted.commit.is_some() {
             return Ok(false);
         }
-        let synced = sqlx::query_scalar!(
-            r#"SELECT actor_system IS NOT NULL AS "synced!: bool" FROM operations WHERE id=?1"#,
-            operation.id
-        )
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        Ok(synced)
+        Self::requested_by_sync_on(tx, operation).await
     }
 }
 
@@ -267,40 +260,19 @@ mod tests {
     use super::*;
     use crate::api::Actor::Daemon;
     use crate::api::{Mutation, MutationResponse};
+    use crate::store::testing::template;
     use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, OperationState, ResolutionSet};
 
     #[tokio::test]
     async fn fetched_snapshot_preserves_intervening_saved_configuration() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
-        let initial = piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='test'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'").unwrap().normalize(ApplicationId::parse("test-app").unwrap());
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                crate::api::Actor::Daemon,
-                Mutation::Save {
-                    application: Box::new(initial),
-                    expected_application_id: None,
-                    deploy: true,
-                },
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved")
-        };
+        let (_directory, store) = Store::temporary().await;
+        let initial = template(
+            "test",
+            "[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'",
+        );
+        let saved = store.save_template(initial, true).await;
         let op = store.operation(&saved.operation_id.unwrap()).await.unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         let captured = store.deployment_snapshot(&op.id).await.unwrap().template;
         let mut fetched = captured.to_manifest();
         fetched.spec.manifest = None;
@@ -373,8 +345,11 @@ mod tests {
 
     /// A repository-backed application `notes` whose saved manifest is only
     /// its connection to `main`.
-    fn connection() -> ApplicationTemplate {
-        piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'").unwrap().normalize(ApplicationId::parse("pending-application").unwrap())
+    fn connection() -> piqueld_core::manifest::ValidatedTemplate {
+        template(
+            "notes",
+            "[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'",
+        )
     }
 
     /// Deploys `environment` from a fetched manifest with `spec`, as the
@@ -416,15 +391,7 @@ mod tests {
         spec: &str,
     ) -> (Operation, piqueld_core::ResolvedApplication) {
         let op = store.operation(id).await.unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         let current = store.get(environment).await.unwrap();
         // As fetching does, the connection replaces the file's own before validation.
         let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
@@ -473,25 +440,8 @@ mod tests {
     /// when a deployment is retried.
     #[tokio::test]
     async fn fetched_manifests_keep_the_current_name() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                crate::api::Actor::Daemon,
-                Mutation::Save {
-                    application: Box::new(connection()),
-                    expected_application_id: None,
-                    deploy: false,
-                },
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved")
-        };
+        let (_directory, store) = Store::temporary().await;
+        let saved = store.save_template(connection(), false).await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
         let production = EnvironmentId::default_for(&application);
         let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
@@ -519,21 +469,10 @@ mod tests {
             },
             repository(connection().spec().manifest.clone()),
         ] {
-            store
-                .accept(crate::api::Actor::Daemon, mutation, None, true, None)
-                .await
-                .unwrap();
+            store.force(mutation).await.unwrap();
         }
         let op = store.retry_operation(&op).await.unwrap();
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Requested,
-                OperationState::Running,
-                None,
-            )
-            .await
-            .unwrap();
+        store.mark_running(&op.id).await;
         store.save_prepared(&op, &target).await.unwrap();
         let current = store.get(&production).await.unwrap();
         assert_eq!(
@@ -550,25 +489,8 @@ mod tests {
     /// own last fetched manifest, so a fetch for one never changes the other.
     #[tokio::test]
     async fn environments_reserve_and_rename_by_their_own_fetched_manifest() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                crate::api::Actor::Daemon,
-                Mutation::Save {
-                    application: Box::new(connection()),
-                    expected_application_id: None,
-                    deploy: false,
-                },
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved")
-        };
+        let (_directory, store) = Store::temporary().await;
+        let saved = store.save_template(connection(), false).await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
         let production = EnvironmentId::default_for(&application);
         let (MutationResponse::Environment(staging), _) = store
@@ -628,48 +550,15 @@ mod tests {
             name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
         };
         assert!(matches!(
-            store
-                .accept(
-                    crate::api::Actor::Daemon,
-                    rename(&production),
-                    None,
-                    true,
-                    None
-                )
-                .await,
+            store.force(rename(&production)).await,
             Err(StoreError::EnvironmentConfigured { .. })
         ));
-        store
-            .accept(
-                crate::api::Actor::Daemon,
-                rename(&staging.id),
-                None,
-                true,
-                None,
-            )
-            .await
-            .unwrap();
+        store.force(rename(&staging.id)).await.unwrap();
     }
 
     /// Saves the repository-backed application `notes` (see `connection`).
     async fn saved_connection(store: &Store) -> ApplicationId {
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                Daemon,
-                Mutation::Save {
-                    application: Box::new(connection()),
-                    expected_application_id: None,
-                    deploy: false,
-                },
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved")
-        };
+        let saved = store.save_template(connection(), false).await;
         ApplicationId::parse(&saved.application_id).unwrap()
     }
 
@@ -689,22 +578,12 @@ mod tests {
     #[tokio::test]
     async fn fetches_of_the_connection_branch_converge_declared_environments() {
         use piqueld_core::{EnvironmentSource, TrackedBranch};
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
-        let polled = piqueld_core::manifest::parse_template_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n[spec.manifest]\npath='app.toml'\nsync={mode='poll'}\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'").unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                Daemon,
-                Mutation::save(polled, None, false),
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved")
-        };
+        let (_directory, store) = Store::temporary().await;
+        let polled = template(
+            "notes",
+            "[spec.manifest]\npath='app.toml'\nsync={mode='poll'}\n[spec.manifest.repository]\nurl='https://example.com/notes.git'\nbranch='main'",
+        );
+        let saved = store.save_template(polled, false).await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
         let production = EnvironmentId::default_for(&application);
         let declared = format!(
@@ -798,8 +677,7 @@ mod tests {
     /// resolve it again, as changing it with `env branch` does.
     #[tokio::test]
     async fn fetched_source_changes_leave_environments_unresolved() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
         let production = EnvironmentId::default_for(&application);
         let canary = |branch: &str| {
@@ -847,8 +725,7 @@ mod tests {
     /// block: renaming it would leave the declaration to recreate it.
     #[tokio::test]
     async fn declared_environments_keep_their_names() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
         let production = EnvironmentId::default_for(&application);
         fetch(
@@ -874,7 +751,7 @@ mod tests {
             name: piqueld_core::EnvironmentName::parse("qa").unwrap(),
         };
         assert!(matches!(
-            store.accept(Daemon, rename, None, true, None).await,
+            store.force(rename).await,
             Err(StoreError::EnvironmentDeclared { environment }) if environment.as_str() == "staging"
         ));
     }
@@ -883,8 +760,7 @@ mod tests {
     /// may not share a name with one of its declarations.
     #[tokio::test]
     async fn accepting_a_fetched_manifest_rejects_declarations_stored_meanwhile() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
         let production = EnvironmentId::default_for(&application);
         let (op, target) = fetched(&store, &production, &token_spec(true)).await;
@@ -904,8 +780,7 @@ mod tests {
     /// stored, even once another environment's fetch replaced the saved one.
     #[tokio::test]
     async fn fetched_declarations_of_every_environment_reserve_their_names() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
         let (MutationResponse::Environment(staging), _) = store
             .accept(

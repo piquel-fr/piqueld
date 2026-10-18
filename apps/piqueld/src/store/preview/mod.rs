@@ -4,7 +4,7 @@
 //! through the `preview_key` unique index instead, and bounded by the
 //! `[previews]` counts checked in the creating transaction.
 use super::{
-    EnvironmentRow, Operation, ResolvedApplication, Store, StoreError, StoredApplication,
+    ApplicationState, Operation, ResolvedApplication, Store, StoreError, StoredApplication,
     StoredEnvironment, now_ms,
 };
 use piqueld_core::{
@@ -85,33 +85,7 @@ impl Store {
     /// # Errors
     /// Returns a storage or decoding error. Absent applications have none.
     pub async fn previews(&self, id: &ApplicationId) -> Result<Vec<EnvironmentView>, StoreError> {
-        Self::previews_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id.as_str(),
-        )
-        .await
-    }
-
-    /// Lists an application's previews on an existing connection or transaction.
-    pub(super) async fn previews_on(
-        connection: &mut SqliteConnection,
-        id: &str,
-    ) -> Result<Vec<EnvironmentView>, StoreError> {
-        sqlx::query_as!(EnvironmentRow,
-            r#"SELECT e.id AS "id!",e.application_id AS "application_id!",e.name AS "name!",e.kind AS "kind!",e.branch,e.pinned_commit,e.promoted_from,e.preview_slot,e.sync AS "sync!",e.synced_commit,e.synced_at_ms,e.resolved_generation,e.delete_intent AS "delete_intent!",e.created_at_ms AS "created_at_ms!",e.updated_at_ms AS "updated_at_ms!" FROM environments e WHERE e.application_id=?1 AND e.kind='preview' ORDER BY e.name"#,id)
-            .fetch_all(connection).await.map_err(StoreError::database)?
-            .into_iter().map(EnvironmentRow::decode).collect()
-    }
-
-    /// Lists an application's environments, then its previews: everything
-    /// deployed under it.
-    pub(super) async fn deployables_on(
-        connection: &mut SqliteConnection,
-        id: &str,
-    ) -> Result<Vec<EnvironmentView>, StoreError> {
-        let mut all = Self::environments_on(connection, id).await?;
-        all.extend(Self::previews_on(connection, id).await?);
-        Ok(all)
+        Self::previews_on(&mut *self.connection().await?, id.as_str()).await
     }
 
     /// Creates the preview of `branch` and `slot`, named by the slug derived
@@ -176,18 +150,9 @@ impl Store {
         }
         if created {
             Self::check_preview_limits_on(tx, application_id, &id, limits).await?;
-            Self::write_status(tx, &id, "not_deployed", None, now).await?;
+            Self::write_status(tx, &id, ApplicationState::NotDeployed, now).await?;
             let message = format!("created preview {slug} of branch {branch}");
-            sqlx::query!(
-                "INSERT INTO events(application_id,environment_id,kind,message,created_at_ms) VALUES(?1,?2,'preview_created',?3,?4)",
-                application_id,
-                id,
-                message,
-                now
-            )
-            .execute(&mut **tx)
-            .await
-            .map_err(StoreError::database)?;
+            Self::environment_event_on(tx, &id, "preview_created", &message, now).await?;
         }
         Ok((
             EnvironmentId::parse(id).map_err(StoreError::corrupt)?,
@@ -316,11 +281,7 @@ impl Store {
     /// # Errors
     /// Returns a storage or decoding error.
     pub async fn preview_origins(&self, id: &EnvironmentId) -> Result<PreviewOrigins, StoreError> {
-        Self::preview_origins_on(
-            &mut *self.pool.acquire().await.map_err(StoreError::database)?,
-            id,
-        )
-        .await
+        Self::preview_origins_on(&mut *self.connection().await?, id).await
     }
 
     /// [`Self::preview_origins`] on an existing connection or transaction.
@@ -520,3 +481,6 @@ impl PreviewOrigins {
         self.current.or(self.latest).unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests;

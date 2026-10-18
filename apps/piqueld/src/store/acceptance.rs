@@ -1,10 +1,10 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
-use super::access::{EnvironmentOwner, Holder};
+use super::auth::access::{EnvironmentOwner, Holder};
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
 use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
-    AcceptedOperation, CreatedPreview, DeletedApplication, RenamedApplication,
+    AcceptedOperation, CreatedPreview, DeletedApplication, EnvironmentView, RenamedApplication,
 };
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
@@ -25,7 +25,7 @@ enum Checked {
     /// A new request.
     New {
         /// The caller's authority; `None` for the daemon and the host operator.
-        caller: Option<super::access::Authority>,
+        caller: Option<super::auth::access::Authority>,
         /// Whether it creates an application.
         creating: bool,
     },
@@ -171,7 +171,7 @@ impl Store {
         if request_id.is_none() {
             return Ok(None);
         }
-        let mut tx = self.pool.begin().await.map_err(StoreError::database)?;
+        let mut tx = self.snapshot().await?;
         let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
         let checked = Self::check_request_on(
             &mut tx,
@@ -480,7 +480,7 @@ impl Store {
             Mutation::Sync(listed) => Self::sync_on(tx, listed, now).await,
             Mutation::Delete { id } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
-                let operation = match Self::pending_deletion_on(tx, &current).await? {
+                let operation = match Self::pending_deletion_on(tx, &current.environment).await? {
                     Some(operation) => operation,
                     None => Self::delete_environment_on(tx, &current).await?,
                 };
@@ -655,23 +655,32 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         preview: &super::StoredEnvironment,
     ) -> Result<Accepted, StoreError> {
-        let operation = match Self::pending_deletion_on(tx, preview).await? {
-            Some(operation) => operation,
-            None => Self::request_delete_on(tx, preview.id()).await?,
-        };
+        let operation = Self::deletion_on(tx, &preview.environment).await?;
         Ok(Self::operation_accepted(&operation))
+    }
+
+    /// Requests `environment`'s deletion (see `request_delete_on`), or
+    /// returns the one already pending.
+    async fn deletion_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        environment: &EnvironmentView,
+    ) -> Result<Operation, StoreError> {
+        match Self::pending_deletion_on(tx, environment).await? {
+            Some(operation) => Ok(operation),
+            None => Self::request_delete_on(tx, &environment.id).await,
+        }
     }
 
     /// The deletion already requested for `environment`, which a repeated
     /// request returns rather than requesting another.
     async fn pending_deletion_on(
         tx: &mut Transaction<'_, Sqlite>,
-        environment: &super::StoredEnvironment,
+        environment: &EnvironmentView,
     ) -> Result<Option<Operation>, StoreError> {
-        Ok(Self::latest_operation_on(tx, environment.id())
+        Ok(Self::latest_operation_on(tx, &environment.id)
             .await?
             .filter(|operation| {
-                environment.delete_intent() && operation.kind == OperationKind::Delete
+                environment.delete_intent && operation.kind == OperationKind::Delete
             }))
     }
 
@@ -1036,15 +1045,7 @@ impl Store {
         }
         let mut operations = Vec::with_capacity(environments.len());
         for environment in &environments {
-            let pending = Self::latest_operation_on(tx, &environment.id)
-                .await?
-                .filter(|operation| {
-                    environment.delete_intent && operation.kind == OperationKind::Delete
-                });
-            let operation = match pending {
-                Some(operation) => operation,
-                None => Self::request_delete_on(tx, &environment.id).await?,
-            };
+            let operation = Self::deletion_on(tx, environment).await?;
             operations.push(AcceptedOperation::from(&operation));
         }
         Self::finish_application_delete_on(tx, &id).await?;
@@ -1064,25 +1065,26 @@ impl Store {
 
     /// Deletes expired idempotency receipts.
     pub(crate) async fn prune_receipts(&self) -> Result<(), StoreError> {
-        let _writer = self.writers.lock().await;
         let now = now_ms();
-        sqlx::query!("DELETE FROM request_receipts WHERE expires_at_ms<=?1", now)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "DELETE FROM request_receipts WHERE expires_at_ms<=?1",
+            now
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::testing::template;
     use super::*;
 
     /// Application deletions accepted before environments existed must still replay.
     #[tokio::test]
     async fn application_deletions_accepted_before_environments_replay() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let id = ApplicationId::parse("app-legacy-01").unwrap();
         let original = Sha256::digest(br#"[{"kind":"delete","id":"app-legacy-01"},3,false]"#);
         let fingerprint = format!("{original:x}");
@@ -1149,23 +1151,7 @@ mod tests {
         spec: &str,
         names: [&str; N],
     ) -> (ApplicationId, [EnvironmentId; N]) {
-        let template = piqueld_core::manifest::parse_template_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
-        ))
-        .unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                Actor::Daemon,
-                Mutation::save(template, None, false),
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved response")
-        };
+        let saved = store.save_template(template("notes", spec), false).await;
         let application = ApplicationId::parse(saved.application_id).unwrap();
         let declared = store.environments(&application).await.unwrap();
         let mut ids = Vec::new();
@@ -1182,10 +1168,7 @@ mod tests {
                 name: EnvironmentName::parse(name).unwrap(),
                 source: None,
             };
-            let (MutationResponse::Environment(environment), _) = store
-                .accept(Actor::Daemon, create, None, true, None)
-                .await
-                .unwrap()
+            let MutationResponse::Environment(environment) = store.force(create).await.unwrap()
             else {
                 panic!("environment response")
             };
@@ -1205,23 +1188,19 @@ mod tests {
     /// the applied block is refused.
     #[tokio::test]
     async fn renames_never_switch_the_configuration_an_environment_deploys() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let (staging, qa) = configured_environments(&store).await;
         for (id, name, configured) in [
             (&staging, "testing", "staging"),
             (&qa, "preview", "preview"),
         ] {
             assert!(matches!(
-                store.accept(Actor::Daemon, rename(id, name), None, true, None).await,
+                store.force(rename(id, name)).await,
                 Err(StoreError::EnvironmentConfigured { environment })
                     if environment.as_str() == configured
             ));
         }
-        store
-            .accept(Actor::Daemon, rename(&qa, "testing"), None, true, None)
-            .await
-            .unwrap();
+        store.force(rename(&qa, "testing")).await.unwrap();
     }
 
     /// Renames keep a resolved environment resolved unless its configuration
@@ -1233,8 +1212,7 @@ mod tests {
             ("${{ env.name }}", false, true),
             ("${{ app.name }}", true, false),
         ] {
-            let directory = tempfile::tempdir().unwrap();
-            let store = Store::open(directory.path().join("db")).await.unwrap();
+            let (_directory, store) = Store::temporary().await;
             let (application, [id]) = environments(
                 &store,
                 &format!("[spec.variables]\nlevel='info'\n[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n[spec.services.environment]\nVALUE='{value}'"),
@@ -1274,8 +1252,7 @@ mod tests {
     /// based on the same inspection fails instead of acting on a renamed environment.
     #[tokio::test]
     async fn environment_changes_from_a_stale_inspection_conflict() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let (_, qa) = configured_environments(&store).await;
         let inspected = store.get(&qa).await.unwrap().application.generation;
         store
@@ -1307,35 +1284,14 @@ mod tests {
     #[tokio::test]
     async fn declared_environments_are_managed_by_the_manifest() {
         use piqueld_core::EnvironmentSource;
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n";
-        let save = |spec: String, deploy: bool| {
-            let template = piqueld_core::manifest::parse_template_toml(&format!(
-                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{service}{spec}"
-            ))
-            .unwrap();
-            let store = &store;
-            async move {
-                let (MutationResponse::Saved(saved), _) = store
-                    .accept(
-                        Actor::Daemon,
-                        Mutation::save(template, None, deploy),
-                        None,
-                        true,
-                        None,
-                    )
-                    .await
-                    .unwrap()
-                else {
-                    panic!("saved response")
-                };
-                saved
-            }
+        let save = async |spec: &str, deploy: bool| {
+            let template = template("notes", &format!("{service}{spec}"));
+            store.save_template_forced(template, deploy).await
         };
         let saved = save(
-            "[spec.environments.staging]\n[spec.environments.production]\npromote_from='staging'\n"
-                .into(),
+            "[spec.environments.staging]\n[spec.environments.production]\npromote_from='staging'\n",
             true,
         )
         .await;
@@ -1379,7 +1335,7 @@ mod tests {
             }),
         ] {
             assert!(matches!(
-                store.accept(Actor::Daemon, refused, None, true, None).await,
+                store.force(refused).await,
                 Err(StoreError::EnvironmentDeclared { .. })
             ));
         }
@@ -1387,8 +1343,7 @@ mod tests {
         // Production builds again, and qa is created; staging, undeclared,
         // stays until deleted explicitly.
         save(
-            "[spec.environments.production]\n[spec.environments.qa.variables]\nlevel='debug'\n"
-                .into(),
+            "[spec.environments.production]\n[spec.environments.qa.variables]\nlevel='debug'\n",
             false,
         )
         .await;
@@ -1398,13 +1353,7 @@ mod tests {
         );
         assert!(named("qa").await.is_some());
         store
-            .accept(
-                Actor::Daemon,
-                Mutation::Delete { id: staging.id },
-                None,
-                true,
-                None,
-            )
+            .force(Mutation::Delete { id: staging.id })
             .await
             .unwrap();
     }
@@ -1414,8 +1363,7 @@ mod tests {
     /// across saves, and still allow changing it that way.
     #[tokio::test]
     async fn blocks_without_a_source_keep_existing_sources() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let spec = "[spec.environments.staging.variables]\nlevel='debug'\n[spec.environments.production.variables]\nlevel='info'\n";
         let (application, [staging, production]) =
             environments(&store, spec, ["staging", "production"]).await;
@@ -1423,24 +1371,13 @@ mod tests {
             id: production.clone(),
             promote_from: Some(staging.clone()),
         });
-        store
-            .accept(Actor::Daemon, promote, None, true, None)
-            .await
-            .unwrap();
-        let template = piqueld_core::manifest::parse_template_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
-        ))
-        .unwrap();
-        store
-            .accept(
-                Actor::Daemon,
-                Mutation::save(template, Some(application.to_string()), false),
-                None,
-                true,
-                None,
-            )
-            .await
-            .unwrap();
+        store.force(promote).await.unwrap();
+        let save = Mutation::save(
+            template("notes", spec),
+            Some(application.to_string()),
+            false,
+        );
+        store.force(save).await.unwrap();
         let source = store.get(&production).await.unwrap().environment.source;
         assert_eq!(source.promoted_from(), Some(&staging));
     }
@@ -1450,8 +1387,7 @@ mod tests {
     /// an environment no edit could remove.
     #[tokio::test]
     async fn edits_declare_no_new_environments() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let (application, _) =
             environments(&store, "[spec.environments.staging]\n", ["staging"]).await;
         let typo = Mutation::Edit {
@@ -1463,7 +1399,7 @@ mod tests {
             deploy: false,
         };
         assert!(matches!(
-            store.accept(Actor::Daemon, typo, None, true, None).await,
+            store.force(typo).await,
             Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
         ));
         assert_eq!(store.environments(&application).await.unwrap().len(), 1);
@@ -1473,28 +1409,13 @@ mod tests {
     /// promoted, even while that change waits for a deployment in progress.
     #[tokio::test]
     async fn deploying_a_save_skips_environments_becoming_promoted() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let (_directory, store) = Store::temporary().await;
         let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'\n[spec.environments.staging]\n";
         let save = async |production: &str| {
-            let template = piqueld_core::manifest::parse_template_toml(&format!(
-                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{service}[spec.environments.production]\n{production}"
-            ))
-            .unwrap();
-            let (MutationResponse::Saved(saved), _) = store
-                .accept(
-                    Actor::Daemon,
-                    Mutation::save(template, None, true),
-                    None,
-                    true,
-                    None,
-                )
+            let spec = format!("{service}[spec.environments.production]\n{production}");
+            store
+                .save_template_forced(template("notes", &spec), true)
                 .await
-                .unwrap()
-            else {
-                panic!("saved response")
-            };
-            saved
         };
         // Both build, and production's deployment is still in progress.
         assert_eq!(save("").await.operation_ids.len(), 2);

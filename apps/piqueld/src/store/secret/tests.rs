@@ -3,12 +3,9 @@ use crate::api::Actor::Daemon;
 use crate::store::Attribution;
 use piqueld_core::manifest::ApplicationTemplate;
 
+/// The [`prebuilt`](crate::store::testing::prebuilt) application these tests save.
 fn application() -> NormalizedApplication {
-    piqueld_core::parse_toml(include_str!(
-        "../../../../../crates/piqueld-core/tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .unwrap()
-    .normalize(piqueld_core::ApplicationId::parse("app-secret-test").unwrap())
+    crate::store::testing::prebuilt("app-secret-test")
 }
 
 /// The environment created with `app`, which shares its ID.
@@ -46,8 +43,7 @@ fn with_generated_secret(app: &NormalizedApplication) -> NormalizedApplication {
 #[tokio::test]
 async fn captured_deployment_protects_secrets_before_pinning() {
     use crate::api::Mutation;
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let app = application();
     let captured = with_secret(&app);
     let op = store
@@ -238,8 +234,7 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
 
 #[tokio::test]
 async fn retained_version_quota_rejects_writes_without_removing_values() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let app = application();
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -478,8 +473,7 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
 #[tokio::test]
 async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
     use piqueld_core::manifest::{SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount};
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let mut manifest = with_secret(&application()).to_manifest();
     manifest.spec.services[0].secrets.push(SecretMount {
         name: "manual".into(),
@@ -588,8 +582,7 @@ async fn deployments_replace_generated_values_discarded_by_key_recovery() {
 #[tokio::test]
 async fn sibling_environment_deletions_do_not_block_another_environments_deployment() {
     use crate::api::{Mutation, MutationResponse};
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let app = application();
     let captured = with_generated_secret(&app);
     store
@@ -668,35 +661,12 @@ async fn sibling_environment_deletions_do_not_block_another_environments_deploym
     ));
 }
 
-/// Seeds account `dev` with developer access and its API token, and returns
-/// the caller acting with that token.
+/// Seeds account `dev` with developer access and its session, and returns
+/// the caller acting with it.
 async fn developer(store: &Store) -> crate::store::Actor<'static> {
-    use crate::store::{Actor, Caller, CredentialKind, NewCredential};
     use piqueld_core::access::{Preset, Scope};
-    let user = piqueld_core::auth::User {
-        id: "dev".into(),
-        username: "dev".into(),
-        display_name: String::new(),
-    };
-    store
-        .seed_auth_user(&user, &Preset::Developer.grants(&Scope::All))
-        .await;
-    let credential = NewCredential {
-        id: "dev-token".into(),
-        secret_hash: "hash".into(),
-        kind: CredentialKind::Token,
-        name: "Test",
-        expires_at: None,
-        grants: None,
-    };
-    store
-        .insert_credential(&user.id, &credential)
-        .await
-        .unwrap();
-    Actor::Account(Caller {
-        credential_id: "dev-token",
-        user_id: "dev",
-    })
+    let grants = Preset::Developer.grants(&Scope::All);
+    store.seed_caller("dev", &grants).await
 }
 
 /// Demotes `dev` (see `developer`) to read-only access, and returns the
@@ -704,7 +674,7 @@ async fn developer(store: &Store) -> crate::store::Actor<'static> {
 async fn demote_developer(store: &Store) -> piqueld_core::access::Denied {
     use piqueld_core::access::{AppPermission, Denied, Permission, Preset, Scope};
     let mut db = store.pool.acquire().await.unwrap();
-    super::super::access::Holder::User("dev")
+    crate::store::auth::access::Holder::User("dev")
         .replace(&mut db, &Preset::ReadOnly.grants(&Scope::All))
         .await
         .unwrap();
@@ -739,8 +709,7 @@ async fn developer_events(
 /// events, including the deletion's runtime action, record the caller.
 #[tokio::test]
 async fn secret_writes_use_the_callers_current_grants() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let app = application();
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -796,8 +765,7 @@ async fn secret_writes_use_the_callers_current_grants() {
 /// change who may mount a value. Their events record the caller.
 #[tokio::test]
 async fn stored_secret_writes_use_the_callers_current_grants() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let app = application();
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
