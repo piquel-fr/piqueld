@@ -13,7 +13,7 @@ mod process;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -114,15 +114,6 @@ impl Workspace {
             .current_dir(dir)
             .output()
             .context("run git")?;
-        ensure!(
-            output.status.success(),
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        Ok(String::from_utf8(output.stdout)
-            .context("git printed invalid UTF-8")?
-            .trim()
-            .to_owned())
+        process::checked_stdout(&format!("git {}", args.join(" ")), output)
     }
 }

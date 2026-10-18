@@ -18,6 +18,7 @@
 use std::{
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream},
+    num::{NonZeroU16, NonZeroU32},
     time::{Duration, Instant},
 };
 
@@ -138,15 +139,13 @@ impl HttpProbe {
         let timeout = timeout.ok_or(ArgumentError::Missing("--timeout"))?;
         Ok(Self {
             port: port
-                .parse()
-                .ok()
-                .filter(|port| *port != 0)
-                .ok_or_else(|| invalid("--port", port))?,
+                .parse::<NonZeroU16>()
+                .map_err(|_| invalid("--port", port))?
+                .get(),
             timeout_seconds: timeout
-                .parse()
-                .ok()
-                .filter(|seconds| *seconds != 0)
-                .ok_or_else(|| invalid("--timeout", timeout))?,
+                .parse::<NonZeroU32>()
+                .map_err(|_| invalid("--timeout", timeout))?
+                .get(),
             path: if path.starts_with('/')
                 && !path.chars().any(|c| c.is_whitespace() || c.is_control())
             {
@@ -202,21 +201,10 @@ impl HttpProbe {
             }
             if let Some(end) = end {
                 let head = response.drain(..end).collect::<Vec<_>>();
-                let line = head
-                    .windows(2)
-                    .position(|pair| pair == b"\r\n")
-                    .map_or(&head[..], |line| &head[..line]);
-                let line = String::from_utf8_lossy(line).into_owned();
-                let status = line
-                    .strip_prefix("HTTP/")
-                    .and_then(|rest| rest.split(' ').nth(1))
-                    .filter(|code| code.len() == 3)
-                    .and_then(|code| code.parse::<u16>().ok())
-                    .ok_or(ProbeError::Malformed(line))?;
-                match status {
+                match Self::status(&head)? {
                     100..200 => continue,
-                    200..400 => return Ok(status),
-                    _ => return Err(ProbeError::Status(status)),
+                    status @ 200..400 => return Ok(status),
+                    status => return Err(ProbeError::Status(status)),
                 }
             }
             let mut buffer = [0; 256];
@@ -241,6 +229,20 @@ impl HttpProbe {
                 Err(error) => return Err(ProbeError::Exchange(error)),
             }
         }
+    }
+
+    /// Returns the three-digit status code of a response head's status line.
+    fn status(head: &[u8]) -> Result<u16, ProbeError> {
+        let line = head
+            .windows(2)
+            .position(|pair| pair == b"\r\n")
+            .map_or(head, |line| &head[..line]);
+        let line = String::from_utf8_lossy(line).into_owned();
+        line.strip_prefix("HTTP/")
+            .and_then(|rest| rest.split(' ').nth(1))
+            .filter(|code| code.len() == 3)
+            .and_then(|code| code.parse().ok())
+            .ok_or(ProbeError::Malformed(line))
     }
 }
 

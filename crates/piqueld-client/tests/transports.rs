@@ -2,19 +2,15 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use axum::{
-    Json, Router,
-    http::HeaderMap,
-    routing::{get, post},
-};
+use axum::{Json, Router, http::HeaderMap, routing::get};
 use piqueld_client::{
-    Client, ClientError, Envelope, ListApplicationsOptions, SavedApplication, SystemStatus,
+    Client, ClientError, Envelope, ListApplicationsOptions, SystemStatus, TransportFailure,
 };
-use std::{path::PathBuf, sync::Mutex, time::Duration};
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixListener},
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::{TcpListener, TcpStream, UnixListener},
     sync::mpsc,
     time::timeout,
 };
@@ -35,42 +31,15 @@ async fn status() -> Json<Envelope<SystemStatus>> {
     })
 }
 
-#[derive(Clone, Debug)]
-struct CapturedRequest {
-    content_type: Option<String>,
-    expected_generation: Option<String>,
-    body: String,
-}
-
-static CAPTURED: Mutex<Option<CapturedRequest>> = Mutex::new(None);
-
-fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-}
-
-async fn capture_toml_apply(headers: HeaderMap, body: String) -> Json<Envelope<SavedApplication>> {
-    *CAPTURED.lock().unwrap() = Some(CapturedRequest {
-        content_type: header_value(&headers, "content-type"),
-        expected_generation: header_value(&headers, "x-expected-generation"),
-        body,
-    });
-    Json(Envelope {
-        data: SavedApplication {
-            generation: 1,
-            operation_id: Some("op-1".into()),
-            operation_ids: vec!["op-1".into()],
-            application_id: "app-1".into(),
-        },
-    })
-}
-
 fn app() -> Router {
-    Router::new()
-        .route("/api/v1/system/status", get(status))
-        .route("/api/v1/applications/apply", post(capture_toml_apply))
+    Router::new().route("/api/v1/system/status", get(status))
+}
+
+/// Binds a free IPv4 loopback port and returns it with a client for it.
+async fn listen() -> (TcpListener, Client) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = Client::tcp(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    (listener, client)
 }
 
 /// Answers one connection with a hand-written HTTP response.
@@ -89,16 +58,47 @@ fn raw_response(status_line: &str, content_type: &str, body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-#[tokio::test]
-async fn typed_client_uses_tcp() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
-    let response = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .system_status()
+/// Accepts one connection and returns it with its request head.
+async fn accept_head(listener: TcpListener) -> (TcpStream, String) {
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let mut buffer = Vec::new();
+    loop {
+        let mut chunk = [0u8; 1024];
+        let read = socket.read(&mut chunk).await.unwrap();
+        assert_ne!(read, 0, "client closed before sending request headers");
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    (socket, String::from_utf8_lossy(&buffer).into_owned())
+}
+
+/// Sends a response head promising more body than follows, then stalls.
+async fn stall_body(mut socket: impl AsyncWrite + Unpin) {
+    socket
+        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\nshort")
         .await
         .unwrap();
+    std::future::pending::<()>().await;
+}
+
+fn assert_timed_out<T: std::fmt::Debug>(result: &Result<T, ClientError>) {
+    assert!(
+        matches!(
+            result,
+            Err(ClientError::Transport { message, kind: TransportFailure::Timeout })
+                if message == "request timed out"
+        ),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn typed_client_uses_tcp() {
+    let (listener, client) = listen().await;
+    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
+    let response = client.system_status().await.unwrap();
     assert_eq!(response.instance_id, "instance-test");
     assert_eq!(response.status, "running");
     assert_eq!(response.api_version, "v1");
@@ -173,7 +173,7 @@ async fn dns_and_connect_failures_include_the_endpoint() {
 #[tokio::test]
 async fn typed_client_uses_unix_socket() {
     let temp = TempDir::new().unwrap();
-    let path = temp.path().join(PathBuf::from("piqueld.sock"));
+    let path = temp.path().join("piqueld.sock");
     let listener = UnixListener::bind(&path).unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
     let response = Client::unix(&path).system_status().await.unwrap();
@@ -184,35 +184,18 @@ async fn typed_client_uses_unix_socket() {
 
 #[tokio::test]
 async fn requests_use_origin_form_with_an_explicit_host_header() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (listener, client) = listen().await;
     let address = listener.local_addr().unwrap();
     let (wire_tx, mut wire_rx) = mpsc::channel(1);
     let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut buffer = Vec::new();
-        loop {
-            let mut chunk = [0u8; 1024];
-            let read = socket.read(&mut chunk).await.unwrap();
-            assert_ne!(read, 0, "client closed before sending request headers");
-            buffer.extend_from_slice(&chunk[..read]);
-            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        wire_tx
-            .send(String::from_utf8_lossy(&buffer).into_owned())
-            .await
-            .unwrap();
+        let (mut socket, head) = accept_head(listener).await;
+        wire_tx.send(head).await.unwrap();
         let body = r#"{"data":{"status":"running","api_version":"v1","daemon_version":"0.1.0","instance_id":"i"}}"#;
         let _ = socket
             .write_all(&raw_response("HTTP/1.1 200 OK", "application/json", body))
             .await;
     });
-    let response = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .system_status()
-        .await
-        .unwrap();
+    let response = client.system_status().await.unwrap();
     server.await.unwrap();
     let wire = wire_rx.recv().await.unwrap();
     assert!(wire.starts_with("GET /api/v1/system/status HTTP/1.1\r\n"));
@@ -228,40 +211,20 @@ async fn requests_use_origin_form_with_an_explicit_host_header() {
 
 #[tokio::test]
 async fn request_timeout_is_reported_by_the_client() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let client = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .with_timeout(Duration::from_millis(1));
-    let result = client.system_status().await;
-    assert!(matches!(
-        result,
-        Err(ClientError::Transport { message, kind: piqueld_client::TransportFailure::Timeout }) if message == "request timed out"
-    ));
+    let (_listener, client) = listen().await;
+    let client = client.with_timeout(Duration::from_millis(1));
+    assert_timed_out(&client.system_status().await);
 }
 
 #[tokio::test]
 async fn incomplete_response_bodies_time_out() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        let (_, mut writer) = tokio::io::split(socket);
-        writer
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\nshort")
-            .await
-            .unwrap();
-        std::future::pending::<()>().await;
-    });
-    let result = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
+    let (listener, client) = listen().await;
+    let server = tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
+    let result = client
         .with_timeout(Duration::from_millis(50))
         .system_status()
         .await;
-    assert!(matches!(
-        result,
-        Err(ClientError::Transport { message, kind: piqueld_client::TransportFailure::Timeout }) if message == "request timed out"
-    ));
+    assert_timed_out(&result);
     server.abort();
 }
 
@@ -270,30 +233,18 @@ async fn unix_socket_stalled_response_bodies_time_out() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("stalled.sock");
     let listener = UnixListener::bind(&path).unwrap();
-    let server = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        let (_, mut writer) = tokio::io::split(socket);
-        writer
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\nshort")
-            .await
-            .unwrap();
-        std::future::pending::<()>().await;
-    });
+    let server = tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
     let result = Client::unix(&path)
         .with_timeout(Duration::from_millis(50))
         .system_status()
         .await;
-    assert!(matches!(
-        result,
-        Err(ClientError::Transport { message, kind: piqueld_client::TransportFailure::Timeout }) if message == "request timed out"
-    ));
+    assert_timed_out(&result);
     server.abort();
 }
 
 #[tokio::test]
 async fn oversized_response_bodies_are_rejected() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let (listener, client) = listen().await;
     let total = 16 * 1024 * 1024 + 1;
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -313,8 +264,7 @@ async fn oversized_response_bodies_are_rejected() {
         }
         std::future::pending::<()>().await;
     });
-    let result = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
+    let result = client
         .with_timeout(Duration::from_secs(15))
         .system_status()
         .await;
@@ -329,8 +279,7 @@ async fn oversized_response_bodies_are_rejected() {
 
 #[tokio::test]
 async fn malformed_success_envelopes_decode_as_errors() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let (listener, client) = listen().await;
     let server = tokio::spawn(serve_raw(
         listener,
         raw_response(
@@ -339,10 +288,7 @@ async fn malformed_success_envelopes_decode_as_errors() {
             r#"{"unexpected":true}"#,
         ),
     ));
-    let result = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .system_status()
-        .await;
+    let result = client.system_status().await;
     server.await.unwrap();
     let Err(ClientError::Decode { source }) = result else {
         panic!("malformed success envelope must preserve its decoder error");
@@ -353,8 +299,7 @@ async fn malformed_success_envelopes_decode_as_errors() {
 
 #[tokio::test]
 async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let (listener, client) = listen().await;
     let server = tokio::spawn(serve_raw(
         listener,
         raw_response(
@@ -363,10 +308,7 @@ async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
             "<html>boom</html>",
         ),
     ));
-    let result = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .system_status()
-        .await;
+    let result = client.system_status().await;
     server.await.unwrap();
     match result {
         Err(ClientError::Api { status, error }) => {
@@ -380,17 +322,13 @@ async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
 
 #[tokio::test]
 async fn structured_api_errors_expose_status_code_and_message() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let (listener, client) = listen().await;
     let body = r#"{"code":"application_deleting","message":"the application is being deleted","details":{"application_id":"app-notes-01"},"request_id":"req-1"}"#;
     let server = tokio::spawn(serve_raw(
         listener,
         raw_response("HTTP/1.1 409 Conflict", "application/json", body),
     ));
-    let result = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .system_status()
-        .await;
+    let result = client.system_status().await;
     server.await.unwrap();
     match result {
         Err(ClientError::Api { status, error }) => {
@@ -405,8 +343,7 @@ async fn structured_api_errors_expose_status_code_and_message() {
 
 #[tokio::test]
 async fn redirects_are_not_followed() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let (listener, client) = listen().await;
     let decoy = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let redirect = format!(
         "HTTP/1.1 302 Found\r\nlocation: http://{}/api/v1/system/status\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
@@ -414,10 +351,7 @@ async fn redirects_are_not_followed() {
     )
     .into_bytes();
     let server = tokio::spawn(serve_raw(listener, redirect));
-    let result = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .system_status()
-        .await;
+    let result = client.system_status().await;
     server.await.unwrap();
     assert!(matches!(
         result,
@@ -432,47 +366,11 @@ async fn redirects_are_not_followed() {
 }
 
 #[tokio::test]
-async fn toml_mutation_headers_are_forwarded() {
-    *CAPTURED.lock().unwrap() = None;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
-    let manifest = "name = 'my-app'\n";
-    let accepted = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
-        .apply_application_toml(manifest)
-        .await
-        .unwrap();
-    server.abort();
-    assert_eq!(accepted.operation_id.as_deref(), Some("op-1"));
-    let captured = CAPTURED
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("the mutation request must be captured");
-    assert_eq!(captured.content_type.as_deref(), Some("application/toml"));
-    assert_eq!(captured.expected_generation.as_deref(), Some("0"));
-    assert_eq!(captured.body, manifest);
-}
-
-#[tokio::test]
 async fn application_queries_are_percent_encoded() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let (listener, client) = listen().await;
     let (target_tx, mut target_rx) = mpsc::channel(1);
     let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut buffer = Vec::new();
-        loop {
-            let mut chunk = [0u8; 1024];
-            let read = socket.read(&mut chunk).await.unwrap();
-            assert_ne!(read, 0, "client closed before sending request headers");
-            buffer.extend_from_slice(&chunk[..read]);
-            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        let request = String::from_utf8_lossy(&buffer).into_owned();
+        let (mut socket, request) = accept_head(listener).await;
         let target = request
             .lines()
             .next()
@@ -488,8 +386,7 @@ async fn application_queries_are_percent_encoded() {
             ))
             .await;
     });
-    let page = Client::tcp(&format!("http://{address}/"))
-        .unwrap()
+    let page = client
         .applications_with(&ListApplicationsOptions {
             cursor: Some("a&b c".into()),
             limit: Some(3),

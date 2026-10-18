@@ -11,7 +11,6 @@ use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     InspectContainerOptions, RestartContainerOptions, StartContainerOptions,
 };
@@ -19,7 +18,7 @@ use rustix::process::{Pid, Signal, getpid, kill_process};
 use tokio::process::Command;
 
 use super::{DATA_LABEL, Instance, Phase, RUNTIME_LABEL, State, Tailnet, WORKTREE_LABEL};
-use crate::docker::{DIND_SOCKET_DIR, Engine};
+use crate::docker::Engine;
 use crate::process::{Job, Shutdown};
 
 /// The daemon allows ten seconds to finish in-flight requests.
@@ -143,7 +142,8 @@ impl Instance {
         // Signals arriving while the engine starts stop the first build.
         let mut shutdown = Shutdown::listen()?;
         let result = async {
-            self.start_engine().await?;
+            // Boxed: the engine's container definition makes this future large.
+            Box::pin(self.start_engine()).await?;
             let tailnet = Tailnet::new()?;
             if self.config.tailscale.socket.as_deref() == Some(&tailnet.socket()) {
                 tailnet.start().await?;
@@ -332,30 +332,16 @@ impl Instance {
                 // The data directory is mounted at the same path because the
                 // daemon bind-mounts files from it, such as the ingress
                 // configuration.
-                let binds = vec![
-                    format!("{name}:/var/lib/docker"),
-                    format!("{runtime}/docker:{DIND_SOCKET_DIR}"),
-                    format!("{data}:{data}"),
-                ];
-                let body = ContainerCreateBody {
-                    image: Some(image),
-                    cmd: Some(vec![
-                        "dockerd".to_owned(),
-                        format!("--host=unix://{DIND_SOCKET_DIR}/docker.sock"),
-                    ]),
-                    env: Some(vec!["DOCKER_TLS_CERTDIR=".to_owned()]),
-                    labels: Some(HashMap::from([
-                        (WORKTREE_LABEL.to_owned(), root),
-                        (DATA_LABEL.to_owned(), data),
-                        (RUNTIME_LABEL.to_owned(), runtime),
-                    ])),
-                    host_config: Some(HostConfig {
-                        privileged: Some(true),
-                        binds: Some(binds),
-                        ..HostConfig::default()
-                    }),
-                    ..ContainerCreateBody::default()
-                };
+                let mut body = Engine::dind_container(
+                    image,
+                    format!("{runtime}/docker"),
+                    [format!("{name}:/var/lib/docker"), format!("{data}:{data}")],
+                );
+                body.labels = Some(HashMap::from([
+                    (WORKTREE_LABEL.to_owned(), root),
+                    (DATA_LABEL.to_owned(), data),
+                    (RUNTIME_LABEL.to_owned(), runtime),
+                ]));
                 engine.launch(Some(&name), body).await?;
             }
             Err(error) => return Err(error).context("inspect the instance's engine"),

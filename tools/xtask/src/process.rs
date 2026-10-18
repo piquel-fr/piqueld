@@ -1,10 +1,10 @@
 //! Child processes that xtask stops together with their descendants.
 
 use std::io::Write;
-use std::process::{ExitCode, ExitStatus};
+use std::process::{ExitCode, ExitStatus, Output};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -130,6 +130,21 @@ pub fn exit_code(status: ExitStatus) -> ExitCode {
         .code()
         .and_then(|code| u8::try_from(code).ok())
         .map_or(ExitCode::FAILURE, ExitCode::from)
+}
+
+/// The trimmed standard output of `name`, a finished command, or an error
+/// with its status and standard error when it failed.
+pub fn checked_stdout(name: &str, output: Output) -> Result<String> {
+    ensure!(
+        output.status.success(),
+        "{name} failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(String::from_utf8(output.stdout)
+        .with_context(|| format!("{name} printed invalid UTF-8"))?
+        .trim()
+        .to_owned())
 }
 
 /// SIGINT, SIGTERM, and SIGHUP, each asking xtask to stop its jobs and clean

@@ -10,8 +10,13 @@ compile_error!("Windows is not supported by piqueld-client");
 
 /// Application desired-state and planning contracts.
 pub mod applications;
+/// Passkey login and account management.
+pub mod auth;
 /// Environment lifecycle, deployment, and observation contracts.
 pub mod environments;
+/// One-off commands in running service tasks.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod exec;
 /// Durable history and observability controls.
 pub mod observability;
 /// Generated OpenAPI document retrieval.
@@ -25,27 +30,24 @@ pub mod sync;
 /// Control-plane status contracts.
 pub mod system;
 
-/// Passkey login and account management.
-pub mod auth;
-/// One-off commands in running service tasks.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod exec;
+mod builds;
+mod client;
+mod editing;
+mod generated;
+mod secrets;
+
 /// Permissions and grants.
 pub use piqueld_core::access;
 /// Audit trail contracts.
 pub use piqueld_core::audit;
 /// Stable API error and diagnostic codes.
 pub use piqueld_core::codes;
+/// Typed saved-configuration editing contracts.
+pub use piqueld_core::edit;
 /// Private links between applications.
 pub use piqueld_core::links;
 /// Tailnet identities and the token bindings they satisfy.
 pub use piqueld_core::tailnet;
-
-mod generated;
-
-mod builds;
-mod client;
-mod secrets;
 
 pub use applications::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
@@ -89,14 +91,14 @@ pub use system::{
     TailnetStatus,
 };
 
-use http::StatusCode;
-use thiserror::Error;
-
 pub use piqueld_core::api::{
     API_PREFIX, ApplicationLogs, BuildLogChunk, BuildLogPage, BuildRecord, BuildState, Envelope,
     EnvironmentAccess, ErrorBody, LogRecord, LogStream, ManifestChange, MountedSecret, Page,
     SecretAccess, SecretKeyRecovery, SecretMetadata, StoredSecret,
 };
+
+use http::StatusCode;
+use thiserror::Error;
 
 /// Validates a TOML application manifest and returns its editable name.
 ///
@@ -122,8 +124,8 @@ pub enum TransportFailure {
     Exchange,
 }
 
-#[derive(Debug, Error)]
 /// Errors produced while making an API request.
+#[derive(Debug, Error)]
 pub enum ClientError {
     /// The endpoint URL or request could not be constructed.
     #[error("invalid request: {message}")]
@@ -168,7 +170,3 @@ pub enum ClientError {
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
-
-/// Typed saved-configuration editing contracts.
-pub use piqueld_core::edit;
-mod editing;
