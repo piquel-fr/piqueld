@@ -24,12 +24,8 @@ pub struct NestedCargo {
 impl NestedCargo {
     /// Prepares a nested build into `<outer target dir>-<suffix>`.
     pub fn new(suffix: &str) -> Result<Self, Box<dyn Error>> {
-        let out_dir = PathBuf::from(
-            env::var_os("OUT_DIR")
-                .ok_or("Cargo did not provide OUT_DIR to the piqueld build script")?,
-        );
         Ok(Self {
-            target_dir: Self::sibling_target_dir(&out_dir, suffix)?,
+            target_dir: Self::sibling_target_dir(&crate::out_dir()?, suffix)?,
         })
     }
 

@@ -4,26 +4,21 @@ use axum::{
     Extension, Router,
     body::Body,
     extract::{DefaultBodyLimit, MatchedPath, RawPathParams, Request},
-    http::{HeaderMap, StatusCode, header},
+    http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
-use piqueld_core::api::{ApplyApplicationRequest, Envelope, ErrorBody};
+use piqueld_core::api::{Envelope, ErrorBody};
 use piqueld_core::auth::HostOperator;
-use piqueld_core::{
-    ApplicationIdError, EnvironmentIdError, EnvironmentNameError, GitBranchError, PreviewSlotError,
-};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
 use utoipa_axum::router::OpenApiRouter;
-
-use crate::store::{PromotionError, StoreError};
 
 #[macro_use]
 mod access;
@@ -35,8 +30,10 @@ mod builds;
 mod deployments;
 mod editing;
 mod environments;
+mod error;
 mod events;
 mod exec;
+mod extract;
 mod lease;
 mod logs;
 mod observability;
@@ -49,9 +46,9 @@ mod ui;
 mod webhooks;
 pub use webhooks::webhook_router;
 
-use crate::api::ApplicationError;
 pub use crate::api::ApplicationService as ApiState;
-use crate::application::BoundaryError;
+use error::ApiError;
+use extract::{ApiJson, ApiPath, ApiQuery, QueryParams};
 pub use openapi::openapi_document;
 pub use ui::{EmbeddedBundle, UiAssets};
 
@@ -64,545 +61,6 @@ const TOML: &str = "application/toml";
 /// (`piquelctl::support::MAX_MANIFEST_BYTES`) must not exceed this value, or a
 /// locally accepted manifest would fail server-side with 413.
 const REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
-
-/// Handler failure rendered as a structured JSON `ErrorBody` response.
-///
-/// Every domain error converts into this type, so handlers can use `?` and
-/// still produce a stable machine-readable `code` plus a sanitized message.
-#[derive(Debug)]
-struct ApiError {
-    status: StatusCode,
-    /// Stable machine-readable error code, e.g. `generation_conflict`.
-    code: &'static str,
-    /// Sanitized, user-facing explanation.
-    message: String,
-    /// Extra structured context; `null` when there is none.
-    details: Value,
-    /// `Allow` header value, only set for 405 responses.
-    allow: Option<String>,
-    /// Diagnostic attached as a response extension so `bind_error_request_id`
-    /// can record it instead of synthesizing a generic one.
-    diagnostic: Option<Box<piqueld_core::observability::Diagnostic>>,
-    /// Authorization refusal attached as a response extension, so the audit
-    /// trail records it even when it reads as a plain 404.
-    denied: Option<piqueld_core::access::Denied>,
-}
-
-impl ApiError {
-    /// Creates an error without details, `Allow` header, or diagnostic.
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            code,
-            message: message.into(),
-            details: Value::Null,
-            allow: None,
-            diagnostic: None,
-            denied: None,
-        }
-    }
-    fn endpoint_not_found() -> Self {
-        Self::new(
-            StatusCode::NOT_FOUND,
-            "endpoint_not_found",
-            "API endpoint was not found",
-        )
-    }
-
-    /// Attaches structured `details` to the error body.
-    fn details(mut self, details: Value) -> Self {
-        self.details = details;
-        self
-    }
-
-    /// Logs storage failures that indicate a server-side fault. Expected client
-    /// errors (conflicts, not found, validation) are deliberately not logged.
-    fn log_storage_error(error: &StoreError) {
-        if matches!(
-            error,
-            StoreError::SecretSource(_)
-                | StoreError::Database
-                | StoreError::DatabaseSource(_)
-                | StoreError::SchemaMismatch
-                | StoreError::SchemaMismatchSource(_)
-                | StoreError::PathSource(_)
-                | StoreError::Corrupt
-                | StoreError::CorruptSource(_)
-        ) {
-            tracing::error!(?error, "storage request failed");
-        }
-    }
-}
-
-impl ApiError {
-    /// Maps secret lifecycle failures selected by `From<StoreError>`.
-    ///
-    /// Panics if given a non-secret variant; callers must pre-filter.
-    fn from_secret_error(error: StoreError) -> Self {
-        match error {
-            StoreError::SecretVersionConflict { expected, actual } => Self::new(
-                StatusCode::CONFLICT,
-                "secret_generation_conflict",
-                "Secret changed since inspection; read its metadata and retry",
-            )
-            .details(json!({"expected_generation": expected, "actual_generation": actual})),
-            StoreError::SecretUnavailable { names } => Self::new(
-                StatusCode::CONFLICT,
-                "secret_unavailable",
-                "Supply replacement secret values and start a new deployment",
-            )
-            .details(json!({"names": names})),
-            ref error @ StoreError::SecretMissing { ref names } => {
-                Self::new(StatusCode::CONFLICT, "secret_missing", error.to_string())
-                    .details(json!({"names": names}))
-            }
-            StoreError::SecretKeyUsable => Self::new(
-                StatusCode::CONFLICT,
-                "secret_key_usable",
-                "The secret master key still works; recovery would discard values needlessly",
-            ),
-            error @ StoreError::SecretSource(_) => {
-                let diagnostic = crate::operations::OperationError::from(error).diagnostic();
-                let mut error = Self::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "secret_storage_unavailable",
-                    "Secret storage is unavailable",
-                );
-                error.diagnostic = Some(Box::new(diagnostic));
-                error
-            }
-            StoreError::SecretDeleting => Self::new(
-                StatusCode::CONFLICT,
-                "secret_deleting",
-                "Secret deletion is in progress; retry deletion to finish cleanup",
-            ),
-            StoreError::SecretQuota => Self::new(
-                StatusCode::CONFLICT,
-                "secret_quota_exceeded",
-                "Secret storage quota exceeded (1000 versions or 100 MiB per environment or application store); delete unused secrets to free space",
-            ),
-            StoreError::SecretReferenced => Self::new(
-                StatusCode::CONFLICT,
-                "secret_referenced",
-                "Secret is still referenced by application configuration or a deployment",
-            ),
-            ref error @ StoreError::SecretAccessDenied {
-                ref environment,
-                ref secret,
-            } => Self::new(
-                StatusCode::CONFLICT,
-                "secret_access_denied",
-                error.to_string(),
-            )
-            .details(json!({"environment": environment, "secret": secret})),
-            other => unreachable!("non-secret storage error: {other}"),
-        }
-    }
-
-    /// Maps environment selection and rename failures selected by
-    /// `From<StoreError>`, naming the environments in `details`, previews
-    /// of applications without a manifest repository, and previews over a
-    /// `[previews]` limit, listing the previews it counts in `details`.
-    ///
-    /// Panics if given another variant; callers must pre-filter.
-    fn from_environment_error(error: StoreError) -> Self {
-        match error {
-            StoreError::EnvironmentRequired { environments } => Self::new(
-                StatusCode::CONFLICT,
-                "environment_required",
-                "The application does not have exactly one environment; name the environment explicitly",
-            )
-            .details(json!({"environments": environments})),
-            StoreError::ConfirmationRequired { environments } => Self::new(
-                StatusCode::CONFLICT,
-                "environment_confirmation_required",
-                "Deleting this application also deletes all its environments; confirm by naming every one",
-            )
-            .details(json!({"environments": environments})),
-            ref error @ StoreError::EnvironmentConfigured { ref environment } => Self::new(
-                StatusCode::CONFLICT,
-                "environment_configured",
-                error.to_string(),
-            )
-            .details(json!({"environment": environment})),
-            ref error @ StoreError::EnvironmentDeclared { ref environment } => Self::new(
-                StatusCode::CONFLICT,
-                piqueld_core::codes::ENVIRONMENT_DECLARED,
-                error.to_string(),
-            )
-            .details(json!({"environment": environment})),
-            ref error @ StoreError::EnvironmentUnknown { ref environment } => Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                piqueld_core::codes::ENVIRONMENT_UNKNOWN,
-                error.to_string(),
-            )
-            .details(json!({"environment": environment})),
-            ref error @ StoreError::PreviewRequiresRepository => Self::new(
-                StatusCode::CONFLICT,
-                piqueld_core::codes::PREVIEW_REQUIRES_REPOSITORY,
-                error.to_string(),
-            ),
-            ref error @ StoreError::PreviewLimitReached(ref reached) => Self::new(
-                StatusCode::CONFLICT,
-                piqueld_core::codes::PREVIEW_LIMIT_REACHED,
-                error.to_string(),
-            )
-            .details(json!(reached)),
-            other => unreachable!("non-environment storage error: {other}"),
-        }
-    }
-
-    /// Maps refused promotions and promotion sources, with what they name in
-    /// `details`. Changes the source made since it was inspected are
-    /// conflicts; impossible sources are invalid input.
-    fn from_promotion_error(error: &PromotionError) -> Self {
-        let (status, code, details) = match error {
-            PromotionError::Promoted { environment } => (
-                StatusCode::CONFLICT,
-                "environment_promoted",
-                json!({"environment": environment}),
-            ),
-            PromotionError::NotPromoted { environment } => (
-                StatusCode::CONFLICT,
-                "environment_not_promoted",
-                json!({"environment": environment}),
-            ),
-            PromotionError::Cycle { environments } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "promotion_cycle",
-                json!({"environments": environments}),
-            ),
-            PromotionError::SourceInvalid { environment, .. } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "promotion_source_invalid",
-                json!({"environment": environment}),
-            ),
-            PromotionError::InUse { environments } => (
-                StatusCode::CONFLICT,
-                "promotion_source_in_use",
-                json!({"environments": environments}),
-            ),
-            PromotionError::SourceNotReady { environment, .. } => (
-                StatusCode::CONFLICT,
-                "promotion_source_not_ready",
-                json!({"environment": environment}),
-            ),
-            PromotionError::SourceChanged {
-                environment,
-                deployment,
-            } => (
-                StatusCode::CONFLICT,
-                "promotion_source_changed",
-                json!({"environment": environment, "deployment": deployment}),
-            ),
-            PromotionError::Secrets {
-                environment,
-                secrets,
-            } => (
-                StatusCode::CONFLICT,
-                "secrets_unavailable",
-                json!({"environment": environment, "secrets": secrets}),
-            ),
-        };
-        Self::new(status, code, error.to_string()).details(details)
-    }
-
-    /// Maps hostname reservation conflicts selected by `From<StoreError>`,
-    /// naming the hostname, and the sibling environment reserving it if any.
-    ///
-    /// Panics if given another variant; callers must pre-filter.
-    fn from_hostname_conflict(error: StoreError) -> Self {
-        match error {
-            StoreError::HostnameConflict { hostname } => Self::new(
-                StatusCode::CONFLICT,
-                "hostname_conflict",
-                "Hostname is reserved by another environment, another application's wildcard, or this installation",
-            )
-            .details(json!({"hostname": hostname})),
-            ref error @ StoreError::SharedHostnameConflict {
-                ref hostname,
-                ref environment,
-            } => Self::new(StatusCode::CONFLICT, "hostname_conflict", error.to_string())
-                .details(json!({"hostname": hostname, "environment": environment})),
-            other => unreachable!("non-hostname storage error: {other}"),
-        }
-    }
-}
-
-impl From<StoreError> for ApiError {
-    /// Classifies storage failures into HTTP status codes and stable error
-    /// codes, logging server-side faults first.
-    fn from(value: StoreError) -> Self {
-        Self::log_storage_error(&value);
-        match value {
-            StoreError::Validation(errors) => errors.into(),
-            StoreError::Edit(error) => error.into(),
-            error @ (StoreError::SecretVersionConflict { .. }
-            | StoreError::SecretUnavailable { .. }
-            | StoreError::SecretMissing { .. }
-            | StoreError::SecretKeyUsable
-            | StoreError::SecretSource(_)
-            | StoreError::SecretDeleting
-            | StoreError::SecretQuota
-            | StoreError::SecretReferenced
-            | StoreError::SecretAccessDenied { .. }) => Self::from_secret_error(error),
-            error @ (StoreError::HostnameConflict { .. }
-            | StoreError::SharedHostnameConflict { .. }) => Self::from_hostname_conflict(error),
-            error @ (StoreError::EnvironmentRequired { .. }
-            | StoreError::ConfirmationRequired { .. }
-            | StoreError::EnvironmentConfigured { .. }
-            | StoreError::EnvironmentDeclared { .. }
-            | StoreError::EnvironmentUnknown { .. }
-            | StoreError::PreviewRequiresRepository
-            | StoreError::PreviewLimitReached(_)) => Self::from_environment_error(error),
-            StoreError::Promotion(error) => Self::from_promotion_error(&error),
-            StoreError::GenerationConflict { expected, actual } => Self::new(
-                StatusCode::CONFLICT,
-                "generation_conflict",
-                "Application changed since inspection; run the command again",
-            )
-            .details(
-                serde_json::json!({"expected_generation":expected,"actual_generation":actual}),
-            ),
-            StoreError::IdentityConflict => Self::new(
-                StatusCode::CONFLICT,
-                "identity_conflict",
-                "Application changed since inspection; run the command again",
-            ),
-            StoreError::ReplayConflict => Self::new(
-                StatusCode::CONFLICT,
-                "request_id_conflict",
-                "request ID was already used for different input",
-            ),
-            StoreError::RepositoryManaged => Self::new(
-                StatusCode::CONFLICT,
-                "repository_managed",
-                "Edit runtime configuration in the repository manifest; only its connection settings can be changed directly",
-            ),
-            StoreError::Busy => Self::new(
-                StatusCode::CONFLICT,
-                "application_busy",
-                "application is busy; wait for its current operation to finish",
-            ),
-            StoreError::HistoryExpired => Self::new(
-                StatusCode::GONE,
-                "history_expired",
-                "Requested event history was pruned; reload history before resuming",
-            ),
-            StoreError::NotFound => {
-                Self::new(StatusCode::NOT_FOUND, "not_found", "resource was not found")
-            }
-            StoreError::Lockout(lockout) => {
-                Self::new(StatusCode::CONFLICT, "account_lockout", lockout.message())
-            }
-            StoreError::Denied(denied) => denied.into(),
-            StoreError::CredentialRevoked => crate::auth::AuthError::Unauthorized.into(),
-            StoreError::AlreadyExists => Self::new(
-                StatusCode::CONFLICT,
-                "application_name_collision",
-                "application, environment, or preview identity or name already exists",
-            ),
-            StoreError::IllegalTransition => Self::new(
-                StatusCode::CONFLICT,
-                "application_state_conflict",
-                "the requested application transition is not allowed",
-            ),
-            StoreError::InvalidInput | StoreError::InvalidInputSource(_) => Self::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "the request is invalid",
-            ),
-            StoreError::SchemaMismatch | StoreError::SchemaMismatchSource(_) => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "schema_mismatch",
-                "database schema is incompatible",
-            ),
-            StoreError::Corrupt | StoreError::CorruptSource(_) => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "stored_state_corrupt",
-                "stored application state is corrupt",
-            ),
-            StoreError::Database | StoreError::DatabaseSource(_) | StoreError::PathSource(_) => {
-                Self::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "storage_unavailable",
-                    "control-plane storage is unavailable",
-                )
-            }
-        }
-    }
-}
-
-impl From<piqueld_core::edit::EditError> for ApiError {
-    /// Maps field-edit failures, exposing the edit reason in `details.reason`.
-    fn from(error: piqueld_core::edit::EditError) -> Self {
-        use piqueld_core::edit::EditError;
-        let (status, code) = match &error {
-            EditError::NotFound { .. } => (StatusCode::NOT_FOUND, "field_resource_not_found"),
-            EditError::AlreadyExists { .. } => (StatusCode::CONFLICT, "field_resource_exists"),
-            EditError::Incompatible(_) => (StatusCode::CONFLICT, "field_incompatible"),
-        };
-        Self::new(status, code, "The field edit could not be applied")
-            .details(json!({"reason": error.to_string()}))
-    }
-}
-
-impl From<BoundaryError> for ApiError {
-    /// Maps runtime, build, and compilation failures, always attaching the
-    /// boundary diagnostic so it is recorded with the request.
-    fn from(value: BoundaryError) -> Self {
-        let diagnostic = value.diagnostic();
-        // Storage conversion handles its own logging, including expected client errors.
-        if !matches!(&value, BoundaryError::Store(_)) {
-            tracing::error!(error = ?value, "runtime boundary request failed");
-        }
-        let mut error = match value {
-            BoundaryError::Store(error) => error.into(),
-            BoundaryError::Runtime(
-                crate::docker::DockerError::Unavailable(_)
-                | crate::docker::DockerError::UnavailableSource { .. },
-            ) => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "docker_unavailable",
-                "Docker Engine is unavailable",
-            ),
-            BoundaryError::Runtime(_) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "runtime_request_failed",
-                "runtime request failed",
-            ),
-            BoundaryError::GitBuild(_) => Self::new(
-                StatusCode::BAD_GATEWAY,
-                "git_build_failed",
-                "Git source build failed",
-            ),
-            BoundaryError::Compilation(_) => Self::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "application_compilation_failed",
-                "application compilation failed",
-            ),
-            BoundaryError::ImageUnavailable(error) => {
-                Self::new(StatusCode::CONFLICT, "image_unavailable", error.to_string())
-            }
-        };
-        error.diagnostic = Some(Box::new(diagnostic));
-        error
-    }
-}
-
-impl From<ApplicationIdError> for ApiError {
-    fn from(_: ApplicationIdError) -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "application_id_invalid",
-            "application ID is invalid",
-        )
-    }
-}
-
-impl From<EnvironmentIdError> for ApiError {
-    fn from(_: EnvironmentIdError) -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "environment_id_invalid",
-            "environment ID is invalid",
-        )
-    }
-}
-
-impl From<EnvironmentNameError> for ApiError {
-    fn from(_: EnvironmentNameError) -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "environment_name_invalid",
-            "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-        )
-    }
-}
-
-impl From<GitBranchError> for ApiError {
-    fn from(error: GitBranchError) -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "git_branch_invalid",
-            error.to_string(),
-        )
-    }
-}
-
-impl From<PreviewSlotError> for ApiError {
-    fn from(error: PreviewSlotError) -> Self {
-        Self::new(
-            StatusCode::BAD_REQUEST,
-            "preview_slot_invalid",
-            error.to_string(),
-        )
-    }
-}
-
-impl From<piqueld_core::ValidationErrors> for ApiError {
-    /// Reports pure decode failures as `toml_malformed` (400) and semantic
-    /// validation failures as `manifest_validation_failed` (422). Both list
-    /// the individual errors in `details.errors`.
-    fn from(piqueld_core::ValidationErrors(errors): piqueld_core::ValidationErrors) -> Self {
-        let error = if errors
-            .iter()
-            .all(|error| error.code == piqueld_core::codes::MANIFEST_DECODE_FAILED)
-        {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "toml_malformed",
-                "request TOML is malformed or does not match the application schema",
-            )
-        } else {
-            Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "manifest_validation_failed",
-                "application manifest failed validation",
-            )
-        };
-        error.details(json!({"errors": errors}))
-    }
-}
-
-impl ApiError {
-    /// Builds the public JSON error body. Its placeholder `request_id` is
-    /// replaced with the real one by `bind_error_request_id`, or by the exec
-    /// stream before it writes a terminal failure frame.
-    fn body(&self) -> ErrorBody {
-        ErrorBody {
-            code: self.code.into(),
-            message: self.message.clone(),
-            details: self.details.clone(),
-            request_id: uuid::Uuid::now_v7().simple().to_string(),
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    /// Renders the JSON error body with the error's status, diagnostic
-    /// extension, and optional `Allow` header.
-    fn into_response(self) -> Response {
-        let mut response = (
-            self.status,
-            [(header::CONTENT_TYPE, JSON)],
-            axum::Json(self.body()),
-        )
-            .into_response();
-        if let Some(diagnostic) = self.diagnostic {
-            response.extensions_mut().insert(*diagnostic);
-        }
-        if let Some(denied) = self.denied {
-            response.extensions_mut().insert(denied);
-        }
-        if let Some(allow) = self.allow
-            && let Ok(value) = header::HeaderValue::from_str(&allow)
-        {
-            response.headers_mut().insert(header::ALLOW, value);
-        }
-        response
-    }
-}
 
 /// Builds the TCP router, registering the dashboard when the binary embeds it.
 pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
@@ -912,19 +370,9 @@ async fn bind_error_request_id(
     request: Request,
     next: Next,
 ) -> Response {
-    let environment = matched
-        .filter(|path| {
-            ["/api/v1/environments/{id}", "/api/v1/previews/{id}"]
-                .iter()
-                .any(|prefix| path.as_str().starts_with(prefix))
-        })
-        .and_then(|_| params.ok())
-        .and_then(|params| {
-            params
-                .iter()
-                .find(|(name, _)| *name == "id")
-                .and_then(|(_, id)| piqueld_core::EnvironmentId::parse(id).ok())
-        });
+    let environment = access::PathOwner::find(matched.as_ref(), params)
+        .filter(|(owner, _)| *owner == access::PathOwner::Environment)
+        .and_then(|(_, id)| piqueld_core::EnvironmentId::parse(id).ok());
     let request_id = request
         .extensions()
         .get::<RequestId>()
@@ -1000,7 +448,7 @@ impl ApiState {
         }
         let diagnostic = diagnostic.unwrap_or_else(|| {
             piqueld_core::observability::Diagnostic::from_recorded_code(
-                format!("diagnostic-{}", uuid::Uuid::now_v7().simple()),
+                crate::operations::diagnostic_id(),
                 &error.code,
                 error.message.clone(),
             )
@@ -1061,300 +509,43 @@ fn method_not_allowed(allow_routes: &AllowRoutes, matched: Option<&MatchedPath>)
 }
 
 /// Per-route `Allow` values derived from the `OpenAPI` document.
-#[derive(Clone)]
 struct AllowRoutes(HashMap<String, String>);
 
 impl AllowRoutes {
-    /// Indexes the `Allow` value for every documented path template.
+    /// Indexes the `Allow` value for every documented path template. `GET`
+    /// implies `HEAD` because Axum answers `HEAD` for every `GET` route.
     ///
     /// ```text
     /// "/api/v1/applications/{id}" -> "GET, HEAD, DELETE"
     /// ```
     fn build(document: &utoipa::openapi::OpenApi) -> Arc<Self> {
-        let mut routes = HashMap::new();
-        for (path, item) in &document.paths.paths {
-            let methods = Self::path_methods(item);
-            if !methods.is_empty() {
-                routes.insert(path.clone(), methods.join(", "));
-            }
-        }
+        let routes = document
+            .paths
+            .paths
+            .iter()
+            .filter_map(|(path, item)| {
+                let methods: Vec<_> = access::operations(item)
+                    .flat_map(|(method, _)| {
+                        let head = (method == Method::GET).then_some(Method::HEAD);
+                        std::iter::once(method).chain(head)
+                    })
+                    .map(|method| method.to_string())
+                    .collect();
+                (!methods.is_empty()).then(|| (path.clone(), methods.join(", ")))
+            })
+            .collect();
         Arc::new(Self(routes))
-    }
-
-    /// Lists the methods one path item registers. `GET` implies `HEAD`
-    /// because Axum answers `HEAD` for every `GET` route.
-    fn path_methods(item: &utoipa::openapi::path::PathItem) -> Vec<&'static str> {
-        let mut methods = Vec::new();
-        if item.get.is_some() {
-            methods.push("GET");
-            methods.push("HEAD");
-        }
-        if item.post.is_some() {
-            methods.push("POST");
-        }
-        if item.put.is_some() {
-            methods.push("PUT");
-        }
-        if item.patch.is_some() {
-            methods.push("PATCH");
-        }
-        if item.delete.is_some() {
-            methods.push("DELETE");
-        }
-        if item.head.is_some() {
-            methods.push("HEAD");
-        }
-        methods
     }
 }
 
 /// Wraps `data` in the `{"data": ...}` envelope with 200 OK.
-fn ok<T: Serialize>(data: T) -> impl IntoResponse {
-    (StatusCode::OK, axum::Json(Envelope { data }))
+fn ok<T: Serialize>(data: T) -> Response {
+    (StatusCode::OK, axum::Json(Envelope { data })).into_response()
 }
+
 /// Wraps `data` in the `{"data": ...}` envelope with 202 Accepted.
 fn accepted<T: Serialize>(data: T) -> Response {
     (StatusCode::ACCEPTED, axum::Json(Envelope { data })).into_response()
-}
-/// Returns the media type from `Content-Type`, without parameters.
-///
-/// ```text
-/// "application/json; charset=utf-8" -> "application/json"
-/// ```
-fn content_type(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .map(|v| v.split(';').next().unwrap_or(v).trim())
-}
-/// Strictly decodes a JSON body, rejecting trailing data. The failing field
-/// path is only logged at debug level (sanitized); clients get a generic
-/// `json_malformed` error.
-fn decode_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, ApiError> {
-    let malformed = || {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "json_malformed",
-            "request JSON is malformed or contains unknown fields",
-        )
-    };
-    let mut deserializer = serde_json::Deserializer::from_slice(body);
-    let value = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        let path = piqueld_core::manifest::safe_decode_path(&error.path().to_string());
-        tracing::debug!(%path, "request JSON was rejected");
-        malformed()
-    })?;
-    deserializer.end().map_err(|_| malformed())?;
-    Ok(value)
-}
-
-/// Decodes and validates a manifest upload in either supported encoding.
-///
-/// Returns the validated application plus optional `expected_generation` and
-/// `expected_application_id` preconditions:
-/// - JSON: an `ApplyApplicationRequest` carrying the preconditions as fields.
-/// - TOML (`application/toml` or `text/toml`): the raw manifest, with
-///   preconditions in the single-valued `x-expected-generation` and
-///   `x-expected-application-id` headers.
-///
-/// Any other content type fails with 415.
-fn parse_manifest(
-    headers: &HeaderMap,
-    body: &[u8],
-) -> Result<
-    (
-        piqueld_core::manifest::ValidatedTemplate,
-        Option<u64>,
-        Option<String>,
-    ),
-    ApiError,
-> {
-    match content_type(headers) {
-        Some(value) if value.eq_ignore_ascii_case(JSON) => {
-            let request: ApplyApplicationRequest = decode_json(body)?;
-            Ok((
-                request.manifest.validate_template()?,
-                request.expected_generation,
-                request.expected_application_id,
-            ))
-        }
-        Some(value)
-            if value.eq_ignore_ascii_case(TOML) || value.eq_ignore_ascii_case("text/toml") =>
-        {
-            let text = std::str::from_utf8(body).map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "toml_malformed",
-                    "request TOML is malformed",
-                )
-            })?;
-            let expected = if headers.get_all("x-expected-generation").iter().count() > 1 {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "generation_invalid",
-                    "expected generation must occur once",
-                ));
-            } else {
-                headers
-                    .get("x-expected-generation")
-                    .map(|value| {
-                        value
-                            .to_str()
-                            .ok()
-                            .and_then(|value| value.parse::<u64>().ok())
-                            .ok_or_else(|| {
-                                ApiError::new(
-                                    StatusCode::BAD_REQUEST,
-                                    "generation_invalid",
-                                    "expected generation must be an unsigned integer",
-                                )
-                            })
-                    })
-                    .transpose()?
-            };
-            Ok((
-                piqueld_core::manifest::parse_template_toml(text)?,
-                expected,
-                optional_header(headers, "x-expected-application-id")?,
-            ))
-        }
-        _ => Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content_type_unsupported",
-            "Content-Type must be application/json or application/toml",
-        )),
-    }
-}
-
-impl From<ApplicationError> for ApiError {
-    /// Maps application service failures, delegating storage and runtime
-    /// errors to their dedicated conversions.
-    fn from(error: ApplicationError) -> Self {
-        match error {
-            ApplicationError::PreconditionRequired => Self::new(
-                StatusCode::BAD_REQUEST,
-                "precondition_required",
-                "Supply the inspected revision and application identity, or explicitly set force=true",
-            ),
-            ApplicationError::InvalidPagination => Self::new(
-                StatusCode::BAD_REQUEST,
-                "pagination_invalid",
-                "pagination parameters are invalid",
-            ),
-            ApplicationError::InvalidLogQuery => Self::new(
-                StatusCode::BAD_REQUEST,
-                "logs_query_invalid",
-                "Tail must be 1–1000 and time window 1–86400 seconds",
-            ),
-            ApplicationError::ServiceNotRunning => Self::new(
-                StatusCode::CONFLICT,
-                "service_not_running",
-                "Service has no running task; deploy it or check its health",
-            ),
-            ApplicationError::ConfigurationUnavailable => Self::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "configuration_unavailable",
-                "Effective host configuration is unavailable",
-            ),
-            ApplicationError::ManifestSerialization(error) => {
-                tracing::error!(?error, "serialize saved manifest");
-                Self::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "manifest_serialization_failed",
-                    "Could not render saved configuration",
-                )
-            }
-            ApplicationError::Store(error) => error.into(),
-            ApplicationError::Runtime(error) => error.into(),
-            ApplicationError::PlanBlocked(diagnostics) => Self::new(
-                StatusCode::CONFLICT,
-                "plan_blocked",
-                "runtime plan contains blocking conflicts",
-            )
-            .details(json!({"diagnostics":diagnostics})),
-            ApplicationError::RepositoryUnavailable(error) => {
-                tracing::warn!(?error, "manifest repository unavailable");
-                Self::new(
-                    StatusCode::BAD_GATEWAY,
-                    "repository_unavailable",
-                    format!(
-                        "The manifest repository could not be read ({error:#}); no preview was deleted"
-                    ),
-                )
-            }
-            ApplicationError::Snapshot(error) => error.into(),
-        }
-    }
-}
-
-impl From<crate::git::snapshot::SnapshotError> for ApiError {
-    /// Maps refused snapshot uploads; Git's output stays in the logs.
-    fn from(error: crate::git::snapshot::SnapshotError) -> Self {
-        use crate::git::snapshot::SnapshotError;
-        let message = error.to_string();
-        match error {
-            SnapshotError::TooLarge { limit } => Self::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                piqueld_core::codes::SNAPSHOT_TOO_LARGE,
-                format!("{message}; raise [snapshots] max_upload_bytes, or upload against a base the repository has"),
-            )
-            .details(json!({ "limit": limit })),
-            SnapshotError::TreeTooLarge { limit } => Self::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                piqueld_core::codes::SNAPSHOT_TOO_LARGE,
-                format!("{message}; raise [checkouts] max_bytes, or ignore the files the preview doesn't need"),
-            )
-            .details(json!({ "limit": limit })),
-            SnapshotError::Invalid(_) => Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                piqueld_core::codes::SNAPSHOT_INVALID,
-                message,
-            ),
-            SnapshotError::BaseUnavailable { prerequisites } => Self::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                piqueld_core::codes::SNAPSHOT_BASE_UNAVAILABLE,
-                format!("{message}; push the base, or upload a complete bundle"),
-            )
-            .details(json!({ "prerequisites": prerequisites })),
-            SnapshotError::TimedOut => Self::new(
-                StatusCode::REQUEST_TIMEOUT,
-                piqueld_core::codes::SNAPSHOT_TIMED_OUT,
-                message,
-            ),
-            SnapshotError::Internal(error) => {
-                tracing::error!(?error, "snapshot upload failed");
-                Self::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "snapshot_unavailable",
-                    message,
-                )
-            }
-        }
-    }
-}
-
-/// Reads an optional single-valued header; repeated or non-ASCII values are
-/// rejected with `header_invalid`.
-fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, ApiError> {
-    if headers.get_all(name).iter().count() > 1 {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "header_invalid",
-            "mutation headers must occur once",
-        ));
-    }
-    headers
-        .get(name)
-        .map(|value| {
-            value.to_str().map(str::to_owned).map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "header_invalid",
-                    "invalid mutation header",
-                )
-            })
-        })
-        .transpose()
 }
 
 /// Builds an isolated metrics-only router; no administrative routes are installed.
@@ -1383,32 +574,4 @@ pub fn metrics_router(state: ApiState) -> Router {
             ),
         )
         .with_state(state)
-}
-
-/// Path extractor that keeps Axum path decoding failures inside the API's
-/// structured error contract, rejecting with a 400 `path_invalid` error.
-struct ApiPath<T>(T);
-
-impl<S, T> axum::extract::FromRequestParts<S> for ApiPath<T>
-where
-    S: Send + Sync,
-    T: serde::de::DeserializeOwned + Send,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        axum::extract::Path::<T>::from_request_parts(parts, state)
-            .await
-            .map(|axum::extract::Path(value)| Self(value))
-            .map_err(|_| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "path_invalid",
-                    "invalid URL path parameter",
-                )
-            })
-    }
 }

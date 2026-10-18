@@ -393,13 +393,7 @@ mod tests {
             .insert_credential(&user.id, &credential)
             .await
             .unwrap();
-        // Only the Docker socket's existence is checked; no request is made.
-        let socket = temp.path().join("docker.sock");
-        let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let docker = Arc::new(crate::docker::BollardDocker::connect(&socket).unwrap());
-        let runtime = crate::reconcile::Controller::new(docker, store.clone())
-            .runtime(Arc::new(tokio::sync::Notify::new()));
-        let service = ApplicationService::new(store, runtime);
+        let (service, _docker) = ApplicationService::unconnected(store, temp.path());
         let url = format!("sqlite:{}", database.display());
         let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();
         let address = IpAddr::from([192, 0, 2, 1]);

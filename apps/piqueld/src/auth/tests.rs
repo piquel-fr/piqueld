@@ -1372,17 +1372,17 @@ async fn https_cookies_use_host_prefix_and_ignore_unprefixed_names() {
         .await;
     let auth = Auth::new(&f.auth.0.store, "https://piqueld.example").unwrap();
     assert_eq!(
-        auth.cookie("piqueld_session", "secret", 60),
+        auth.cookie(AuthCookie::Session, "secret", 60),
         "__Host-piqueld_session=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60; Secure"
     );
     assert_eq!(
-        f.auth.cookie("piqueld_session", "secret", 60),
+        f.auth.cookie(AuthCookie::Session, "secret", 60),
         "piqueld_session_7845=secret; Path=/; HttpOnly; SameSite=Strict; Max-Age=60"
     );
     assert_eq!(
         Auth::new(&f.auth.0.store, "https://piqueld.example:8443")
             .unwrap()
-            .cookie_name("piqueld_session"),
+            .cookie_name(AuthCookie::Session),
         "__Host-piqueld_session_8443"
     );
     let router = auth.guard(Router::new().route("/api/v1/private", get(signed_in)));

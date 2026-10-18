@@ -1,6 +1,6 @@
 //! Embeds the static `piqueld-probe` that HTTP health checks run in services.
 
-use std::{env, error::Error, fs, path::Path, path::PathBuf};
+use std::{env, error::Error, fs, path::Path};
 
 use crate::nested::NestedCargo;
 
@@ -25,11 +25,7 @@ pub fn embed(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
     // Embed a copy that lives with this script's output. The nested build
     // writes `built` while this script runs, so tracking it would always look
     // newer than the last run and rebuild the daemon every time.
-    let out_dir = PathBuf::from(
-        env::var_os("OUT_DIR")
-            .ok_or("Cargo did not provide OUT_DIR to the piqueld build script")?,
-    );
-    let copy = out_dir.join("piqueld-probe");
+    let copy = crate::out_dir()?.join("piqueld-probe");
     fs::copy(&built, &copy)?;
     println!("cargo:rustc-env=PIQUELD_PROBE_BINARY={}", copy.display());
     Ok(())

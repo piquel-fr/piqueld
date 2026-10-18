@@ -807,3 +807,21 @@ impl ApplicationService {
         Ok(response)
     }
 }
+
+#[cfg(test)]
+impl ApplicationService {
+    /// A service over `store` whose runtime never reaches Docker. Connecting
+    /// only checks that the socket exists, so a listener bound in `dir`
+    /// stands in for it; keep the returned listener alive with the service.
+    pub(crate) fn unconnected(
+        store: Arc<Store>,
+        dir: &std::path::Path,
+    ) -> (Self, tokio::net::UnixListener) {
+        let socket = dir.join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let docker = Arc::new(crate::docker::BollardDocker::connect(&socket).unwrap());
+        let runtime = crate::reconcile::Controller::new(docker, Arc::clone(&store))
+            .runtime(Arc::new(tokio::sync::Notify::new()));
+        (Self::new(store, runtime), listener)
+    }
+}

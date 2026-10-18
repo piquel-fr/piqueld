@@ -20,8 +20,10 @@ use webauthn_rs_core::WebauthnCore;
 
 /// One day in seconds, the unit for credential and invitation lifetimes.
 const DAY: i64 = 86_400;
-/// Seconds a started passkey ceremony stays redeemable.
-const CEREMONY_LIFETIME: i64 = 300;
+/// Seconds a started passkey ceremony, and its binding cookie, stay redeemable.
+pub(crate) const CEREMONY_LIFETIME: i64 = 300;
+/// Seconds a passkey browser session lasts, unless a day passes unused.
+pub(crate) const BROWSER_SESSION_LIFETIME: i64 = 7 * DAY;
 /// Capacity of each in-memory pending map (ceremonies and device logins).
 const MAX_PENDING: usize = 1024;
 /// Prefix of credential secrets issued since authorization was introduced.
@@ -58,10 +60,29 @@ pub enum AuthError {
     #[error("first-account setup is not completed")]
     SetupPending,
     /// Operating-system entropy was unavailable.
-    #[error("could not generate an authentication secret: {0}")]
-    Random(String),
+    #[error("could not generate an authentication secret")]
+    Random(#[source] getrandom::Error),
 }
 type Result<T> = std::result::Result<T, AuthError>;
+
+/// The cookies the daemon sets, named per origin by [`Auth::cookie_name`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AuthCookie {
+    /// A browser session's credential secret.
+    Session,
+    /// Ties a passkey ceremony's finish request to the browser that started it.
+    Ceremony,
+}
+
+impl AuthCookie {
+    /// The name before the origin's prefix and port.
+    const fn base_name(self) -> &'static str {
+        match self {
+            Self::Session => "piqueld_session",
+            Self::Ceremony => "piqueld_ceremony",
+        }
+    }
+}
 
 /// Shared authentication service, using the control plane's `SQLite` database.
 #[derive(Clone)]
@@ -280,9 +301,13 @@ impl Auth {
     }
     /// Generates 32 random bytes as unpadded URL-safe base64 (43 characters).
     pub(crate) fn secret() -> Result<String> {
-        let mut bytes = [0_u8; 32];
-        getrandom::fill(&mut bytes).map_err(|error| AuthError::Random(error.to_string()))?;
-        Ok(URL_SAFE_NO_PAD.encode(bytes))
+        Ok(URL_SAFE_NO_PAD.encode(Self::random::<32>()?))
+    }
+    /// Reads `N` bytes of operating-system entropy.
+    fn random<const N: usize>() -> Result<[u8; N]> {
+        let mut bytes = [0_u8; N];
+        getrandom::fill(&mut bytes).map_err(AuthError::Random)?;
+        Ok(bytes)
     }
     /// Hashes a secret with SHA-256 for storage and lookup; raw secrets are never
     /// persisted.
@@ -334,8 +359,9 @@ impl Auth {
     /// https://piqueld.example:8443  __Host-piqueld_session_8443
     /// http://localhost:7845         piqueld_session_7845
     /// ```
-    pub(crate) fn cookie_name(&self, name: &str) -> String {
+    pub(crate) fn cookie_name(&self, cookie: AuthCookie) -> String {
         let prefix = if self.0.secure { "__Host-" } else { "" };
+        let name = cookie.base_name();
         match self.0.port {
             Some(port) => format!("{prefix}{name}_{port}"),
             None => format!("{prefix}{name}"),
@@ -346,10 +372,10 @@ impl Auth {
     /// ```text
     /// __Host-piqueld_session=<secret>; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800; Secure
     /// ```
-    pub(crate) fn cookie(&self, name: &str, secret: &str, age: i64) -> String {
+    pub(crate) fn cookie(&self, cookie: AuthCookie, secret: &str, age: i64) -> String {
         format!(
             "{}={secret}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{}",
-            self.cookie_name(name),
+            self.cookie_name(cookie),
             if self.0.secure { "; Secure" } else { "" }
         )
     }
@@ -372,6 +398,13 @@ impl Auth {
             return Err(AuthError::Invalid(
                 "username must contain 1–64 letters, digits, dots, dashes or underscores; display name must be at most 200 bytes",
             ));
+        }
+        Ok(())
+    }
+    /// Requires a passkey name of 1–200 bytes.
+    fn validate_passkey_name(name: &str) -> Result<()> {
+        if name.is_empty() || name.len() > 200 {
+            return Err(AuthError::Invalid("passkey name must contain 1–200 bytes"));
         }
         Ok(())
     }

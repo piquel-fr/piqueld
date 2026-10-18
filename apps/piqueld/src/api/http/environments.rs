@@ -1,13 +1,15 @@
 //! Environment lifecycle, status, and repair. Deployment, history, logs, and
 //! secrets of an environment live with their own handlers.
-use super::applications::{ForceQuery, GenerationQuery, accept_mutation, request_body};
-use super::{ApiError, ApiPath, ApiState, accepted, ok, openapi::ApiErrorResponse};
+use super::applications::{ForceQuery, GenerationQuery, accept_mutation};
+use super::extract::{IDEMPOTENCY_KEY, optional_header};
+use super::{
+    ApiError, ApiJson, ApiPath, ApiQuery, ApiState, accepted, ok, openapi::ApiErrorResponse,
+};
 use crate::api::{Mutation, PromotionMutation, SourceChoice};
 use crate::auth::Identity;
 use axum::{
     Extension,
-    body::Bytes,
-    extract::{Query, State, rejection::BytesRejection},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -19,21 +21,6 @@ use piqueld_core::api::{
 };
 use piqueld_core::sync::EnvironmentSyncRequest;
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, ReleaseId, TrackedBranch};
-
-/// Decodes a JSON environment or preview request, requiring the JSON content type.
-pub(super) fn environment_request<T: serde::de::DeserializeOwned>(
-    headers: &HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<T, ApiError> {
-    if super::content_type(headers) != Some("application/json") {
-        return Err(ApiError::new(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content_type_unsupported",
-            "Content-Type must be application/json",
-        ));
-    }
-    super::decode_json(&request_body(body)?)
-}
 
 /// Adds an environment to an application.
 ///
@@ -56,12 +43,11 @@ pub(super) fn environment_request<T: serde::de::DeserializeOwned>(
 pub(super) async fn create(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ForceQuery>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<CreateEnvironmentRequest>,
 ) -> Result<Response, ApiError> {
-    let request: CreateEnvironmentRequest = environment_request(&headers, body)?;
     let source = match (request.branch, request.commit, request.promote_from) {
         (Some(branch), commit, None) => {
             Some(SourceChoice::Branch(TrackedBranch::new(branch, commit)?))
@@ -94,7 +80,7 @@ pub(super) async fn create(
             source,
         },
         request.expected_generation,
-        ForceQuery::decode(query)?.force,
+        query.force,
         &headers,
     )
     .await
@@ -190,12 +176,11 @@ pub(super) async fn status(
 pub(super) async fn rename(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ForceQuery>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<EnvironmentRequest>,
 ) -> Result<Response, ApiError> {
-    let request: EnvironmentRequest = environment_request(&headers, body)?;
     accept_mutation(
         &state,
         &identity,
@@ -204,7 +189,7 @@ pub(super) async fn rename(
             name: EnvironmentName::parse(request.name)?,
         },
         request.expected_generation,
-        ForceQuery::decode(query)?.force,
+        query.force,
         &headers,
     )
     .await
@@ -229,12 +214,11 @@ pub(super) async fn rename(
 pub(super) async fn branch(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ForceQuery>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<EnvironmentBranchRequest>,
 ) -> Result<Response, ApiError> {
-    let request: EnvironmentBranchRequest = environment_request(&headers, body)?;
     accept_mutation(
         &state,
         &identity,
@@ -243,7 +227,7 @@ pub(super) async fn branch(
             branch: TrackedBranch::new(request.branch, request.commit)?,
         },
         request.expected_generation,
-        ForceQuery::decode(query)?.force,
+        query.force,
         &headers,
     )
     .await
@@ -269,9 +253,8 @@ pub(super) async fn sync(
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<EnvironmentSyncRequest>,
 ) -> Result<Response, ApiError> {
-    let request: EnvironmentSyncRequest = environment_request(&headers, body)?;
     let mutation = Mutation::SetSync {
         id: EnvironmentId::parse(id)?,
         enabled: request.enabled,
@@ -299,12 +282,11 @@ pub(super) async fn sync(
 pub(super) async fn source(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ForceQuery>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<EnvironmentSourceRequest>,
 ) -> Result<Response, ApiError> {
-    let request: EnvironmentSourceRequest = environment_request(&headers, body)?;
     accept_mutation(
         &state,
         &identity,
@@ -313,7 +295,7 @@ pub(super) async fn source(
             promote_from: request.promote_from.map(EnvironmentId::parse).transpose()?,
         }),
         request.expected_generation,
-        ForceQuery::decode(query)?.force,
+        query.force,
         &headers,
     )
     .await
@@ -368,13 +350,12 @@ fn selection(request: &PromoteRequest) -> Result<PromotionSelection, ApiError> {
 pub(super) async fn promote(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,
-    query: Result<Query<ForceQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<ForceQuery>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<PromoteRequest>,
 ) -> Result<Response, ApiError> {
-    let request: PromoteRequest = environment_request(&headers, body)?;
-    let request_id = super::optional_header(&headers, "idempotency-key")?;
+    let request_id = optional_header(&headers, IDEMPOTENCY_KEY)?;
     Ok(accepted(
         state
             .promote(
@@ -382,7 +363,7 @@ pub(super) async fn promote(
                 &EnvironmentId::parse(id)?,
                 selection(&request)?,
                 request.expected_generation,
-                ForceQuery::decode(query)?.force,
+                query.force,
                 request_id.as_deref(),
             )
             .await?,
@@ -409,10 +390,8 @@ pub(super) async fn promote(
 pub(super) async fn plan_promotion(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    ApiJson(request): ApiJson<PromoteRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let request: PromoteRequest = environment_request(&headers, body)?;
     Ok(ok(state
         .plan_release(&EnvironmentId::parse(id)?, &selection(&request)?)
         .await?))
@@ -437,9 +416,8 @@ pub(super) async fn delete(
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<GenerationQuery>,
 ) -> Result<Response, ApiError> {
-    let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
         &identity,
@@ -470,9 +448,8 @@ pub(super) async fn reconcile(
     Extension(identity): Extension<Identity>,
     ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    query: Result<Query<GenerationQuery>, axum::extract::rejection::QueryRejection>,
+    ApiQuery(query): ApiQuery<GenerationQuery>,
 ) -> Result<Response, ApiError> {
-    let query = GenerationQuery::decode(query)?;
     accept_mutation(
         &state,
         &identity,

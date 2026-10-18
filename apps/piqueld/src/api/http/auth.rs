@@ -1,6 +1,6 @@
 //! Authentication HTTP boundary shared by both daemon transports.
 use super::ApiError;
-use crate::auth::{Auth, AuthError, Identity};
+use crate::auth::{Auth, AuthCookie, AuthError, Identity};
 use crate::store::StoreError;
 use crate::tailnet::TailnetLookup;
 use axum::{
@@ -86,12 +86,13 @@ impl From<AuthError> for ApiError {
     }
 }
 
-/// Reads one cookie value from the `Cookie` headers, all of them.
+/// Reads one of `auth`'s cookies from the `Cookie` headers, all of them.
 ///
 /// ```text
-/// "a=1; piqueld_session=abc" + "piqueld_session" -> Some("abc")
+/// "a=1; piqueld_session=abc" + Session -> Some("abc")
 /// ```
-fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+fn cookie<'a>(auth: &Auth, headers: &'a HeaderMap, cookie: AuthCookie) -> Option<&'a str> {
+    let name = auth.cookie_name(cookie);
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -165,7 +166,7 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
         .and_then(|v| v.split_once(' '))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
         .map(|(_, token)| token);
-    let session = cookie(request.headers(), &auth.cookie_name("piqueld_session"));
+    let session = cookie(auth, request.headers(), AuthCookie::Session);
     let secret = bearer.or(session);
     let operator = (authorization.is_none() && !request.headers().contains_key(header::COOKIE))
         .then(|| super::UnixPeer::host_operator(request.extensions()))
@@ -203,10 +204,10 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     ) || request.headers().contains_key(header::UPGRADE);
     let ceremony = request.uri().path().contains("/auth/register/")
         || request.uri().path().contains("/auth/login/");
-    if mutation
-        && ((origin.is_some() && origin != Some(auth.origin()))
-            || ((uses_cookie || (ceremony && bearer.is_none())) && origin != Some(auth.origin())))
-    {
+    // Any foreign origin is refused; cookie-authenticated and bearer-less
+    // ceremony requests must also name the configured one.
+    let origin_required = origin.is_some() || uses_cookie || (ceremony && bearer.is_none());
+    if mutation && origin_required && origin != Some(auth.origin()) {
         let response = ApiError::new(
             StatusCode::FORBIDDEN,
             "origin_mismatch",
@@ -347,7 +348,8 @@ async fn refused(
 /// session `token` was issued.
 fn session_response(auth: &Auth, user: User, token: Option<String>) -> Response {
     let who = Principal::User(user.clone());
-    signed_in(auth, who, user, token.map(|token| (token, 7 * 86400)))
+    let session = token.map(|token| (token, crate::auth::BROWSER_SESSION_LIFETIME));
+    signed_in(auth, who, user, session)
 }
 /// Returns `body` as JSON, setting a session cookie that lasts `age`
 /// seconds when a new session `(token, age)` was issued. The audit trail
@@ -364,14 +366,20 @@ fn signed_in(
         response
             .extensions_mut()
             .insert(super::access::SignedIn(who));
-        response.headers_mut().append(
-            header::SET_COOKIE,
-            auth.cookie("piqueld_session", &token, age)
-                .parse()
-                .expect("generated cookie is valid"),
-        );
+        set_cookie(&mut response, auth, AuthCookie::Session, &token, age);
     }
     response
+}
+
+/// Adds a `Set-Cookie` header setting `auth`'s `cookie` to `value` for `age`
+/// seconds.
+fn set_cookie(response: &mut Response, auth: &Auth, cookie: AuthCookie, value: &str, age: i64) {
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        auth.cookie(cookie, value, age)
+            .parse()
+            .expect("generated cookie is valid"),
+    );
 }
 /// The host operator making a Unix socket request (see `UnixPeer`). Anyone
 /// else is answered as if the route did not exist.
@@ -401,18 +409,13 @@ fn hidden() -> ApiError {
 /// Reads the ceremony binding cookie that ties a passkey finish request to the
 /// browser that started it; missing cookies are unauthorized.
 fn binding<'a>(auth: &Auth, headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
-    cookie(headers, &auth.cookie_name("piqueld_ceremony"))
-        .ok_or_else(|| AuthError::Unauthorized.into())
+    cookie(auth, headers, AuthCookie::Ceremony).ok_or_else(|| AuthError::Unauthorized.into())
 }
 /// Returns a passkey challenge and sets its five-minute ceremony binding cookie.
 fn challenge_response(auth: &Auth, ceremony: Ceremony, binding: &str) -> Response {
     let mut response = Json(ceremony).into_response();
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        auth.cookie("piqueld_ceremony", binding, 300)
-            .parse()
-            .expect("generated cookie is valid"),
-    );
+    let age = crate::auth::CEREMONY_LIFETIME;
+    set_cookie(&mut response, auth, AuthCookie::Ceremony, binding, age);
     response
 }
 
@@ -574,11 +577,9 @@ pub(super) async fn logout(
     Extension(identity): Extension<Identity>,
 ) -> Result<Response, ApiError> {
     auth.logout(&identity).await?;
-    Ok((
-        [(header::SET_COOKIE, auth.cookie("piqueld_session", "", 0))],
-        Json(Managed::default()),
-    )
-        .into_response())
+    let mut response = Json(Managed::default()).into_response();
+    set_cookie(&mut response, &auth, AuthCookie::Session, "", 0);
+    Ok(response)
 }
 /// Lists accounts, passkeys, credentials, and open invitations.
 ///
@@ -617,12 +618,12 @@ pub(super) async fn device_start(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<DeviceStart>, ApiError> {
-    let body = super::applications::request_body(body)?;
+    let body = super::extract::request_body(body)?;
     let requester = peer.map(|Extension(ConnectInfo(peer))| peer.ip());
     let request = if body.is_empty() {
         DeviceStartRequest::default()
     } else {
-        super::decode_json::<DeviceStartRequest>(&body)?
+        super::extract::decode_json::<DeviceStartRequest>(&body)?
     };
     Ok(Json(auth.device_start(requester, request.grants).await?))
 }

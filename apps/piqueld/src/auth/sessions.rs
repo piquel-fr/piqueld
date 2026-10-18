@@ -283,8 +283,7 @@ impl Auth {
         }
         let device_code = Self::secret()?;
         let user_code = loop {
-            let mut bytes = [0_u8; 8];
-            getrandom::fill(&mut bytes).map_err(|error| AuthError::Random(error.to_string()))?;
+            let bytes = Self::random::<8>()?;
             let alphabet = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
             let mut code: String = bytes
                 .iter()

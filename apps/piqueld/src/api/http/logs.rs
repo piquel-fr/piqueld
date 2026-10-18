@@ -1,9 +1,6 @@
-use super::{ApiError, ApiPath, ApiState, ok, openapi::ApiErrorResponse};
-use axum::{
-    extract::{Query, State, rejection::QueryRejection},
-    http::StatusCode,
-    response::IntoResponse,
-};
+//! Recent container output of an environment's services.
+use super::{ApiError, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse};
+use axum::{extract::State, response::IntoResponse};
 use piqueld_core::{
     EnvironmentId,
     api::{ApplicationLogs, Envelope},
@@ -35,6 +32,12 @@ impl Default for LogQuery {
         }
     }
 }
+
+impl QueryParams for LogQuery {
+    const INVALID_CODE: &'static str = "logs_query_invalid";
+    const INVALID_MESSAGE: &'static str = "Invalid log query";
+}
+
 /// Gets recent container output for an environment.
 ///
 /// Output can be narrowed to one service and one stream. Unknown or malformed
@@ -46,15 +49,8 @@ impl Default for LogQuery {
 pub(super) async fn get(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
-    query: Result<Query<LogQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<LogQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let Query(query) = query.map_err(|_| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "logs_query_invalid",
-            "Invalid log query",
-        )
-    })?;
     let id = EnvironmentId::parse(id)?;
     Ok(ok(state
         .logs(

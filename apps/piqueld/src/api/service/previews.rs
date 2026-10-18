@@ -1,7 +1,6 @@
 //! Preview queries with their branch state, pruning previews whose branch is
 //! gone, and deploying snapshots of local worktrees. Creating, deploying, and
 //! deleting one are mutations.
-use super::views::status_view;
 use super::{
     Actor, ApplicationError, ApplicationService, Mutation, MutationResponse, PreviewMutation,
 };
@@ -188,7 +187,7 @@ impl ApplicationService {
         let branch = Self::branch_state(&preview, &origins, heads.as_ref(), fetched.as_deref())?;
         Ok(PreviewView {
             origin: origins.running(),
-            status: status_view(self.store.status(&preview.id).await?),
+            status: self.store.status(&preview.id).await?.into(),
             latest_operation: self
                 .store
                 .latest_operation_for_environment(&preview.id)

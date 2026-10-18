@@ -140,10 +140,9 @@ impl ApplicationService {
             })
             .map(|volume| volume.logical_name.to_string())
             .collect();
-        let ingress = self.ingress.as_ref().is_some_and(|ingress| ingress.enabled);
         let desired = self
             .store
-            .with_links(desired.with_ingress(ingress), &observed)
+            .with_links(desired.with_ingress(self.ingress_enabled()), &observed)
             .await?;
         let mut plan = Plan::from_request(
             &PlanRequest::Preview {
@@ -186,12 +185,7 @@ impl ApplicationService {
             .store
             .release(application, &candidate.promotion.release)
             .await?;
-        match self.runtime.local_images().await {
-            Ok(present) => {
-                release.availability = Some(present.availability(release.release.sources()));
-            }
-            Err(error) => tracing::warn!(?error, "release availability unknown"),
-        }
+        self.mark_availability([&mut release]).await;
         let proposed = app.spec();
         Ok(PlanView {
             application_id: application.to_string(),
@@ -226,13 +220,14 @@ impl ApplicationService {
         let observed = self.runtime.observe(source).await?;
         // Network attachments include ingress's and links', projected as the
         // controller does.
-        let ingress = self.ingress.as_ref().is_some_and(|ingress| ingress.enabled);
         let routes = self.store.applied_routes(source.id()).await?;
         if let Some(target) = &source.resolved
             && self
                 .store
                 .with_links(
-                    target.clone().with_ingress_routes(ingress, &routes),
+                    target
+                        .clone()
+                        .with_ingress_routes(self.ingress_enabled(), &routes),
                     &observed,
                 )
                 .await?
