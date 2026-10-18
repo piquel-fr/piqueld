@@ -1037,6 +1037,35 @@
         letter-spacing: .1em;
     }
 
+    /* One service of a deployment snapshot or release */
+    .snapshot-service {
+        display: grid;
+        gap: 8px;
+        padding: 12px 0;
+        border-top: 1px solid var(--line);
+    }
+
+    /* Grant summaries and the grant editor */
+    .grant-list {
+        display: grid;
+        gap: 4px;
+        margin: 0;
+        padding-left: 18px;
+        font-size: 13px;
+        color: var(--ink-soft);
+    }
+
+    .grant-permissions,
+    .grant-applications {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 8px 16px;
+    }
+
+    .grant-permissions .checkbox {
+        white-space: normal;
+    }
+
     @media (max-width: 640px) {
         .form-row {
             flex-wrap: wrap;
@@ -1070,36 +1099,5 @@
         .diff-row .arrow {
             display: none;
         }
-    }
-}
-
-@layer components {
-    .snapshot-service {
-        display: grid;
-        gap: 8px;
-        padding: 12px 0;
-        border-top: 1px solid var(--line);
-    }
-}
-
-@layer components {
-    .grant-list {
-        display: grid;
-        gap: 4px;
-        margin: 0;
-        padding-left: 18px;
-        font-size: 13px;
-        color: var(--ink-soft);
-    }
-
-    .grant-permissions,
-    .grant-applications {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 8px 16px;
-    }
-
-    .grant-permissions .checkbox {
-        white-space: normal;
     }
 }

@@ -1,9 +1,10 @@
 //! Application-owned route editing and independent HTTPS readiness.
-use super::super::ui::{Icon, Tone, badge, empty, icon, notice, remove_button, route_name};
-use super::{dirty_group, editor, save_actions};
+use super::super::ui::{Tone, badge, empty, limited_add_button, notice, remove_button, route_name};
+use super::{Draft, Rows, editor};
 use leptos::prelude::*;
 use piqueld_client::{
-    Redirect, RedirectStatus, Route, Visibility, edit::ApplicationEdit, system::DnsRecordState,
+    ApplicationManifest, Redirect, RedirectStatus, Route, Visibility, edit::ApplicationEdit,
+    system::DnsRecordState,
 };
 
 /// One editable route row. Both destinations keep their fields so switching
@@ -39,9 +40,15 @@ impl Default for RouteDraft {
 }
 
 impl RouteDraft {
-    /// Saved routes as editable rows.
-    fn rows(routes: Vec<Route>) -> Vec<Self> {
-        routes.into_iter().map(Self::from).collect()
+    /// The manifest's routes as editable rows.
+    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
+        manifest
+            .spec
+            .routes
+            .iter()
+            .cloned()
+            .map(Self::from)
+            .collect()
     }
 
     /// The route input, or a message when a number does not parse.
@@ -94,29 +101,12 @@ impl From<Route> for RouteDraft {
     }
 }
 
-/// Reads one field of a row, empty when the row was removed.
-fn field<T: Default>(
-    draft: RwSignal<Vec<RouteDraft>>,
-    index: usize,
-    read: impl Fn(&RouteDraft) -> T,
-) -> T {
-    draft.with(|rows| rows.get(index).map(read).unwrap_or_default())
-}
-
-/// Updates one row in place.
-fn edit(draft: RwSignal<Vec<RouteDraft>>, index: usize, write: impl FnOnce(&mut RouteDraft)) {
-    draft.update(|rows| {
-        if let Some(row) = rows.get_mut(index) {
-            write(row);
-        }
-    });
-}
-
-const fn route_tone(state: &str) -> Tone {
-    match state.as_bytes() {
-        b"ready" => Tone::Ok,
-        b"failed" => Tone::Bad,
-        b"pending" => Tone::Pending,
+/// Badge tone of a deployed route's HTTPS state.
+fn route_tone(state: &str) -> Tone {
+    match state {
+        "ready" => Tone::Ok,
+        "failed" => Tone::Bad,
+        "pending" => Tone::Pending,
         _ => Tone::Neutral,
     }
 }
@@ -138,61 +128,18 @@ const fn dns_tone(state: DnsRecordState) -> Tone {
 #[component]
 pub(super) fn RouteSettings() -> impl IntoView {
     let context = editor();
-    let draft = RwSignal::new(RouteDraft::rows(context.manifest().spec.routes));
-    let baseline = RwSignal::new(draft.get_untracked());
-    dirty_group("routes".into(), draft, baseline);
-    Effect::new(move |_| {
-        let saved_routes = context
-            .saved
-            .with(|saved| RouteDraft::rows(saved.application.to_manifest().spec.routes));
-        if draft.get_untracked() == baseline.get_untracked() {
-            draft.set(saved_routes.clone());
-            baseline.set(saved_routes);
-        }
-    });
-    let save = move || {
-        let routes = match draft
-            .get_untracked()
-            .into_iter()
-            .map(RouteDraft::route)
-            .collect()
-        {
-            Ok(routes) => routes,
-            Err(message) => {
-                context.error.set(Some(message.into()));
-                return;
-            }
-        };
-        context.save(
-            ApplicationEdit::Routes(routes),
-            Callback::new(move |saved: piqueld_client::ApplicationView| {
-                draft.set(RouteDraft::rows(
-                    saved.application.to_manifest().spec.routes,
-                ));
-                baseline.set(draft.get_untracked());
-            }),
-        );
+    let draft = Draft::synced("routes", RouteDraft::rows);
+    let routes = draft.value;
+    let save = move || match routes
+        .get_untracked()
+        .into_iter()
+        .map(RouteDraft::route)
+        .collect()
+    {
+        Ok(saved) => draft.save(ApplicationEdit::Routes(saved), RouteDraft::rows),
+        Err(message) => context.error.set(Some(message.into())),
     };
-    let readiness = context
-        .dashboard
-        .with_value(|dashboard| dashboard.signals.readiness);
-    // Deployed routes of every environment and preview, with its name.
-    let deployed = move || {
-        readiness.get().map(|status| {
-            context.saved.with(|saved| {
-                status
-                    .ingress
-                    .routes
-                    .into_iter()
-                    .filter_map(|route| {
-                        saved
-                            .deployable(&route.environment_id)
-                            .map(|environment| (environment.name.to_string(), route))
-                    })
-                    .collect::<Vec<_>>()
-            })
-        })
-    };
+    let readiness = context.signals().readiness;
     view! {
         <div class="stack">
             <section class="card">
@@ -219,7 +166,9 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     {move || {
                         readiness
                             .get()
-                            .filter(|status| status.ingress.enabled && !status.ingress.private.enabled)
+                            .filter(|status| {
+                                status.ingress.enabled && !status.ingress.private.enabled
+                            })
                             .map(|_| {
                                 notice(
                                     Tone::Info,
@@ -229,242 +178,253 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     }} <fieldset disabled={move || context.blocked()}>
                         <div class="form-list">
                             <For
-                                each={move || (0..draft.with(Vec::len)).collect::<Vec<_>>()}
+                                each={move || routes.indices()}
                                 key={|index| *index}
-                                children={move |index| {
-                                    view! {
-                                        <div class="form-row">
-                                            <label class="field">
-                                                <span>"Hostname"</span>
-                                                <input
-                                                    type="text"
-                                                    placeholder="app.example.com"
-                                                    prop:value={move || field(draft, index, |r| r.hostname.clone())}
-                                                    on:input={move |event| {
-                                                        edit(draft, index, |r| r.hostname = event_target_value(&event));
-                                                    }}
-                                                />
-                                            </label>
-                                            <label class="field" style="max-width:130px">
-                                                <span>"Name"</span>
-                                                <input
-                                                    type="text"
-                                                    placeholder="optional"
-                                                    title="Stable name selecting this route in every environment and preview"
-                                                    prop:value={move || field(draft, index, |r| r.name.clone())}
-                                                    on:input={move |event| {
-                                                        edit(draft, index, |r| r.name = event_target_value(&event));
-                                                    }}
-                                                />
-                                            </label>
-                                            <label class="field" style="max-width:130px">
-                                                <span>"Visibility"</span>
-                                                <select
-                                                    prop:value={move || field(draft, index, |r| r.visibility).to_string()}
-                                                    on:change={move |event| {
-                                                        if let Ok(visibility) = event_target_value(&event).parse() {
-                                                            edit(draft, index, |r| r.visibility = visibility);
-                                                        }
-                                                    }}
-                                                >
-                                                    <option value="private">"Private"</option>
-                                                    <option value="public">"Public"</option>
-                                                </select>
-                                            </label>
-                                            <label class="field" style="max-width:140px">
-                                                <span>"Destination"</span>
-                                                <select
-                                                    prop:value={move || {
-                                                        if field(draft, index, |r| r.redirect) { "redirect" } else { "service" }
-                                                    }}
-                                                    on:change={move |event| {
-                                                        edit(draft, index, |r| r.redirect = event_target_value(&event) == "redirect");
-                                                    }}
-                                                >
-                                                    <option value="service">"Service"</option>
-                                                    <option value="redirect">"Redirect"</option>
-                                                </select>
-                                            </label>
-                                            {move || {
-                                                if field(draft, index, |r| r.redirect) {
-                                                    view! {
-                                                        <label class="field">
-                                                            <span>"Redirect to"</span>
-                                                            <input
-                                                                type="url"
-                                                                placeholder="https://example.com"
-                                                                prop:value={move || field(draft, index, |r| r.to.clone())}
-                                                                on:input={move |event| {
-                                                                    edit(draft, index, |r| r.to = event_target_value(&event));
-                                                                }}
-                                                            />
-                                                        </label>
-                                                        <label class="field" style="max-width:180px">
-                                                            <span>"Status"</span>
-                                                            <select
-                                                                prop:value={move || field(draft, index, |r| r.status.clone())}
-                                                                on:change={move |event| {
-                                                                    edit(draft, index, |r| r.status = event_target_value(&event));
-                                                                }}
-                                                            >
-                                                                <option value="308">"308 Permanent"</option>
-                                                                <option value="301">"301 Moved permanently"</option>
-                                                                <option value="307">"307 Temporary"</option>
-                                                                <option value="302">"302 Found"</option>
-                                                                <option value="303">"303 See other"</option>
-                                                            </select>
-                                                        </label>
-                                                        <label class="checkbox">
-                                                            <input
-                                                                type="checkbox"
-                                                                prop:checked={move || field(draft, index, |r| r.preserve_path)}
-                                                                on:change={move |event| {
-                                                                    edit(draft, index, |r| r.preserve_path = event_target_checked(&event));
-                                                                }}
-                                                            />
-                                                            "Keep path and query"
-                                                        </label>
-                                                    }
-                                                        .into_any()
-                                                } else {
-                                                    view! {
-                                                        <label class="field">
-                                                            <span>"Service"</span>
-                                                            <select
-                                                                prop:value={move || field(draft, index, |r| r.service.clone())}
-                                                                on:change={move |event| {
-                                                                    edit(draft, index, |r| r.service = event_target_value(&event));
-                                                                }}
-                                                            >
-                                                                <option value="">"Select a service"</option>
-                                                                {move || {
-                                                                    context
-                                                                        .manifest()
-                                                                        .spec
-                                                                        .services
-                                                                        .into_iter()
-                                                                        .map(|service| {
-                                                                            view! {
-                                                                                <option value={service
-                                                                                    .name
-                                                                                    .clone()}>{service.name.clone()}</option>
-                                                                            }
-                                                                        })
-                                                                        .collect_view()
-                                                                }}
-                                                            </select>
-                                                        </label>
-                                                        <label class="field" style="max-width:120px">
-                                                            <span>"HTTP port"</span>
-                                                            <input
-                                                                type="number"
-                                                                min="1"
-                                                                max="65535"
-                                                                prop:value={move || field(draft, index, |r| r.port.clone())}
-                                                                on:input={move |event| {
-                                                                    edit(draft, index, |r| r.port = event_target_value(&event));
-                                                                }}
-                                                            />
-                                                        </label>
-                                                    }
-                                                        .into_any()
-                                                }
-                                            }}
-                                            {remove_button(move || {
-                                                draft
-                                                    .update(|rows| {
-                                                        rows.remove(index);
-                                                    });
-                                            })}
-                                        </div>
-                                    }
-                                }}
+                                children={move |index| route_row(routes, index)}
                             />
                         </div>
-                        <button
-                            type="button"
-                            class="btn btn-sm"
-                            disabled={move || draft.with(Vec::len) >= 64}
-                            on:click={move |_| {
-                                draft
-                                    .update(|rows| {
-                                        rows.push(RouteDraft::default())
-                                    });
-                            }}
-                        >
-                            {icon(Icon::Plus)}
-                            "Add route"
-                        </button>
-                        {save_actions(draft, baseline, save, || false)}
+                        {limited_add_button(
+                            "Add route",
+                            move || routes.with(Vec::len) >= 64,
+                            move || routes.update(|rows| rows.push(RouteDraft::default())),
+                        )}
+                        {draft.actions(save, || false)}
                     </fieldset>
                 </div>
             </section>
-            <section class="card card-flush">
-                <header>
-                    <div>
-                        <h3>"Deployed routes"</h3>
-                        <p>"HTTPS readiness is probed independently of application rollout."</p>
-                    </div>
-                </header>
-                {move || {
-                    match deployed() {
-                        None => empty("Waiting for the ingress status…"),
-                        Some(routes) if routes.is_empty() => {
-                            empty("No routes are deployed for this application.")
-                        }
-                        Some(routes) => {
-                            view! {
-                                <table class="table">
-                                    <thead>
-                                        <tr>
-                                            <th>"Hostname"</th>
-                                            <th>"Name"</th>
-                                            <th>"Environment"</th>
-                                            <th>"Visibility"</th>
-                                            <th>"Destination"</th>
-                                            <th>"DNS records"</th>
-                                            <th>"DNS"</th>
-                                            <th>"State"</th>
-                                            <th>"Details"</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {routes
-                                            .into_iter()
-                                            .map(|(environment, route)| {
-                                                view! {
-                                                    <tr>
-                                                        <td>
-                                                            <strong>{route.hostname}</strong>
-                                                        </td>
-                                                        <td>{route_name(route.name)}</td>
-                                                        <td>{environment}</td>
-                                                        <td>{route.visibility.to_string()}</td>
-                                                        <td>
-                                                            <code>{route.target.to_string()}</code>
-                                                        </td>
-                                                        <td>
-                                                            <code>{route.dns.to_string()}</code>
-                                                        </td>
-                                                        <td>
-                                                            {badge(dns_tone(route.dns_state), route.dns_state.to_string())}
-                                                        </td>
-                                                        <td>
-                                                            {badge(route_tone(&route.state), route.state.clone())}
-                                                        </td>
-                                                        <td class="muted">{route.message}</td>
-                                                    </tr>
-                                                }
-                                            })
-                                            .collect_view()}
-                                    </tbody>
-                                </table>
-                            }
-                                .into_any()
-                        }
-                    }
-                }}
-            </section>
+            <DeployedRoutes />
         </div>
+    }
+}
+
+/// Fields of route `index`: its hostname, name, visibility, and either the
+/// redirect or the service it leads to.
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
+fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
+    let context = editor();
+    let destination = move || {
+        if routes.field(index, |r| r.redirect) {
+            view! {
+                <label class="field">
+                    <span>"Redirect to"</span>
+                    <input
+                        type="url"
+                        placeholder="https://example.com"
+                        prop:value={move || routes.field(index, |r| r.to.clone())}
+                        on:input={move |event| {
+                            routes.edit(index, |r| r.to = event_target_value(&event));
+                        }}
+                    />
+                </label>
+                <label class="field" style="max-width:180px">
+                    <span>"Status"</span>
+                    <select
+                        prop:value={move || routes.field(index, |r| r.status.clone())}
+                        on:change={move |event| {
+                            routes.edit(index, |r| r.status = event_target_value(&event));
+                        }}
+                    >
+                        <option value="308">"308 Permanent"</option>
+                        <option value="301">"301 Moved permanently"</option>
+                        <option value="307">"307 Temporary"</option>
+                        <option value="302">"302 Found"</option>
+                        <option value="303">"303 See other"</option>
+                    </select>
+                </label>
+                <label class="checkbox">
+                    <input
+                        type="checkbox"
+                        prop:checked={move || routes.field(index, |r| r.preserve_path)}
+                        on:change={move |event| {
+                            routes.edit(index, |r| r.preserve_path = event_target_checked(&event));
+                        }}
+                    />
+                    "Keep path and query"
+                </label>
+            }
+            .into_any()
+        } else {
+            view! {
+                <label class="field">
+                    <span>"Service"</span>
+                    <select
+                        prop:value={move || routes.field(index, |r| r.service.clone())}
+                        on:change={move |event| {
+                            routes.edit(index, |r| r.service = event_target_value(&event));
+                        }}
+                    >
+                        {context.service_options()}
+                    </select>
+                </label>
+                <label class="field" style="max-width:120px">
+                    <span>"HTTP port"</span>
+                    <input
+                        type="number"
+                        min="1"
+                        max="65535"
+                        prop:value={move || routes.field(index, |r| r.port.clone())}
+                        on:input={move |event| {
+                            routes.edit(index, |r| r.port = event_target_value(&event));
+                        }}
+                    />
+                </label>
+            }
+            .into_any()
+        }
+    };
+    view! {
+        <div class="form-row">
+            <label class="field">
+                <span>"Hostname"</span>
+                <input
+                    type="text"
+                    placeholder="app.example.com"
+                    prop:value={move || routes.field(index, |r| r.hostname.clone())}
+                    on:input={move |event| {
+                        routes.edit(index, |r| r.hostname = event_target_value(&event));
+                    }}
+                />
+            </label>
+            <label class="field" style="max-width:130px">
+                <span>"Name"</span>
+                <input
+                    type="text"
+                    placeholder="optional"
+                    title="Stable name selecting this route in every environment and preview"
+                    prop:value={move || routes.field(index, |r| r.name.clone())}
+                    on:input={move |event| {
+                        routes.edit(index, |r| r.name = event_target_value(&event));
+                    }}
+                />
+            </label>
+            <label class="field" style="max-width:130px">
+                <span>"Visibility"</span>
+                <select
+                    prop:value={move || routes.field(index, |r| r.visibility).to_string()}
+                    on:change={move |event| {
+                        if let Ok(visibility) = event_target_value(&event).parse() {
+                            routes.edit(index, |r| r.visibility = visibility);
+                        }
+                    }}
+                >
+                    <option value="private">"Private"</option>
+                    <option value="public">"Public"</option>
+                </select>
+            </label>
+            <label class="field" style="max-width:140px">
+                <span>"Destination"</span>
+                <select
+                    prop:value={move || {
+                        if routes.field(index, |r| r.redirect) { "redirect" } else { "service" }
+                    }}
+                    on:change={move |event| {
+                        routes
+                            .edit(index, |r| r.redirect = event_target_value(&event) == "redirect");
+                    }}
+                >
+                    <option value="service">"Service"</option>
+                    <option value="redirect">"Redirect"</option>
+                </select>
+            </label>
+            {destination}
+            {remove_button(move || routes.remove(index))}
+        </div>
+    }
+    .into_any()
+}
+
+/// The application's deployed routes in every environment and preview, with
+/// their DNS and HTTPS state, from the dashboard readiness signal.
+#[component]
+fn DeployedRoutes() -> impl IntoView {
+    let context = editor();
+    let readiness = context.signals().readiness;
+    // Deployed routes of every environment and preview, with its name.
+    let deployed = move || {
+        readiness.get().map(|status| {
+            context.saved.with(|saved| {
+                status
+                    .ingress
+                    .routes
+                    .into_iter()
+                    .filter_map(|route| {
+                        saved
+                            .deployable(&route.environment_id)
+                            .map(|environment| (environment.name.to_string(), route))
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+    view! {
+        <section class="card card-flush">
+            <header>
+                <div>
+                    <h3>"Deployed routes"</h3>
+                    <p>"HTTPS readiness is probed independently of application rollout."</p>
+                </div>
+            </header>
+            {move || {
+                match deployed() {
+                    None => empty("Waiting for the ingress status…"),
+                    Some(routes) if routes.is_empty() => {
+                        empty("No routes are deployed for this application.")
+                    }
+                    Some(routes) => {
+                        view! {
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>"Hostname"</th>
+                                        <th>"Name"</th>
+                                        <th>"Environment"</th>
+                                        <th>"Visibility"</th>
+                                        <th>"Destination"</th>
+                                        <th>"DNS records"</th>
+                                        <th>"DNS"</th>
+                                        <th>"State"</th>
+                                        <th>"Details"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {routes
+                                        .into_iter()
+                                        .map(|(environment, route)| {
+                                            view! {
+                                                <tr>
+                                                    <td>
+                                                        <strong>{route.hostname}</strong>
+                                                    </td>
+                                                    <td>{route_name(route.name)}</td>
+                                                    <td>{environment}</td>
+                                                    <td>{route.visibility.to_string()}</td>
+                                                    <td>
+                                                        <code>{route.target.to_string()}</code>
+                                                    </td>
+                                                    <td>
+                                                        <code>{route.dns.to_string()}</code>
+                                                    </td>
+                                                    <td>
+                                                        {badge(
+                                                            dns_tone(route.dns_state),
+                                                            route.dns_state.to_string(),
+                                                        )}
+                                                    </td>
+                                                    <td>
+                                                        {badge(route_tone(&route.state), route.state.clone())}
+                                                    </td>
+                                                    <td class="muted">{route.message}</td>
+                                                </tr>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </tbody>
+                            </table>
+                        }
+                            .into_any()
+                    }
+                }
+            }}
+        </section>
     }
 }

@@ -1,17 +1,19 @@
 //! Browser login gate and account management. The small JavaScript bridge only
 //! translates `WebAuthn` binary fields; all network/state handling stays in Rust.
 use super::access::{GrantEditor, can, summary};
-use super::ui::{Icon, PageHeader, Tone, badge, empty, icon, notice, text_input, when};
+use super::ui::{Icon, Modal, PageHeader, Tone, badge, empty, icon, notice, text_field, when};
+use super::{ClientErrorExt, confirm, reload};
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use piqueld_client::{
     Client,
-    access::{GlobalPermission, Grants, Permission},
+    access::{GlobalPermission, Grants, Permission, Preset, Scope},
     auth::{
-        Account, Ceremony, CeremonyFinish, DeviceRequest, Directory, Manage, Principal,
-        RegistrationStart, Session,
+        Account, Ceremony, CeremonyFinish, CredentialView, DeviceRequest, Directory, Manage,
+        PasskeyView, Principal, RegistrationStart, Session,
     },
+    tailnet::TailnetBinding,
 };
 use wasm_bindgen::prelude::*;
 
@@ -47,6 +49,7 @@ extern "C" {
     #[wasm_bindgen(catch, js_name = piqueldPasskey)]
     fn passkey(options: &str, registration: bool) -> Result<js_sys::Promise, JsValue>;
 }
+
 /// Runs the browser half of a server-issued passkey ceremony and packages the
 /// credential for the matching `finish` endpoint.
 async fn complete(ceremony: Ceremony, registration: bool) -> Result<CeremonyFinish, String> {
@@ -61,6 +64,7 @@ async fn complete(ceremony: Ceremony, registration: bool) -> Result<CeremonyFini
         credential: serde_json::from_str(&response).map_err(|e| e.to_string())?,
     })
 }
+
 /// Extracts a readable message from a thrown JavaScript value.
 fn js_error(error: &JsValue) -> String {
     js_sys::Reflect::get(error, &JsValue::from_str("message"))
@@ -69,6 +73,7 @@ fn js_error(error: &JsValue) -> String {
         .or_else(|| error.as_string())
         .unwrap_or_else(|| "Passkey operation failed or was cancelled".into())
 }
+
 /// Registers a new passkey: start, browser ceremony, finish.
 async fn register(input: RegistrationStart) -> Result<(), String> {
     let client = Client::browser();
@@ -82,6 +87,7 @@ async fn register(input: RegistrationStart) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
 /// Signs in with a passkey, returning the new session and its grants.
 async fn sign_in() -> Result<Session, String> {
     let client = Client::browser();
@@ -92,12 +98,14 @@ async fn sign_in() -> Result<Session, String> {
         .map_err(|e| e.to_string())?;
     client.auth_me().await.map_err(|e| e.to_string())
 }
+
 /// Performs a full page navigation to `path`.
 fn navigate(path: &str) {
     if let Some(window) = web_sys::window() {
         let _ = window.location().set_href(path);
     }
 }
+
 /// A secret link being redeemed on the sign-in page.
 #[derive(Clone)]
 enum Invite {
@@ -108,42 +116,31 @@ enum Invite {
     /// `#operator=`: signs the browser in as the host operator.
     Operator(String),
 }
+
 impl Invite {
-    fn secret(&self) -> String {
-        match self {
-            Self::Account(secret) | Self::Enrollment(secret) | Self::Operator(secret) => {
-                secret.clone()
-            }
+    /// Reads an invitation, enrollment, or host operator sign-in secret once and
+    /// removes it from the address bar and session history, so it is not left
+    /// behind if the page is abandoned.
+    fn take() -> Option<Self> {
+        let window = web_sys::window()?;
+        let fragment = window.location().hash().ok()?;
+        let invite = if let Some(secret) = fragment.strip_prefix("#invite=") {
+            Self::Account(secret.to_owned())
+        } else if let Some(secret) = fragment.strip_prefix("#operator=") {
+            Self::Operator(secret.to_owned())
+        } else {
+            Self::Enrollment(fragment.strip_prefix("#enroll=")?.to_owned())
+        };
+        if let (Ok(history), Ok(path)) = (window.history(), window.location().pathname()) {
+            let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
         }
+        Some(invite)
     }
 }
-/// Reads an invitation, enrollment, or host operator sign-in secret once and
-/// removes it from the address bar and session history, so it is not left
-/// behind if the page is abandoned.
-fn take_invitation() -> Option<Invite> {
-    let window = web_sys::window()?;
-    let fragment = window.location().hash().ok()?;
-    let invite = if let Some(secret) = fragment.strip_prefix("#invite=") {
-        Invite::Account(secret.to_owned())
-    } else if let Some(secret) = fragment.strip_prefix("#operator=") {
-        Invite::Operator(secret.to_owned())
-    } else {
-        Invite::Enrollment(fragment.strip_prefix("#enroll=")?.to_owned())
-    };
-    if let (Ok(history), Ok(path)) = (window.history(), window.location().pathname()) {
-        let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
-    }
-    Some(invite)
-}
-/// Reloads the current page.
-fn reload() {
-    if let Some(window) = web_sys::window() {
-        let _ = window.location().reload();
-    }
-}
-fn confirm(message: &str) -> bool {
-    web_sys::window().is_some_and(|window| window.confirm_with_message(message).unwrap_or(false))
-}
+
+/// What a successful action shows: a message, and a one-time secret to copy
+/// (both empty to show nothing).
+type Shown = (String, String);
 
 /// Outcome of the last asynchronous action: one busy flag, one error, one
 /// success message, and an optional one-time secret to copy.
@@ -155,6 +152,7 @@ struct Feedback {
     secret: RwSignal<String>,
     revision: RwSignal<u32>,
 }
+
 impl Feedback {
     /// Creates idle feedback state.
     fn new() -> Self {
@@ -166,12 +164,10 @@ impl Feedback {
             revision: RwSignal::new(0),
         }
     }
+
     /// Runs `task` unless another action is in progress, showing its success
     /// message or error. `try_*` setters tolerate the owning view being unmounted.
-    fn run(
-        self,
-        task: impl std::future::Future<Output = Result<(String, String), String>> + 'static,
-    ) {
+    fn run(self, task: impl Future<Output = Result<Shown, String>> + 'static) {
         if self.busy.get_untracked() {
             return;
         }
@@ -193,6 +189,7 @@ impl Feedback {
             self.busy.try_set(false);
         });
     }
+
     /// Sends an account management command and shows any one-time token or
     /// invitation link it returns.
     fn manage(self, command: Manage) {
@@ -213,10 +210,16 @@ impl Feedback {
             })
         });
     }
+
+    /// Notice of the current error, if any.
+    fn error_view(self) -> impl IntoView {
+        move || (!self.error.get().is_empty()).then(|| notice(Tone::Bad, self.error.get()))
+    }
+
     /// Renders the current error and success message.
     fn view(self) -> impl IntoView {
         view! {
-            {move || (!self.error.get().is_empty()).then(|| notice(Tone::Bad, self.error.get()))}
+            {self.error_view()}
             {move || {
                 (!self.message.get().is_empty())
                     .then(|| {
@@ -246,7 +249,24 @@ struct AuthState {
     expired: RwSignal<bool>,
     invitation: StoredValue<Option<Invite>>,
 }
+
 impl AuthState {
+    /// The state `Gate` provides.
+    fn get() -> Self {
+        use_context().expect("authentication gate")
+    }
+
+    /// Whether a session is established, so the dashboard may show.
+    fn signed_in(self) -> bool {
+        self.loaded.get() && self.error.get().is_empty() && self.current.get().is_some()
+    }
+
+    /// Resumes `session` after it expired.
+    fn resume(self, session: Session) {
+        self.current.set(Some(session));
+        self.expired.set(false);
+    }
+
     /// View shown instead of the dashboard: connecting, a load error with retry,
     /// or the sign-in page.
     fn pending(self) -> AnyView {
@@ -288,9 +308,7 @@ impl AuthState {
 
 /// The signed-in account and its grants.
 pub(super) fn session() -> RwSignal<Option<Session>> {
-    use_context::<AuthState>()
-        .expect("authentication gate")
-        .current
+    AuthState::get().current
 }
 
 /// Who is signed in, for chrome that shows who is working.
@@ -312,6 +330,7 @@ fn account_session() -> Signal<bool> {
     })
 }
 
+/// The piqueld mark and name heading authentication cards.
 fn brand() -> AnyView {
     view! {
         <div class="auth-brand">
@@ -334,7 +353,7 @@ pub(super) fn Gate() -> impl IntoView {
         current: RwSignal::new(None::<Session>),
         error: RwSignal::new(String::new()),
         expired: RwSignal::new(false),
-        invitation: StoredValue::new(take_invitation()),
+        invitation: StoredValue::new(Invite::take()),
     };
     provide_context(state);
     let listener = window_event_listener(
@@ -353,8 +372,7 @@ pub(super) fn Gate() -> impl IntoView {
                 state.initialized.set(status.initialized);
                 match client.auth_me().await {
                     Ok(session) => state.current.set(Some(session)),
-                    Err(piqueld_client::ClientError::Api { status, .. })
-                        if status.as_u16() == 401 => {}
+                    Err(error) if error.unauthorized() => {}
                     Err(e) => state.error.set(e.to_string()),
                 }
             }
@@ -391,9 +409,8 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                 .auth_me()
                 .await
                 .map_err(|_| "Still signed out; sign in first, then continue.".to_owned())?;
-            state.current.set(Some(session));
-            state.expired.set(false);
-            Ok((String::new(), String::new()))
+            state.resume(session);
+            Ok(Shown::default())
         });
     };
     view! {
@@ -426,10 +443,8 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
                         on:click={move |_| {
                             feedback
                                 .run(async move {
-                                    let session = sign_in().await?;
-                                    state.current.set(Some(session));
-                                    state.expired.set(false);
-                                    Ok((String::new(), String::new()))
+                                    state.resume(sign_in().await?);
+                                    Ok(Shown::default())
                                 });
                         }}
                     >
@@ -454,14 +469,9 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
 /// Renders `DashboardLayout` once a user is signed in, otherwise the pending/sign-in view.
 #[component]
 pub(super) fn ProtectedDashboardLayout() -> impl IntoView {
-    let state = use_context::<AuthState>().expect("authentication gate");
+    let state = AuthState::get();
     view! {
-        <Show
-            when={move || {
-                state.loaded.get() && state.error.get().is_empty() && state.current.get().is_some()
-            }}
-            fallback={move || state.pending()}
-        >
+        <Show when={move || state.signed_in()} fallback={move || state.pending()}>
             <super::DashboardLayout />
         </Show>
     }
@@ -470,7 +480,7 @@ pub(super) fn ProtectedDashboardLayout() -> impl IntoView {
 /// Standalone `/dashboard/auth` page (sign-in, registration, device approval).
 #[component]
 pub(super) fn AuthPage() -> impl IntoView {
-    let state = use_context::<AuthState>().expect("authentication gate");
+    let state = AuthState::get();
     move || state.pending()
 }
 
@@ -488,168 +498,16 @@ fn SignIn(
     let device = web_sys::window()
         .and_then(|w| w.location().hash().ok())
         .is_some_and(|fragment| fragment == "#device");
-    let username = RwSignal::new(String::new());
-    let display_name = RwSignal::new(String::new());
-    let name = RwSignal::new("My passkey".to_owned());
-    let signed_in = current.is_some();
     let operator = current
         .as_ref()
         .is_some_and(|session| session.principal.user().is_none());
-    let who = current
-        .map(|session| session.principal.name().to_owned())
-        .unwrap_or_default();
-    let content = if let Some(Invite::Operator(secret)) = &invitation {
-        let secret = secret.clone();
-        view! {
-            <h2>"Sign in as the host operator"</h2>
-            <p class="hint">
-                "This one-time link from " <code>"piquelctl sign-in-link"</code>
-                " signs this browser in as the daemon host's operator, with full access, for 12 hours. It is not an account and has no passkeys."
-            </p>
-            <div class="form-actions">
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    on:click={move |_| {
-                        let secret = secret.clone();
-                        feedback
-                            .run(async move {
-                                Client::browser()
-                                    .auth_operator_sign_in(&secret)
-                                    .await
-                                    .map_err(|e| e.to_string())?;
-                                navigate("/dashboard/");
-                                Ok((String::new(), String::new()))
-                            });
-                    }}
-                >
-                    "Sign in as host operator"
-                </button>
-            </div>
-        }
-        .into_any()
-    } else if let Some(Invite::Enrollment(secret)) = &invitation {
-        let secret = secret.clone();
-        view! {
-            <h2>"Add a passkey"</h2>
-            <p class="hint">
-                "This link adds a passkey to an existing piqueld account. Name the passkey and register it to sign in."
-            </p>
-            <div class="stack-sm">
-                {text_input("Passkey name", name, String::clone, |v, s| *v = s)}
-            </div>
-            <div class="form-actions">
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    on:click={move |_| {
-                        let input = RegistrationStart {
-                            invitation: Some(secret.clone()),
-                            user_id: None,
-                            username: String::new(),
-                            display_name: String::new(),
-                            passkey_name: name.get_untracked(),
-                        };
-                        feedback
-                            .run(async move {
-                                register(input).await?;
-                                navigate("/dashboard/");
-                                Ok((String::new(), String::new()))
-                            });
-                    }}
-                >
-                    {icon(Icon::Key)}
-                    "Register passkey"
-                </button>
-            </div>
-        }
-        .into_any()
-    } else if invitation.is_some() {
-        view! {
-            <h2>"Create your account"</h2>
-            <p class="hint">
-                "You have been invited to this piqueld host. Choose a username and register a passkey to finish."
-            </p>
-            <div class="stack-sm">
-                <label class="field">
-                    <span>"Username"</span>
-                    <input
-                        type="text"
-                        autocomplete="username"
-                        prop:value={move || username.get()}
-                        on:input={move |event| username.set(event_target_value(&event))}
-                    />
-                </label>
-                {text_input("Display name (optional)", display_name, String::clone, |v, s| *v = s)}
-                {text_input("Passkey name", name, String::clone, |v, s| *v = s)}
-            </div>
-            <div class="form-actions">
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    on:click={move |_| {
-                        let input = RegistrationStart {
-                            invitation: invitation.as_ref().map(Invite::secret),
-                            user_id: None,
-                            username: username.get_untracked(),
-                            display_name: display_name.get_untracked(),
-                            passkey_name: name.get_untracked(),
-                        };
-                        feedback
-                            .run(async move {
-                                register(input).await?;
-                                navigate("/dashboard/");
-                                Ok((String::new(), String::new()))
-                            });
-                    }}
-                >
-                    {icon(Icon::Key)}
-                    "Create account with a passkey"
-                </button>
-            </div>
-        }
-        .into_any()
-    } else if !initialized {
-        view! {
-            <h2>"Set up piqueld"</h2>
-            <p class="hint">
-                "No account exists yet. Run " <code>"piquelctl setup-link"</code>
-                " on the daemon host and open the link it prints to create the first account. It is also saved in the "
-                <code>"setup-link"</code> " file in the daemon’s data directory."
-            </p>
-            <div class="form-actions">
-                <button type="button" class="btn" on:click={move |_| reload()}>
-                    {icon(Icon::Refresh)}
-                    "Check again"
-                </button>
-            </div>
-        }
-        .into_any()
-    } else if !signed_in {
-        view! {
-            <h2>"Sign in"</h2>
-            <p class="hint">"Use a passkey registered for this piqueld host."</p>
-            <div class="form-actions">
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    on:click={move |_| {
-                        feedback
-                            .run(async move {
-                                sign_in().await?;
-                                reload();
-                                Ok((String::new(), String::new()))
-                            });
-                    }}
-                >
-                    {icon(Icon::Key)}
-                    "Sign in with a passkey"
-                </button>
-            </div>
-        }
-        .into_any()
-    } else if device && operator {
-        view! {
+    let content = match (invitation, current) {
+        (Some(Invite::Operator(secret)), _) => operator_sign_in(feedback, secret),
+        (Some(Invite::Enrollment(secret)), _) => enrollment(feedback, secret),
+        (Some(Invite::Account(secret)), _) => registration(feedback, secret),
+        (None, _) if !initialized => setup(),
+        (None, None) => passkey_sign_in(feedback),
+        (None, Some(_)) if device && operator => view! {
             <h2>"Connect piquelctl"</h2>
             {notice(
                 Tone::Warn,
@@ -659,20 +517,24 @@ fn SignIn(
                 <Logout />
             </div>
         }
-        .into_any()
-    } else if device {
-        view! { <DeviceApproval who={who} /> }.into_any()
-    } else {
-        view! {
-            <h2>{format!("Signed in as {who}")}</h2>
-            <div class="form-actions">
-                <a class="btn btn-primary" href="/dashboard/">
-                    "Open dashboard"
-                </a>
-                <Logout />
-            </div>
+        .into_any(),
+        (None, Some(session)) => {
+            let who = session.principal.name().to_owned();
+            if device {
+                view! { <DeviceApproval who={who} /> }.into_any()
+            } else {
+                view! {
+                    <h2>{format!("Signed in as {who}")}</h2>
+                    <div class="form-actions">
+                        <a class="btn btn-primary" href="/dashboard/">
+                            "Open dashboard"
+                        </a>
+                        <Logout />
+                    </div>
+                }
+                .into_any()
+            }
         }
-        .into_any()
     };
     view! {
         <main class="auth-page">
@@ -682,6 +544,174 @@ fn SignIn(
             </section>
         </main>
     }
+}
+
+/// Signs in as the host operator with a `piquelctl sign-in-link` secret.
+fn operator_sign_in(feedback: Feedback, secret: String) -> AnyView {
+    view! {
+        <h2>"Sign in as the host operator"</h2>
+        <p class="hint">
+            "This one-time link from " <code>"piquelctl sign-in-link"</code>
+            " signs this browser in as the daemon host's operator, with full access, for 12 hours. It is not an account and has no passkeys."
+        </p>
+        <div class="form-actions">
+            <button
+                type="button"
+                class="btn btn-primary"
+                on:click={move |_| {
+                    let secret = secret.clone();
+                    feedback
+                        .run(async move {
+                            Client::browser()
+                                .auth_operator_sign_in(&secret)
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            navigate("/dashboard/");
+                            Ok(Shown::default())
+                        });
+                }}
+            >
+                "Sign in as host operator"
+            </button>
+        </div>
+    }
+    .into_any()
+}
+
+/// Registers a passkey as `input` asks, then opens the dashboard.
+fn register_and_open(feedback: Feedback, input: RegistrationStart) {
+    feedback.run(async move {
+        register(input).await?;
+        navigate("/dashboard/");
+        Ok(Shown::default())
+    });
+}
+
+/// Adds a passkey to an existing account through an enrollment link.
+fn enrollment(feedback: Feedback, secret: String) -> AnyView {
+    let name = RwSignal::new("My passkey".to_owned());
+    view! {
+        <h2>"Add a passkey"</h2>
+        <p class="hint">
+            "This link adds a passkey to an existing piqueld account. Name the passkey and register it to sign in."
+        </p>
+        <div class="stack-sm">{text_field("Passkey name", name)}</div>
+        <div class="form-actions">
+            <button
+                type="button"
+                class="btn btn-primary"
+                on:click={move |_| {
+                    register_and_open(
+                        feedback,
+                        RegistrationStart {
+                            invitation: Some(secret.clone()),
+                            user_id: None,
+                            username: String::new(),
+                            display_name: String::new(),
+                            passkey_name: name.get_untracked(),
+                        },
+                    );
+                }}
+            >
+                {icon(Icon::Key)}
+                "Register passkey"
+            </button>
+        </div>
+    }
+    .into_any()
+}
+
+/// Creates an account through an invitation link.
+fn registration(feedback: Feedback, secret: String) -> AnyView {
+    let username = RwSignal::new(String::new());
+    let display_name = RwSignal::new(String::new());
+    let name = RwSignal::new("My passkey".to_owned());
+    view! {
+        <h2>"Create your account"</h2>
+        <p class="hint">
+            "You have been invited to this piqueld host. Choose a username and register a passkey to finish."
+        </p>
+        <div class="stack-sm">
+            <label class="field">
+                <span>"Username"</span>
+                <input
+                    type="text"
+                    autocomplete="username"
+                    prop:value={move || username.get()}
+                    on:input={move |event| username.set(event_target_value(&event))}
+                />
+            </label>
+            {text_field("Display name (optional)", display_name)}
+            {text_field("Passkey name", name)}
+        </div>
+        <div class="form-actions">
+            <button
+                type="button"
+                class="btn btn-primary"
+                on:click={move |_| {
+                    register_and_open(
+                        feedback,
+                        RegistrationStart {
+                            invitation: Some(secret.clone()),
+                            user_id: None,
+                            username: username.get_untracked(),
+                            display_name: display_name.get_untracked(),
+                            passkey_name: name.get_untracked(),
+                        },
+                    );
+                }}
+            >
+                {icon(Icon::Key)}
+                "Create account with a passkey"
+            </button>
+        </div>
+    }
+    .into_any()
+}
+
+/// First-run instructions, before any account exists.
+fn setup() -> AnyView {
+    view! {
+        <h2>"Set up piqueld"</h2>
+        <p class="hint">
+            "No account exists yet. Run " <code>"piquelctl setup-link"</code>
+            " on the daemon host and open the link it prints to create the first account. It is also saved in the "
+            <code>"setup-link"</code> " file in the daemon’s data directory."
+        </p>
+        <div class="form-actions">
+            <button type="button" class="btn" on:click={move |_| reload()}>
+                {icon(Icon::Refresh)}
+                "Check again"
+            </button>
+        </div>
+    }
+    .into_any()
+}
+
+/// Signs in with a registered passkey.
+fn passkey_sign_in(feedback: Feedback) -> AnyView {
+    view! {
+        <h2>"Sign in"</h2>
+        <p class="hint">"Use a passkey registered for this piqueld host."</p>
+        <div class="form-actions">
+            <button
+                type="button"
+                class="btn btn-primary"
+                on:click={move |_| {
+                    feedback
+                        .run(async move {
+                            sign_in().await?;
+                            reload();
+                            Ok(Shown::default())
+                        });
+                }}
+            >
+                {icon(Icon::Key)}
+                "Sign in with a passkey"
+            </button>
+        </div>
+    }
+    .into_any()
 }
 
 /// Two-step CLI approval: the approver first sees where the request came from.
@@ -697,7 +727,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                 .await
                 .map_err(|e| e.to_string())?;
             request.set(Some(found));
-            Ok((String::new(), String::new()))
+            Ok(Shown::default())
         });
     };
     let approve = move |_| {
@@ -799,6 +829,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
         </div>
     }
 }
+
 /// Describes where a device request originated; `None` means the local socket.
 fn requester_label(requester: Option<&str>) -> String {
     requester.map_or_else(
@@ -806,6 +837,7 @@ fn requester_label(requester: Option<&str>) -> String {
         |address| format!("network address {address}"),
     )
 }
+
 /// Coarse relative age of a device request.
 ///
 /// ```text
@@ -820,7 +852,8 @@ fn age_label(seconds: u32) -> String {
     }
 }
 
-/// Sign-out button; an already-invalid session (401) still counts as signed out.
+/// Sign-out button; an already-invalid session (401) still counts as signed
+/// out. `compact` shows only its icon.
 #[component]
 pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
     let feedback = Feedback::new();
@@ -828,44 +861,27 @@ pub(super) fn Logout(#[prop(optional)] compact: bool) -> impl IntoView {
         feedback.run(async move {
             match Client::browser().auth_logout().await {
                 Ok(_) => {}
-                Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 401 => {}
+                Err(error) if error.unauthorized() => {}
                 Err(error) => return Err(error.to_string()),
             }
             navigate("/dashboard/");
-            Ok((String::new(), String::new()))
+            Ok(Shown::default())
         });
     };
-    let error =
-        move || (!feedback.error.get().is_empty()).then(|| notice(Tone::Bad, feedback.error.get()));
-    if compact {
-        view! {
-            <button
-                type="button"
-                class="btn btn-ghost btn-icon"
-                title="Sign out"
-                aria-label="Sign out"
-                disabled={move || feedback.busy.get()}
-                on:click={sign_out}
-            >
-                {icon(Icon::LogOut)}
-            </button>
-            {error}
-        }
-        .into_any()
-    } else {
-        view! {
-            <button
-                type="button"
-                class="btn"
-                disabled={move || feedback.busy.get()}
-                on:click={sign_out}
-            >
-                {icon(Icon::LogOut)}
-                "Sign out"
-            </button>
-            {error}
-        }
-        .into_any()
+    let label = compact.then_some("Sign out");
+    view! {
+        <button
+            type="button"
+            class={if compact { "btn btn-ghost btn-icon" } else { "btn" }}
+            title={label}
+            aria-label={label}
+            disabled={move || feedback.busy.get()}
+            on:click={sign_out}
+        >
+            {icon(Icon::LogOut)}
+            {(!compact).then_some("Sign out")}
+        </button>
+        {feedback.error_view()}
     }
 }
 
@@ -962,7 +978,7 @@ pub(super) fn AccountsPage() -> impl IntoView {
 fn InvitationDialog(opened: RwSignal<bool>, feedback: Feedback) -> impl IntoView {
     let grants = RwSignal::new(Grants::default());
     view! {
-        <super::ui::Modal title="Create invitation" opened={opened} wide=true>
+        <Modal title="Create invitation" opened={opened} wide=true>
             <p class="hint">
                 "The account created with this link receives these grants. You can only hand out access you hold."
             </p>
@@ -988,8 +1004,32 @@ fn InvitationDialog(opened: RwSignal<bool>, feedback: Feedback) -> impl IntoView
                     "Create link"
                 </button>
             </div>
-        </super::ui::Modal>
+        </Modal>
     }
+}
+
+/// Ghost "Activity" link to the audit trail of credential `id`.
+fn activity_link(id: &str) -> AnyView {
+    view! {
+        <a class="btn btn-ghost btn-sm" href={format!("/dashboard/audit?credential={id}")}>
+            "Activity"
+        </a>
+    }
+    .into_any()
+}
+
+/// Ghost "Revoke" button sending `command`.
+fn revoke_button(feedback: Feedback, command: impl Fn() -> Manage + 'static) -> AnyView {
+    view! {
+        <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            on:click={move |_| feedback.manage(command())}
+        >
+            "Revoke"
+        </button>
+    }
+    .into_any()
 }
 
 /// Live host operator browser sessions, opened with `piquelctl sign-in-link`.
@@ -997,38 +1037,31 @@ fn InvitationDialog(opened: RwSignal<bool>, feedback: Feedback) -> impl IntoView
 /// everything, so only callers holding that may revoke one.
 #[component]
 fn OperatorSessions(directory: Directory, feedback: Feedback) -> impl IntoView {
-    let revoke = super::access::can(piqueld_client::access::Permission::Admin);
+    let revoke = can(Permission::Admin);
     let sessions = directory.operator_sessions;
     (!sessions.is_empty()).then(|| {
         let rows = sessions
             .into_iter()
             .map(|session| {
                 let id = session.id;
-                let activity = format!("/dashboard/audit?credential={id}");
                 view! {
                     <tr>
                         <td>{session.operator.to_string()}</td>
                         <td class="muted">{when(session.expires_at * 1000)}</td>
                         <td class="actions">
-                            <a class="btn btn-ghost btn-sm" href={activity}>
-                                "Activity"
-                            </a>
-                            <Show when={move || revoke.get()}>
-                                <button
-                                    type="button"
-                                    class="btn btn-ghost btn-sm"
-                                    on:click={
-                                        let id = id.clone();
-                                        move |_| {
-                                            feedback
-                                                .manage(Manage::RevokeCredential {
-                                                    id: id.clone(),
-                                                });
-                                        }
-                                    }
-                                >
-                                    "Revoke"
-                                </button>
+                            {activity_link(&id)}
+                            <Show when={move || {
+                                revoke.get()
+                            }}>
+                                {
+                                    let id = id.clone();
+                                    revoke_button(
+                                        feedback,
+                                        move || Manage::RevokeCredential {
+                                            id: id.clone(),
+                                        },
+                                    )
+                                }
                             </Show>
                         </td>
                     </tr>
@@ -1060,6 +1093,7 @@ fn OperatorSessions(directory: Directory, feedback: Feedback) -> impl IntoView {
     })
 }
 
+/// Pending invitation and enrollment links, each revocable.
 #[component]
 fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
     let users = directory.users;
@@ -1085,18 +1119,12 @@ fn Invitations(directory: Directory, feedback: Feedback) -> impl IntoView {
                     <td>{purpose}</td>
                     <td class="muted">{when(invite.expires_at * 1000)}</td>
                     <td class="actions">
-                        <button
-                            type="button"
-                            class="btn btn-ghost btn-sm"
-                            on:click={move |_| {
-                                feedback
-                                    .manage(Manage::RevokeInvitation {
-                                        id: id.clone(),
-                                    });
-                            }}
-                        >
-                            "Revoke"
-                        </button>
+                        {revoke_button(
+                            feedback,
+                            move || Manage::RevokeInvitation {
+                                id: id.clone(),
+                            },
+                        )}
                     </td>
                 </tr>
             }
@@ -1147,20 +1175,10 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
             .user()
             .is_some_and(|signed_in| signed_in.id == user.id)
     });
-    let issuer = account_session().get_untracked();
     let manage = can(Permission::Global(GlobalPermission::AccountsManage));
     let id = StoredValue::new(user.id.clone());
     let username = RwSignal::new(user.username);
     let display_name = RwSignal::new(user.display_name);
-    let passkey_name = RwSignal::new("New passkey".to_owned());
-    let token_name = RwSignal::new(String::new());
-    let days = RwSignal::new("90".to_owned());
-    let tailnet = RwSignal::new(String::new());
-    // New tokens start read-only within the account's access.
-    let token_grants = RwSignal::new(Grants::default());
-    let token_initial = piqueld_client::access::Preset::ReadOnly
-        .grants(&piqueld_client::access::Scope::All)
-        .intersection(&account.grants);
     let editing = RwSignal::new(false);
     let grants = RwSignal::new(account.grants.clone());
     let initial = StoredValue::new(account.grants.clone());
@@ -1185,31 +1203,6 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
             });
         }
     };
-    let create_token = move |_| {
-        let days = days.get_untracked();
-        let days = if days.is_empty() {
-            Ok(None)
-        } else {
-            days.parse::<u32>()
-                .map(Some)
-                .map_err(|_| "Enter a positive number of days, or leave blank")
-        };
-        let tailnet = tailnet.get_untracked();
-        let tailnet = if tailnet.trim().is_empty() {
-            Ok(None)
-        } else {
-            piqueld_client::tailnet::TailnetBinding::parse(tailnet.trim()).map(Some)
-        };
-        match (days, tailnet) {
-            (Ok(days), Ok(tailnet)) => feedback.manage(Manage::CreateToken {
-                grants: token_grants.get_untracked(),
-                name: token_name.get_untracked(),
-                days,
-                tailnet,
-            }),
-            (Err(problem), _) | (_, Err(problem)) => feedback.error.set(problem.into()),
-        }
-    };
     view! {
         <section class="card auth-account">
             <header>
@@ -1231,8 +1224,7 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                 <h3>"Profile"</h3>
             </div>
             <div class="form-grid">
-                {text_input("Username", username, String::clone, |v, s| *v = s)}
-                {text_input("Display name", display_name, String::clone, |v, s| *v = s)}
+                {text_field("Username", username)} {text_field("Display name", display_name)}
             </div>
             <div class="form-actions">
                 <button
@@ -1259,10 +1251,7 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                     </button>
                 </Show>
             </div>
-            <Show
-                when={move || editing.get()}
-                fallback={move || summary(&initial.get_value())}
-            >
+            <Show when={move || editing.get()} fallback={move || summary(&initial.get_value())}>
                 <GrantEditor initial={initial.get_value()} value={grants} />
                 <div class="form-actions">
                     <button
@@ -1284,248 +1273,291 @@ fn Account(account: Account, directory: Directory, feedback: Feedback) -> impl I
                 </div>
             </Show>
 
-            <div class="section-header">
-                <h3>"Passkeys"</h3>
-            </div>
-            <div class="form-list">
-                {passkeys
-                    .into_iter()
-                    .map(|key| {
-                        let key_id = StoredValue::new(key.id);
-                        let label = RwSignal::new(key.name);
-                        view! {
-                            <div class="form-row">
-                                {text_input("Passkey name", label, String::clone, |v, s| *v = s)}
-                                <button
-                                    type="button"
-                                    class="btn"
-                                    on:click={move |_| {
-                                        feedback
-                                            .manage(Manage::RenamePasskey {
-                                                id: key_id.get_value(),
-                                                name: label.get_untracked(),
-                                            });
-                                    }}
-                                >
-                                    "Rename"
-                                </button>
-                                <button
-                                    type="button"
-                                    class="btn btn-ghost"
-                                    on:click={move |_| {
-                                        feedback
-                                            .manage(Manage::RemovePasskey {
-                                                id: key_id.get_value(),
-                                            });
-                                    }}
-                                >
-                                    "Remove"
-                                </button>
-                            </div>
-                        }
-                    })
-                    .collect_view()}
-                {if own {
-                    view! {
-                        <div class="form-row">
-                            {text_input("New passkey name", passkey_name, String::clone, |v, s| *v = s)}
-                            <button
-                                type="button"
-                                class="btn"
-                                on:click={move |_| {
-                                    feedback
-                                        .run(async move {
-                                            register(RegistrationStart {
-                                                    invitation: None,
-                                                    user_id: Some(id.get_value()),
-                                                    username: String::new(),
-                                                    display_name: String::new(),
-                                                    passkey_name: passkey_name.get_untracked(),
-                                                })
-                                                .await?;
-                                            Ok(("Passkey added.".into(), String::new()))
-                                        });
-                                }}
-                            >
-                                {icon(Icon::Key)}
-                                "Add passkey"
-                            </button>
-                        </div>
-                    }
-                        .into_any()
-                } else if !issuer {
-                    view! {
-                        <p class="hint">
-                            "Only the account owner can add passkeys. An account with accounts:manage can send them a single-use enrollment link."
-                        </p>
-                    }
-                        .into_any()
-                } else {
-                    view! {
-                        <div class="form-row">
-                            <p class="hint">
-                                "Only the account owner can add passkeys. Send them a single-use enrollment link."
-                            </p>
-                            <button
-                                type="button"
-                                class="btn"
-                                on:click={move |_| {
-                                    feedback
-                                        .manage(Manage::CreateEnrollment {
-                                            user_id: id.get_value(),
-                                        });
-                                }}
-                            >
-                                {icon(Icon::Key)}
-                                "Create enrollment link"
-                            </button>
-                        </div>
-                    }
-                        .into_any()
-                }}
-            </div>
+            <Passkeys passkeys={passkeys} user={id.get_value()} own={own} feedback={feedback} />
+            <Credentials
+                credentials={credentials}
+                user={id.get_value()}
+                grants={account.grants.clone()}
+                feedback={feedback}
+            />
+            {own.then(|| view! { <NewToken grants={account.grants} feedback={feedback} /> })}
+        </section>
+    }
+}
 
-            <div class="section-header">
-                <h3>"Sessions and API tokens"</h3>
+/// An account's passkeys, each renamed or removed in place. The account
+/// itself registers new ones (`own`); others receive an enrollment link.
+#[component]
+fn Passkeys(
+    passkeys: Vec<PasskeyView>,
+    user: String,
+    own: bool,
+    feedback: Feedback,
+) -> impl IntoView {
+    let issuer = account_session().get_untracked();
+    let user = StoredValue::new(user);
+    let passkey_name = RwSignal::new("New passkey".to_owned());
+    let add = if own {
+        view! {
+            <div class="form-row">
+                {text_field("New passkey name", passkey_name)}
                 <button
                     type="button"
-                    class="btn btn-danger btn-sm"
+                    class="btn"
                     on:click={move |_| {
                         feedback
-                            .manage(Manage::RevokeAll {
-                                user_id: id.get_value(),
+                            .run(async move {
+                                register(RegistrationStart {
+                                        invitation: None,
+                                        user_id: Some(user.get_value()),
+                                        username: String::new(),
+                                        display_name: String::new(),
+                                        passkey_name: passkey_name.get_untracked(),
+                                    })
+                                    .await?;
+                                Ok(("Passkey added.".into(), String::new()))
                             });
                     }}
                 >
-                    "Revoke all"
+                    {icon(Icon::Key)}
+                    "Add passkey"
                 </button>
             </div>
-            <div class="table-wrap">
-                {if credentials.is_empty() {
-                    empty("No active sessions or tokens.")
-                } else {
-                    view! {
-                        <table class="table">
-                            <thead>
-                                <tr>
-                                    <th>"Name"</th>
-                                    <th>"Kind"</th>
-                                    <th>"Access"</th>
-                                    <th>"Last used"</th>
-                                    <th>"Expires"</th>
-                                    <th></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {credentials
-                                    .into_iter()
-                                    .map(|credential| {
-                                        let credential_id = credential.id.clone();
-                                        view! {
-                                            <tr>
-                                                <td>{credential.name}</td>
-                                                <td>{badge(Tone::Neutral, credential.kind)}</td>
-                                                // What the credential can do now: its grants
-                                                // within the account's current access.
-                                                <td>
-                                                    {credential
-                                                        .grants
-                                                        .as_ref()
-                                                        .map(|grants| {
-                                                            initial.with_value(|account| grants.intersection(account))
-                                                        })
-                                                        .map_or_else(
-                                                            || "Full account access".into_any(),
-                                                            |grants| summary(&grants),
-                                                        )}
-                                                    {credential
-                                                        .tailnet
-                                                        .map(|binding| {
-                                                            view! {
-                                                                <div class="muted">
-                                                                    {format!("Only from tailnet {binding}")}
-                                                                </div>
-                                                            }
-                                                        })}
-                                                </td>
-                                                <td class="muted">
-                                                    {when(credential.last_used_at * 1000)}
-                                                </td>
-                                                <td class="muted">
-                                                    {credential
-                                                        .expires_at
-                                                        .map_or_else(|| "Never".into_any(), |t| when(t * 1000))}
-                                                </td>
-                                                <td class="actions">
-                                                    <a
-                                                        class="btn btn-ghost btn-sm"
-                                                        href={format!(
-                                                            "/dashboard/audit?credential={}",
-                                                            credential.id,
-                                                        )}
-                                                    >
-                                                        "Activity"
-                                                    </a>
-                                                    <button
-                                                        type="button"
-                                                        class="btn btn-ghost btn-sm"
-                                                        on:click={move |_| {
-                                                            feedback
-                                                                .manage(Manage::RevokeCredential {
-                                                                    id: credential_id.clone(),
-                                                                });
-                                                        }}
-                                                    >
-                                                        "Revoke"
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        }
-                                    })
-                                    .collect_view()}
-                            </tbody>
-                        </table>
-                    }
-                        .into_any()
-                }}
+        }
+        .into_any()
+    } else if !issuer {
+        view! {
+            <p class="hint">
+                "Only the account owner can add passkeys. An account with accounts:manage can send them a single-use enrollment link."
+            </p>
+        }
+        .into_any()
+    } else {
+        view! {
+            <div class="form-row">
+                <p class="hint">
+                    "Only the account owner can add passkeys. Send them a single-use enrollment link."
+                </p>
+                <button
+                    type="button"
+                    class="btn"
+                    on:click={move |_| {
+                        feedback
+                            .manage(Manage::CreateEnrollment {
+                                user_id: user.get_value(),
+                            });
+                    }}
+                >
+                    {icon(Icon::Key)}
+                    "Create enrollment link"
+                </button>
             </div>
-            {own
-                .then(|| {
+        }
+        .into_any()
+    };
+    view! {
+        <div class="section-header">
+            <h3>"Passkeys"</h3>
+        </div>
+        <div class="form-list">
+            {passkeys
+                .into_iter()
+                .map(|key| {
+                    let key_id = StoredValue::new(key.id);
+                    let label = RwSignal::new(key.name);
                     view! {
-                        <div class="section-header">
-                            <h3>"New API token"</h3>
-                        </div>
-                        <p class="hint">
-                            "Tokens act with these grants, limited by this account's access, and cannot create credentials."
-                        </p>
-                        <GrantEditor
-                            initial={token_initial}
-                            value={token_grants}
-                            limit={account.grants.clone()}
-                        />
-                        <div class="form-row" style="margin-top:14px">
-                            {text_input("New token name", token_name, String::clone, |v, s| *v = s)}
-                            <label class="field">
-                                <span>"Expires in days (blank: never)"</span>
-                                <input
-                                    type="number"
-                                    min="1"
-                                    prop:value={days}
-                                    on:input={move |e| days.set(event_target_value(&e))}
-                                />
-                            </label>
-                            {text_input(
-                                "Tailnet user or tag (optional, e.g. tag:ci)",
-                                tailnet,
-                                String::clone,
-                                |v, s| *v = s,
-                            )}
-                            <button type="button" class="btn" on:click={create_token}>
-                                "Create token"
+                        <div class="form-row">
+                            {text_field("Passkey name", label)}
+                            <button
+                                type="button"
+                                class="btn"
+                                on:click={move |_| {
+                                    feedback
+                                        .manage(Manage::RenamePasskey {
+                                            id: key_id.get_value(),
+                                            name: label.get_untracked(),
+                                        });
+                                }}
+                            >
+                                "Rename"
+                            </button>
+                            <button
+                                type="button"
+                                class="btn btn-ghost"
+                                on:click={move |_| {
+                                    feedback
+                                        .manage(Manage::RemovePasskey {
+                                            id: key_id.get_value(),
+                                        });
+                                }}
+                            >
+                                "Remove"
                             </button>
                         </div>
                     }
-                })}
-        </section>
+                })
+                .collect_view()} {add}
+        </div>
+    }
+}
+
+/// An account's sessions and API tokens, with what each may do within the
+/// account's `grants`, and a button revoking them all.
+#[component]
+fn Credentials(
+    credentials: Vec<CredentialView>,
+    user: String,
+    grants: Grants,
+    feedback: Feedback,
+) -> impl IntoView {
+    let user = StoredValue::new(user);
+    let rows = credentials
+        .into_iter()
+        .map(|credential| {
+            let credential_id = credential.id.clone();
+            // What the credential can do now: its grants within the
+            // account's current access.
+            let access = credential
+                .grants
+                .as_ref()
+                .map(|limit| limit.intersection(&grants))
+                .map_or_else(
+                    || "Full account access".into_any(),
+                    |grants| summary(&grants),
+                );
+            view! {
+                <tr>
+                    <td>{credential.name}</td>
+                    <td>{badge(Tone::Neutral, credential.kind)}</td>
+                    <td>
+                        {access}
+                        {credential
+                            .tailnet
+                            .map(|binding| {
+                                view! {
+                                    <div class="muted">
+                                        {format!("Only from tailnet {binding}")}
+                                    </div>
+                                }
+                            })}
+                    </td>
+                    <td class="muted">{when(credential.last_used_at * 1000)}</td>
+                    <td class="muted">
+                        {credential
+                            .expires_at
+                            .map_or_else(|| "Never".into_any(), |t| when(t * 1000))}
+                    </td>
+                    <td class="actions">
+                        {activity_link(&credential.id)}
+                        {revoke_button(
+                            feedback,
+                            move || Manage::RevokeCredential {
+                                id: credential_id.clone(),
+                            },
+                        )}
+                    </td>
+                </tr>
+            }
+        })
+        .collect::<Vec<_>>();
+    view! {
+        <div class="section-header">
+            <h3>"Sessions and API tokens"</h3>
+            <button
+                type="button"
+                class="btn btn-danger btn-sm"
+                on:click={move |_| {
+                    feedback
+                        .manage(Manage::RevokeAll {
+                            user_id: user.get_value(),
+                        });
+                }}
+            >
+                "Revoke all"
+            </button>
+        </div>
+        <div class="table-wrap">
+            {if rows.is_empty() {
+                empty("No active sessions or tokens.")
+            } else {
+                view! {
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>"Name"</th>
+                                <th>"Kind"</th>
+                                <th>"Access"</th>
+                                <th>"Last used"</th>
+                                <th>"Expires"</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                }
+                    .into_any()
+            }}
+        </div>
+    }
+}
+
+/// Creates an API token of the signed-in account, limited to its `grants`;
+/// new tokens start read-only.
+#[component]
+fn NewToken(grants: Grants, feedback: Feedback) -> impl IntoView {
+    let token_name = RwSignal::new(String::new());
+    let days = RwSignal::new("90".to_owned());
+    let tailnet = RwSignal::new(String::new());
+    let token_grants = RwSignal::new(Grants::default());
+    let initial = Preset::ReadOnly.grants(&Scope::All).intersection(&grants);
+    let create = move |_| {
+        let days = days.get_untracked();
+        let days = if days.is_empty() {
+            Ok(None)
+        } else {
+            days.parse::<u32>()
+                .map(Some)
+                .map_err(|_| "Enter a positive number of days, or leave blank")
+        };
+        let tailnet = tailnet.get_untracked();
+        let tailnet = if tailnet.trim().is_empty() {
+            Ok(None)
+        } else {
+            TailnetBinding::parse(tailnet.trim()).map(Some)
+        };
+        match (days, tailnet) {
+            (Ok(days), Ok(tailnet)) => feedback.manage(Manage::CreateToken {
+                grants: token_grants.get_untracked(),
+                name: token_name.get_untracked(),
+                days,
+                tailnet,
+            }),
+            (Err(problem), _) | (_, Err(problem)) => feedback.error.set(problem.into()),
+        }
+    };
+    view! {
+        <div class="section-header">
+            <h3>"New API token"</h3>
+        </div>
+        <p class="hint">
+            "Tokens act with these grants, limited by this account's access, and cannot create credentials."
+        </p>
+        <GrantEditor initial={initial} value={token_grants} limit={grants} />
+        <div class="form-row" style="margin-top:14px">
+            {text_field("New token name", token_name)}
+            <label class="field">
+                <span>"Expires in days (blank: never)"</span>
+                <input
+                    type="number"
+                    min="1"
+                    prop:value={days}
+                    on:input={move |e| days.set(event_target_value(&e))}
+                />
+            </label>
+            {text_field("Tailnet user or tag (optional, e.g. tag:ci)", tailnet)}
+            <button type="button" class="btn" on:click={create}>
+                "Create token"
+            </button>
+        </div>
     }
 }

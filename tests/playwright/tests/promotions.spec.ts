@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures.js';
+import { test, expect, call, applicationTab, environmentTab, head } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 /** The manifest of `shop`, which declares `staging` and `production`
@@ -18,21 +18,6 @@ const manifest = {
     }],
   },
 };
-
-/** Calls the API from the signed-in page, returning the response's `data`. */
-async function call(page: Page, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
-  return page.evaluate(async ({ method, path, body, headers }) => {
-    const raw = typeof body === 'string';
-    const response = await fetch(`/api/v1/${path}`, {
-      method,
-      headers: body === undefined ? headers : { 'Content-Type': raw ? 'application/octet-stream' : 'application/json', ...headers },
-      body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
-    });
-    const value = await response.json();
-    if (!response.ok) throw new Error(JSON.stringify(value));
-    return value.data;
-  }, { method, path, body, headers });
-}
 
 /** `shop`, whose manifest creates `staging` building the saved manifest and
  * `production` promoted from it. */
@@ -90,12 +75,6 @@ async function promotionPlan(page: Page, app: string, staging: string, secrets: 
   };
   return plan;
 }
-
-const environmentTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
-const applicationTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
-const head = (page: Page) => page.locator('.detail-head');
 
 test('deploying and promoting start from a list of environments with their own actions', async ({ page, account }) => {
   void account;

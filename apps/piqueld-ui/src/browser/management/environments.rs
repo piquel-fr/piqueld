@@ -4,26 +4,30 @@
 //! application or its repository. The manifest decides whether environments
 //! it declares exist, and their source and sync when their block sets them,
 //! so those controls are then read-only.
-use super::super::environment_row;
+use super::super::confirm;
 use super::super::format::commit;
 use super::super::ui::{
-    Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_input, when,
+    Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_field,
+    text_input, when,
 };
 use super::deployments::EnvironmentAction;
-use super::{EditorContext, editor, mutation_client, transport_failure};
+use super::{EditorContext, editor};
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentName,
-    EnvironmentRequest, EnvironmentSourceRequest, EnvironmentView, TrackedBranch, Visibility,
+    Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentChange,
+    EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentView, TrackedBranch,
+    Visibility,
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
 };
 
-enum EnvironmentChange {
+/// A change to one of the application's environments. All but `Sync` are
+/// guarded by the saved generation.
+#[derive(Clone)]
+enum EnvironmentEdit {
     /// `promote_from` excludes `branch`.
     Create {
         name: String,
@@ -48,11 +52,15 @@ enum EnvironmentChange {
         id: String,
         promote_from: Option<String>,
     },
+    /// Deletes the environment, retaining its volumes.
     Delete(String),
+    /// Retries a deletion that did not finish.
     RetryDeletion(String),
 }
 
-impl EnvironmentChange {
+impl EnvironmentEdit {
+    /// Sends the change, returning the changed environment unless it is
+    /// being deleted.
     async fn send(
         &self,
         client: &Client,
@@ -125,68 +133,60 @@ impl EnvironmentChange {
 }
 
 impl EditorContext {
-    /// Retries ambiguous transport failures with the same request identity and
-    /// updates only environment metadata, preserving application form drafts.
+    /// Sends `change` (see `mutate`) and updates only environment metadata,
+    /// preserving application form drafts.
     fn change_environment(
         self,
-        change: EnvironmentChange,
+        change: EnvironmentEdit,
         done: impl FnOnce(Option<EnvironmentView>) + 'static,
     ) {
         if self.action_blocked() {
             return;
         }
-        let client = match mutation_client() {
-            Ok(client) => client,
-            Err(error) => {
-                self.set_error(Some(error));
-                return;
-            }
+        let (application, generation) = self
+            .saved
+            .with_untracked(|saved| (saved.application.id().to_string(), saved.generation));
+        // Environment lifecycle changes advance the application revision, so
+        // later edits stay guarded by it.
+        let advances = !matches!(
+            change,
+            EnvironmentEdit::RetryDeletion(_) | EnvironmentEdit::Sync { .. }
+        );
+        let deleted = match &change {
+            EnvironmentEdit::Delete(id) => Some(id.clone()),
+            _ => None,
         };
-        let saved = self.saved.get_untracked();
-        self.set_error(None);
-        self.busy.set(true);
-        spawn_local(async move {
-            let id = saved.application.id().as_str();
-            let mut result = change.send(&client, id, saved.generation).await;
-            if result.as_ref().is_err_and(transport_failure) {
-                result = change.send(&client, id, saved.generation).await;
-            }
-            match result {
-                Ok(environment) => {
-                    self.saved.update(|saved| {
-                        // Environment lifecycle changes advance the application
-                        // revision, so later edits stay guarded by it.
-                        if !matches!(
-                            change,
-                            EnvironmentChange::RetryDeletion(_) | EnvironmentChange::Sync { .. }
-                        ) {
-                            saved.generation += 1;
-                        }
-                        if let Some(environment) = &environment {
-                            saved.environments.retain(|env| env.id != environment.id);
-                            saved.environments.push(environment.clone());
-                            saved.environments.sort_by(|a, b| a.name.cmp(&b.name));
-                        } else if let EnvironmentChange::Delete(id) = &change
-                            && let Some(env) = saved
-                                .environments
-                                .iter_mut()
-                                .find(|env| env.id.as_str() == id)
-                        {
-                            env.delete_intent = true;
-                        }
-                    });
-                    self.notice.set(if environment.is_some() {
-                        "Environment saved.".into()
-                    } else {
-                        "Environment deletion accepted. Its volumes will be retained.".into()
-                    });
-                    done(environment);
-                    self.dashboard.with_value(|d| d.refresh.run(()));
-                }
-                Err(error) => self.failure(&error),
-            }
-            self.busy.set(false);
-        });
+        self.mutate(
+            move |client| {
+                let (change, application) = (change.clone(), application.clone());
+                async move { change.send(&client, &application, generation).await }
+            },
+            move |environment| {
+                self.saved.update(|saved| {
+                    if advances {
+                        saved.generation += 1;
+                    }
+                    if let Some(environment) = &environment {
+                        saved.environments.retain(|env| env.id != environment.id);
+                        saved.environments.push(environment.clone());
+                        saved.environments.sort_by(|a, b| a.name.cmp(&b.name));
+                    } else if let Some(env) = saved
+                        .environments
+                        .iter_mut()
+                        .find(|env| deleted.as_deref() == Some(env.id.as_str()))
+                    {
+                        env.delete_intent = true;
+                    }
+                });
+                self.notice.set(if environment.is_some() {
+                    "Environment saved.".into()
+                } else {
+                    "Environment deletion accepted. Its volumes will be retained.".into()
+                });
+                done(environment);
+                self.refresh_dashboard();
+            },
+        );
     }
 }
 
@@ -197,7 +197,7 @@ impl EditorContext {
 #[component]
 pub(super) fn EnvironmentList() -> impl IntoView {
     let context = editor();
-    let signals = context.dashboard.with_value(|d| d.signals);
+    let signals = context.signals();
     // Latest deployment of an environment among the listed deployments.
     let latest = move |environment: &str| {
         signals.applications.with(|rows| {
@@ -235,7 +235,7 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                                 let deleting = environment.delete_intent;
                                 let name = environment.name.to_string();
                                 let source = context.describe_source(&environment.source);
-                                let health = environment_row(signals, &id).map(|row| row.health());
+                                let health = signals.environment_row(&id).map(|row| row.health());
                                 let latest = latest(&id);
                                 view! {
                                     <li class="list-row list-row-link">
@@ -302,9 +302,11 @@ fn Drift() -> impl IntoView {
                         {drift
                             .into_iter()
                             .map(|change| {
-                                let tone = match change {
-                                    piqueld_client::EnvironmentChange::Undeclared { .. } => Tone::Warn,
-                                    _ => Tone::Neutral,
+                                let (tone, label) = match change {
+                                    EnvironmentChange::Undeclared { .. } => {
+                                        (Tone::Warn, "Not declared")
+                                    }
+                                    _ => (Tone::Neutral, "Pending"),
                                 };
                                 view! {
                                     <li class="list-row">
@@ -312,15 +314,7 @@ fn Drift() -> impl IntoView {
                                             {change.environment().to_string()}
                                             <small>{change.summary()}</small>
                                         </span>
-                                        {badge(
-                                            tone,
-                                            match change {
-                                                piqueld_client::EnvironmentChange::Undeclared {
-                                                    ..
-                                                } => "Not declared",
-                                                _ => "Pending",
-                                            },
-                                        )}
+                                        {badge(tone, label)}
                                     </li>
                                 }
                             })
@@ -391,6 +385,14 @@ pub(super) fn last_synced(synced: Option<SyncedHead>) -> AnyView {
     )
 }
 
+/// Branch and optional commit inputs of `branch`.
+fn branch_fields(branch: RwSignal<(String, String)>) -> impl IntoView {
+    view! {
+        {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
+        {text_input("Commit (optional)", branch, |v| v.1.clone(), |v, input| v.1 = input)}
+    }
+}
+
 /// Validates a branch and optional commit typed into a form; a blank commit
 /// follows the branch head.
 fn tracked_branch((branch, commit): (String, String)) -> Result<TrackedBranch, String> {
@@ -400,7 +402,7 @@ fn tracked_branch((branch, commit): (String, String)) -> Result<TrackedBranch, S
 
 /// The branch and commit a repository-backed application's new environments
 /// follow by default, from its `spec.manifest`.
-fn default_branch(context: super::EditorContext) -> (String, String) {
+fn default_branch(context: EditorContext) -> (String, String) {
     context
         .manifest()
         .spec
@@ -502,7 +504,7 @@ fn NewEnvironment() -> impl IntoView {
             None
         };
         let navigate = navigate.clone();
-        let change = EnvironmentChange::Create {
+        let change = EnvironmentEdit::Create {
             name: value,
             branch: tracked,
             promote_from: Some(promote_from.get_untracked()).filter(|id| !id.is_empty()),
@@ -547,14 +549,16 @@ fn NewEnvironment() -> impl IntoView {
                         }}
                     </p>
                     <Show when={move || {
-                        context.saved.with(|saved| !saved.application.spec().environments.is_empty())
+                        context
+                            .saved
+                            .with(|saved| !saved.application.spec().environments.is_empty())
                     }}>
                         {notice(
                             Tone::Neutral,
                             "The manifest declares this application's environments. To add one it manages, add a [spec.environments.<name>] block to it; one created here is not declared, and shows as a difference from the manifest.",
                         )}
                     </Show>
-                    {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                    {text_field("Environment name", name)}
                     <Show when={move || sources.with(|sources| !sources.is_empty())}>
                         <PromotionSource
                             value={promote_from}
@@ -562,15 +566,9 @@ fn NewEnvironment() -> impl IntoView {
                             none="None: build its own source"
                         />
                     </Show>
-                    <Show when={move || context.managed() && builds()}>
-                        {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
-                        {text_input(
-                            "Commit (optional)",
-                            branch,
-                            |v| v.1.clone(),
-                            |v, input| v.1 = input,
-                        )}
-                    </Show>
+                    <Show when={move || {
+                        context.managed() && builds()
+                    }}>{branch_fields(branch)}</Show>
                 </fieldset>
                 {move || context.error.get().map(|error| notice(Tone::Bad, error))}
                 <div class="form-actions">
@@ -643,35 +641,23 @@ fn SourceSettings() -> impl IntoView {
     });
     let builds = move || promote_from.with(String::is_empty);
     let sources = Signal::derive(move || context.promotion_sources(&id.get_value()));
-    let deleting = move || {
-        context
-            .selected_environment()
-            .is_some_and(|environment| environment.delete_intent)
-    };
-    let name = move || {
-        context
-            .selected_environment()
-            .map(|environment| environment.name.to_string())
-            .unwrap_or_default()
-    };
+    let name = move || context.selected_name();
     let declared = move || context.source_declared(&name());
-    let blocked = move || context.action_blocked() || deleting() || declared();
+    let blocked = move || context.action_blocked() || context.selected_deleting() || declared();
     // The change saving would make, if any.
-    let change = move || -> Option<Result<EnvironmentChange, String>> {
+    let change = move || -> Option<Result<EnvironmentEdit, String>> {
         let id = id.get_value();
         if !builds() {
             let from = promote_from.get();
-            return (Some(&from) != promoted().as_ref()).then(|| {
-                Ok(EnvironmentChange::Source {
-                    id,
-                    promote_from: Some(from),
-                })
-            });
+            return (Some(&from) != promoted().as_ref()).then_some(Ok(EnvironmentEdit::Source {
+                id,
+                promote_from: Some(from),
+            }));
         }
         if repository() {
             return match tracked_branch(branch.get()) {
                 Ok(tracked) if promoted().is_none() && Some(&tracked) == current().as_ref() => None,
-                Ok(tracked) => Some(Ok(EnvironmentChange::Branch {
+                Ok(tracked) => Some(Ok(EnvironmentEdit::Branch {
                     id,
                     branch: tracked,
                 })),
@@ -679,7 +665,7 @@ fn SourceSettings() -> impl IntoView {
             };
         }
         promoted().map(|_| {
-            Ok(EnvironmentChange::Source {
+            Ok(EnvironmentEdit::Source {
                 id,
                 promote_from: None,
             })
@@ -703,7 +689,7 @@ fn SourceSettings() -> impl IntoView {
     };
     let toggle_sync = move |_| {
         if let Some((environment, _)) = sync() {
-            let change = EnvironmentChange::Sync {
+            let change = EnvironmentEdit::Sync {
                 id: id.get_value(),
                 enabled: !environment.sync,
             };
@@ -720,15 +706,18 @@ fn SourceSettings() -> impl IntoView {
                             (Some(from), _) => {
                                 view! {
                                     "Receives releases promoted from "
-                                    <A href={context.environment_href(&from)}>
-                                        {context.environment_name(&from)}
-                                    </A>
+                                    <A href={context
+                                        .environment_href(
+                                            &from,
+                                        )}>{context.environment_name(&from)}</A>
                                     ", and never builds or fetches."
                                 }
                                     .into_any()
                             }
                             (None, Some(branch)) => {
-                                format!("Builds the manifest on branch {branch} of the application's repository.")
+                                format!(
+                                    "Builds the manifest on branch {branch} of the application's repository.",
+                                )
                                     .into_any()
                             }
                             (None, None) => "Builds the application's saved manifest.".into_any(),
@@ -747,15 +736,7 @@ fn SourceSettings() -> impl IntoView {
                         prefix="Releases promoted from "
                     />
                     <Show when={move || builds() && repository()}>
-                        <div class="form-grid">
-                            {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
-                            {text_input(
-                                "Commit (optional)",
-                                branch,
-                                |v| v.1.clone(),
-                                |v, input| v.1 = input,
-                            )}
-                        </div>
+                        <div class="form-grid">{branch_fields(branch)}</div>
                     </Show>
                 </fieldset>
                 <p class="hint">
@@ -791,10 +772,7 @@ fn SourceSettings() -> impl IntoView {
                         view! {
                             <dl class="kv">
                                 <dt>"Deploy on push"</dt>
-                                <dd>
-                                    {badge}
-                                    <div class="muted">{reason}</div>
-                                </dd>
+                                <dd>{badge} <div class="muted">{reason}</div></dd>
                                 <dt>"Last synced"</dt>
                                 <dd>{last_synced(environment.synced)}</dd>
                             </dl>
@@ -802,7 +780,7 @@ fn SourceSettings() -> impl IntoView {
                                 <button
                                     type="button"
                                     class="btn"
-                                    disabled={move || context.action_blocked() || deleting() || declared()}
+                                    disabled={blocked}
                                     on:click={toggle_sync}
                                 >
                                     {if environment.sync {
@@ -825,12 +803,7 @@ fn SourceSettings() -> impl IntoView {
 #[component]
 fn EnvironmentVisibility() -> impl IntoView {
     let context = editor();
-    let name = move || {
-        context
-            .selected_environment()
-            .map(|environment| environment.name.to_string())
-            .unwrap_or_default()
-    };
+    let name = move || context.selected_name();
     let current = move || {
         context
             .environment_manifest()
@@ -868,7 +841,10 @@ fn EnvironmentVisibility() -> impl IntoView {
                 </div>
             </header>
             <form class="stack-sm" on:submit={save}>
-                <fieldset class="stack-sm" disabled={move || context.blocked() || context.managed()}>
+                <fieldset
+                    class="stack-sm"
+                    disabled={move || context.blocked() || context.managed()}
+                >
                     <label class="field">
                         <span>"Route visibility"</span>
                         <select
@@ -879,7 +855,9 @@ fn EnvironmentVisibility() -> impl IntoView {
                                 }
                             }}
                         >
-                            <option value="public">"Public: routes keep their own visibility"</option>
+                            <option value="public">
+                                "Public: routes keep their own visibility"
+                            </option>
                             <option value="private">"Private: every route is tailnet-only"</option>
                         </select>
                     </label>
@@ -904,22 +882,14 @@ fn EnvironmentVisibility() -> impl IntoView {
 /// environment. Deletion returns to the application's environments once
 /// accepted.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EnvironmentSettings() -> impl IntoView {
     let context = editor();
     let navigate = use_navigate();
     let id = StoredValue::new(context.environment_id());
-    let current = move || {
-        context
-            .selected_environment()
-            .map(|environment| environment.name.to_string())
-            .unwrap_or_default()
-    };
+    let current = move || context.selected_name();
     let name = RwSignal::new(current());
-    let deleting = move || {
-        context
-            .selected_environment()
-            .is_some_and(|environment| environment.delete_intent)
-    };
+    let deleting = move || context.selected_deleting();
     let rename = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         let value = name.get_untracked();
@@ -928,7 +898,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
             return;
         }
         context.change_environment(
-            EnvironmentChange::Rename {
+            EnvironmentEdit::Rename {
                 id: id.get_value(),
                 name: value,
             },
@@ -937,19 +907,19 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
     };
     let delete = move |_| {
         if deleting() {
-            context.change_environment(EnvironmentChange::RetryDeletion(id.get_value()), |_| {});
+            context.change_environment(EnvironmentEdit::RetryDeletion(id.get_value()), |_| {});
             return;
         }
         let message = format!(
             "Delete environment {}, its services, secrets and deployment history? The application and other environments remain. Docker volume data will be retained.",
             current()
         );
-        if !window().confirm_with_message(&message).unwrap_or(false) {
+        if !confirm(&message) {
             return;
         }
         let navigate = navigate.clone();
         let href = format!("/dashboard/applications/{}?tab=environments", context.id());
-        context.change_environment(EnvironmentChange::Delete(id.get_value()), move |_| {
+        context.change_environment(EnvironmentEdit::Delete(id.get_value()), move |_| {
             navigate(&href, NavigateOptions::default());
         });
     };
@@ -970,7 +940,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                         context.action_blocked() || deleting() || context.declared(&current())
                     }}
                 >
-                    {text_input("Environment name", name, String::clone, |value, input| *value = input)}
+                    {text_field("Environment name", name)}
                     <dl class="kv">
                         <dt>"Environment ID"</dt>
                         <dd>
@@ -989,7 +959,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                         title={move || {
                             context
                                 .declared(&current())
-                                .then(|| format!("The manifest declares [spec.environments.{}]; rename that block instead.", current()))
+                                .then(|| {
+                                    format!(
+                                        "The manifest declares [spec.environments.{}]; rename that block instead.",
+                                        current(),
+                                    )
+                                })
                         }}
                     >
                         "Rename environment"
@@ -1012,7 +987,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                     title={move || {
                         context
                             .declared(&current())
-                            .then(|| format!("Remove [spec.environments.{}] from the manifest first.", current()))
+                            .then(|| {
+                                format!(
+                                    "Remove [spec.environments.{}] from the manifest first.",
+                                    current(),
+                                )
+                            })
                     }}
                     on:click={delete}
                 >

@@ -207,12 +207,14 @@
         color: var(--muted);
     }
 
-    .breadcrumb a {
+    .breadcrumb a,
+    .detail-title a {
         color: var(--muted);
         text-decoration: none;
     }
 
-    .breadcrumb a:hover {
+    .breadcrumb a:hover,
+    .detail-title a:hover {
         color: var(--ink);
     }
 
@@ -241,15 +243,6 @@
     .detail-title h1 {
         font-size: 24px;
         overflow-wrap: anywhere;
-    }
-
-    .detail-title a {
-        color: var(--muted);
-        text-decoration: none;
-    }
-
-    .detail-title a:hover {
-        color: var(--ink);
     }
 
     .section-header {

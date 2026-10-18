@@ -2,9 +2,11 @@
 //! manifest repository, listed with their status, where their branch is, and
 //! whether pushes redeploy them. Each opens on the environment page, with the
 //! actions and cards below.
-use super::super::client_error_message;
 use super::super::format::commit;
-use super::super::ui::{Icon, Modal, Tone, badge, empty, health_badge, icon, notice, text_input};
+use super::super::ui::{
+    Icon, Modal, Tone, badge, empty, health_badge, icon, loaded, notice, text_input,
+};
+use super::super::{UserError, confirm};
 use super::environments::{last_synced, sync_badge};
 use super::{EditorContext, editor};
 use crate::state::ApplicationHealth;
@@ -34,7 +36,7 @@ impl EditorContext {
             "Delete preview {} of branch {branch}, its services, secrets, and deployment history? Every Docker volume it created is removed with its data.",
             preview.name
         );
-        if !window().confirm_with_message(&message).unwrap_or(false) {
+        if !confirm(&message) {
             return;
         }
         let id = preview.id.to_string();
@@ -47,7 +49,7 @@ impl EditorContext {
                 self.notice.set(
                     "Preview deletion accepted. Its volumes and their data will be removed.".into(),
                 );
-                self.dashboard.with_value(|d| d.refresh.run(()));
+                self.refresh_dashboard();
                 deleted();
             },
         );
@@ -90,7 +92,11 @@ fn deploys(view: &PreviewView) -> AnyView {
     let base = snapshot.base.as_ref().map_or_else(
         || view! { ", uploaded with its whole history" }.into_any(),
         |base| {
-            view! { " on " <code title={base.clone()}>{commit(base).to_owned()}</code> }.into_any()
+            view! {
+                " on "
+                <code title={base.clone()}>{commit(base).to_owned()}</code>
+            }
+            .into_any()
         },
     );
     let redeploy = match &view.branch {
@@ -154,18 +160,14 @@ fn bounds(bounds: Vec<DiagnosticView>) -> AnyView {
 /// The application's previews with their status and branch state, read when
 /// the tab opens and on refresh. "Prune gone" deletes those whose branch is gone.
 #[component]
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PreviewList() -> impl IntoView {
     let context = editor();
     // Listing runs a `git ls-remote` of the manifest repository, so it is
     // fetched on demand rather than polled.
     let data = LocalResource::new(move || {
         let id = context.id();
-        async move {
-            Client::browser()
-                .previews(&id)
-                .await
-                .map_err(|error| client_error_message(&error))
-        }
+        async move { Client::browser().previews(&id).await.user_error() }
     });
     // Previews whose branch was gone when the list loaded.
     let gone = move || {
@@ -188,7 +190,7 @@ pub(super) fn PreviewList() -> impl IntoView {
         let message = format!(
             "Delete the previews whose branch is gone ({names}), their services, secrets, and deployment history? Every Docker volume they created is removed with its data."
         );
-        if !window().confirm_with_message(&message).unwrap_or(false) {
+        if !confirm(&message) {
             return;
         }
         let request = PrunePreviewsRequest {
@@ -205,7 +207,7 @@ pub(super) fn PreviewList() -> impl IntoView {
                     "Deletion of {} previews accepted. Their volumes and their data will be removed.",
                     deleted.len()
                 ));
-                context.dashboard.with_value(|d| d.refresh.run(()));
+                context.refresh_dashboard();
                 data.refetch();
             },
         );
@@ -243,11 +245,13 @@ pub(super) fn PreviewList() -> impl IntoView {
                     <NewPreview />
                 </div>
             </div>
-            {move || match data.get() {
-                None => empty("Loading previews…"),
-                Some(Err(error)) => notice(Tone::Bad, error),
-                Some(Ok(previews)) if previews.is_empty() => empty(none()),
-                Some(Ok(previews)) => {
+            {loaded(
+                data,
+                "Loading previews…",
+                move |previews| {
+                    if previews.is_empty() {
+                        return empty(none());
+                    }
                     view! {
                         <ul class="list" aria-label="Previews">
                             {previews
@@ -264,8 +268,8 @@ pub(super) fn PreviewList() -> impl IntoView {
                         </ul>
                     }
                         .into_any()
-                }
-            }}
+                },
+            )}
         </div>
     }
 }
@@ -363,9 +367,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
     let bounded = bounds_badge(&view.bounds);
     let (sync, sync_reason) = sync_badge(view.sync);
     let synced = view.preview.synced.clone().map(|head| {
-        view! {
-            <span class="meta">"synced " {last_synced(Some(head))}</span>
-        }
+        view! { <span class="meta">"synced " {last_synced(Some(head))}</span> }
     });
     let deleting = view.preview.delete_intent;
     let status = if deleting {
@@ -391,7 +393,10 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
                 aria-label={format!("Delete preview {name}")}
                 disabled={move || context.blocked() || deleting}
                 on:click={move |_| {
-                    preview.with_value(|preview| context.delete_preview(preview, move || deleted.run(())));
+                    preview
+                        .with_value(|preview| {
+                            context.delete_preview(preview, move || deleted.run(()));
+                        });
                 }}
             >
                 "Delete"
@@ -422,7 +427,7 @@ pub(super) fn PreviewActions() -> impl IntoView {
                     .notice
                     .set("Deployment accepted. Follow its progress below.".into());
                 context.tab.set("Deployments");
-                context.dashboard.with_value(|d| d.refresh.run(()));
+                context.refresh_dashboard();
             },
         );
     };
@@ -435,7 +440,7 @@ pub(super) fn PreviewActions() -> impl IntoView {
                     .selected_environment()
                     .map_or_else(String::new, |preview| local_command(&preview));
                 format!(
-                    "Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot from its worktree with `{command}`."
+                    "Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot from its worktree with `{command}`.",
                 )
             }}
             disabled={move || context.environment_action_blocked()}
@@ -462,15 +467,11 @@ pub(super) fn PreviewSettings() -> impl IntoView {
         let id = id.clone();
         move || {
             let id = id.clone();
-            async move {
-                Client::browser()
-                    .preview(&id)
-                    .await
-                    .map_err(|error| client_error_message(&error))
-            }
+            async move { Client::browser().preview(&id).await.user_error() }
         }
     });
-    let loaded = move |show: fn(PreviewView) -> AnyView| {
+    // `show` of the loaded preview; muted text while it loads or if loading failed.
+    let detail = move |show: fn(PreviewView) -> AnyView| {
         move || match data.get() {
             None => view! { <span class="muted">"Loading…"</span> }.into_any(),
             Some(Err(error)) => view! { <span class="muted">{error}</span> }.into_any(),
@@ -523,7 +524,7 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                 </dd>
                 <dt>"Branch state"</dt>
                 <dd>
-                    {loaded(|view| {
+                    {detail(|view| {
                         let (badge, detail) = branch_state(&view.branch);
                         view! {
                             {badge}
@@ -533,10 +534,10 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                     })}
                 </dd>
                 <dt>"Deploys"</dt>
-                <dd>{loaded(|view| deploys(&view))}</dd>
+                <dd>{detail(|view| deploys(&view))}</dd>
                 <dt>"Deploy on push"</dt>
                 <dd>
-                    {loaded(|view| {
+                    {detail(|view| {
                         let (badge, reason) = sync_badge(view.sync);
                         view! {
                             {badge}
@@ -546,9 +547,9 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                     })}
                 </dd>
                 <dt>"Last synced"</dt>
-                <dd>{loaded(|view| last_synced(view.preview.synced))}</dd>
+                <dd>{detail(|view| last_synced(view.preview.synced))}</dd>
                 <dt>"Bounds"</dt>
-                <dd>{loaded(|view| bounds(view.bounds))}</dd>
+                <dd>{detail(|view| bounds(view.bounds))}</dd>
             </dl>
         </section>
     }
