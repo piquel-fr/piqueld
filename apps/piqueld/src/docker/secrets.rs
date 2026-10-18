@@ -1,10 +1,10 @@
 //! Docker secret provisioning and file references. Secret values are never inspected.
-use super::{BollardDocker, DesiredService, DockerError};
+use super::{BollardDocker, BollardResult, DesiredService, DockerError};
 use base64::Engine as _;
 use bollard::models::{
     Secret, SecretSpec, TaskSpecContainerSpecFile, TaskSpecContainerSpecSecrets,
 };
-use piqueld_core::resource::{APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL};
+use piqueld_core::resource::MANAGED_LABEL;
 use std::collections::BTreeMap;
 
 impl BollardDocker {
@@ -18,30 +18,29 @@ impl BollardDocker {
         name: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<Option<Secret>, DockerError> {
-        match self.docker.inspect_secret(name).await {
-            Ok(secret) => {
-                let labels: BTreeMap<String, String> = secret
-                    .spec
-                    .as_ref()
-                    .and_then(|s| s.labels.as_ref())
-                    .map(|l| l.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                    .unwrap_or_default();
-                if ownership.get(MANAGED_LABEL).map(String::as_str) != Some("true")
-                    || [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
-                        .iter()
-                        .any(|key| {
-                            ownership.get(*key).is_none() || labels.get(*key) != ownership.get(*key)
-                        })
-                {
-                    return Err(DockerError::OwnershipConflict);
-                }
-                Ok(Some(secret))
-            }
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => Ok(None),
-            Err(error) => Err(DockerError::request("inspect secret", error)),
+        let Some(secret) = self
+            .docker
+            .inspect_secret(name)
+            .await
+            .found()
+            .or_request("inspect secret")?
+        else {
+            return Ok(None);
+        };
+        let labels = secret.spec.as_ref().and_then(|spec| spec.labels.as_ref());
+        let owned = ownership.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+            && Self::environment_labels(ownership, "secret ownership").is_ok_and(|expected| {
+                expected.iter().all(|(key, value)| {
+                    labels
+                        .and_then(|labels| labels.get(*key))
+                        .map(String::as_str)
+                        == Some(value)
+                })
+            });
+        if !owned {
+            return Err(DockerError::OwnershipConflict);
         }
+        Ok(Some(secret))
     }
     /// Creates an owned secret unless it already exists.
     ///
@@ -88,14 +87,11 @@ impl BollardDocker {
                     .id
                     .as_deref()
                     .ok_or(DockerError::Validation("secret ID missing"))?;
-                match self.docker.delete_secret(id).await {
-                    Ok(())
-                    | Err(bollard::errors::Error::DockerResponseServerError {
-                        status_code: 404,
-                        ..
-                    }) => (),
-                    Err(error) => return Err(DockerError::request("delete secret", error)),
-                }
+                self.docker
+                    .delete_secret(id)
+                    .await
+                    .found()
+                    .or_request("delete secret")?;
             }
         }
         Ok(())

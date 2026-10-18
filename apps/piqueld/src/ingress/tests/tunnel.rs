@@ -1,7 +1,7 @@
 //! Tunnel mode: `cloudflared`'s configuration and container, and the gateway's
 //! tunnel listener. The harness test emulates `cloudflared` with a container
 //! on the edge network, since a real tunnel needs Cloudflare.
-use super::{FailingEngine, Scenario, dns01::CURL_IMAGE};
+use super::{Engine, Scenario, dns01::CURL_IMAGE, private_config, routes};
 use crate::{
     config::{Credential, TunnelConfig, TunnelCredentials},
     ingress::Ingress,
@@ -26,20 +26,24 @@ fn tunnel(secret: &str) -> TunnelConfig {
 }
 
 /// An ingress in tunnel mode whose Docker Engine is never called.
-async fn tunnel_ingress(directory: &tempfile::TempDir) -> Ingress {
-    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    // Docker clients require the socket file to exist; nothing listens on it.
-    let socket = directory.path().join("docker.sock");
-    drop(tokio::net::UnixListener::bind(&socket).unwrap());
-    Ingress::new(true, &socket, directory.path(), store)
-        .unwrap()
-        .with_tunnel(&tunnel("c2VjcmV0"))
+async fn tunnel_ingress() -> (Engine, Ingress) {
+    let engine = Engine::unused().await;
+    let ingress = engine.ingress(true).with_tunnel(&tunnel("c2VjcmV0"));
+    (engine, ingress)
+}
+
+/// A gateway container of `store`'s installation, inspected as `fields`
+/// besides its labels.
+fn owned_container(store: &Store, mut fields: Value) -> Value {
+    fields["Config"] = json!({"Labels":{
+        "io.piqueld.managed":"true","io.piqueld.instance":store.instance_id(),"io.piqueld.ingress":"true"
+    }});
+    fields
 }
 
 #[tokio::test]
 async fn cloudflared_forwards_everything_to_the_tunnel_listener_without_privileges() {
-    let directory = tempfile::tempdir().unwrap();
-    let ingress = tunnel_ingress(&directory).await;
+    let (engine, ingress) = tunnel_ingress().await;
     let gateway = &ingress.name;
     let credentials = ingress.tunnel.as_ref().unwrap();
     assert_eq!(
@@ -80,7 +84,7 @@ async fn cloudflared_forwards_everything_to_the_tunnel_listener_without_privileg
         host["Binds"],
         json!([format!(
             "{}:/etc/cloudflared:ro",
-            directory.path().join("ingress/tunnel").display()
+            engine.directory.path().join("ingress/tunnel").display()
         )])
     );
     // New credentials replace the container, which reads them again.
@@ -103,19 +107,8 @@ async fn cloudflared_forwards_everything_to_the_tunnel_listener_without_privileg
 
 #[tokio::test]
 async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
-    let directory = tempfile::tempdir().unwrap();
-    let ingress =
-        tunnel_ingress(&directory)
-            .await
-            .with_private(&crate::config::PrivateIngressConfig {
-                enabled: true,
-                ..Default::default()
-            });
-    let routes = |visibility: Visibility, host: &str| {
-        let mut manifest = super::application("one", host, "body").to_manifest();
-        manifest.spec.routes[0].visibility = visibility;
-        manifest.validate().unwrap().spec().routes.clone()
-    };
+    let (_engine, ingress) = tunnel_ingress().await;
+    let ingress = ingress.with_private(&private_config());
     let table: crate::store::ingress::RoutingTable = [
         (
             EnvironmentId::parse("env-public").unwrap(),
@@ -185,24 +178,13 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
 
 /// The tunnel status reported while Docker inspects `cloudflared` as `state`.
 async fn tunnel_status(state: Value) -> PublicIngressStatus {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("docker.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    let container = json!({
-        "Config":{"Labels":{
-            "io.piqueld.managed":"true","io.piqueld.instance":store.instance_id(),"io.piqueld.ingress":"true"
-        }},
-        "State":state
-    });
-    let engine = axum::Router::new().fallback(move || async move { axum::Json(container) });
-    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
-    let ingress = Ingress::new(true, &socket, directory.path(), store)
-        .unwrap()
-        .with_tunnel(&tunnel("c2VjcmV0"));
-    let status = ingress.public_status().await;
-    server.abort();
-    status
+    let engine = Engine::serving(|store| {
+        let container = owned_container(store, json!({ "State": state }));
+        axum::Router::new().fallback(move || async move { axum::Json(container) })
+    })
+    .await;
+    let ingress = engine.ingress(true).with_tunnel(&tunnel("c2VjcmV0"));
+    ingress.public_status().await
 }
 
 #[tokio::test]
@@ -224,40 +206,33 @@ async fn the_tunnel_is_connected_only_while_its_healthcheck_passes() {
 /// Whether `ingress` may replace a running direct-mode gateway while an
 /// application's retained routes lack a verified network.
 async fn defers_replacing_a_direct_gateway(tunnel: Option<&TunnelConfig>) -> anyhow::Result<()> {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("docker.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    let container = json!({
-        "Config":{"Labels":{
-            "io.piqueld.managed":"true","io.piqueld.instance":store.instance_id(),"io.piqueld.ingress":"true"
-        }},
-        "State":{"Running":true},
-        "HostConfig":{"PortBindings":{"443/tcp":[{"HostIp":"","HostPort":"443"}]}}
-    });
-    let engine = axum::Router::new().fallback(move || async move { axum::Json(container) });
-    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
-    let mut ingress = Ingress::new(true, &socket, directory.path(), store).unwrap();
+    let engine = Engine::serving(|store| {
+        let container = owned_container(
+            store,
+            json!({
+                "State":{"Running":true},
+                "HostConfig":{"PortBindings":{"443/tcp":[{"HostIp":"","HostPort":"443"}]}}
+            }),
+        );
+        axum::Router::new().fallback(move || async move { axum::Json(container) })
+    })
+    .await;
+    let mut ingress = engine.ingress(true);
     if let Some(tunnel) = tunnel {
         ingress = ingress.with_tunnel(tunnel);
     }
-    let routes = super::application("one", "www.example.com", "body")
-        .to_manifest()
-        .validate()
-        .unwrap()
-        .spec()
-        .routes
-        .clone();
-    let table = [(EnvironmentId::parse("env-broken").unwrap(), routes)].into();
-    let result = ingress
+    let table = [(
+        EnvironmentId::parse("env-broken").unwrap(),
+        routes(Visibility::Public, "www.example.com"),
+    )]
+    .into();
+    ingress
         .replace_gateway(
             &table,
             &std::collections::BTreeSet::new(),
             &ingress.container_spec(),
         )
-        .await;
-    server.abort();
-    result
+        .await
 }
 
 #[tokio::test]
@@ -277,45 +252,39 @@ async fn a_deferred_replacement_never_switches_modes() {
 
 #[tokio::test]
 async fn disabled_ingress_removes_the_tunnel_credentials_even_if_docker_fails() {
-    let engine = FailingEngine::start().await;
-    let directory = engine.directory.path();
-    let credentials = directory.join("ingress/tunnel/credentials.json");
+    let engine = Engine::failing().await;
+    let credentials = engine
+        .directory
+        .path()
+        .join("ingress/tunnel/credentials.json");
     std::fs::create_dir_all(credentials.parent().unwrap()).unwrap();
     std::fs::write(&credentials, "{}").unwrap();
-    let disabled = Ingress::new(
-        false,
-        &directory.join("docker.sock"),
-        directory,
-        Arc::clone(&engine.store),
-    )
-    .unwrap()
-    .with_tunnel(&tunnel("c2VjcmV0"));
+    let disabled = engine.ingress(false).with_tunnel(&tunnel("c2VjcmV0"));
     disabled.synchronize().await.unwrap_err();
     assert!(!credentials.exists());
 }
 
 #[tokio::test]
 async fn disabled_ingress_stops_containers_even_if_the_credentials_remain() {
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("docker.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let inspected = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let engine = axum::Router::new().fallback({
+    let engine = Engine::serving(|_| {
         let inspected = Arc::clone(&inspected);
-        move |uri: axum::http::Uri| async move {
+        axum::Router::new().fallback(move |uri: axum::http::Uri| async move {
             inspected.lock().unwrap().push(uri.path().to_owned());
             axum::http::StatusCode::NOT_FOUND
-        }
-    });
-    let server = tokio::spawn(async move { axum::serve(listener, engine).await });
+        })
+    })
+    .await;
     // A directory where the credentials file belongs cannot be removed.
-    std::fs::create_dir_all(directory.path().join("ingress/tunnel/credentials.json/x")).unwrap();
-    let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
-    let disabled = Ingress::new(false, &socket, directory.path(), store)
-        .unwrap()
-        .with_tunnel(&tunnel("c2VjcmV0"));
+    std::fs::create_dir_all(
+        engine
+            .directory
+            .path()
+            .join("ingress/tunnel/credentials.json/x"),
+    )
+    .unwrap();
+    let disabled = engine.ingress(false).with_tunnel(&tunnel("c2VjcmV0"));
     let error = disabled.synchronize().await.unwrap_err();
-    server.abort();
     assert!(
         format!("{error:#}").contains("remove the Cloudflare Tunnel credentials"),
         "{error:#}"

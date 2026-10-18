@@ -52,6 +52,33 @@ const WEBHOOK_SOCKET: &str = "webhooks.sock";
 /// hostname to.
 const DASHBOARD_SOCKET: &str = "dashboard.sock";
 
+/// Ticks of a background loop, every period until cancellation; missed
+/// ticks are skipped.
+struct Ticks<'a> {
+    interval: tokio::time::Interval,
+    cancellation: &'a CancellationToken,
+}
+
+impl<'a> Ticks<'a> {
+    /// Ticks every `period`, the first at once.
+    fn every(period: Duration, cancellation: &'a CancellationToken) -> Self {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Self {
+            interval,
+            cancellation,
+        }
+    }
+
+    /// Waits for the next tick: `false` once cancelled.
+    async fn next(&mut self) -> bool {
+        tokio::select! {
+            () = self.cancellation.cancelled() => false,
+            _ = self.interval.tick() => true,
+        }
+    }
+}
+
 /// The daemon's end of the dashboard hostname, which the private listener
 /// forwards to it.
 pub struct DashboardSocket {
@@ -276,18 +303,42 @@ impl Ingress {
             crate::prepare_data_dir(directory).await?;
         }
         let path = control.join(name);
-        match tokio::fs::remove_file(&path).await {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(error).with_context(|| format!("remove the previous {name}"));
-            }
-            _ => {}
-        }
+        Self::remove_file(&path)
+            .await
+            .with_context(|| format!("remove the previous {name}"))?;
         let previous = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
         let bound = tokio::net::UnixListener::bind(&path);
         rustix::process::umask(previous);
         let listener = bound.with_context(|| format!("bind {name}"))?;
         tracing::info!(socket = %path.display(), "control socket bound");
         Ok(listener)
+    }
+
+    /// Writes a file readable only by the daemon, replacing it atomically.
+    async fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let temporary = path.with_extension("tmp");
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)
+            .await
+            .with_context(|| format!("create {}", temporary.display()))?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        tokio::fs::rename(&temporary, path)
+            .await
+            .with_context(|| format!("replace {}", path.display()))
+    }
+
+    /// Removes the file at `path`; one that does not exist counts as removed.
+    async fn remove_file(path: &Path) -> std::io::Result<()> {
+        match tokio::fs::remove_file(path).await {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
     }
 
     /// The private hostname the gateway forwards to the daemon's dashboard
@@ -412,10 +463,8 @@ impl Ingress {
     /// Every minute, issues and renews the DNS-01 certificates deployed routes
     /// need. The gateway loop loads new certificates into Caddy.
     async fn run_certificates(&self, cancellation: &CancellationToken) {
-        let mut tick = tokio::time::interval(Duration::from_mins(1));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
+        let mut ticks = Ticks::every(Duration::from_mins(1), cancellation);
+        while ticks.next().await {
             let desired = if self.enabled {
                 match self.store.routing_table().await {
                     Ok(table) => self.dns01_hostnames(&table),
@@ -437,33 +486,36 @@ impl Ingress {
     /// Every 10s, reconciles the gateway under the writer lock and relays Caddy
     /// logs. Failures are logged and retried on the next tick.
     async fn run_gateway(&self, cancellation: &CancellationToken) {
-        let mut tick = tokio::time::interval(Duration::from_secs(10));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
-            tokio::select! {
-                ()=cancellation.cancelled()=>return,
-                ()=async {
-                    let result = {
-                        let _guard = self.update.lock().await;
-                        *self.requester.lock().await = None;
-                        self.synchronize().await
-                    };
-                    if let Err(error) = result { tracing::warn!(error=?error,"ingress reconciliation failed; will retry"); }
-                    if let Err(error) = self.relay_logs().await { tracing::debug!(?error,"could not read Caddy diagnostics"); }
-                }=>{}
+        let mut ticks = Ticks::every(Duration::from_secs(10), cancellation);
+        while ticks.next().await {
+            let pass = async {
+                let result = {
+                    let _guard = self.update.lock().await;
+                    *self.requester.lock().await = None;
+                    self.synchronize().await
+                };
+                if let Err(error) = result {
+                    tracing::warn!(?error, "ingress reconciliation failed; will retry");
+                }
+                if let Err(error) = self.relay_logs().await {
+                    tracing::debug!(?error, "could not read Caddy diagnostics");
+                }
+            };
+            if cancellation.run_until_cancelled(pass).await.is_none() {
+                return;
             }
         }
     }
 
     /// Every 15s, refreshes route status by probing HTTPS for acknowledged routes.
     async fn run_probes(&self, cancellation: &CancellationToken) {
-        let mut tick = tokio::time::interval(Duration::from_secs(15));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
+        let mut ticks = Ticks::every(Duration::from_secs(15), cancellation);
+        while ticks.next().await {
             // Slow public DNS/TLS must never delay gateway drift repair or disablement.
-            tokio::select! { ()=cancellation.cancelled()=>return, ()=self.probe_routes()=>{} }
+            let probes = cancellation.run_until_cancelled(self.probe_routes());
+            if probes.await.is_none() {
+                return;
+            }
         }
     }
 

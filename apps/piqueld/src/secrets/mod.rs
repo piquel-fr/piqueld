@@ -15,6 +15,11 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+/// Bytes of a master key: a 256-bit `XChaCha20-Poly1305` key.
+const KEY_BYTES: usize = 32;
+/// Bytes of an `XChaCha20-Poly1305` nonce.
+const NONCE_BYTES: usize = 24;
+
 /// Master-key failures whose kind is safe to expose as a diagnostic fact.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub(crate) enum KeyFailure {
@@ -110,9 +115,7 @@ impl SecretCipher {
                 .persist_noclobber(path)
                 .map_err(|e| e.error)
                 .context("install secret master key")?;
-            File::open(parent)?
-                .sync_all()
-                .context("sync secret key directory")?;
+            Self::sync_directory(path)?;
         }
         let descriptor = rustix::fs::open(
             path,
@@ -128,11 +131,12 @@ impl SecretCipher {
         {
             bail!(KeyFailure::NotPrivate);
         }
-        let mut bytes = Zeroizing::new(Vec::with_capacity(33));
-        file.take(33)
+        // One byte more than a key tells a longer file apart.
+        let mut bytes = Zeroizing::new(Vec::with_capacity(KEY_BYTES + 1));
+        file.take(KEY_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
             .context("read secret master key")?;
-        if bytes.len() != 32 {
+        if bytes.len() != KEY_BYTES {
             bail!(KeyFailure::InvalidLength);
         }
         Ok(Self(XChaCha20Poly1305::new_from_slice(&bytes).map_err(
@@ -150,6 +154,13 @@ impl SecretCipher {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             result => result.context("move unusable secret master key aside")?,
         }
+        Self::sync_directory(path)
+    }
+
+    /// Syncs the directory holding the key at `path`, so that installing or
+    /// moving the key survives a crash.
+    fn sync_directory(path: &Path) -> anyhow::Result<()> {
+        use anyhow::Context;
         File::open(path.parent().context("locate secret key directory")?)?
             .sync_all()
             .context("sync secret key directory")
@@ -199,7 +210,7 @@ impl SecretCipher {
         generation: i64,
         envelope: &Envelope,
     ) -> anyhow::Result<Zeroizing<Vec<u8>>> {
-        if envelope.nonce.len() != 24 {
+        if envelope.nonce.len() != NONCE_BYTES {
             anyhow::bail!("invalid encrypted secret nonce");
         }
         let aad = Self::context(owner, name, generation);

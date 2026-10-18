@@ -1,5 +1,6 @@
 use super::{
-    Arc, BollardDocker, Docker, DockerError, ListNodesOptions, Path, ResourceKind, ServiceSpec,
+    Arc, BollardDocker, BollardResult, Docker, DockerError, ListNodesOptions, Path, ResourceKind,
+    ServiceSpec,
 };
 use futures_util::TryStreamExt as _;
 use http_body_util::{BodyExt, Full};
@@ -36,6 +37,12 @@ pub(super) enum WireError {
 struct ServiceResponseDiagnostic {
     status: StatusCode,
     message: String,
+}
+
+impl From<DockerError> for WireError {
+    fn from(error: DockerError) -> Self {
+        Self::Public(error)
+    }
 }
 
 impl WireError {
@@ -106,22 +113,16 @@ impl BollardDocker {
         path: &str,
         spec: Option<&ServiceSpec>,
     ) -> Result<Vec<u8>, WireError> {
-        let body = if let Some(spec) = spec {
-            let mut value = serde_json::to_value(spec).map_err(|source| {
-                WireError::Public(DockerError::request(
-                    "serialize service specification",
-                    source,
-                ))
-            })?;
-            Self::rename_swarm_healthcheck(&mut value, "HealthCheck", "Healthcheck");
-            serde_json::to_vec(&value).map_err(|source| {
-                WireError::Public(DockerError::request(
-                    "serialize service specification",
-                    source,
-                ))
-            })?
-        } else {
-            Vec::new()
+        let body = match spec {
+            Some(spec) => serde_json::to_value(spec)
+                .and_then(|mut value| {
+                    Self::rename_swarm_healthcheck(&mut value, "HealthCheck", "Healthcheck");
+                    serde_json::to_vec(&value)
+                })
+                .map_err(|source| {
+                    DockerError::request("serialize service specification", source)
+                })?,
+            None => Vec::new(),
         };
         self.engine_request(method, path, body).await
     }
@@ -158,16 +159,12 @@ impl BollardDocker {
             let reader = tokio_util::io::SyncIoBridge::new(tokio_util::io::StreamReader::new(
                 Box::pin(data),
             ));
-            tokio::task::spawn_blocking(move || {
+            let decoded = tokio::task::spawn_blocking(move || {
                 serde_json::from_reader(std::io::BufReader::new(reader))
             })
             .await
-            .map_err(|source| {
-                WireError::Public(DockerError::request("decode Docker listing", source))
-            })?
-            .map_err(|source| {
-                WireError::Public(DockerError::request("decode Docker listing", source))
-            })
+            .map_err(|source| DockerError::request("decode Docker listing", source))?;
+            Ok(decoded.map_err(|source| DockerError::request("decode Docker listing", source))?)
         })
         .await
     }
@@ -189,35 +186,20 @@ impl BollardDocker {
         read: impl AsyncFnOnce(hyper::Response<hyper::body::Incoming>) -> Result<T, WireError>,
     ) -> Result<T, WireError> {
         let deadline = tokio::time::Instant::now() + SERVICE_REQUEST_TIMEOUT;
+        let connect = "connect to Docker Engine";
         let stream = tokio::time::timeout_at(deadline, UnixStream::connect(self.socket.as_ref()))
             .await
-            .map_err(|source| {
-                WireError::Public(DockerError::unavailable("connect to Docker Engine", source))
-            })?
-            .map_err(|source| {
-                WireError::Public(DockerError::unavailable("connect to Docker Engine", source))
-            })?;
-        let (mut sender, connection) = match tokio::time::timeout_at(
+            .map_err(|source| DockerError::unavailable(connect, source))?
+            .map_err(|source| DockerError::unavailable(connect, source))?;
+        let open = "open Docker service connection";
+        // Elapsed deadlines are unavailability, like every other timeout.
+        let (mut sender, connection) = tokio::time::timeout_at(
             deadline,
             hyper::client::conn::http1::handshake(TokioIo::new(stream)),
         )
         .await
-        {
-            // Elapsed deadlines are unavailability, like every other timeout.
-            Err(source) => {
-                return Err(WireError::Public(DockerError::unavailable(
-                    "open Docker service connection",
-                    source,
-                )));
-            }
-            Ok(Err(source)) => {
-                return Err(WireError::Public(DockerError::request(
-                    "open Docker service connection",
-                    source,
-                )));
-            }
-            Ok(Ok(parts)) => parts,
-        };
+        .map_err(|source| DockerError::unavailable(open, source))?
+        .map_err(|source| DockerError::request(open, source))?;
         // Hyper returns a connection driver separately from the request sender;
         // it must run concurrently for the sender to make progress. Always
         // abort and join it after the request. JoinSet also aborts on drop when
@@ -238,12 +220,11 @@ impl BollardDocker {
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::CONNECTION, "close")
                 .body(Full::new(Bytes::from(body)))
-                .map_err(|source| {
-                    WireError::Public(DockerError::request("build Docker service request", source))
-                })?;
-            let response = sender.send_request(request).await.map_err(|source| {
-                WireError::Public(DockerError::request("send Docker service request", source))
-            })?;
+                .map_err(|source| DockerError::request("build Docker service request", source))?;
+            let response = sender
+                .send_request(request)
+                .await
+                .map_err(|source| DockerError::request("send Docker service request", source))?;
             read(response).await
         })
         .await;
@@ -251,14 +232,9 @@ impl BollardDocker {
         if let Some(Err(source)) = drivers.join_next().await
             && !source.is_cancelled()
         {
-            return Err(WireError::Public(DockerError::request(
-                "join Docker service connection",
-                source,
-            )));
+            return Err(DockerError::request("join Docker service connection", source).into());
         }
-        result.map_err(|source| {
-            WireError::Public(DockerError::unavailable("request Docker service", source))
-        })?
+        result.map_err(|source| DockerError::unavailable("request Docker service", source))?
     }
 
     /// Collects a bounded response while retaining transport failures.
@@ -272,16 +248,13 @@ impl BollardDocker {
         let mut response = response.into_body();
         let mut body = Vec::new();
         while let Some(frame) = response.frame().await {
-            let frame = frame.map_err(|source| {
-                WireError::Public(DockerError::request("read Docker service response", source))
-            })?;
+            let frame = frame
+                .map_err(|source| DockerError::request("read Docker service response", source))?;
             let Ok(data) = frame.into_data() else {
                 continue;
             };
             if body.len().saturating_add(data.len()) > MAX_SERVICE_RESPONSE_BYTES {
-                return Err(WireError::Public(DockerError::Request(
-                    "read Docker service response",
-                )));
+                return Err(DockerError::Request("read Docker service response").into());
             }
             body.extend_from_slice(&data);
         }
@@ -354,31 +327,28 @@ impl BollardDocker {
                                 DockerError::unavailable("refresh the service version", source)
                             })??;
                     let refreshed = refreshed.ok_or(DockerError::OwnershipConflict)?;
-                    let expected = spec
-                        .labels
-                        .clone()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect();
-                    if refreshed.id.as_deref() != Some(id)
-                        || refreshed
-                            .spec
-                            .as_ref()
-                            .and_then(|spec| spec.name.as_deref())
-                            != spec.name.as_deref()
-                        || !Self::owns_resource(
-                            refreshed
-                                .spec
-                                .as_ref()
-                                .and_then(|spec| spec.labels.clone())
-                                .unwrap_or_default(),
-                            &expected,
-                            ResourceKind::Service,
-                            spec.name.as_deref().unwrap_or_default(),
-                        )
-                    {
+                    let name = refreshed
+                        .spec
+                        .as_ref()
+                        .and_then(|spec| spec.name.as_deref());
+                    if refreshed.id.as_deref() != Some(id) || name != spec.name.as_deref() {
                         return Err(DockerError::OwnershipConflict);
                     }
+                    Self::check_ownership(
+                        refreshed
+                            .spec
+                            .as_ref()
+                            .and_then(|spec| spec.labels.clone())
+                            .unwrap_or_default(),
+                        &spec
+                            .labels
+                            .clone()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect(),
+                        ResourceKind::Service,
+                        spec.name.as_deref().unwrap_or_default(),
+                    )?;
                     version = refreshed
                         .version
                         .and_then(|value| value.index)
@@ -453,10 +423,11 @@ impl BollardDocker {
     /// Fetches the local nodes and rejects anything other than one ready,
     /// reachable, active manager.
     pub(super) async fn validate_single_node_manager(&self) -> Result<(), DockerError> {
-        let nodes = Self::map_request(
-            "list Swarm nodes",
-            self.docker.list_nodes(None::<ListNodesOptions>).await,
-        )?;
+        let nodes = self
+            .docker
+            .list_nodes(None::<ListNodesOptions>)
+            .await
+            .or_request("list Swarm nodes")?;
         if !Self::single_node_manager(&nodes) {
             return Err(DockerError::IncompatibleSwarm);
         }
@@ -505,14 +476,6 @@ impl BollardDocker {
                 .and_then(|status| status.reachability)
                 == Some(bollard::models::Reachability::REACHABLE)
     }
-
-    /// Converts a Bollard request result while retaining the operation name.
-    pub(super) fn map_request<T>(
-        operation: &'static str,
-        result: Result<T, bollard::errors::Error>,
-    ) -> Result<T, DockerError> {
-        result.map_err(|error| DockerError::request(operation, error))
-    }
 }
 
 #[cfg(test)]
@@ -523,6 +486,16 @@ mod tests {
         docker: BollardDocker,
         task: tokio::task::JoinHandle<()>,
         _directory: tempfile::TempDir,
+    }
+
+    /// A client of the engine socket in a new directory, and the listener
+    /// behind it.
+    fn listen() -> (tempfile::TempDir, tokio::net::UnixListener, BollardDocker) {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("docker.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let docker = BollardDocker::connect(&socket).unwrap();
+        (directory, listener, docker)
     }
 
     impl EngineStub {
@@ -559,10 +532,7 @@ mod tests {
         /// the request line when one is expected.
         fn serve(exchanges: Vec<(Option<String>, String)>) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let directory = tempfile::tempdir().unwrap();
-            let socket = directory.path().join("docker.sock");
-            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-            let docker = BollardDocker::connect(&socket).unwrap();
+            let (directory, listener, docker) = listen();
             let task = tokio::spawn(async move {
                 for (expected, response) in exchanges {
                     let (mut stream, _) = listener.accept().await.unwrap();
@@ -668,10 +638,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_service_request_closes_connection_driver() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("docker.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let docker = BollardDocker::connect(&socket).unwrap();
+        let (_directory, listener, docker) = listen();
         let request = tokio::spawn(async move { docker.inspect_service_wire("test").await });
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut headers = Vec::new();
@@ -695,12 +662,9 @@ mod tests {
     #[tokio::test]
     async fn missing_engine_retains_io_cause_and_public_classification() {
         use std::error::Error;
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("docker.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let docker = BollardDocker::connect(&socket).unwrap();
+        let (directory, listener, docker) = listen();
         drop(listener);
-        std::fs::remove_file(socket).unwrap();
+        std::fs::remove_file(directory.path().join("docker.sock")).unwrap();
         let error = docker.inspect_service_wire("test").await.unwrap_err();
         let source = error
             .source()

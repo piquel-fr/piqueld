@@ -249,15 +249,21 @@ impl Checkouts {
     /// Opens `root`, removing checkouts a previous process left behind, with
     /// the default `[checkouts] max_bytes`.
     pub(crate) async fn open(root: PathBuf) -> std::io::Result<Self> {
-        match tokio::fs::remove_dir_all(&root).await {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
-        tokio::fs::create_dir_all(&root).await?;
+        Self::recreate(&root).await?;
         Ok(Self::new(
             root,
             crate::config::CheckoutsConfig::default().max_bytes,
         ))
+    }
+
+    /// Empties `directory`, removing whatever a previous process left in it,
+    /// and creates it, with its parents, when missing.
+    pub(crate) async fn recreate(directory: &Path) -> std::io::Result<()> {
+        match tokio::fs::remove_dir_all(directory).await {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        tokio::fs::create_dir_all(directory).await
     }
 
     /// The same checkouts directory within `max_bytes` instead, before any
@@ -284,6 +290,13 @@ impl Checkouts {
     /// The most bytes all checkouts may take at once.
     pub(crate) const fn max_bytes(&self) -> u64 {
         self.max_bytes
+    }
+
+    /// The refusal of a checkout or download larger than `max_bytes`.
+    const fn too_large(&self) -> TreeTooLarge {
+        TreeTooLarge {
+            limit: self.max_bytes,
+        }
     }
 
     /// Clones the repository shallowly into a new directory and checks out
@@ -320,10 +333,7 @@ impl Checkouts {
         let tree = self.measure(&root, revision).await?;
         let bytes = tree.saturating_add(Self::disk_usage(directory.path()).await?);
         if bytes > self.max_bytes {
-            return Err(TreeTooLarge {
-                limit: self.max_bytes,
-            }
-            .into());
+            return Err(self.too_large().into());
         }
         let disk = Arc::clone(&self.disk)
             .acquire_many_owned(Self::permits(bytes)?)
@@ -336,29 +346,12 @@ impl Checkouts {
             .await
             .context("write Git checkout attributes")?;
         crate::command::LoggedCommand::run_recorded(
-            Checkout::command()
-                .arg("-C")
-                .arg(&root)
-                .args(["checkout", "--detach", revision, "--"]),
+            Checkout::command_in(&root).args(["checkout", "--detach", revision, "--"]),
             "checkout Git commit",
             log,
         )
         .await?;
-        let output = Checkout::command()
-            .arg("-C")
-            .arg(&root)
-            .args(["rev-parse", "HEAD"])
-            .kill_on_drop(true)
-            .output()
-            .await
-            .context("resolve Git commit")?;
-        let commit = String::from_utf8(output.stdout)
-            .context("decode Git commit")?
-            .trim()
-            .to_owned();
-        if !output.status.success() || !valid_git_commit(&commit) {
-            bail!("Git did not resolve a full commit hash");
-        }
+        let commit = Checkout::head(&root).await?;
         let disk = self.settle(directory.path(), disk).await?;
         Ok(Checkout {
             directory,
@@ -381,9 +374,7 @@ impl Checkouts {
         if let Some(more) = needed.checked_sub(held).filter(|more| *more > 0) {
             let more = Arc::clone(&self.disk)
                 .try_acquire_many_owned(more)
-                .map_err(|_| TreeTooLarge {
-                    limit: self.max_bytes,
-                })?;
+                .map_err(|_| self.too_large())?;
             disk.merge(more);
         }
         Ok(disk)
@@ -403,13 +394,10 @@ impl Checkouts {
     /// Returns a Git failure, or [`TreeTooLarge`] when it takes more than
     /// `[checkouts] max_bytes` or has more than [`Self::FILES`] files.
     pub(crate) async fn measure(&self, repository: &Path, revision: &str) -> anyhow::Result<u64> {
-        let too_large = || TreeTooLarge {
-            limit: self.max_bytes,
-        };
         // A line is at most a type, 20 digits, and two separators, so a
         // larger output has more than `FILES` lines.
-        let mut command = Checkout::command();
-        command.arg("-C").arg(repository).args([
+        let mut command = Checkout::command_in(repository);
+        command.args([
             "ls-tree",
             "-r",
             "-t",
@@ -425,7 +413,7 @@ impl Checkouts {
         .await
         .map_err(
             |error| match error.downcast_ref::<crate::command::OutputLimit>() {
-                Some(_) => too_large().into(),
+                Some(_) => self.too_large().into(),
                 None => error,
             },
         )?;
@@ -440,7 +428,7 @@ impl Checkouts {
             let cost = piqueld_core::api::SnapshotLimits::file_cost(size);
             bytes = bytes.saturating_add(cost);
             if files >= Self::FILES || bytes > self.max_bytes {
-                return Err(too_large().into());
+                return Err(self.too_large().into());
             }
         }
         Ok(bytes)
@@ -472,8 +460,8 @@ impl Checkouts {
             return Ok(());
         };
         let fetch = |arguments: &[&str]| {
-            let mut fetch = Checkout::command();
-            fetch.arg("-C").arg(root).arg("fetch").args(arguments);
+            let mut fetch = Checkout::command_in(root);
+            fetch.arg("fetch").args(arguments);
             fetch
         };
         let pinned = crate::command::LoggedCommand::run_recorded(
@@ -598,7 +586,7 @@ impl Checkouts {
             priority,
         };
         let image = docker
-            .build_image_recorded(&build, log)
+            .build_image(&build, log)
             .await
             .context("build Git source image")?;
         Ok((checkout.commit, image))
@@ -642,6 +630,31 @@ impl Checkout {
         command
     }
 
+    /// A hardened `git` command (see [`Self::command`]) run in the
+    /// repository at `directory`.
+    pub(crate) fn command_in(directory: &Path) -> Command {
+        let mut command = Self::command();
+        command.arg("-C").arg(directory);
+        command
+    }
+
+    /// The full commit hash `HEAD` resolves to in the repository at `root`.
+    async fn head(root: &Path) -> anyhow::Result<String> {
+        let output = Self::command_in(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .context("resolve Git commit")?;
+        let commit = String::from_utf8(output.stdout)
+            .context("decode Git commit")?
+            .trim()
+            .to_owned();
+        if !output.status.success() || !valid_git_commit(&commit) {
+            bail!("Git did not resolve a full commit hash");
+        }
+        Ok(commit)
+    }
+
     /// Working tree root inside the temporary directory.
     pub(crate) fn root(&self) -> PathBuf {
         self.directory.path().join("repository")
@@ -683,13 +696,13 @@ mod tests {
             .await
             .unwrap();
         crate::command::LoggedCommand::run(
-            Checkout::command().arg("-C").arg(root).args(["add", "."]),
+            Checkout::command_in(root).args(["add", "."]),
             "stage fixture",
         )
         .await
         .unwrap();
         crate::command::LoggedCommand::run(
-            Checkout::command().arg("-C").arg(root).args([
+            Checkout::command_in(root).args([
                 "-c",
                 "user.name=Test",
                 "-c",
@@ -702,14 +715,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let output = Checkout::command()
-            .arg("-C")
-            .arg(root)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .unwrap();
-        String::from_utf8(output.stdout).unwrap().trim().into()
+        Checkout::head(root).await.unwrap()
     }
 
     #[tokio::test]
@@ -816,9 +822,7 @@ mod tests {
             "FROM scratch\n"
         );
         // Clones are shallow, and their directory goes with them.
-        let depth = Checkout::command()
-            .arg("-C")
-            .arg(checkout.root())
+        let depth = Checkout::command_in(&checkout.root())
             .args(["rev-list", "--count", "HEAD"])
             .output()
             .await

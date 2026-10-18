@@ -1,6 +1,6 @@
 use super::{
-    ApplicationState, CancellationToken, Controller, DockerApi, Operation, OperationError,
-    OperationKind, OperationState, Plan, PlanRequest, StoreError, blocked_plan_error,
+    ApplicationState, BlockedPlan, CancellationToken, Controller, DockerApi, Operation,
+    OperationError, OperationKind, OperationState, Plan, PlanRequest, StoreError,
 };
 use crate::application::RuntimeBoundary;
 use crate::docker::JobRuns;
@@ -211,25 +211,14 @@ impl<D: DockerApi> Controller<D> {
         if names.is_empty() {
             return Ok(());
         }
-        let journal = self
-            .store
-            .begin_action(Some(&operation.id), "remove_volumes", None)
-            .await?;
-        let result = match self.store.action_request(&journal, 1).await {
-            Ok(()) => self.remove_volumes(operation, &names).await,
-            Err(error) => Err(error.into()),
-        };
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(OperationError::diagnostic),
-            )
-            .await?;
-        result?;
-        self.store
-            .mutation_event(&operation.id)
-            .await
-            .map_err(OperationError::from)
+        self.journaled(
+            &operation.id,
+            "remove_volumes",
+            None,
+            self.remove_volumes(operation, &names),
+        )
+        .await?;
+        Ok(self.store.mutation_event(&operation.id).await?)
     }
 
     /// Removes `names` and verifies none of them is still observed.
@@ -261,29 +250,12 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         names: &[String],
     ) -> Result<(), OperationError> {
-        let journal = self
-            .store
-            .begin_action(Some(&operation.id), "remove_secrets", None)
-            .await?;
-        let result = match self.store.action_request(&journal, 1).await {
-            Ok(()) => self
-                .docker
-                .remove_secrets(names, &self.ownership_labels(&operation.environment_id))
-                .await
-                .map_err(OperationError::from),
-            Err(error) => Err(error.into()),
-        };
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(OperationError::diagnostic),
-            )
-            .await?;
-        result?;
-        self.store
-            .mutation_event(&operation.id)
-            .await
-            .map_err(OperationError::from)
+        let ownership = self.ownership_labels(&operation.environment_id);
+        self.journaled(&operation.id, "remove_secrets", None, async {
+            Ok(self.docker.remove_secrets(names, &ownership).await?)
+        })
+        .await?;
+        Ok(self.store.mutation_event(&operation.id).await?)
     }
 
     /// Plans from fresh observations until no work remains. Only desired state and
@@ -304,8 +276,7 @@ impl<D: DockerApi> Controller<D> {
             && !self
                 .store
                 .set_status_for_operation(&operation.id, ApplicationState::Deploying, None)
-                .await
-                .map_err(OperationError::from)?
+                .await?
         {
             return Err(OperationError::Superseded);
         }
@@ -336,10 +307,7 @@ impl<D: DockerApi> Controller<D> {
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
             self.check_current(operation).await?;
-            self.store
-                .record_health(&operation.id, &observed)
-                .await
-                .map_err(OperationError::from)?;
+            self.store.record_health(&operation.id, &observed).await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
@@ -384,8 +352,7 @@ impl<D: DockerApi> Controller<D> {
                     && !self
                         .store
                         .set_status_for_operation(&operation.id, ApplicationState::Ready, None)
-                        .await
-                        .map_err(OperationError::from)?
+                        .await?
                 {
                     return Err(OperationError::Superseded);
                 }
@@ -423,27 +390,20 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<PlanRequest, OperationError> {
         self.store
             .progress(&operation.id, "preparing", None)
-            .await
-            .map_err(OperationError::from)?;
-        let application = self
-            .store
-            .get(&operation.environment_id)
-            .await
-            .map_err(OperationError::from)?;
-        Ok(if operation.kind == OperationKind::Delete {
-            PlanRequest::Delete {
-                environment_id: operation.environment_id.clone(),
-                instance_id: piqueld_core::InstanceId::parse(self.store.instance_id())
-                    .expect("valid store identity"),
-            }
-        } else {
-            PlanRequest::Reconcile {
-                desired: tokio::select! {
-                    ()=cancellation.cancelled()=>return Err(OperationError::Cancelled),
-                    result=tokio::time::timeout(self.prepare_timeout, self.prepare_target(operation,&application))=>result.map_err(|_| OperationError::PreparationTimeout)??,
-                },
-            }
-        })
+            .await?;
+        let application = self.store.get(&operation.environment_id).await?;
+        if operation.kind == OperationKind::Delete {
+            return Ok(self.delete_request(&operation.environment_id));
+        }
+        let prepared = tokio::time::timeout(
+            self.prepare_timeout,
+            self.prepare_target(operation, &application),
+        );
+        let desired = tokio::select! {
+            () = cancellation.cancelled() => return Err(OperationError::Cancelled),
+            result = prepared => result.map_err(|_| OperationError::PreparationTimeout)??,
+        };
+        Ok(PlanRequest::Reconcile { desired })
     }
 
     /// Stages the environment's routes and applies them through managed ingress
@@ -508,10 +468,9 @@ impl<D: DockerApi> Controller<D> {
             .map(|diagnostic| diagnostic.resource.as_str());
         self.store
             .progress(&operation.id, "planning", resource)
-            .await
-            .map_err(OperationError::from)?;
+            .await?;
         if plan.is_blocked() {
-            return Err(blocked_plan_error(plan));
+            return Err(BlockedPlan::of(plan).error());
         }
         Ok(())
     }
@@ -534,12 +493,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
         self.check_current(operation).await?;
         self.docker.ensure_swarm(false).await?;
-        if let Some(target) = self
-            .store
-            .prepared_target(&operation.id)
-            .await
-            .map_err(OperationError::from)?
-        {
+        if let Some(target) = self.store.prepared_target(&operation.id).await? {
             return Ok(target);
         }
         let tracking = application.tracking()?;
@@ -602,8 +556,7 @@ impl<D: DockerApi> Controller<D> {
         let current = self
             .store
             .latest_operation_for_environment(&operation.environment_id)
-            .await
-            .map_err(OperationError::from)?;
+            .await?;
         let Some(current) = current.filter(|current| current.id == operation.id) else {
             return Err(OperationError::Superseded);
         };
@@ -638,6 +591,37 @@ mod tests {
         docker::BollardDocker,
         store::Store,
     };
+
+    /// A store in a temporary directory, and a Docker socket nothing serves.
+    struct Harness {
+        directory: tempfile::TempDir,
+        store: Arc<Store>,
+        socket: std::path::PathBuf,
+        _listener: tokio::net::UnixListener,
+    }
+
+    impl Harness {
+        async fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+            let socket = directory.path().join("unused.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            Self {
+                directory,
+                store,
+                socket,
+                _listener: listener,
+            }
+        }
+
+        /// A controller of this store whose Docker Engine never answers.
+        fn controller(&self) -> Controller<BollardDocker> {
+            Controller::new(
+                Arc::new(BollardDocker::connect(&self.socket).unwrap()),
+                Arc::clone(&self.store),
+            )
+        }
+    }
 
     /// Accepts a routed environment and starts executing its operation.
     async fn running_operation(store: &Store) -> Operation {
@@ -676,9 +660,9 @@ mod tests {
 
     #[tokio::test]
     async fn routing_superseded_while_waiting_for_the_gateway_is_superseded() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
-        let operation = running_operation(&store).await;
+        let harness = Harness::new().await;
+        let store = &harness.store;
+        let operation = running_operation(store).await;
         let routes = store
             .deployment_snapshot(&operation.id)
             .await
@@ -689,19 +673,16 @@ mod tests {
             .spec()
             .routes
             .clone();
-        let socket_path = temp.path().join("unused.sock");
-        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
         let ingress = Arc::new(
-            crate::ingress::Ingress::new(true, &socket_path, temp.path(), Arc::clone(&store))
-                .unwrap(),
-        );
-        let controller = Arc::new(
-            Controller::new(
-                Arc::new(BollardDocker::connect(&socket_path).unwrap()),
-                Arc::clone(&store),
+            crate::ingress::Ingress::new(
+                true,
+                &harness.socket,
+                harness.directory.path(),
+                Arc::clone(store),
             )
-            .with_ingress(Arc::clone(&ingress)),
+            .unwrap(),
         );
+        let controller = Arc::new(harness.controller().with_ingress(Arc::clone(&ingress)));
 
         let gateway = ingress.hold_updates().await;
         let staging = tokio::spawn({
@@ -738,9 +719,9 @@ mod tests {
 
     #[tokio::test]
     async fn reconciliation_leaves_concurrent_daemon_actions_open() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
-        let operation = running_operation(&store).await;
+        let harness = Harness::new().await;
+        let store = &harness.store;
+        let operation = running_operation(store).await;
         store
             .transition_operation(
                 &operation.id,
@@ -750,12 +731,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let socket_path = temp.path().join("unused.sock");
-        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
-        let controller = Controller::new(
-            Arc::new(BollardDocker::connect(&socket_path).unwrap()),
-            Arc::clone(&store),
-        );
+        let controller = harness.controller();
         // Another worker, such as ingress, is mid-change when reconciliation starts.
         let action = store
             .begin_action(None, "ingress_start_gateway", None)
@@ -789,8 +765,8 @@ mod tests {
 
     #[tokio::test]
     async fn execution_cleanup_waits_for_live_repair_to_commit() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let harness = Harness::new().await;
+        let store = &harness.store;
         let manifest = piqueld_core::manifest::parse_template_toml(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='repair'\n[spec]",
         ).unwrap();
@@ -828,12 +804,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let socket_path = temp.path().join("unused.sock");
-        let _socket = tokio::net::UnixListener::bind(&socket_path).unwrap();
-        let controller = Controller::new(
-            Arc::new(BollardDocker::connect(&socket_path).unwrap()),
-            Arc::clone(&store),
-        );
+        let controller = harness.controller();
         let abandoned = store
             .begin_action(Some(&operation.id), "resolving_image", Some("web"))
             .await

@@ -37,7 +37,7 @@
 //! the store until published, so a failed publish is retried. Changes are
 //! daemon-scoped journal actions
 //! with `ingress_dns_*` phases; a pass that changes nothing records nothing.
-use super::{Ingress, wire::Journaled};
+use super::{Ingress, Ticks, wire::Journaled};
 use crate::dns::provider::{DnsProvider, Found, Record, RecordId, Zone};
 use anyhow::{Context, Result};
 use piqueld_core::{
@@ -162,11 +162,9 @@ impl Ingress {
         if !dns.manages_any_records() {
             return;
         }
-        let mut tick = tokio::time::interval(Duration::from_secs(10));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut ticks = Ticks::every(Duration::from_secs(10), cancellation);
         let mut last: Option<(BTreeMap<RouteHostname, Plan>, Instant, bool)> = None;
-        loop {
-            tokio::select! { ()=cancellation.cancelled()=>return, _=tick.tick()=>{} }
+        while ticks.next().await {
             if cancellation
                 .run_until_cancelled(dns.refresh())
                 .await

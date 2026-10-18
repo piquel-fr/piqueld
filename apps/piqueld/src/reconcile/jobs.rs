@@ -315,12 +315,8 @@ impl<D: DockerApi> Controller<D> {
 
     /// Appends a piqueld explanation to the run's output as a stderr line.
     async fn note(log: &BuildLog, message: &str) -> Result<(), OperationError> {
-        log.append(
-            format!("piqueld: {message}\n").as_bytes(),
-            LogStream::Stderr,
-        )
-        .await
-        .map_err(OperationError::from)
+        let line = format!("piqueld: {message}\n");
+        Ok(log.append(line.as_bytes(), LogStream::Stderr).await?)
     }
 
     /// Polls until the run stops and returns its status, or `Running` once the
@@ -363,10 +359,7 @@ impl<D: DockerApi> Controller<D> {
                     failure = Some(error);
                 }
             }
-            tokio::select! {
-                () = cancellation.cancelled() => return Err(OperationError::Cancelled),
-                () = tokio::time::sleep(JOB_POLL_INTERVAL) => {}
-            }
+            Self::pause(cancellation, JOB_POLL_INTERVAL).await?;
         }
     }
 
@@ -388,13 +381,7 @@ impl<D: DockerApi> Controller<D> {
                 self.docker.remove_jobs(ownership, runs)
             })
             .await;
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(OperationError::diagnostic),
-            )
-            .await?;
-        result
+        self.close_action(&journal, result).await
     }
 
     /// Retries durable cleanup independently of deployment execution. The
@@ -436,26 +423,13 @@ impl<D: DockerApi> Controller<D> {
         operation: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), OperationError> {
-        let journal = self
-            .store
-            .begin_action(Some(operation), "remove_jobs", None)
-            .await?;
-        let result = match self.store.action_request(&journal, 1).await {
-            Ok(()) => self
+        self.journaled(operation, "remove_jobs", None, async {
+            Ok(self
                 .docker
                 .remove_jobs(ownership, JobRuns::Of(operation))
-                .await
-                .map_err(OperationError::from),
-            Err(error) => Err(OperationError::from(error)),
-        };
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(OperationError::diagnostic),
-            )
-            .await?;
-        result?;
-        self.store.finish_job_cleanup(operation).await?;
-        Ok(())
+                .await?)
+        })
+        .await?;
+        Ok(self.store.finish_job_cleanup(operation).await?)
     }
 }

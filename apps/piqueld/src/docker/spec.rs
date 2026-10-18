@@ -113,8 +113,8 @@ impl BollardDocker {
             }),
             container_spec: Some(TaskSpecContainerSpec {
                 image: Some(desired.image.to_string()),
-                command: BollardDocker::nonempty(&desired.command),
-                args: BollardDocker::nonempty(&desired.arguments),
+                command: Self::nonempty(&desired.command),
+                args: Self::nonempty(&desired.arguments),
                 env: Some(
                     desired
                         .environment
@@ -144,12 +144,12 @@ impl BollardDocker {
                     .into_iter()
                     .map(|attachment| NetworkAttachmentConfig {
                         target: Some(attachment.network),
-                        aliases: BollardDocker::nonempty(&attachment.aliases),
+                        aliases: Self::nonempty(&attachment.aliases),
                         ..Default::default()
                     })
                     .collect(),
             ),
-            resources: BollardDocker::task_resources(desired.resources.as_ref())?,
+            resources: Self::task_resources(desired.resources.as_ref())?,
             restart_policy: Some(TaskSpecRestartPolicy {
                 condition: Some(TaskSpecRestartPolicyConditionEnum::ANY),
                 delay: Some(RESTART_DELAY),

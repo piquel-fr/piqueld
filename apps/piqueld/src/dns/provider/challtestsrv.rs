@@ -51,14 +51,7 @@ impl Provider for Challtestsrv {
     }
 
     fn zones(&self, _http: &reqwest::Client) -> impl Future<Output = Result<Vec<Zone>, ApiError>> {
-        std::future::ready(Ok(self
-            .zones
-            .iter()
-            .map(|name| Zone {
-                name: name.clone(),
-                id: name.to_string(),
-            })
-            .collect()))
+        std::future::ready(Ok(self.zones.iter().cloned().map(Zone::named).collect()))
     }
 
     fn records(

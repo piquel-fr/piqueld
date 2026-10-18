@@ -2,7 +2,7 @@
 //! environments they link are in.
 
 use super::{Controller, DockerApi, DockerError, OperationError, StoreError};
-use piqueld_core::{EnvironmentId, InstanceId, ObservedApplication, resource::APPLICATION_LABEL};
+use piqueld_core::{EnvironmentId, ObservedApplication, resource::APPLICATION_LABEL};
 
 impl<D: DockerApi> Controller<D> {
     /// Detaches `id`'s services from the link networks its links no longer
@@ -38,7 +38,7 @@ impl<D: DockerApi> Controller<D> {
                 granted.push(self.store.with_links(target, observed).await?);
             }
         }
-        let instance = InstanceId::parse(self.store.instance_id()).expect("valid store identity");
+        let instance = self.instance_id();
         let ownership = self.ownership_labels(id);
         for (service, network) in observed.revoked_links(&instance, id, &granted) {
             self.journaled_link_change(operation_id, "detach_network", service, || {
@@ -81,20 +81,9 @@ impl<D: DockerApi> Controller<D> {
         change: impl FnOnce() -> F,
     ) -> Result<(), OperationError> {
         let _guard = self.mutations.lock().await;
-        let journal = self
-            .store
-            .begin_action(Some(operation_id), action, Some(resource))
-            .await?;
-        let result = match self.store.action_request(&journal, 1).await {
-            Ok(()) => change().await.map_err(OperationError::from),
-            Err(error) => Err(error.into()),
-        };
-        self.store
-            .finish_action(
-                &journal,
-                result.as_ref().err().map(OperationError::diagnostic),
-            )
-            .await?;
-        result
+        self.journaled(operation_id, action, Some(resource), async {
+            Ok(change().await?)
+        })
+        .await
     }
 }

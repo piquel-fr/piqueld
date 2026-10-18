@@ -35,6 +35,8 @@ use std::{
 const GATEWAY_LABEL: &str = "io.piqueld.ingress";
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
 pub(super) const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
+/// The writable scratch space of managed containers with a temporary directory.
+pub(super) const TMPFS: &str = "rw,noexec,nosuid,size=16777216";
 
 impl Ingress {
     /// Ownership labels applied to the gateway container, the apps node,
@@ -60,6 +62,39 @@ impl Ingress {
         self.named_container(&self.name).await
     }
 
+    /// The container an unfinished replacement stopped serving.
+    fn previous_name(&self) -> String {
+        format!("{}-previous", self.name)
+    }
+
+    /// The container a replacement prepares before cutover.
+    fn next_name(&self) -> String {
+        format!("{}-next", self.name)
+    }
+
+    /// Whether an inspected container is running.
+    pub(super) fn running(container: &Value) -> bool {
+        container["State"]["Running"] == true
+    }
+
+    /// Whether an inspected container was built from `spec`, by its hash.
+    fn built_from(container: &Value, spec: &Value) -> bool {
+        container["Config"]["Labels"][CONFIGURATION_LABEL] == spec["Labels"][CONFIGURATION_LABEL]
+    }
+
+    /// Whether `current`, a managed container as inspected, is running and
+    /// built from `spec`, after verifying its security-relevant settings
+    /// (see [`Self::check_container_configuration`]).
+    fn up_to_date(current: Option<&Value>, spec: &Value) -> Result<bool> {
+        match current {
+            Some(current) if Self::built_from(current, spec) => {
+                Self::check_container_configuration(current, spec)?;
+                Ok(Self::running(current))
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Inspects a container by name, verifying ownership when it exists.
     pub(super) async fn named_container(&self, name: &str) -> Result<Option<Value>> {
         let container = self
@@ -83,8 +118,8 @@ impl Ingress {
             self.node_name(),
             self.tunnel_name(),
             self.name.clone(),
-            format!("{}-previous", self.name),
-            format!("{}-next", self.name),
+            self.previous_name(),
+            self.next_name(),
         ] {
             match self.named_container(&name).await {
                 Ok(Some(_)) => existing.push(name),
@@ -335,34 +370,66 @@ impl Ingress {
             .copied()
     }
 
-    /// Builds the hardened Caddy container spec: runs as the daemon's user with a
-    /// read-only root, only `NET_BIND_SERVICE`, host-bound ports 80/443 unless
-    /// the tunnel replaces them, and data, config, and control directories
+    /// The hardened base of every managed container's spec (the gateway, the
+    /// apps node and `cloudflared`): `image` running `command` as the
+    /// daemon's user with `environment`, `labels` and `binds`, a read-only
+    /// root, no capabilities or new privileges, bounded local logs, restarted
+    /// unless stopped, and only the edge network.
+    pub(super) fn managed_spec(
+        &self,
+        image: &str,
+        command: Value,
+        environment: Value,
+        labels: Value,
+        binds: Value,
+    ) -> Value {
+        let uid = rustix::process::geteuid().as_raw();
+        let gid = rustix::process::getegid().as_raw();
+        let mut spec = json!({
+            "Image":image,"User":format!("{uid}:{gid}"),
+            "HostConfig":{
+                "RestartPolicy":{"Name":"unless-stopped"},
+                "ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],
+                "LogConfig":{"Type":"local","Config":{"max-size":"10m","max-file":"3"}},
+                "NetworkMode":self.name
+            }
+        });
+        spec["Cmd"] = command;
+        spec["Env"] = environment;
+        spec["Labels"] = labels;
+        spec["HostConfig"]["Binds"] = binds;
+        spec
+    }
+
+    /// Builds the hardened Caddy container spec (see [`Self::managed_spec`]),
+    /// adding only `NET_BIND_SERVICE`, host-bound ports 80/443 unless the
+    /// tunnel replaces them, and data, config, and control directories
     /// bind-mounted from the ingress directory. The private and tunnel
     /// listeners' ports are never published. The spec's own hash is stored in
     /// `CONFIGURATION_LABEL` to detect drift, so switching modes replaces it.
     pub(super) fn container_spec(&self) -> Value {
-        let uid = rustix::process::geteuid().as_raw();
-        let gid = rustix::process::getegid().as_raw();
         let binds: Vec<_> = ["data", "config", "control"]
             .into_iter()
             .map(|name| format!("{}:/{name}", self.directory.join(name).display()))
             .collect();
-        let mut spec = json!({
-            "Image":CADDY_IMAGE,"User":format!("{uid}:{gid}"),
-            "Cmd":["caddy","run","--resume","--config","/config/caddy/autosave.json"],
-            "Env":["XDG_DATA_HOME=/data","XDG_CONFIG_HOME=/config"],
-            "Labels":self.labels(),
-            "HostConfig":{
-                "Binds":binds,"RestartPolicy":{"Name":"unless-stopped"},
-                "ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["NET_BIND_SERVICE"],"SecurityOpt":["no-new-privileges:true"],
-                "Sysctls":{"net.ipv4.ip_unprivileged_port_start":"0"},
-                "Tmpfs":{"/tmp":"rw,noexec,nosuid,size=16777216"},
-                "LogConfig":{"Type":"local","Config":{"max-size":"10m","max-file":"3"}},
-                "NetworkMode":self.name
-            },
-            "NetworkingConfig":{"EndpointsConfig":{&self.name:{"GwPriority":1}}}
-        });
+        let mut spec = self.managed_spec(
+            CADDY_IMAGE,
+            json!([
+                "caddy",
+                "run",
+                "--resume",
+                "--config",
+                "/config/caddy/autosave.json"
+            ]),
+            json!(["XDG_DATA_HOME=/data", "XDG_CONFIG_HOME=/config"]),
+            self.labels(),
+            json!(binds),
+        );
+        let host = &mut spec["HostConfig"];
+        host["CapAdd"] = json!(["NET_BIND_SERVICE"]);
+        host["Sysctls"] = json!({"net.ipv4.ip_unprivileged_port_start":"0"});
+        host["Tmpfs"] = json!({"/tmp": TMPFS});
+        spec["NetworkingConfig"] = json!({"EndpointsConfig":{&self.name:{"GwPriority":1}}});
         if self.tunnel.is_none() {
             spec["ExposedPorts"] = json!({"80/tcp":{},"443/tcp":{}});
             spec["HostConfig"]["PortBindings"] = json!({"80/tcp":[{"HostIp":"","HostPort":"80"}],"443/tcp":[{"HostIp":"","HostPort":"443"}]});
@@ -415,14 +482,8 @@ impl Ingress {
         self.recover_gateway().await?;
         let spec = self.container_spec();
         let current = self.container().await?;
-        if let Some(current) = &current
-            && current["Config"]["Labels"][CONFIGURATION_LABEL]
-                == spec["Labels"][CONFIGURATION_LABEL]
-        {
-            Self::check_container_configuration(current, &spec)?;
-            if current["State"]["Running"] == true {
-                return Ok(());
-            }
+        if Self::up_to_date(current.as_ref(), &spec)? {
+            return Ok(());
         }
         for directory in [
             &self.directory,
@@ -435,10 +496,10 @@ impl Ingress {
         }
         self.ensure_edge_network().await?;
         self.ensure_image(CADDY_IMAGE).await?;
-        if current.as_ref().is_some_and(|container| {
-            container["Config"]["Labels"][CONFIGURATION_LABEL]
-                != spec["Labels"][CONFIGURATION_LABEL]
-        }) {
+        if current
+            .as_ref()
+            .is_some_and(|container| !Self::built_from(container, &spec))
+        {
             return self.replace_gateway(table, networks, &spec).await;
         }
         let journal = self.journal("ingress_start_gateway", &self.name).await?;
@@ -466,17 +527,12 @@ impl Ingress {
         prepare: impl Future<Output = Result<()>>,
     ) -> Result<()> {
         let current = self.named_container(name).await?;
-        let matches = current.as_ref().is_some_and(|current| {
-            current["Config"]["Labels"][CONFIGURATION_LABEL] == spec["Labels"][CONFIGURATION_LABEL]
-        });
-        if let Some(current) = &current
-            && matches
-        {
-            Self::check_container_configuration(current, spec)?;
-            if current["State"]["Running"] == true {
-                return Ok(());
-            }
+        if Self::up_to_date(current.as_ref(), spec)? {
+            return Ok(());
         }
+        let matches = current
+            .as_ref()
+            .is_some_and(|current| Self::built_from(current, spec));
         prepare.await?;
         let journal = self.journal(phase, name).await?;
         let result = async {
@@ -485,14 +541,7 @@ impl Ingress {
                 self.remove_container(&journal, name).await?;
                 self.create_container(&journal, name, spec).await?;
             }
-            self.docker
-                .send(
-                    &journal,
-                    Method::POST,
-                    &format!("/containers/{name}/start"),
-                    None,
-                )
-                .await?;
+            self.start_named(&journal, name).await?;
             tracing::info!(container=%name, image=%spec["Image"], "started managed ingress container");
             Ok(())
         }
@@ -543,6 +592,19 @@ impl Ingress {
         journal.finish(result).await
     }
 
+    /// Starts the container `name`.
+    async fn start_named(&self, journal: &Journaled<'_>, name: &str) -> Result<()> {
+        self.docker
+            .send(
+                journal,
+                Method::POST,
+                &format!("/containers/{name}/start"),
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Creates a container with the given name and spec without starting it.
     pub(super) async fn create_container(
         &self,
@@ -582,11 +644,7 @@ impl Ingress {
             Self::proxies(routes)
                 && !networks.contains(&DockerNetworkName::for_ingress(id).to_string())
         }) {
-            let Some(container) = self
-                .container()
-                .await?
-                .filter(|container| container["State"]["Running"] == true)
-            else {
+            let Some(container) = self.container().await?.filter(Self::running) else {
                 anyhow::bail!(
                     "cannot replace gateway: retained routes for application {id} lack a verified network and the old gateway is not running"
                 );
@@ -605,10 +663,7 @@ impl Ingress {
         let journal = self.journal("ingress_replace_gateway", &self.name).await?;
         let result = self.cut_over(&journal, table, networks, spec).await;
         journal.finish(result).await?;
-        if let Err(error) = self
-            .remove_stale_container(&format!("{}-previous", self.name))
-            .await
-        {
+        if let Err(error) = self.remove_stale_container(&self.previous_name()).await {
             tracing::warn!(gateway=%self.name, error=%format!("{error:#}"),
                 "replaced gateway could not be removed; recovery retries the cleanup");
         }
@@ -630,17 +685,13 @@ impl Ingress {
         networks: &BTreeSet<String>,
         spec: &Value,
     ) -> Result<()> {
-        let next = format!("{}-next", self.name);
-        let previous = format!("{}-previous", self.name);
+        let next = self.next_name();
+        let previous = self.previous_name();
         self.validate_replacement(journal, &next, spec, table)
             .await?;
         self.create_container(journal, &next, spec).await?;
         self.attach_networks(journal, &next, networks).await?;
-        let configuration = if self
-            .container()
-            .await?
-            .is_some_and(|container| container["State"]["Running"] == true)
-        {
+        let configuration = if self.container().await?.as_ref().is_some_and(Self::running) {
             self.caddy.get("/config/").await?
         } else {
             let bytes = tokio::fs::read(self.directory.join("config/caddy/autosave.json")).await?;
@@ -698,14 +749,7 @@ impl Ingress {
         validation["HostConfig"]["RestartPolicy"] = json!({"Name":"no"});
         self.remove_container(journal, name).await?;
         self.create_container(journal, name, &validation).await?;
-        self.docker
-            .send(
-                journal,
-                Method::POST,
-                &format!("/containers/{name}/start"),
-                None,
-            )
-            .await?;
+        self.start_named(journal, name).await?;
         let exited = self
             .docker
             .send(
@@ -751,16 +795,15 @@ impl Ingress {
     /// A `-previous` container without `rollback.json` means the cutover committed
     /// and only cleanup remains; any other leftover triggers a restore.
     pub(super) async fn recover_gateway(&self) -> Result<()> {
-        let previous = format!("{}-previous", self.name);
+        let previous = self.previous_name();
         if self.named_container(&previous).await?.is_some()
             && !tokio::fs::try_exists(self.rollback_path()).await?
         {
             // The replacement committed; only its cleanup was interrupted.
             return self.remove_stale_container(&previous).await;
         }
-        let next = format!("{}-next", self.name);
         if self.named_container(&previous).await?.is_none()
-            && self.named_container(&next).await?.is_none()
+            && self.named_container(&self.next_name()).await?.is_none()
         {
             return Ok(());
         }
@@ -771,8 +814,8 @@ impl Ingress {
 
     /// Restores the gateway that an unfinished replacement stopped.
     async fn restore_gateway(&self, journal: &Journaled<'_>) -> Result<()> {
-        let previous = format!("{}-previous", self.name);
-        let next = format!("{}-next", self.name);
+        let previous = self.previous_name();
+        let next = self.next_name();
         if self.named_container(&previous).await?.is_some() {
             self.remove_container(journal, &self.name).await?;
             self.restore_configuration().await?;
@@ -785,7 +828,7 @@ impl Ingress {
             // Cancellation may land between stopping the old container and
             // renaming it. Keep the candidate until the old listener is restored.
             if let Some(container) = self.container().await?
-                && container["State"]["Running"] != true
+                && !Self::running(&container)
             {
                 // Before the first rename the old autosave is still untouched.
                 self.start_container(journal).await?;
@@ -811,7 +854,7 @@ impl Ingress {
     /// Atomically writes a JSON file under `config/caddy`, readable only by the
     /// daemon since it can hold DNS-01 private keys.
     async fn write_configuration(&self, file: &str, configuration: &Value) -> Result<()> {
-        super::certificates::write_private(
+        Self::write_private(
             &self.directory.join("config/caddy").join(file),
             &serde_json::to_vec(configuration)?,
         )
@@ -829,14 +872,7 @@ impl Ingress {
 
     /// Starts the serving container and waits up to 10s for Caddy's admin API.
     async fn start_container(&self, journal: &Journaled<'_>) -> Result<()> {
-        self.docker
-            .send(
-                journal,
-                Method::POST,
-                &format!("/containers/{}/start", self.name),
-                None,
-            )
-            .await?;
+        self.start_named(journal, &self.name).await?;
         // Docker reports a running process before Caddy opens its admin socket.
         // Wait for startup here instead of failing an otherwise healthy deployment.
         tokio::time::timeout(Duration::from_secs(10), async {
