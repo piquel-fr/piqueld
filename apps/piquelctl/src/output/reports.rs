@@ -1,6 +1,10 @@
 //! Typed command results. Human-only context never leaks into JSON schemas.
-use super::{HumanWriter, Report};
-use crate::{deployments::Deployed, profiles::ProfileSummary};
+use super::HumanWriter;
+use crate::{
+    deployments::Deployed,
+    profiles::ProfileSummary,
+    support::{join_or, short_commit},
+};
 use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
@@ -10,25 +14,50 @@ use piqueld_client::{
     Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
     ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
     SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus,
-    Template, UrlState,
+    Template, UrlState, VariableValue,
     links::ImportState,
     sync::{SyncState, WebhookSecret, WebhookView},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
-use std::io;
+use std::{collections::BTreeMap, io};
 
-// Identity JSON is the common case; keep its implementation in one place.
-// `report!(Type, self, out, { ... })` implements `Report` with `Json = Self` and the
-// block as `render_human`.
+// Implements `Report` with the block as `render_human`. The JSON is the value
+// itself, what it dereferences to, or one of its fields:
+//
+// report!(Type, self, out, { ... })                    // Json = Type
+// report!(Vec<Row> as [Row], self, out, { ... })       // Json = [Row]
+// report!(Wrapper as Inner = field, self, out, { ... }) // Json = Inner, from `self.field`
+//
+// rustfmt skips the `as` forms, so their bodies are formatted by hand.
 macro_rules! report {
-    ($ty:ty, $this:ident, $out:ident, $body:block) => {
-        impl Report for $ty {
-            type Json = Self;
-            fn json(&self) -> &Self { self }
-            fn render_human(&$this, $out: &mut HumanWriter<'_>) -> io::Result<()> $body
+    (@impl $ty:ty, $json:ty, |$this:ident| $value:expr, $out:ident, $body:block) => {
+        impl $crate::output::Report for $ty {
+            type Json = $json;
+            fn json(&$this) -> &$json {
+                $value
+            }
+            fn render_human(
+                &$this,
+                $out: &mut $crate::output::HumanWriter<'_>,
+            ) -> std::io::Result<()> $body
         }
     };
+    ($ty:ty as $json:ty = $field:tt, $this:ident, $out:ident, $body:block) => {
+        $crate::output::reports::report!(@impl $ty, $json, |$this| &$this.$field, $out, $body);
+    };
+    ($ty:ty as $json:ty, $this:ident, $out:ident, $body:block) => {
+        $crate::output::reports::report!(@impl $ty, $json, |$this| $this, $out, $body);
+    };
+    ($ty:ty, $this:ident, $out:ident, $body:block) => {
+        $crate::output::reports::report!(@impl $ty, Self, |$this| $this, $out, $body);
+    };
+}
+pub(crate) use report;
+
+/// `healthy` or `unhealthy`.
+const fn health(healthy: bool) -> &'static str {
+    if healthy { "healthy" } else { "unhealthy" }
 }
 
 /// Daemon status; JSON is the daemon's status, human output adds the transport
@@ -38,103 +67,85 @@ pub(crate) struct StatusReport<'a> {
     pub(crate) transport: &'a str,
     pub(crate) ingress: Option<&'a IngressStatus>,
 }
-impl Report for StatusReport<'_> {
-    type Json = SystemStatus;
-    fn json(&self) -> &Self::Json {
-        self.status
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        let s = self.status;
-        out.line(format_args!(
-            "daemon {} (version {}, API {}, instance {})",
-            s.status, s.daemon_version, s.api_version, s.instance_id
-        ))?;
-        out.label("Transport", self.transport)?;
-        s.images.render_human(out)?;
-        let tailnet = &s.tailscale;
-        if tailnet.enabled {
-            out.label(
-                "Tailnet node",
-                format_args!(
-                    "{} ({}, certificate expires at Unix ms {})",
-                    tailnet.dns_name.as_deref().unwrap_or("unknown"),
-                    tailnet.state,
-                    tailnet
-                        .certificate_expires_at_ms
-                        .map_or_else(|| "unknown".into(), |at| at.to_string()),
-                ),
-            )?;
-            if !tailnet.healthy || !tailnet.public_url_matches {
-                out.label("Tailnet problem", &tailnet.message)?;
-            }
+report!(StatusReport<'_> as SystemStatus = status, self, out, {
+    let s = self.status;
+    out.line(format_args!(
+        "daemon {} (version {}, API {}, instance {})",
+        s.status, s.daemon_version, s.api_version, s.instance_id
+    ))?;
+    out.label("Transport", self.transport)?;
+    s.images.render_human(out)?;
+    let tailnet = &s.tailscale;
+    if tailnet.enabled {
+        out.label(
+            "Tailnet node",
+            format_args!(
+                "{} ({}, certificate expires at Unix ms {})",
+                tailnet.dns_name.as_deref().unwrap_or("unknown"),
+                tailnet.state,
+                tailnet
+                    .certificate_expires_at_ms
+                    .map_or_else(|| "unknown".into(), |at| at.to_string()),
+            ),
+        )?;
+        if !tailnet.healthy || !tailnet.public_url_matches {
+            out.label("Tailnet problem", &tailnet.message)?;
         }
-        if let Some(ingress) = self.ingress.filter(|ingress| ingress.enabled) {
-            out.label(
-                "Public listener",
-                format_args!(
-                    "{}: {}",
-                    if ingress.healthy {
-                        "healthy"
-                    } else {
-                        "unhealthy"
-                    },
-                    ingress.message
-                ),
-            )?;
-            match &ingress.public {
-                PublicIngressStatus::Direct => out.label("Public ingress", "ports 80/443")?,
-                PublicIngressStatus::Tunnel {
-                    id,
-                    connected,
-                    message,
-                } => {
-                    out.label(
-                        "Public ingress",
-                        format_args!(
-                            "Cloudflare Tunnel {id} ({})",
-                            if *connected {
-                                "connected"
-                            } else {
-                                "not connected"
-                            }
-                        ),
-                    )?;
-                    if !connected {
-                        out.label("Tunnel problem", message)?;
-                    }
-                }
-            }
-            let private = &ingress.private;
-            if private.enabled {
+    }
+    if let Some(ingress) = self.ingress.filter(|ingress| ingress.enabled) {
+        out.label(
+            "Public listener",
+            format_args!("{}: {}", health(ingress.healthy), ingress.message),
+        )?;
+        match &ingress.public {
+            PublicIngressStatus::Direct => out.label("Public ingress", "ports 80/443")?,
+            PublicIngressStatus::Tunnel {
+                id,
+                connected,
+                message,
+            } => {
                 out.label(
-                    "Private listener",
+                    "Public ingress",
                     format_args!(
-                        "apps node {} ({}, {})",
-                        private.dns_name.as_deref().unwrap_or("not joined"),
-                        if private.state.is_empty() {
-                            "unknown"
+                        "Cloudflare Tunnel {id} ({})",
+                        if *connected {
+                            "connected"
                         } else {
-                            &private.state
-                        },
-                        if private.addresses.is_empty() {
-                            "no tailnet addresses".into()
-                        } else {
-                            private.addresses.join(", ")
-                        },
+                            "not connected"
+                        }
                     ),
                 )?;
-                if !private.healthy {
-                    out.label("Private listener problem", &private.message)?;
+                if !connected {
+                    out.label("Tunnel problem", message)?;
                 }
             }
         }
-        match &s.previews {
-            Some(previews) => previews.render_human(out)?,
-            None => out.label("Previews", "unavailable: the daemon could not count them")?,
+        let private = &ingress.private;
+        if private.enabled {
+            out.label(
+                "Private listener",
+                format_args!(
+                    "apps node {} ({}, {})",
+                    private.dns_name.as_deref().unwrap_or("not joined"),
+                    if private.state.is_empty() {
+                        "unknown"
+                    } else {
+                        &private.state
+                    },
+                    join_or(&private.addresses, "no tailnet addresses"),
+                ),
+            )?;
+            if !private.healthy {
+                out.label("Private listener problem", &private.message)?;
+            }
         }
-        s.dns.render_human(out)
     }
-}
+    match &s.previews {
+        Some(previews) => previews.render_human(out)?,
+        None => out.label("Previews", "unavailable: the daemon could not count them")?,
+    }
+    s.dns.render_human(out)
+});
 
 // The built images cleanup kept, and what it removed since the daemon started.
 report!(ImageStatus, self, out, {
@@ -203,78 +214,45 @@ pub(crate) struct FileRow {
     pub(crate) file: ServiceFile,
 }
 
-impl Report for Vec<FileRow> {
-    type Json = [FileRow];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No files.");
-        }
-        out.heading("SERVICE  TARGET  MODE  SOURCE")?;
-        for row in self {
-            let source = match &row.file.source {
-                FileSource::Path(path) => format!("repository {path}"),
-                FileSource::Content(content) => format!("inline, {} bytes", content.len()),
-            };
-            out.line(format_args!(
-                "{}  {}  {}  {source}",
-                row.service, row.file.target, row.file.mode
-            ))?;
-        }
-        Ok(())
-    }
-}
+report!(Vec<FileRow> as [FileRow], self, out, {
+    out.table(self, "No files.", "SERVICE  TARGET  MODE  SOURCE", |out, row| {
+        let source = match &row.file.source {
+            FileSource::Path(path) => format!("repository {path}"),
+            FileSource::Content(content) => format!("inline, {} bytes", content.len()),
+        };
+        out.line(format_args!(
+            "{}  {}  {}  {source}",
+            row.service, row.file.target, row.file.mode
+        ))
+    })
+});
 
-/// `export list` result.
-impl Report for Vec<Export> {
-    type Json = [Export];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No exports.");
-        }
-        out.heading("SERVICE  APPLICATIONS  PREVIEWS")?;
-        for export in self {
-            out.line(format_args!(
-                "{}  {}  {}",
-                export.service,
-                export.applications.join(","),
-                if export.previews { "yes" } else { "no" }
-            ))?;
-        }
-        Ok(())
-    }
-}
+// `export list` result.
+report!(Vec<Export> as [Export], self, out, {
+    out.table(self, "No exports.", "SERVICE  APPLICATIONS  PREVIEWS", |out, export| {
+        out.line(format_args!(
+            "{}  {}  {}",
+            export.service,
+            export.applications.join(","),
+            if export.previews { "yes" } else { "no" }
+        ))
+    })
+});
 
-/// `import list` result.
-impl Report for Vec<Import> {
-    type Json = [Import];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No imports.");
-        }
-        out.heading("NAME  ENVIRONMENT")?;
-        for import in self {
-            out.line(format_args!(
-                "{}.{}  {}",
-                import.service,
-                import.application,
-                import
-                    .environment
-                    .as_ref()
-                    .map_or("same name", Template::as_str)
-            ))?;
-        }
-        Ok(())
-    }
-}
+// `import list` result.
+report!(Vec<Import> as [Import], self, out, {
+    out.table(self, "No imports.", "NAME  ENVIRONMENT", |out, import| {
+        out.line(format_args!(
+            "{}.{}  {}",
+            import.service,
+            import.application,
+            import
+                .environment
+                .as_ref()
+                .map_or("same name", Template::as_str)
+        ))
+    })
+});
 
 /// One deployed route of `route list`, with its environment's name.
 #[derive(Serialize)]
@@ -284,17 +262,12 @@ pub(crate) struct RouteRow {
     pub(crate) route: RouteStatus,
 }
 
-impl Report for Vec<RouteRow> {
-    type Json = [RouteRow];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No deployed routes.");
-        }
-        out.heading("HOSTNAME  NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS")?;
-        for row in self {
+report!(Vec<RouteRow> as [RouteRow], self, out, {
+    out.table(
+        self,
+        "No deployed routes.",
+        "HOSTNAME  NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS",
+        |out, row| {
             let route = &row.route;
             out.line(format_args!(
                 "{}  {}  {}  {}  {}  {}  {}  {}",
@@ -310,10 +283,10 @@ impl Report for Vec<RouteRow> {
             if route.state != "ready" {
                 out.line(format_args!("  {}", route.message))?;
             }
-        }
-        Ok(())
-    }
-}
+            Ok(())
+        },
+    )
+});
 
 // DNS providers with their zones and health, then DNS-01 certificates; shown
 // by `status` and `dns refresh`.
@@ -324,21 +297,13 @@ report!(DnsStatus, self, out, {
             format_args!(
                 "{} ({}{}): {}",
                 provider.kind,
-                if provider.healthy {
-                    "healthy"
-                } else {
-                    "unhealthy"
-                },
+                health(provider.healthy),
                 if provider.manage_records {
                     ", manages route records"
                 } else {
                     ""
                 },
-                if provider.zones.is_empty() {
-                    "no zones".into()
-                } else {
-                    provider.zones.join(", ")
-                },
+                join_or(&provider.zones, "no zones"),
             ),
         )?;
         if !provider.healthy {
@@ -351,11 +316,7 @@ report!(DnsStatus, self, out, {
             format_args!(
                 "{} for {} (expires at Unix ms {})",
                 certificate.name,
-                if certificate.hostnames.is_empty() {
-                    "no routes".into()
-                } else {
-                    certificate.hostnames.join(", ")
-                },
+                join_or(&certificate.hostnames, "no routes"),
                 certificate
                     .expires_at_ms
                     .map_or_else(|| "never issued".into(), |at| at.to_string()),
@@ -374,14 +335,12 @@ pub(crate) struct ProfilesReport<'a> {
     pub(crate) profiles: Vec<ProfileSummary<'a>>,
 }
 report!(ProfilesReport<'_>, self, out, {
-    if self.profiles.is_empty() {
-        return out.line("No profiles configured.");
-    }
-    out.heading("NAME  ENDPOINT")?;
-    for profile in &self.profiles {
-        out.line(format_args!("{}  {}", profile.name, profile.endpoint))?;
-    }
-    Ok(())
+    out.table(
+        &self.profiles,
+        "No profiles configured.",
+        "NAME  ENDPOINT",
+        |out, profile| out.line(format_args!("{}  {}", profile.name, profile.endpoint)),
+    )
 });
 
 /// One environment with its status, as listed by `env list` and inside `app list`.
@@ -457,19 +416,216 @@ impl Names<'_> {
             DeploymentOrigin::Local(snapshot) => snapshot_origin(snapshot),
         }
     }
+
+    /// One release: its commit, image availability, each service's image
+    /// and provenance, and every deployment that received it.
+    fn release(self, out: &mut HumanWriter<'_>, release: &ReleaseView) -> io::Result<()> {
+        out.line(format_args!(
+            "{}  {}  created {}",
+            release.id,
+            release.release.commit().map_or_else(
+                || "saved manifest".to_owned(),
+                |commit| format!("commit {commit}")
+            ),
+            release.created_at_ms
+        ))?;
+        if let Some(availability) = &release.availability {
+            let services =
+                |missing: &[ServiceImage]| join_or(missing.iter().map(|image| &image.service), "");
+            out.label(
+                "  Images",
+                match availability {
+                    ReleaseAvailability::Present => "all present".into(),
+                    ReleaseAvailability::Pullable { missing } => format!(
+                        "missing for {}; deploying it pulls them again by digest",
+                        services(missing)
+                    ),
+                    ReleaseAvailability::Unavailable { missing } => format!(
+                        "missing for {}; it can't be deployed again",
+                        services(missing)
+                    ),
+                },
+            )?;
+        }
+        for (service, source) in release.release.sources() {
+            out.label(
+                &format!("  {service}"),
+                match source {
+                    ResolvedSource::Image {
+                        requested,
+                        digest_reference,
+                    } => format!("{digest_reference} (pulled {requested})"),
+                    ResolvedSource::Git {
+                        requested,
+                        commit,
+                        image_id,
+                        ..
+                    } => format!(
+                        "{image_id} (built from {} at {commit})",
+                        repository(requested)
+                    ),
+                },
+            )?;
+        }
+        for promotion in &release.promotions {
+            out.label(
+                "  Deployed to",
+                format_args!(
+                    "{} as {}, {}",
+                    self.environment(promotion.environment_id.as_str()),
+                    promotion.deployment_id,
+                    self.origin(&promotion.origin)
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// A plan's release: the release, where it comes from, the volumes it
+    /// creates empty, and every secret the environment can't use yet.
+    fn release_plan(self, out: &mut HumanWriter<'_>, plan: &ReleasePlan) -> io::Result<()> {
+        out.blank()?;
+        out.heading("Release:")?;
+        self.release(out, &plan.release)?;
+        out.label("  Origin", self.origin(&plan.origin))?;
+        for volume in &plan.new_volumes {
+            out.label("  New volume", format_args!("{volume} (created empty)"))?;
+        }
+        for problem in &plan.secrets {
+            let (secret, problem) = match problem {
+                SecretProblem::Missing { secret } => {
+                    (secret, "missing from the application's store")
+                }
+                SecretProblem::AccessDenied { secret } => {
+                    (secret, "its access list excludes this environment")
+                }
+                SecretProblem::Unavailable { secret } => {
+                    (secret, "key recovery discarded its value; store a new one")
+                }
+                SecretProblem::Deleting { secret } => (secret, "it is being deleted"),
+            };
+            out.label("  Secret", format_args!("{secret}: {problem}"))?;
+        }
+        Ok(())
+    }
+
+    /// Renders a plan: manifest changes, an action summary with per-action
+    /// risk and reason, a release's, then diagnostics.
+    fn plan(self, out: &mut HumanWriter<'_>, plan: &PlanView) -> io::Result<()> {
+        out.label("Application", &plan.application_id)?;
+        if plan.identical {
+            out.blank()?;
+            out.line(if plan.operation.is_some() {
+                "Configuration matches the latest deployment snapshot."
+            } else {
+                "Configuration matches the saved configuration."
+            })?;
+        }
+        if !plan.changes.is_empty() {
+            out.blank()?;
+            out.heading("Changes:")?;
+            out.manifest_changes(&plan.changes)?;
+        }
+        if !plan.environments.is_empty() {
+            out.blank()?;
+            out.heading("Environments:")?;
+            out.environment_changes(&plan.environments)?;
+        }
+        let summary = plan.plan.summary();
+        out.blank()?;
+        out.label(
+            "Actions",
+            format_args!(
+                "{} total · {} runtime mutations · {} destructive · {} blocking",
+                summary.action_count,
+                summary.mutation_count,
+                summary.destructive_count,
+                summary.blocking_conflicts
+            ),
+        )?;
+        for (index, action) in plan.plan.actions.iter().enumerate() {
+            let mut description = action.human_description().to_ascii_lowercase();
+            if let Some(first) = description.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            out.line(format_args!("  {:>2}. {description}", index + 1))?;
+            let risk = match action.kind.risk() {
+                ActionRisk::None => "no risk",
+                ActionRisk::Availability => "availability",
+                ActionRisk::DataAdjacent => "data-adjacent",
+                ActionRisk::Destructive => "destructive",
+            };
+            let reason = match &action.reason {
+                ActionReason::Missing => "missing".into(),
+                ActionReason::Drift { fields } if fields.is_empty() => "drift".into(),
+                ActionReason::Drift { fields } => format!("drift ({})", fields.join(", ")),
+                ActionReason::Obsolete => "obsolete".into(),
+                ActionReason::ConvergencePending => "convergence pending".into(),
+                ActionReason::ResolutionRequired => "resolution required".into(),
+                ActionReason::ApplicationDeletion => "application deletion".into(),
+                ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
+                ActionReason::DeploymentJob => "deployment job".into(),
+            };
+            out.line(format_args!("      {risk} · {reason}"))?;
+        }
+        if let Some(release) = &plan.release {
+            self.release_plan(out, release)?;
+        }
+        out.variables(&plan.variables)?;
+        if !plan.rollouts.is_empty() {
+            out.blank()?;
+            out.heading("Rollout:")?;
+            for rollout in &plan.rollouts {
+                out.line(format_args!(
+                    "  {}: {} ({}) · monitor {}s",
+                    rollout.service,
+                    rollout.order,
+                    rollout.order_source.as_str(),
+                    rollout.monitor_seconds
+                ))?;
+            }
+        }
+        for diagnostic in &plan.plan.diagnostics {
+            out.blank()?;
+            out.label(
+                "Diagnostic",
+                format_args!("{} [{}]", diagnostic.code, diagnostic.resource),
+            )?;
+            out.line(format_args!(
+                "  {}{}",
+                diagnostic.message,
+                if diagnostic.blocking {
+                    " (blocking)"
+                } else {
+                    ""
+                }
+            ))?;
+        }
+        Ok(())
+    }
 }
 
 /// A report whose human rendering names environments; its JSON is the
 /// value's own.
 pub(crate) struct Named<'a, T> {
-    pub(crate) value: &'a T,
-    pub(crate) names: Names<'a>,
+    value: &'a T,
+    names: Names<'a>,
+}
+
+impl<'a, T> Named<'a, T> {
+    /// `value`, rendered naming the environments of `application`.
+    pub(crate) fn new(value: &'a T, application: &'a ApplicationView) -> Self {
+        Self {
+            value,
+            names: Names(&application.environments),
+        }
+    }
 }
 
 // Implements `Report` for `Named<T>`, rendering with `names` in scope.
 macro_rules! named {
     ($ty:ty, $value:ident, $names:ident, $out:ident, $body:block) => {
-        impl Report for Named<'_, $ty> {
+        impl $crate::output::Report for Named<'_, $ty> {
             type Json = $ty;
             fn json(&self) -> &$ty {
                 self.value
@@ -482,35 +638,30 @@ macro_rules! named {
     };
 }
 
-impl Report for Vec<EnvironmentRow> {
-    type Json = [EnvironmentRow];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No environments.");
-        }
-        out.heading("NAME  STATE  SOURCE  RESOLVED  ID")?;
-        let environments = self
-            .iter()
-            .map(|row| row.environment.clone())
-            .collect::<Vec<_>>();
-        for row in self {
-            let environment = &row.environment;
-            out.line(format_args!(
-                "{}  {}  {}  {}  {}",
-                environment.name,
-                row.state(),
-                Names(&environments).source(&environment.source),
-                environment
-                    .resolved_generation
-                    .map_or_else(|| "none".to_owned(), |v| v.to_string()),
-                environment.id
-            ))?;
-        }
-        Ok(())
-    }
+report!(Vec<EnvironmentRow> as [EnvironmentRow], self, out, {
+    let environments = self
+        .iter()
+        .map(|row| row.environment.clone())
+        .collect::<Vec<_>>();
+    let names = Names(&environments);
+    out.table(self, "No environments.", "NAME  STATE  SOURCE  RESOLVED  ID", |out, row| {
+        let environment = &row.environment;
+        out.line(format_args!(
+            "{}  {}  {}  {}  {}",
+            environment.name,
+            row.state(),
+            names.source(&environment.source),
+            resolved_generation(environment),
+            environment.id
+        ))
+    })
+});
+
+/// The configuration revision an environment last resolved, or `none`.
+fn resolved_generation(environment: &EnvironmentView) -> String {
+    environment
+        .resolved_generation
+        .map_or_else(|| "none".to_owned(), |generation| generation.to_string())
 }
 
 /// One `app list` row.
@@ -521,28 +672,23 @@ pub(crate) struct ApplicationRow {
 }
 
 report!(Page<ApplicationRow>, self, out, {
-    if self.items.is_empty() {
-        return out.line("No applications.");
-    }
-    out.heading("NAME  ENVIRONMENTS  GENERATION  ID")?;
-    for row in &self.items {
-        let environments = if row.environments.is_empty() {
-            "none".to_owned()
-        } else {
-            row.environments
-                .iter()
-                .map(|environment| {
+    out.table(
+        &self.items,
+        "No applications.",
+        "NAME  ENVIRONMENTS  GENERATION  ID",
+        |out, row| {
+            let environments = join_or(
+                row.environments.iter().map(|environment| {
                     format!("{} {}", environment.environment.name, environment.state())
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        out.line(format_args!(
-            "{}  {}  {}  {}",
-            row.application.name, environments, row.application.generation, row.application.id
-        ))?;
-    }
-    Ok(())
+                }),
+                "none",
+            );
+            out.line(format_args!(
+                "{}  {}  {}  {}",
+                row.application.name, environments, row.application.generation, row.application.id
+            ))
+        },
+    )
 });
 
 /// `app show` result: configuration, environments with their state, and
@@ -554,6 +700,7 @@ pub(crate) struct ShowReport<'a> {
 }
 report!(ShowReport<'_>, self, out, {
     let app = self.application;
+    let spec = app.application.spec();
     out.line(format_args!(
         "{} ({})",
         app.application.metadata().name,
@@ -561,7 +708,7 @@ report!(ShowReport<'_>, self, out, {
     ))?;
     out.blank()?;
     out.label("Configuration revision", app.generation)?;
-    if let Some(connection) = &app.application.spec().manifest {
+    if let Some(connection) = &spec.manifest {
         out.label("Sync", connection.sync)?;
         if let Some(check) = &app.sync_check {
             match &check.error {
@@ -570,11 +717,6 @@ report!(ShowReport<'_>, self, out, {
             }
         }
     }
-    let environments = self
-        .environments
-        .iter()
-        .map(|row| row.environment.clone())
-        .collect::<Vec<_>>();
     for row in self.environments {
         out.label(
             "Environment",
@@ -583,7 +725,7 @@ report!(ShowReport<'_>, self, out, {
                 row.environment.name,
                 row.environment.id,
                 row.state(),
-                Names(&environments).source(&row.environment.source)
+                Names(&app.environments).source(&row.environment.source)
             ),
         )?;
     }
@@ -593,9 +735,9 @@ report!(ShowReport<'_>, self, out, {
     if !app.drift.is_empty() {
         out.blank()?;
         out.heading("Differs from the manifest:")?;
-        Names::environment_changes(out, &app.drift)?;
+        out.environment_changes(&app.drift)?;
     }
-    for service in &app.application.spec().services {
+    for service in &spec.services {
         out.blank()?;
         out.label("Service", &service.name)?;
         out.label("  Replicas", &service.replicas)?;
@@ -606,20 +748,13 @@ report!(ShowReport<'_>, self, out, {
             }
         }
     }
-    if !app.application.spec().volumes.is_empty() {
+    if !spec.volumes.is_empty() {
         out.label(
             "Named volumes",
-            app.application
-                .spec()
-                .volumes
-                .iter()
-                .map(|v| v.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
+            join_or(spec.volumes.iter().map(|volume| &volume.name), ""),
         )?;
         out.line("Named volumes are retained on deletion.")?;
     }
-    let spec = app.application.spec();
     if !spec.variables.is_empty()
         || !spec.environments.is_empty()
         || !spec.previews.variables.is_empty()
@@ -681,17 +816,10 @@ fn sync(state: SyncState, environment: &EnvironmentView) -> String {
 /// local snapshot 0123456789ab, uploaded complete
 /// ```
 fn snapshot_origin(snapshot: &LocalSnapshot) -> String {
-    let short = |commit: &str| commit[..commit.len().min(12)].to_owned();
+    let commit = short_commit(&snapshot.commit);
     match &snapshot.base {
-        Some(base) => format!(
-            "local snapshot {} on {}",
-            short(&snapshot.commit),
-            short(base)
-        ),
-        None => format!(
-            "local snapshot {}, uploaded complete",
-            short(&snapshot.commit)
-        ),
+        Some(base) => format!("local snapshot {commit} on {}", short_commit(base)),
+        None => format!("local snapshot {commit}, uploaded complete"),
     }
 }
 
@@ -713,18 +841,13 @@ fn branch_state(state: &BranchState) -> String {
     }
 }
 
-/// `preview list` result.
-impl Report for Vec<PreviewView> {
-    type Json = [PreviewView];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No previews.");
-        }
-        out.heading("BRANCH  SLOT  SLUG  STATE  BRANCH STATE  SYNC  SYNCED  LAST OPERATION  ID")?;
-        for view in self {
+// `preview list` result.
+report!(Vec<PreviewView> as [PreviewView], self, out, {
+    out.table(
+        self,
+        "No previews.",
+        "BRANCH  SLOT  SLUG  STATE  BRANCH STATE  SYNC  SYNCED  LAST OPERATION  ID",
+        |out, view| {
             let preview = &view.preview;
             let slot = preview
                 .preview()
@@ -743,16 +866,15 @@ impl Report for Vec<PreviewView> {
                     .synced
                     .as_ref()
                     .and_then(|synced| synced.commit.as_deref())
-                    .map_or("-", |commit| &commit[..commit.len().min(12)]),
+                    .map_or("-", short_commit),
                 view.latest_operation
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), |op| format!("{} {}", op.state, op.id)),
                 preview.id
-            ))?;
-        }
-        Ok(())
-    }
-}
+            ))
+        },
+    )
+});
 
 report!(PreviewView, self, out, {
     let preview = &self.preview;
@@ -835,6 +957,33 @@ report!(CreatedPreviewReport<'_>, self, out, {
 });
 
 impl HumanWriter<'_> {
+    /// Writes `empty` when there are no `rows`, else the `heading` line and
+    /// each row.
+    fn table<T>(
+        &mut self,
+        rows: &[T],
+        empty: &str,
+        heading: &str,
+        mut row: impl FnMut(&mut Self, &T) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if rows.is_empty() {
+            return self.line(empty);
+        }
+        self.heading(heading)?;
+        for item in rows {
+            row(self, item)?;
+        }
+        Ok(())
+    }
+
+    /// The `Next cursor` label of a page that has more items.
+    pub(crate) fn next_cursor(&mut self, cursor: Option<&str>) -> io::Result<()> {
+        match cursor {
+            Some(cursor) => self.label("Next cursor", cursor),
+            None => Ok(()),
+        }
+    }
+
     /// One `URL` label per URL, with its name and state, and what keeps it
     /// pending; every command that shows URLs lists them this way.
     fn urls<'u>(&mut self, urls: impl IntoIterator<Item = &'u RouteUrl>) -> io::Result<()> {
@@ -853,6 +1002,56 @@ impl HumanWriter<'_> {
         }
         Ok(())
     }
+
+    /// Renders manifest field changes, one per line: `+` added, `-` removed,
+    /// `~` changed.
+    fn manifest_changes(&mut self, changes: &[ManifestChange]) -> io::Result<()> {
+        for change in changes {
+            let (marker, value) = match (&change.before, &change.after) {
+                (None, Some(after)) => ('+', ChangeValue::render(after)),
+                (Some(before), None) => ('-', ChangeValue::render(before)),
+                (Some(before), Some(after)) => (
+                    '~',
+                    format!(
+                        "{} → {}",
+                        ChangeValue::render(before),
+                        ChangeValue::render(after)
+                    ),
+                ),
+                (None, None) => ('~', "absent".into()),
+            };
+            self.change(marker, &change.field, &value)?;
+        }
+        Ok(())
+    }
+
+    /// Renders how the manifest's declarations change environments, one per
+    /// line: `+` creates one, `!` reports one it no longer declares, and `~`
+    /// changes one.
+    fn environment_changes(&mut self, changes: &[EnvironmentChange]) -> io::Result<()> {
+        for change in changes {
+            let marker = match change {
+                EnvironmentChange::Create { .. } => '+',
+                EnvironmentChange::Undeclared { .. } => '!',
+                EnvironmentChange::Source { .. } | EnvironmentChange::Sync { .. } => '~',
+            };
+            self.change(marker, change.environment().as_str(), &change.summary())?;
+        }
+        Ok(())
+    }
+
+    /// Lists the rendered value of each reference, when there are any.
+    fn variables(&mut self, variables: &BTreeMap<String, VariableValue>) -> io::Result<()> {
+        if variables.is_empty() {
+            return Ok(());
+        }
+        self.blank()?;
+        self.heading("Variables:")?;
+        for (reference, value) in variables {
+            self.line(format_args!("  {reference} = {value}"))?;
+        }
+        Ok(())
+    }
 }
 
 // `wait` result: the deployment is as ready as asked.
@@ -868,19 +1067,13 @@ report!(Deployed, self, out, {
 // it is pending.
 report!(RouteUrl, self, out, { out.line(&self.url) });
 
-/// `url` result.
-impl Report for Vec<RouteUrl> {
-    type Json = [RouteUrl];
-    fn json(&self) -> &Self::Json {
-        self
+// `url` result.
+report!(Vec<RouteUrl> as [RouteUrl], self, out, {
+    if self.is_empty() {
+        return out.line("No routes.");
     }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No routes.");
-        }
-        out.urls(self)
-    }
-}
+    out.urls(self)
+});
 
 /// A deploy accepted with `--no-wait`: the accepted operation's fields, and
 /// the deployment's.
@@ -897,29 +1090,23 @@ report!(AcceptedDeploymentReport, self, out, {
     ))
 });
 
-/// `preview prune` result: the previews whose deletion was accepted, with
-/// their operations, since `--no-wait` reports before they finish.
-impl Report for Vec<DeletedPreview> {
-    type Json = [DeletedPreview];
-    fn json(&self) -> &Self::Json {
-        self
+// `preview prune` result: the previews whose deletion was accepted, with
+// their operations, since `--no-wait` reports before they finish.
+report!(Vec<DeletedPreview> as [DeletedPreview], self, out, {
+    if self.is_empty() {
+        return out.line("No preview deleted.");
     }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        if self.is_empty() {
-            return out.line("No preview deleted.");
-        }
-        for deleted in self {
-            out.line(format_args!(
-                "Deleting preview {} of branch {} ({}) with its volumes: operation {}",
-                deleted.preview.name,
-                preview_branch(&deleted.preview),
-                deleted.preview.id,
-                deleted.operation.operation_id
-            ))?;
-        }
-        Ok(())
+    for deleted in self {
+        out.line(format_args!(
+            "Deleting preview {} of branch {} ({}) with its volumes: operation {}",
+            deleted.preview.name,
+            preview_branch(&deleted.preview),
+            deleted.preview.id,
+            deleted.operation.operation_id
+        ))?;
     }
-}
+    Ok(())
+});
 
 /// `env show` result: an environment's intent, the manifest it deploys, and
 /// its runtime state.
@@ -967,15 +1154,10 @@ report!(EnvironmentShowReport<'_>, self, out, {
         self.detail
             .release
             .as_ref()
-            .map_or("none", piqueld_client::ReleaseId::as_str),
+            .map_or("none", ReleaseId::as_str),
     )?;
     out.label("Configuration revision", application.generation)?;
-    out.label(
-        "Resolved revision",
-        environment
-            .resolved_generation
-            .map_or_else(|| "none".to_owned(), |v| v.to_string()),
-    )?;
+    out.label("Resolved revision", resolved_generation(environment))?;
     let values = manifest
         .iter()
         .flat_map(|manifest| manifest.values(&environment.target()));
@@ -1092,112 +1274,8 @@ named!(Page<ReleaseView>, page, names, out, {
     for release in &page.items {
         names.release(out, release)?;
     }
-    if let Some(cursor) = &page.next_cursor {
-        out.label("Next cursor", cursor)?;
-    }
-    Ok(())
+    out.next_cursor(page.next_cursor.as_deref())
 });
-
-impl Names<'_> {
-    /// One release: its commit, image availability, each service's image
-    /// and provenance, and every deployment that received it.
-    fn release(self, out: &mut HumanWriter<'_>, release: &ReleaseView) -> io::Result<()> {
-        out.line(format_args!(
-            "{}  {}  created {}",
-            release.id,
-            release.release.commit().map_or_else(
-                || "saved manifest".to_owned(),
-                |commit| format!("commit {commit}")
-            ),
-            release.created_at_ms
-        ))?;
-        if let Some(availability) = &release.availability {
-            let services = |missing: &[ServiceImage]| {
-                missing
-                    .iter()
-                    .map(|image| image.service.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            out.label(
-                "  Images",
-                match availability {
-                    ReleaseAvailability::Present => "all present".into(),
-                    ReleaseAvailability::Pullable { missing } => format!(
-                        "missing for {}; deploying it pulls them again by digest",
-                        services(missing)
-                    ),
-                    ReleaseAvailability::Unavailable { missing } => format!(
-                        "missing for {}; it can't be deployed again",
-                        services(missing)
-                    ),
-                },
-            )?;
-        }
-        for (service, source) in release.release.sources() {
-            out.label(
-                &format!("  {service}"),
-                match source {
-                    ResolvedSource::Image {
-                        requested,
-                        digest_reference,
-                    } => format!("{digest_reference} (pulled {requested})"),
-                    ResolvedSource::Git {
-                        requested,
-                        commit,
-                        image_id,
-                        ..
-                    } => format!(
-                        "{image_id} (built from {} at {commit})",
-                        repository(requested)
-                    ),
-                },
-            )?;
-        }
-        for promotion in &release.promotions {
-            out.label(
-                "  Deployed to",
-                format_args!(
-                    "{} as {}, {}",
-                    self.environment(promotion.environment_id.as_str()),
-                    promotion.deployment_id,
-                    self.origin(&promotion.origin)
-                ),
-            )?;
-        }
-        Ok(())
-    }
-}
-
-impl Names<'_> {
-    /// A plan's release: the release, where it comes from, the volumes it
-    /// creates empty, and every secret the environment can't use yet.
-    fn release_plan(self, out: &mut HumanWriter<'_>, plan: &ReleasePlan) -> io::Result<()> {
-        out.blank()?;
-        out.heading("Release:")?;
-        self.release(out, &plan.release)?;
-        out.label("  Origin", self.origin(&plan.origin))?;
-        for volume in &plan.new_volumes {
-            out.label("  New volume", format_args!("{volume} (created empty)"))?;
-        }
-        for problem in &plan.secrets {
-            let (secret, problem) = match problem {
-                SecretProblem::Missing { secret } => {
-                    (secret, "missing from the application's store")
-                }
-                SecretProblem::AccessDenied { secret } => {
-                    (secret, "its access list excludes this environment")
-                }
-                SecretProblem::Unavailable { secret } => {
-                    (secret, "key recovery discarded its value; store a new one")
-                }
-                SecretProblem::Deleting { secret } => (secret, "it is being deleted"),
-            };
-            out.label("  Secret", format_args!("{secret}: {problem}"))?;
-        }
-        Ok(())
-    }
-}
 
 /// `env promote` result: the deployment, the release it pinned and where it
 /// came from, and, once waited for, its outcome.
@@ -1276,93 +1354,72 @@ report!(Page<BuildRecord>, self, out, {
             build.id, build.environment_id, subject, build.state, build.started_at_ms
         ))?;
     }
-    if let Some(cursor) = &self.next_cursor {
-        out.label("Next cursor", cursor)?;
+    out.next_cursor(self.next_cursor.as_deref())
+});
+
+// Secret metadata list, flagging unreadable values and pending deletions.
+report!(Vec<SecretMetadata> as [SecretMetadata], self, out, {
+    for secret in self {
+        out.line(format_args!(
+            "{}  generation {}{}{}",
+            secret.name,
+            secret.generation,
+            if secret.unavailable {
+                "  value unavailable; the next deploy generates a new one"
+            } else {
+                ""
+            },
+            if secret.deleting {
+                "  deletion pending; retry delete"
+            } else {
+                ""
+            }
+        ))?;
     }
     Ok(())
 });
-
-/// Secret metadata list, flagging unreadable values and pending deletions.
-impl Report for Vec<SecretMetadata> {
-    type Json = [SecretMetadata];
-    fn json(&self) -> &Self::Json {
-        self
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        for secret in self {
-            out.line(format_args!(
-                "{}  generation {}{}{}",
-                secret.name,
-                secret.generation,
-                if secret.unavailable {
-                    "  value unavailable; the next deploy generates a new one"
-                } else {
-                    ""
-                },
-                if secret.deleting {
-                    "  deletion pending; retry delete"
-                } else {
-                    ""
-                }
-            ))?;
-        }
-        Ok(())
-    }
-}
 
 /// Stored secrets with their access, naming environments.
 pub(crate) struct StoredSecretsReport<'a> {
     pub(crate) secrets: &'a [StoredSecret],
     pub(crate) environments: &'a [EnvironmentView],
 }
-impl Report for StoredSecretsReport<'_> {
-    type Json = [StoredSecret];
-    fn json(&self) -> &Self::Json {
-        self.secrets
+report!(StoredSecretsReport<'_> as [StoredSecret] = secrets, self, out, {
+    for secret in self.secrets {
+        let metadata = &secret.metadata;
+        out.line(format_args!(
+            "{}  generation {}  {}{}{}",
+            metadata.name,
+            metadata.generation,
+            secret.access.describe(self.environments),
+            if metadata.unavailable {
+                "  value unavailable; replace value and deploy"
+            } else {
+                ""
+            },
+            if metadata.deleting {
+                "  deletion pending; retry delete"
+            } else {
+                ""
+            }
+        ))?;
     }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        for secret in self.secrets {
-            let metadata = &secret.metadata;
-            out.line(format_args!(
-                "{}  generation {}  {}{}{}",
-                metadata.name,
-                metadata.generation,
-                secret.access.describe(self.environments),
-                if metadata.unavailable {
-                    "  value unavailable; replace value and deploy"
-                } else {
-                    ""
-                },
-                if metadata.deleting {
-                    "  deletion pending; retry delete"
-                } else {
-                    ""
-                }
-            ))?;
-        }
-        Ok(())
-    }
-}
+    Ok(())
+});
 
 /// One stored secret after a change, naming the environments that may mount it.
 pub(crate) struct StoredSecretReport<'a> {
     pub(crate) secret: &'a StoredSecret,
     pub(crate) environments: &'a [EnvironmentView],
 }
-impl Report for StoredSecretReport<'_> {
-    type Json = StoredSecret;
-    fn json(&self) -> &Self::Json {
-        self.secret
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        out.line(format_args!(
-            "Saved {} generation {}, mountable by {}. Deploy to use it.",
-            self.secret.metadata.name,
-            self.secret.metadata.generation,
-            self.secret.access.describe(self.environments)
-        ))
-    }
-}
+report!(StoredSecretReport<'_> as StoredSecret = secret, self, out, {
+    out.line(format_args!(
+        "Saved {} generation {}, mountable by {}. Deploy to use it.",
+        self.secret.metadata.name,
+        self.secret.metadata.generation,
+        self.secret.access.describe(self.environments)
+    ))
+});
 
 report!(SecretMetadata, self, out, {
     out.line(format_args!(
@@ -1399,10 +1456,7 @@ report!(Page<Event>, self, out, {
                 .map_or_else(String::new, |actor| format!("  by {actor}"))
         ))?;
     }
-    if let Some(cursor) = &self.next_cursor {
-        out.label("Next cursor", cursor)?;
-    }
-    Ok(())
+    out.next_cursor(self.next_cursor.as_deref())
 });
 
 report!(Operation, self, out, {
@@ -1495,9 +1549,8 @@ impl<'a> DeletionReport<'a> {
     /// Deletion awaited until the environment disappeared.
     pub(crate) fn completed(accepted: &'a AcceptedOperation) -> Self {
         Self {
-            accepted,
             outcome: Some("deleted"),
-            volumes_retained: true,
+            ..Self::accepted(accepted)
         }
     }
 
@@ -1550,9 +1603,8 @@ impl<'a> ApplicationDeletionReport<'a> {
     /// Deletion awaited until the application disappeared.
     pub(crate) fn completed(deleted: &'a DeletedApplication) -> Self {
         Self {
-            deleted,
             outcome: Some("deleted"),
-            volumes_retained: true,
+            ..Self::accepted(deleted)
         }
     }
 }
@@ -1586,179 +1638,23 @@ report!(ValidManifestReport, self, out, {
 
 /// Saved TOML in human mode; a JSON string in machine mode.
 pub(crate) struct ManifestReport(pub(crate) String);
-impl Report for ManifestReport {
-    type Json = str;
-    fn json(&self) -> &str {
-        &self.0
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
-        out.line(self.0.trim_end())
-    }
-}
-
-impl Names<'_> {
-    /// Renders a plan: manifest changes, an action summary with per-action
-    /// risk and reason, a release's, then diagnostics.
-    fn plan(self, out: &mut HumanWriter<'_>, plan: &PlanView) -> io::Result<()> {
-        out.label("Application", &plan.application_id)?;
-        if plan.identical {
-            out.blank()?;
-            out.line(if plan.operation.is_some() {
-                "Configuration matches the latest deployment snapshot."
-            } else {
-                "Configuration matches the saved configuration."
-            })?;
-        }
-        if !plan.changes.is_empty() {
-            out.blank()?;
-            out.heading("Changes:")?;
-            Configuration::changes(out, &plan.changes)?;
-        }
-        if !plan.environments.is_empty() {
-            out.blank()?;
-            out.heading("Environments:")?;
-            Self::environment_changes(out, &plan.environments)?;
-        }
-        let summary = plan.plan.summary();
-        out.blank()?;
-        out.label(
-            "Actions",
-            format_args!(
-                "{} total · {} runtime mutations · {} destructive · {} blocking",
-                summary.action_count,
-                summary.mutation_count,
-                summary.destructive_count,
-                summary.blocking_conflicts
-            ),
-        )?;
-        for (index, action) in plan.plan.actions.iter().enumerate() {
-            let mut description = action.human_description().to_ascii_lowercase();
-            if let Some(first) = description.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
-            out.line(format_args!("  {:>2}. {description}", index + 1))?;
-            let risk = match action.kind.risk() {
-                ActionRisk::None => "no risk",
-                ActionRisk::Availability => "availability",
-                ActionRisk::DataAdjacent => "data-adjacent",
-                ActionRisk::Destructive => "destructive",
-            };
-            let reason = match &action.reason {
-                ActionReason::Missing => "missing".into(),
-                ActionReason::Drift { fields } if fields.is_empty() => "drift".into(),
-                ActionReason::Drift { fields } => format!("drift ({})", fields.join(", ")),
-                ActionReason::Obsolete => "obsolete".into(),
-                ActionReason::ConvergencePending => "convergence pending".into(),
-                ActionReason::ResolutionRequired => "resolution required".into(),
-                ActionReason::ApplicationDeletion => "application deletion".into(),
-                ActionReason::VolumeRetentionPolicy => "volume retention policy".into(),
-                ActionReason::DeploymentJob => "deployment job".into(),
-            };
-            out.line(format_args!("      {risk} · {reason}"))?;
-        }
-        if let Some(release) = &plan.release {
-            self.release_plan(out, release)?;
-        }
-        Configuration::variables(out, &plan.variables)?;
-        if !plan.rollouts.is_empty() {
-            out.blank()?;
-            out.heading("Rollout:")?;
-            for rollout in &plan.rollouts {
-                out.line(format_args!(
-                    "  {}: {} ({}) · monitor {}s",
-                    rollout.service,
-                    rollout.order,
-                    rollout.order_source.as_str(),
-                    rollout.monitor_seconds
-                ))?;
-            }
-        }
-        for diagnostic in &plan.plan.diagnostics {
-            out.blank()?;
-            out.label(
-                "Diagnostic",
-                format_args!("{} [{}]", diagnostic.code, diagnostic.resource),
-            )?;
-            out.line(format_args!(
-                "  {}{}",
-                diagnostic.message,
-                if diagnostic.blocking {
-                    " (blocking)"
-                } else {
-                    ""
-                }
-            ))?;
-        }
-        Ok(())
-    }
-}
-
-impl Names<'_> {
-    /// Renders how the manifest's declarations change environments, one per
-    /// line: `+` creates one, `!` reports one it no longer declares, and `~`
-    /// changes one.
-    fn environment_changes(
-        out: &mut HumanWriter<'_>,
-        changes: &[EnvironmentChange],
-    ) -> io::Result<()> {
-        for change in changes {
-            let marker = match change {
-                EnvironmentChange::Create { .. } => '+',
-                EnvironmentChange::Undeclared { .. } => '!',
-                EnvironmentChange::Source { .. } | EnvironmentChange::Sync { .. } => '~',
-            };
-            out.change(marker, change.environment().as_str(), &change.summary())?;
-        }
-        Ok(())
-    }
-}
+report!(ManifestReport as str = 0, self, out, {
+    out.line(self.0.trim_end())
+});
 
 report!(PlanView, self, out, { Names(&[]).plan(out, self) });
 
 named!(PlanView, plan, names, out, { names.plan(out, plan) });
 
 /// Human rendering of plan change values, which the daemon sends as JSON text.
-struct Configuration;
+struct ChangeValue;
 
-impl Configuration {
-    /// Renders manifest field changes, one per line: `+` added, `-` removed,
-    /// `~` changed.
-    fn changes(out: &mut HumanWriter<'_>, changes: &[ManifestChange]) -> io::Result<()> {
-        for change in changes {
-            let (marker, value) = match (&change.before, &change.after) {
-                (None, Some(after)) => ('+', Self::value(after)),
-                (Some(before), None) => ('-', Self::value(before)),
-                (Some(before), Some(after)) => (
-                    '~',
-                    format!("{} → {}", Self::value(before), Self::value(after)),
-                ),
-                (None, None) => ('~', "absent".into()),
-            };
-            out.change(marker, &change.field, &value)?;
-        }
-        Ok(())
-    }
-
-    /// Lists the rendered value of each reference, when there are any.
-    fn variables(
-        out: &mut HumanWriter<'_>,
-        variables: &std::collections::BTreeMap<String, piqueld_client::VariableValue>,
-    ) -> io::Result<()> {
-        if variables.is_empty() {
-            return Ok(());
-        }
-        out.blank()?;
-        out.heading("Variables:")?;
-        for (reference, value) in variables {
-            out.line(format_args!("  {reference} = {value}"))?;
-        }
-        Ok(())
-    }
-
+impl ChangeValue {
     /// Renders a change value, falling back to the raw text when it is not JSON.
-    fn value(value: &str) -> String {
-        serde_json::from_str(value).map_or_else(|_| value.to_owned(), |value| Self::render(&value))
+    fn render(value: &str) -> String {
+        serde_json::from_str(value).map_or_else(|_| value.to_owned(), |value| Self::prose(&value))
     }
+
     /// Flattens JSON into compact prose: empty values become `none`, image sources
     /// are shortened, and object keys lose underscores.
     ///
@@ -1768,31 +1664,24 @@ impl Configuration {
     /// {"read_only":true,"volume":"data"}         →  read only: true, volume: data
     /// ["a","b"]                                  →  a, b
     /// ```
-    fn render(value: &serde_json::Value) -> String {
+    fn prose(value: &serde_json::Value) -> String {
         use serde_json::Value;
         match value {
             Value::Null => "none".into(),
             Value::String(value) => value.clone(),
-            Value::Array(values) if values.is_empty() => "none".into(),
-            Value::Array(values) => values
-                .iter()
-                .map(Self::render)
-                .collect::<Vec<_>>()
-                .join(", "),
+            Value::Array(values) => join_or(values.iter().map(Self::prose), "none"),
             Value::Object(values) => {
                 if values.get("type").and_then(Value::as_str) == Some("image")
                     && let Some(image) = values.get("image").and_then(Value::as_str)
                 {
                     return format!("image {image}");
                 }
-                if values.is_empty() {
-                    return "none".into();
-                }
-                values
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k.replace('_', " "), Self::render(v)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                join_or(
+                    values
+                        .iter()
+                        .map(|(k, v)| format!("{}: {}", k.replace('_', " "), Self::prose(v))),
+                    "none",
+                )
             }
             value => value.to_string(),
         }

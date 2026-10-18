@@ -16,10 +16,17 @@
 //!    with a ref, and bundles it, thin against a base the application's
 //!    repository has, or with the whole history only when asked to (see
 //!    [`History`]).
-use crate::error::{CliError, ErrorKind, Result};
+use crate::{
+    error::{CliError, ErrorKind, Result},
+    support::short_commit,
+};
 use piqueld_client::{LocalSnapshot, SnapshotLimits};
-use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    process::{Output, Stdio},
+};
+use tokio::process::Command;
 
 /// Variables that would point Git commands at another repository, index,
 /// or object directory than the ones each command names.
@@ -102,8 +109,8 @@ impl Worktree {
 
     /// Finds the worktree containing `directory`.
     pub(crate) async fn at(directory: &Path) -> Result<Self> {
-        let output = Git::command(directory)
-            .args([
+        let output = Git::run(
+            Git::command(directory).args([
                 "rev-parse",
                 "--path-format=absolute",
                 "--show-toplevel",
@@ -111,10 +118,11 @@ impl Worktree {
                 "index",
                 "--git-path",
                 "objects",
-            ])
-            .output()
-            .await;
-        let output = Git::checked(output, "find the Git worktree").map_err(|_| {
+            ]),
+            "find the Git worktree",
+        )
+        .await
+        .map_err(|_| {
             CliError::new(
                 ErrorKind::Input,
                 "--local snapshots the Git worktree of the current directory, but there is none",
@@ -134,14 +142,11 @@ impl Worktree {
 
     /// The branch `HEAD` is on; `None` when it is detached.
     pub(crate) async fn branch(&self) -> Result<Option<String>> {
-        let output = Git::command(&self.root)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-            .output()
-            .await;
-        match output {
-            Ok(output) if output.status.code() == Some(1) => Ok(None),
-            output => Git::checked(output, "read the current branch").map(Some),
-        }
+        Git::optional(
+            Git::command(&self.root).args(["symbolic-ref", "--quiet", "--short", "HEAD"]),
+            "read the current branch",
+        )
+        .await
     }
 
     /// Commits the worktree's tracked and untracked files on top of `HEAD`,
@@ -156,13 +161,11 @@ impl Worktree {
         branch: &str,
         limits: Option<&SnapshotLimits>,
     ) -> Result<Snapshot<'_>> {
-        let head = Git::checked(
-            Git::command(&self.root)
-                .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
-                .output()
-                .await,
+        let head = Git::run(
+            Git::command(&self.root).args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]),
             "read HEAD",
         )
+        .await
         .map_err(|_| {
             CliError::new(
                 ErrorKind::Input,
@@ -205,22 +208,21 @@ impl Worktree {
             _ => {}
         }
         snapshot.stage(ignored).await?;
-        let staged = |arguments: &[&str]| snapshot.staged(arguments);
-        let tree = Git::checked(staged(&["write-tree"]).output().await, "write the tree")?;
-        let uncommitted = Git::checked(
-            staged(&["diff-index", "--cached", "--name-only", "-z", "HEAD"])
-                .output()
-                .await,
+        let tree = Git::run(&mut snapshot.staged(&["write-tree"]), "write the tree").await?;
+        let uncommitted = Git::run(
+            &mut snapshot.staged(&["diff-index", "--cached", "--name-only", "-z", "HEAD"]),
             "list uncommitted files",
-        )?
+        )
+        .await?
         .split('\0')
         .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect();
-        let submodules = Git::checked(
-            staged(&["ls-files", "--stage", "-z"]).output().await,
+        let submodules = Git::run(
+            &mut snapshot.staged(&["ls-files", "--stage", "-z"]),
             "list staged files",
-        )?
+        )
+        .await?
         .split('\0')
         .filter_map(|entry| entry.strip_prefix("160000 "))
         .filter_map(|entry| entry.split_once('\t').map(|(_, path)| path.to_owned()))
@@ -235,16 +237,16 @@ impl Worktree {
             ));
         }
         let message = format!("piquelctl snapshot of {branch}");
-        let commit = Git::checked(
-            staged(&["commit-tree", &tree, "-p", &head, "-m", &message])
+        let commit = Git::run(
+            snapshot
+                .staged(&["commit-tree", &tree, "-p", &head, "-m", &message])
                 .env("GIT_AUTHOR_NAME", "piquelctl")
                 .env("GIT_AUTHOR_EMAIL", "snapshot@piquelctl.invalid")
                 .env("GIT_COMMITTER_NAME", "piquelctl")
-                .env("GIT_COMMITTER_EMAIL", "snapshot@piquelctl.invalid")
-                .output()
-                .await,
+                .env("GIT_COMMITTER_EMAIL", "snapshot@piquelctl.invalid"),
             "commit the snapshot",
-        )?;
+        )
+        .await?;
         Ok(Snapshot {
             commit,
             uncommitted,
@@ -255,14 +257,13 @@ impl Worktree {
     /// The worktree's tracked files, NUL-separated, with `options` of
     /// `git ls-files` such as `--others`, honoring ignore rules.
     async fn tracked(&self, options: &[&str], action: &str) -> Result<String> {
-        Git::checked(
+        Git::run(
             Git::command(&self.root)
                 .args(["ls-files", "-z", "--cached", "--exclude-standard"])
-                .args(options)
-                .output()
-                .await,
+                .args(options),
             action,
         )
+        .await
     }
 
     /// Refuses `files`, the snapshot's, when they take more than `limits`
@@ -270,9 +271,7 @@ impl Worktree {
     /// in vain. Their size in the worktree stands for the snapshot's; the
     /// `ignored` ones, sent as committed, are left out of the estimate.
     async fn check_size(&self, files: &str, ignored: &str, limits: &SnapshotLimits) -> Result<()> {
-        let ignored = ignored
-            .split('\0')
-            .collect::<std::collections::BTreeSet<_>>();
+        let ignored = ignored.split('\0').collect::<BTreeSet<_>>();
         let mut sizes = Vec::new();
         for path in files
             .split('\0')
@@ -291,7 +290,7 @@ impl Worktree {
             .iter()
             .flat_map(|(_, path)| Path::new(path).ancestors().skip(1))
             .filter(|directory| !directory.as_os_str().is_empty())
-            .collect::<std::collections::BTreeSet<_>>()
+            .collect::<BTreeSet<_>>()
             .len() as u64;
         let total = sizes
             .iter()
@@ -329,13 +328,11 @@ impl Worktree {
     /// through a configured filter driver, such as Git LFS's, which store
     /// their own data in the repository.
     async fn check_supported(&self, files: &str) -> Result<()> {
-        let format = Git::checked(
-            Git::command(&self.root)
-                .args(["rev-parse", "--show-object-format"])
-                .output()
-                .await,
+        let format = Git::run(
+            Git::command(&self.root).args(["rev-parse", "--show-object-format"]),
             "read the object format",
-        )?;
+        )
+        .await?;
         if format != "sha1" {
             return Err(CliError::new(
                 ErrorKind::Input,
@@ -344,51 +341,46 @@ impl Worktree {
         }
         // Older Git marks a partial clone with `extensions.partialClone`,
         // newer Git with its remote's `promisor` setting.
-        let partial = Git::command(&self.root)
-            .args([
+        let partial = Git::optional(
+            Git::command(&self.root).args([
                 "config",
                 "--name-only",
                 "--get-regexp",
                 r"^(extensions\.partialclone|remote\..*\.promisor)$",
-            ])
-            .output()
-            .await;
-        // Exit code 1: not a partial clone.
-        match partial {
-            Ok(output) if output.status.code() == Some(1) => {}
-            output => {
-                Git::checked(output, "read whether this is a partial clone")?;
-                return Err(CliError::new(
-                    ErrorKind::Input,
-                    "--local does not support partial clones; clone without --filter",
-                ));
-            }
+            ]),
+            "read whether this is a partial clone",
+        )
+        .await?;
+        if partial.is_some() {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                "--local does not support partial clones; clone without --filter",
+            ));
         }
-        let configured = Git::command(&self.root)
-            .args([
+        let Some(drivers) = Git::optional(
+            Git::command(&self.root).args([
                 "config",
                 "--name-only",
                 "--get-regexp",
                 r"^filter\..*\.(clean|process)$",
-            ])
-            .output()
-            .await;
-        // Exit code 1: no filter driver is configured.
-        let drivers = match configured {
-            Ok(output) if output.status.code() == Some(1) => return Ok(()),
-            output => Git::checked(output, "read the filter drivers")?,
+            ]),
+            "read the filter drivers",
+        )
+        .await?
+        else {
+            return Ok(());
         };
         let drivers = drivers
             .lines()
             .filter_map(|key| key.strip_prefix("filter.")?.rsplit_once('.'))
             .map(|(driver, _)| driver.to_owned())
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut check = Git::command(&self.root);
-        check.args(["check-attr", "--stdin", "-z", "filter"]);
-        let attributes = Git::checked(
-            Git::with_input(check, files.to_owned()).await,
+            .collect::<BTreeSet<_>>();
+        let attributes = Git::run_with_input(
+            Git::command(&self.root).args(["check-attr", "--stdin", "-z", "filter"]),
+            files.to_owned(),
             "read the filters",
-        )?;
+        )
+        .await?;
         // `<path>\0filter\0<driver>\0`, for every file.
         let filtered = attributes
             .split('\0')
@@ -414,29 +406,29 @@ impl Worktree {
     /// The nearest ancestor of `HEAD` that a remote-tracking branch has,
     /// which the application's repository most likely has too.
     async fn base(&self) -> Result<Option<String>> {
-        let remotes = Git::checked(
-            Git::command(&self.root)
-                .args(["for-each-ref", "--format=%(objectname)", "refs/remotes"])
-                .output()
-                .await,
+        let remotes = Git::run(
+            Git::command(&self.root).args([
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/remotes",
+            ]),
             "list remote-tracking branches",
-        )?;
+        )
+        .await?;
         let mut remotes = remotes.lines().collect::<Vec<_>>();
         remotes.sort_unstable();
         remotes.dedup();
         if remotes.is_empty() {
             return Ok(None);
         }
-        let output = Git::command(&self.root)
-            .args(["merge-base", "HEAD"])
-            .args(remotes)
-            .output()
-            .await;
-        match output {
-            // No common ancestor.
-            Ok(output) if output.status.code() == Some(1) => Ok(None),
-            output => Git::checked(output, "find the base commit").map(Some),
-        }
+        // Exit code 1: no common ancestor.
+        Git::optional(
+            Git::command(&self.root)
+                .args(["merge-base", "HEAD"])
+                .args(remotes),
+            "find the base commit",
+        )
+        .await
     }
 }
 
@@ -453,7 +445,7 @@ impl Bundle {
         match &self.snapshot.base {
             Some(base) => format!(
                 "{size} against {}: {commits} unpushed commits and the snapshot",
-                &base[..base.len().min(12)]
+                short_commit(base)
             ),
             None => format!("{size} with the whole history: {commits} commits and the snapshot"),
         }
@@ -491,14 +483,13 @@ impl Snapshot<'_> {
         };
         let repository = self.directory.path().join("bundle.git");
         if !repository.exists() {
-            Git::checked(
+            Git::run(
                 Git::command(self.directory.path())
                     .args(["init", "--quiet", "--bare", "--object-format=sha1"])
-                    .arg(&repository)
-                    .output()
-                    .await,
+                    .arg(&repository),
                 "create the bundle repository",
-            )?;
+            )
+            .await?;
             let alternates = format!(
                 "{}\n{}\n",
                 self.objects().display(),
@@ -507,13 +498,11 @@ impl Snapshot<'_> {
             tokio::fs::write(repository.join("objects/info/alternates"), alternates)
                 .await
                 .map_err(|error| Git::failure("share the snapshot's objects", error))?;
-            Git::checked(
-                Git::command(&repository)
-                    .args(["update-ref", "refs/heads/snapshot", &self.commit])
-                    .output()
-                    .await,
+            Git::run(
+                Git::command(&repository).args(["update-ref", "refs/heads/snapshot", &self.commit]),
                 "name the snapshot",
-            )?;
+            )
+            .await?;
         }
         let path = self.directory.path().join(if base.is_some() {
             "thin.bundle"
@@ -528,18 +517,16 @@ impl Snapshot<'_> {
         if let Some(base) = &base {
             bundle.arg(format!("^{base}"));
         }
-        Git::checked(bundle.output().await, "create the bundle")?;
+        Git::run(&mut bundle, "create the bundle").await?;
         let range = match &base {
             Some(base) => format!("{base}..HEAD"),
             None => "HEAD".to_owned(),
         };
-        let commits = Git::checked(
-            Git::command(&self.worktree.root)
-                .args(["rev-list", "--count", &range])
-                .output()
-                .await,
+        let commits = Git::run(
+            Git::command(&self.worktree.root).args(["rev-list", "--count", &range]),
             "count the commits",
-        )?
+        )
+        .await?
         .parse()
         .map_err(|error| Git::failure("count the commits", error))?;
         let length = tokio::fs::metadata(&path)
@@ -562,13 +549,13 @@ impl Snapshot<'_> {
     /// `HEAD` and marked assume-unchanged first, so staging never reads
     /// their local content.
     async fn stage(&self, ignored: String) -> Result<()> {
-        let staged = |arguments: &[&str]| self.staged(arguments);
         // `git add` skips files marked assume-unchanged, so the snapshot
         // would keep their committed content; only the copy's marks go.
-        let index_entries = Git::checked(
-            staged(&["ls-files", "-v", "-z"]).output().await,
+        let index_entries = Git::run(
+            &mut self.staged(&["ls-files", "-v", "-z"]),
             "list the index",
-        )?;
+        )
+        .await?;
         let assumed = index_entries
             .split('\0')
             .filter_map(|entry| entry.split_once(' '))
@@ -576,57 +563,56 @@ impl Snapshot<'_> {
             .map(|(_, path)| path)
             .collect::<Vec<_>>();
         if !assumed.is_empty() {
-            let clear = staged(&["update-index", "--no-assume-unchanged", "-z", "--stdin"]);
-            Git::checked(
-                Git::with_input(clear, assumed.join("\0")).await,
+            Git::run_with_input(
+                &mut self.staged(&["update-index", "--no-assume-unchanged", "-z", "--stdin"]),
+                assumed.join("\0"),
                 "stage files marked assume-unchanged",
-            )?;
+            )
+            .await?;
         }
         if !ignored.is_empty() {
             // Names, not pathspecs: an ignored file may be named `:(exclude)x`.
-            let reset = staged(&[
-                "--literal-pathspecs",
-                "reset",
-                "--quiet",
-                "HEAD",
-                "--pathspec-from-file=-",
-                "--pathspec-file-nul",
-            ]);
-            Git::checked(
-                Git::with_input(reset, ignored).await,
+            Git::run_with_input(
+                &mut self.staged(&[
+                    "--literal-pathspecs",
+                    "reset",
+                    "--quiet",
+                    "HEAD",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ]),
+                ignored,
                 "keep ignored files as committed",
-            )?;
+            )
+            .await?;
             // Marked so `git add` never reads their local content.
-            let committed = Git::checked(
-                staged(&[
+            let committed = Git::run(
+                &mut self.staged(&[
                     "ls-files",
                     "-z",
                     "--cached",
                     "--ignored",
                     "--exclude-standard",
-                ])
-                .output()
-                .await,
+                ]),
                 "list tracked ignored files",
-            )?;
+            )
+            .await?;
             if !committed.is_empty() {
-                let mark = staged(&["update-index", "--assume-unchanged", "-z", "--stdin"]);
-                Git::checked(
-                    Git::with_input(mark, committed).await,
+                Git::run_with_input(
+                    &mut self.staged(&["update-index", "--assume-unchanged", "-z", "--stdin"]),
+                    committed,
                     "keep ignored files as committed",
-                )?;
+                )
+                .await?;
             }
         }
-        Git::checked(
-            staged(&["add", "--all"]).output().await,
-            "stage the worktree",
-        )?;
+        Git::run(&mut self.staged(&["add", "--all"]), "stage the worktree").await?;
         Ok(())
     }
 
     /// A Git command in the worktree that reads and writes the snapshot's
     /// index and objects, reading the repository's as alternates.
-    fn staged(&self, arguments: &[&str]) -> tokio::process::Command {
+    fn staged(&self, arguments: &[&str]) -> Command {
         let mut command = Git::command(&self.worktree.root);
         command
             .env("GIT_INDEX_FILE", self.index())
@@ -666,8 +652,8 @@ impl Git {
 
     /// A Git command run in `directory`, unaffected by variables naming
     /// another repository, never prompting, and with [`Self::ISOLATED`].
-    fn command(directory: &Path) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new("git");
+    fn command(directory: &Path) -> Command {
+        let mut command = Command::new("git");
         for variable in REPOSITORY_VARIABLES {
             command.env_remove(variable);
         }
@@ -676,29 +662,43 @@ impl Git {
             .args(Self::ISOLATED)
             .arg("-C")
             .arg(directory)
-            .stdin(std::process::Stdio::null())
+            .stdin(Stdio::null())
             .kill_on_drop(true);
         command
     }
 
-    /// Runs `command` with `input` on its standard input, capturing its
-    /// output like `Command::output`.
-    async fn with_input(
-        mut command: tokio::process::Command,
-        input: String,
-    ) -> std::io::Result<Output> {
-        let mut child = command
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
-        // Written concurrently with reading the output, so neither pipe fills.
-        let write =
-            async move { tokio::io::AsyncWriteExt::write_all(&mut stdin, input.as_bytes()).await };
-        let (written, output) = tokio::join!(write, child.wait_with_output());
-        written?;
-        output
+    /// Runs `command` to `action`, returning its output as [`Self::checked`].
+    async fn run(command: &mut Command, action: &str) -> Result<String> {
+        Self::checked(command.output().await, action)
+    }
+
+    /// Like [`Self::run`], but `None` when Git exits with code 1, which the
+    /// commands run this way use for "nothing found".
+    async fn optional(command: &mut Command, action: &str) -> Result<Option<String>> {
+        match command.output().await {
+            Ok(output) if output.status.code() == Some(1) => Ok(None),
+            output => Self::checked(output, action).map(Some),
+        }
+    }
+
+    /// Like [`Self::run`], with `input` on the command's standard input.
+    async fn run_with_input(command: &mut Command, input: String, action: &str) -> Result<String> {
+        let output = async {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let mut stdin = child.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+            // Written concurrently with reading the output, so neither pipe fills.
+            let write = async move {
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, input.as_bytes()).await
+            };
+            let (written, output) = tokio::join!(write, child.wait_with_output());
+            written?;
+            output
+        };
+        Self::checked(output.await, action)
     }
 
     /// The standard output of a successful command, without its final

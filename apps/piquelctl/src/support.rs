@@ -1,16 +1,13 @@
-//! Shared helpers: confirmation prompts, blocking input, manifest reading, retries,
-//! and small formatting utilities.
-use crate::{
-    cli::Cli,
-    error::{CliError, ErrorKind, Result},
-    output::Console,
-};
-use piqueld_client::{ClientError, ValidationErrors};
+//! Shared helpers: blocking operator input, file reading, retries, and small
+//! formatting utilities.
+use crate::error::{CliError, ErrorKind, Result};
+use piqueld_client::ClientError;
 use serde_json::json;
 use std::{
+    fmt,
     future::Future,
-    io::{self, IsTerminal, Read},
-    path::Path,
+    io::{self, Read},
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -53,41 +50,6 @@ pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
 
-/// Asks for `y`/`yes` on stdin before a mutation. `--yes` skips the prompt; without it,
-/// `--noninteractive` or a non-terminal stdin is an input error. Any other answer
-/// fails with "operation was not confirmed".
-pub(crate) async fn confirm(
-    console: &mut Console,
-    noninteractive: bool,
-    yes: bool,
-    prompt: &str,
-) -> Result<()> {
-    if yes {
-        return Ok(());
-    }
-    if noninteractive || !io::stdin().is_terminal() {
-        return Err(CliError::new(
-            ErrorKind::Input,
-            "confirmation is required in a non-interactive terminal; pass --yes",
-        ));
-    }
-    console.prompt(prompt)?;
-    let answer = read_input("confirmation", || {
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        Ok(answer)
-    })
-    .await?;
-    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Ok(())
-    } else {
-        Err(CliError::new(
-            ErrorKind::Input,
-            "operation was not confirmed",
-        ))
-    }
-}
-
 /// Runs a blocking read of operator input off the async runtime, so the
 /// command supervisor in `main` keeps handling Ctrl-C. The command timeout is
 /// suspended while the read is open; `main` exits the process directly if the
@@ -119,68 +81,43 @@ pub(crate) async fn read_text(path: &Path, what: &'static str, limit: u64) -> Re
     let path = path.to_owned();
     let display_path = path.display().to_string();
     tokio::task::spawn_blocking(move || {
-        let metadata = std::fs::metadata(&path).map_err(|error| {
-            CliError::new(
-                ErrorKind::Input,
-                format!("could not read {what} {}: {error}", path.display()),
-            )
-        })?;
-        if !metadata.is_file() {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                format!("{what} path {} is not a regular file", path.display()),
-            ));
-        }
-        let file = std::fs::File::open(&path).map_err(|error| {
-            CliError::new(
-                ErrorKind::Input,
-                format!("could not read {what} {}: {error}", path.display()),
-            )
-        })?;
-        let metadata = file.metadata().map_err(|error| {
-            CliError::new(
-                ErrorKind::Input,
-                format!("could not inspect {what} {}: {error}", path.display()),
-            )
-        })?;
-        if !metadata.is_file() {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                format!("{what} path {} is not a regular file", path.display()),
-            ));
-        }
+        let shown = path.display();
+        let invalid =
+            |problem: fmt::Arguments<'_>| CliError::new(ErrorKind::Input, problem.to_string());
+        let unreadable =
+            |error: io::Error| invalid(format_args!("could not read {what} {shown}: {error}"));
+        let regular = |metadata: std::fs::Metadata| {
+            if metadata.is_file() {
+                Ok(metadata)
+            } else {
+                Err(invalid(format_args!(
+                    "{what} path {shown} is not a regular file"
+                )))
+            }
+        };
+        regular(std::fs::metadata(&path).map_err(unreadable)?)?;
+        let file = std::fs::File::open(&path).map_err(unreadable)?;
+        let metadata = regular(file.metadata().map_err(|error| {
+            invalid(format_args!("could not inspect {what} {shown}: {error}"))
+        })?)?;
         if metadata.len() > limit {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                format!(
-                    "{what} {} exceeds the {limit}-byte input limit",
-                    path.display()
-                ),
-            ));
+            return Err(invalid(format_args!(
+                "{what} {shown} exceeds the {limit}-byte input limit"
+            )));
         }
         // Cap the read itself so a concurrently growing file cannot force an
         // unbounded allocation after the metadata check.
         let mut bytes = Vec::new();
         file.take(limit + 1)
             .read_to_end(&mut bytes)
-            .map_err(|error| {
-                CliError::new(
-                    ErrorKind::Input,
-                    format!("could not read {what} {}: {error}", path.display()),
-                )
-            })?;
+            .map_err(unreadable)?;
         if bytes.len() as u64 > limit {
-            return Err(CliError::new(
-                ErrorKind::Input,
-                format!("{what} {} exceeds the input limit", path.display()),
-            ));
+            return Err(invalid(format_args!(
+                "{what} {shown} exceeds the input limit"
+            )));
         }
-        String::from_utf8(bytes).map_err(|_| {
-            CliError::new(
-                ErrorKind::Input,
-                format!("{what} {} is not valid UTF-8", path.display()),
-            )
-        })
+        String::from_utf8(bytes)
+            .map_err(|_| invalid(format_args!("{what} {shown} is not valid UTF-8")))
     })
     .await
     .map_err(|error| {
@@ -191,24 +128,20 @@ pub(crate) async fn read_text(path: &Path, what: &'static str, limit: u64) -> Re
     })?
 }
 
-/// Extracts the application name from manifest TOML, reporting validation errors
-/// against `path`.
+/// Extracts the application name from manifest TOML. Validation failures are
+/// an input error against `path`, listing them in structured details.
 pub(crate) fn manifest_name(manifest: &str, path: &Path) -> Result<String> {
-    piqueld_client::application_name_from_toml(manifest)
-        .map_err(|errors| manifest_validation_error(path, &errors))
-}
-
-/// Input error listing manifest validation failures, with structured details.
-fn manifest_validation_error(path: &Path, errors: &ValidationErrors) -> CliError {
-    CliError::new(
-        ErrorKind::Input,
-        format!(
-            "manifest {} failed validation with {} error(s)",
-            path.display(),
-            errors.0.len()
-        ),
-    )
-    .with_details(json!({"errors": errors}))
+    piqueld_client::application_name_from_toml(manifest).map_err(|errors| {
+        CliError::new(
+            ErrorKind::Input,
+            format!(
+                "manifest {} failed validation with {} error(s)",
+                path.display(),
+                errors.0.len()
+            ),
+        )
+        .with_details(json!({"errors": errors}))
+    })
 }
 
 /// Runs `request`, retrying once after 25ms if it failed at the transport level
@@ -229,22 +162,14 @@ where
     }
 }
 
-/// Human description of the configured endpoint.
-///
-/// ```text
-/// --url http://127.0.0.1:7845  →  TCP http://127.0.0.1:7845
-/// (no endpoint)                →  Unix socket /run/piqueld/piqueld.sock
-/// ```
-pub(crate) fn transport_description(cli: &Cli) -> String {
-    if let Some(url) = &cli.url {
-        format!("TCP {url}")
-    } else {
-        let socket = cli.socket.as_deref().map_or_else(
-            || DEFAULT_SOCKET.to_owned(),
-            |path| path.to_string_lossy().into_owned(),
-        );
-        format!("Unix socket {socket}")
-    }
+/// The user's piqueld configuration directory, holding the profiles and
+/// credentials files: `$XDG_CONFIG_HOME/piqueld`, else `$HOME/.config/piqueld`.
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|root| root.join("piqueld"))
 }
 
 /// Whether `value` parses as an application ID (names may also match this shape).
@@ -262,5 +187,27 @@ pub(crate) fn format_duration(duration: Duration) -> String {
         format!("{}s", duration.as_secs())
     } else {
         format!("{}ms", duration.as_millis())
+    }
+}
+
+/// A commit abbreviated to its first 12 characters.
+pub(crate) fn short_commit(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
+}
+
+/// `items` joined with `, `, or `empty` when there are none.
+///
+/// ```text
+/// ["a", "b"] → "a, b"    [] → empty
+/// ```
+pub(crate) fn join_or<T: fmt::Display>(items: impl IntoIterator<Item = T>, empty: &str) -> String {
+    let items = items
+        .into_iter()
+        .map(|item| item.to_string())
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        empty.to_owned()
+    } else {
+        items.join(", ")
     }
 }

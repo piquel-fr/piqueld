@@ -2,11 +2,11 @@
 use crate::{
     cli::{Cli, Command},
     error::{CliError, ErrorKind, Result},
-    output::{Console, HumanWriter, Report},
+    output::{Console, reports::report},
 };
 use piqueld_client::{
     Client,
-    auth::{OperatorLink, User},
+    auth::{OperatorLink, SetupLink, User},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -46,17 +46,13 @@ impl Credentials {
         if let Some(path) = std::env::var_os("PIQUELD_CREDENTIALS_FILE") {
             return Ok(path.into());
         }
-        let root = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
-            .ok_or_else(|| {
-                CliError::new(
-                    ErrorKind::Input,
-                    "set PIQUELD_CREDENTIALS_FILE or HOME to store login credentials",
-                )
-            })?;
-        Ok(root.join("piqueld/credentials.json"))
+        let directory = crate::support::config_dir().ok_or_else(|| {
+            CliError::new(
+                ErrorKind::Input,
+                "set PIQUELD_CREDENTIALS_FILE or HOME to store login credentials",
+            )
+        })?;
+        Ok(directory.join("credentials.json"))
     }
     /// Endpoint key that scopes saved logins to one daemon.
     ///
@@ -66,18 +62,10 @@ impl Credentials {
     /// (neither)                   →  unix:/run/piqueld/piqueld.sock
     /// ```
     fn key(cli: &Cli) -> String {
-        cli.url.as_ref().map_or_else(
-            || {
-                format!(
-                    "unix:{}",
-                    cli.socket.as_ref().map_or_else(
-                        || crate::support::DEFAULT_SOCKET.into(),
-                        |p| p.to_string_lossy().into_owned()
-                    )
-                )
-            },
-            |url| url.trim_end_matches('/').to_owned(),
-        )
+        match &cli.url {
+            Some(url) => url.trim_end_matches('/').to_owned(),
+            None => format!("unix:{}", cli.socket_path().to_string_lossy()),
+        }
     }
     /// Reads the credentials file at its default location.
     fn read() -> Result<Self> {
@@ -216,37 +204,20 @@ impl Credentials {
                 ));
             }
         };
-        token.map_or(Ok(client.clone()), |token| {
-            client.with_bearer(&token).map_err(Into::into)
-        })
+        match token {
+            Some(token) => Ok(client.with_bearer(&token)?),
+            None => Ok(client),
+        }
     }
 }
-/// Authenticated account result, shared by `login` and `whoami`.
-pub(crate) struct AccountReport(pub User);
-impl Report for AccountReport {
-    type Json = User;
-    fn json(&self) -> &User {
-        &self.0
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> std::io::Result<()> {
-        out.line(format_args!("{} ({})", self.0.username, self.0.id))
-    }
-}
-/// A link served only over the Unix socket, such as the first-account setup
-/// link; human output is the bare URL so it can be piped.
-pub(crate) struct LinkReport<T> {
-    url: String,
-    link: T,
-}
-impl<T: serde::Serialize> Report for LinkReport<T> {
-    type Json = T;
-    fn json(&self) -> &T {
-        &self.link
-    }
-    fn render_human(&self, out: &mut HumanWriter<'_>) -> std::io::Result<()> {
-        out.line(&self.url)
-    }
-}
+// `login` result: the signed-in account.
+report!(User, self, out, {
+    out.line(format_args!("{} ({})", self.username, self.id))
+});
+// Links served only over the Unix socket; human output is the bare URL so it
+// can be piped.
+report!(SetupLink, self, out, { out.line(&self.url) });
+report!(OperatorLink, self, out, { out.line(&self.url) });
 /// Refuses `command` locally unless it will reach the daemon's Unix socket,
 /// the only transport serving it.
 fn require_socket(cli: &Cli, command: &str) -> Result<()> {
@@ -267,11 +238,7 @@ pub(crate) async fn setup_link(
 ) -> Result<()> {
     require_socket(cli, "setup-link")?;
     let link = client.auth_setup_link().await?;
-    let url = link.url.clone();
-    console.emit(&LinkReport {
-        url: url.clone(),
-        link,
-    })?;
+    console.emit(&link)?;
     if open {
         let opener = if cfg!(target_os = "macos") {
             "open"
@@ -279,7 +246,7 @@ pub(crate) async fn setup_link(
             "xdg-open"
         };
         std::process::Command::new(opener)
-            .arg(&url)
+            .arg(&link.url)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -301,7 +268,7 @@ pub(crate) async fn recover_admin(cli: &Cli, client: &Client, console: &mut Cons
     let link = client.auth_recover_admin().await?;
     operator_link(
         console,
-        link,
+        &link,
         "this link creates a new administrator account and works once within 24 hours; \
          open it in a browser and register a passkey. It was recorded as a security event, \
          which notifies administrators when security notifications are enabled.",
@@ -315,7 +282,7 @@ pub(crate) async fn sign_in_link(cli: &Cli, client: &Client, console: &mut Conso
     let link = client.auth_sign_in_link().await?;
     operator_link(
         console,
-        link,
+        &link,
         "this link signs a browser in as the host operator, with full access, for 12 hours; \
          it works once within 10 minutes. It was recorded as a security event, \
          which notifies administrators when security notifications are enabled.",
@@ -323,12 +290,9 @@ pub(crate) async fn sign_in_link(cli: &Cli, client: &Client, console: &mut Conso
 }
 /// Prints a link issued to the host operator after `warning` about what it
 /// grants.
-fn operator_link(console: &mut Console, link: OperatorLink, warning: &str) -> Result<()> {
+fn operator_link(console: &mut Console, link: &OperatorLink, warning: &str) -> Result<()> {
     console.warning(warning)?;
-    console.emit(&LinkReport {
-        url: link.url.clone(),
-        link,
-    })
+    console.emit(link)
 }
 /// Runs the browser device-code login:
 /// 1. Refuses when the daemon has no first account yet (that needs the setup link).
@@ -351,7 +315,7 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
         ));
     }
     let limit = match &cli.command {
-        crate::cli::Command::Login { limit } if !limit.is_empty() => Some(limit.grants_by_id()?),
+        Command::Login { limit } if !limit.is_empty() => Some(limit.grants_by_id()?),
         _ => None,
     };
     let start = client.auth_device_start(limit.clone()).await?;
@@ -405,7 +369,7 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
                         );
                         Ok(())
                     })?;
-                    return console.emit(&AccountReport(user));
+                    return console.emit(&user);
                 }
                 _ => {
                     return Err(CliError::new(
@@ -416,10 +380,17 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
             }
         }
     };
+    let expiry = Duration::from_secs(u64::from(start.expires_in).min(MAX_DEVICE_LOGIN_SECS));
     tokio::select! {
-        result=finish=>result,
-        ()=tokio::time::sleep(Duration::from_secs(u64::from(start.expires_in).min(MAX_DEVICE_LOGIN_SECS)))=>Err(CliError::new(ErrorKind::Input,"login expired; run piquelctl login again")),
-        signal=tokio::signal::ctrl_c()=>{signal?;Err(CliError::new(ErrorKind::Interrupted,"login cancelled"))},
+        result = finish => result,
+        () = tokio::time::sleep(expiry) => Err(CliError::new(
+            ErrorKind::Input,
+            "login expired; run piquelctl login again",
+        )),
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            Err(CliError::new(ErrorKind::Interrupted, "login cancelled"))
+        }
     }
 }
 /// Revokes the current credential on the daemon, then drops its saved copy.
@@ -439,8 +410,11 @@ pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) ->
         client.clone()
     };
     match client.auth_logout().await {
-        Ok(_) => {}
-        Err(piqueld_client::ClientError::Api { status, .. }) if status.as_u16() == 401 => {}
+        Ok(_)
+        | Err(piqueld_client::ClientError::Api {
+            status: http::StatusCode::UNAUTHORIZED,
+            ..
+        }) => {}
         Err(error) => return Err(error.into()),
     }
     if let Some((id, token)) = saved {

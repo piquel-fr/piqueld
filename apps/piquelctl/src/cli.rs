@@ -2,7 +2,10 @@
 //! internal notes use `//`. Flattened `Args` structs keep `//` because their doc
 //! comments would become the `about` text of commands that flatten them.
 use clap::{Args, Parser, Subcommand};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 /// Essential commands for inspecting and operating applications and their environments.
 #[derive(Debug, Parser)]
@@ -48,6 +51,28 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: Command,
+}
+
+impl Cli {
+    /// The daemon socket: `--socket`, or the daemon's default one.
+    pub(crate) fn socket_path(&self) -> &Path {
+        self.socket
+            .as_deref()
+            .unwrap_or(Path::new(crate::support::DEFAULT_SOCKET))
+    }
+
+    /// Human description of the configured endpoint.
+    ///
+    /// ```text
+    /// --url http://127.0.0.1:7845  →  TCP http://127.0.0.1:7845
+    /// (no endpoint)                →  Unix socket /run/piqueld/piqueld.sock
+    /// ```
+    pub(crate) fn transport(&self) -> String {
+        match &self.url {
+            Some(url) => format!("TCP {url}"),
+            None => format!("Unix socket {}", self.socket_path().to_string_lossy()),
+        }
+    }
 }
 
 // Account selection and authentication transport options.
@@ -405,42 +430,39 @@ pub(crate) struct OperationArgs {
 /// "500ms" → 500ms    "30" → 30s    "2m" → 120s    "0s" / "1.5s" / "-1" → error
 /// ```
 pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, String> {
-    let (number, unit) = if let Some(value) = value.strip_suffix("ms") {
-        (value, "ms")
-    } else if let Some(value) = value.strip_suffix('s') {
-        (value, "s")
-    } else if let Some(value) = value.strip_suffix('m') {
-        (value, "m")
-    } else if let Some(value) = value.strip_suffix('h') {
-        (value, "h")
-    } else {
-        (value, "s")
-    };
+    /// Converts a number of the unit, `None` when it overflows.
+    type Unit = fn(u64) -> Option<Duration>;
+    // `ms` comes first because it ends with `s`.
+    let units: [(&str, Unit); 4] = [
+        ("ms", |number| Some(Duration::from_millis(number))),
+        ("s", |number| Some(Duration::from_secs(number))),
+        ("m", |number| Duration::from_secs(number).checked_mul(60)),
+        ("h", |number| {
+            Duration::from_secs(number).checked_mul(60 * 60)
+        }),
+    ];
+    let (number, unit) = units
+        .into_iter()
+        .find_map(|(suffix, unit)| value.strip_suffix(suffix).map(|number| (number, unit)))
+        .unwrap_or((value, units[1].1));
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("timeout must be an integer duration such as 500ms, 30s, or 2m".to_owned());
     }
-    let number = number
-        .parse::<u64>()
-        .map_err(|_| "timeout is too large".to_owned())?;
-    let duration = match unit {
-        "ms" => Duration::from_millis(number),
-        "s" => Duration::from_secs(number),
-        "m" => Duration::from_secs(
-            number
-                .checked_mul(60)
-                .ok_or_else(|| "timeout is too large".to_owned())?,
-        ),
-        "h" => Duration::from_secs(
-            number
-                .checked_mul(60 * 60)
-                .ok_or_else(|| "timeout is too large".to_owned())?,
-        ),
-        _ => unreachable!("duration suffix is selected above"),
-    };
+    let duration = number
+        .parse()
+        .ok()
+        .and_then(unit)
+        .ok_or_else(|| "timeout is too large".to_owned())?;
     if duration.is_zero() {
         return Err("timeout must be greater than zero".to_owned());
     }
     Ok(duration)
+}
+
+/// The application revision a change is conditioned on: `--expected-generation`,
+/// else the inspected `current` one; none with `--force`, which overrides it.
+pub(crate) fn expected_generation(force: bool, expected: Option<u64>, current: u64) -> Option<u64> {
+    (!force).then_some(expected.unwrap_or(current))
 }
 
 #[derive(Debug, Args)]
@@ -488,7 +510,7 @@ impl RevisionArgs {
     }
 }
 
-/// Application selection, confirmation, and waiting shared by `app reconcile` and `app deploy`.
+// Application selection, confirmation, and waiting shared by `app reconcile` and `app deploy`.
 #[derive(Debug, Args)]
 pub(crate) struct TargetArgs {
     /// Application name or stable ID.

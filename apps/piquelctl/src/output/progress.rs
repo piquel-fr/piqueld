@@ -1,5 +1,5 @@
 //! Task presentation only: callers supply domain-independent labels and outcomes.
-use super::{Escaped, Event, HumanWriter, SharedWriter};
+use super::{Escaped, Event, HumanWriter, SharedWriter, lock};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::{
     io,
@@ -125,10 +125,7 @@ impl Output {
         // Completion is a permanent ordinary line, not an indicatif zombie row.
         // This survives later task drops and progress redraws.
         let _ = self.suspend(|| -> io::Result<()> {
-            let mut writer = self
-                .writer
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut writer = lock(&self.writer);
             if matches!(self.backend, Backend::Json) {
                 Event::Progress {
                     task: label,
@@ -158,10 +155,7 @@ impl ProgressTask {
     /// Sets the task's current message; unchanged messages are skipped so plain
     /// mode prints only transitions. No-op after finish or when hidden.
     pub(crate) fn update(&self, message: &str) {
-        let mut task = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut task = lock(&self.state);
         if task.finished || matches!(task.output.backend, Backend::Hidden) {
             return;
         }
@@ -182,10 +176,7 @@ impl ProgressTask {
     /// op-123: succeeded · deleted [4s]
     /// ```
     pub(crate) fn finish(&self, outcome: TaskOutcome, message: &str) {
-        let mut task = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut task = lock(&self.state);
         if task.finished {
             return;
         }
@@ -204,10 +195,7 @@ impl ProgressTask {
     /// terminal between its own events without racing a tick.
     #[cfg(test)]
     pub(super) fn stop_ticking(&self) {
-        let task = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let task = lock(&self.state);
         if let Some(bar) = &task.bar {
             bar.disable_steady_tick();
         }
