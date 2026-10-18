@@ -62,6 +62,7 @@ pub struct ServiceGeneral {
     /// Desired replicas.
     pub replicas: Typed<u16>,
 }
+
 /// Container entrypoint and arguments saved together.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -244,59 +245,84 @@ pub enum ServiceEdit {
     Rollout(Rollout),
 }
 
-/// A service setting identified by its container target, such as a mount or a file.
-trait Targeted: Sized {
-    /// Name of the setting in `NotFound` errors.
+/// A declaration identified by a key within its list: services and volumes
+/// by name, mounts and files by container target.
+trait Keyed: Sized {
+    /// Name of the declaration in `NotFound` and `AlreadyExists` errors.
     const KIND: &'static str;
 
-    /// The container path that identifies it within its service.
-    fn target(&self) -> &str;
+    /// The key that identifies it within its list.
+    fn key(&self) -> &str;
 
-    /// Replaces the item with `value`'s target, or appends `value`.
-    fn set(items: &mut Vec<Self>, value: Self) {
-        match items
+    /// The item at `key`, failing with `NotFound` if absent.
+    fn find<'a>(items: &'a mut [Self], key: &str) -> Result<&'a mut Self, EditError> {
+        items
             .iter_mut()
-            .find(|item| item.target() == value.target())
-        {
+            .find(|item| item.key() == key)
+            .ok_or_else(|| EditError::NotFound {
+                kind: Self::KIND,
+                name: key.to_owned(),
+            })
+    }
+
+    /// Appends `value`, failing with `AlreadyExists` if its key is taken.
+    fn add(items: &mut Vec<Self>, value: Self) -> Result<(), EditError> {
+        if items.iter().any(|item| item.key() == value.key()) {
+            return Err(EditError::AlreadyExists {
+                kind: Self::KIND,
+                name: value.key().to_owned(),
+            });
+        }
+        items.push(value);
+        Ok(())
+    }
+
+    /// Replaces the item with `value`'s key, or appends `value`.
+    fn set(items: &mut Vec<Self>, value: Self) {
+        match items.iter_mut().find(|item| item.key() == value.key()) {
             Some(item) => *item = value,
             None => items.push(value),
         }
     }
 
-    /// Removes the item at `target`, failing with `NotFound` if absent.
-    fn remove(items: &mut Vec<Self>, target: String) -> Result<(), EditError> {
+    /// Removes the item at `key`, failing with `NotFound` if absent.
+    fn remove(items: &mut Vec<Self>, key: &str) -> Result<(), EditError> {
         let index = items
             .iter()
-            .position(|item| item.target() == target)
-            .ok_or(EditError::NotFound {
+            .position(|item| item.key() == key)
+            .ok_or_else(|| EditError::NotFound {
                 kind: Self::KIND,
-                name: target,
+                name: key.to_owned(),
             })?;
         items.remove(index);
         Ok(())
     }
 }
 
-impl Targeted for Mount {
-    const KIND: &'static str = "mount";
+// Implements `Keyed` from each declaration's kind and key field.
+macro_rules! keyed {
+    ($($type:ty => $kind:literal, $key:ident;)*) => {$(
+        impl Keyed for $type {
+            const KIND: &'static str = $kind;
 
-    fn target(&self) -> &str {
-        &self.target
-    }
+            fn key(&self) -> &str {
+                &self.$key
+            }
+        }
+    )*};
 }
 
-impl Targeted for ServiceFile {
-    const KIND: &'static str = "file";
-
-    fn target(&self) -> &str {
-        &self.target
-    }
+keyed! {
+    Service => "service", name;
+    Volume => "volume", name;
+    Mount => "mount", target;
+    ServiceFile => "file", target;
 }
 
 /// Errors applying a structurally valid edit to the current saved configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
-    /// The named service, volume, environment entry, or mount does not exist.
+    /// The named service, volume, environment variable, mount, or file does not exist.
     #[error("{kind} {name:?} was not found")]
     NotFound {
         /// Resource kind.
@@ -336,6 +362,7 @@ impl ApplicationEdit {
     /// services' dependencies on it, and renaming a service repoints them all,
     /// so references never dangle.
     /// Removing a volume leaves mounts in place for validation to reject.
+    ///
     /// # Errors
     /// Rejects missing/duplicate resources and incompatible nested fields.
     pub fn apply(self, manifest: &mut ApplicationManifest) -> Result<(), EditError> {
@@ -346,31 +373,9 @@ impl ApplicationEdit {
             Self::RepositoryUrl(value) => Self::repository(manifest)?.repository.url = value,
             Self::RepositoryPath(value) => Self::repository(manifest)?.path = value,
             Self::RepositorySync(value) => Self::repository(manifest)?.sync = value,
-            Self::AddService(service) => {
-                if manifest
-                    .spec
-                    .services
-                    .iter()
-                    .any(|s| s.name == service.name)
-                {
-                    return Err(EditError::AlreadyExists {
-                        kind: "service",
-                        name: service.name,
-                    });
-                }
-                manifest.spec.services.push(*service);
-            }
+            Self::AddService(service) => Keyed::add(&mut manifest.spec.services, *service)?,
             Self::RemoveService(name) => {
-                let index = manifest
-                    .spec
-                    .services
-                    .iter()
-                    .position(|s| s.name == name)
-                    .ok_or(EditError::NotFound {
-                        kind: "service",
-                        name: name.clone(),
-                    })?;
-                manifest.spec.services.remove(index);
+                Keyed::remove(&mut manifest.spec.services, &name)?;
                 Self::retarget_service(manifest, &name, None);
             }
             Self::Service { name, edit } => {
@@ -378,16 +383,7 @@ impl ApplicationEdit {
                     ServiceEdit::Name(value) => Some(value.clone()),
                     _ => None,
                 };
-                let service = manifest
-                    .spec
-                    .services
-                    .iter_mut()
-                    .find(|s| s.name == name)
-                    .ok_or(EditError::NotFound {
-                        kind: "service",
-                        name: name.clone(),
-                    })?;
-                edit.apply(service)?;
+                edit.apply(Keyed::find(&mut manifest.spec.services, &name)?)?;
                 if let Some(new_name) = renamed_to {
                     Self::retarget_service(manifest, &name, Some(&new_name));
                 }
@@ -397,27 +393,8 @@ impl ApplicationEdit {
             Self::Jobs(jobs) => manifest.spec.jobs = jobs,
             Self::Exports(exports) => manifest.spec.exports = exports,
             Self::Imports(imports) => manifest.spec.imports = imports,
-            Self::AddVolume(volume) => {
-                if manifest.spec.volumes.iter().any(|v| v.name == volume.name) {
-                    return Err(EditError::AlreadyExists {
-                        kind: "volume",
-                        name: volume.name,
-                    });
-                }
-                manifest.spec.volumes.push(volume);
-            }
-            Self::RemoveVolume(name) => {
-                let index = manifest
-                    .spec
-                    .volumes
-                    .iter()
-                    .position(|v| v.name == name)
-                    .ok_or(EditError::NotFound {
-                        kind: "volume",
-                        name,
-                    })?;
-                manifest.spec.volumes.remove(index);
-            }
+            Self::AddVolume(volume) => Keyed::add(&mut manifest.spec.volumes, volume)?,
+            Self::RemoveVolume(name) => Keyed::remove(&mut manifest.spec.volumes, &name)?,
             Self::Variables(variables) => variables.apply(&mut manifest.spec),
             Self::EnvironmentVisibility {
                 environment,
@@ -428,6 +405,7 @@ impl ApplicationEdit {
         }
         Ok(())
     }
+
     /// Returns the connected manifest repository, or `Incompatible` when none is set.
     fn repository(
         manifest: &mut ApplicationManifest,
@@ -440,6 +418,7 @@ impl ApplicationEdit {
                 "connect a manifest repository before editing its settings",
             ))
     }
+
     /// Repoints routes, jobs, exports, and dependencies naming service `old`
     /// to `new`, or drops them when `new` is `None` because the service was
     /// removed. Renaming an exported service renames its link alias.
@@ -473,6 +452,7 @@ impl ApplicationEdit {
         }
     }
 }
+
 impl ServiceEdit {
     /// Applies this edit to one service in memory. Nested Git, build, and health
     /// settings require the matching variant to already be selected; clearing the
@@ -513,11 +493,11 @@ impl ServiceEdit {
             Self::Arguments(value) => service.arguments = value,
             Self::Mounts(value) => service.mounts = value,
             Self::Secrets(value) => service.secrets = value,
-            Self::Mount(value) => Targeted::set(&mut service.mounts, value),
-            Self::RemoveMount(target) => Targeted::remove(&mut service.mounts, target)?,
+            Self::Mount(value) => Keyed::set(&mut service.mounts, value),
+            Self::RemoveMount(target) => Keyed::remove(&mut service.mounts, &target)?,
             Self::Files(value) => service.files = value,
-            Self::File(value) => Targeted::set(&mut service.files, value),
-            Self::RemoveFile(target) => Targeted::remove(&mut service.files, target)?,
+            Self::File(value) => Keyed::set(&mut service.files, value),
+            Self::RemoveFile(target) => Keyed::remove(&mut service.files, &target)?,
             Self::Healthcheck(value) => service.healthcheck = value,
             Self::HealthPort(_)
             | Self::HealthPath(_)
@@ -546,6 +526,7 @@ impl ServiceEdit {
         }
         Ok(())
     }
+
     /// Applies a health check field edit to `check`, which must be the kind
     /// of check the field belongs to. `apply` passes only health field edits.
     fn apply_health(self, check: &mut HealthCheck) -> Result<(), EditError> {
@@ -592,6 +573,7 @@ impl ServiceEdit {
         }
         Ok(())
     }
+
     /// Returns the resource limits, inserting an empty block if none exist.
     fn resources(service: &mut Service) -> &mut ResourceLimits {
         service.resources.get_or_insert(ResourceLimits {
@@ -615,6 +597,7 @@ impl ServiceEdit {
             )),
         }
     }
+
     /// Returns the build settings of a Git source; image sources are incompatible.
     fn build(service: &mut Service) -> Result<&mut Build, EditError> {
         match &mut service.source {
@@ -624,12 +607,14 @@ impl ServiceEdit {
             )),
         }
     }
+
     /// Returns the configured health check, failing when none is set.
     fn health(service: &mut Service) -> Result<&mut HealthCheck, EditError> {
         service.healthcheck.as_mut().ok_or(EditError::Incompatible(
             "configure a health check before editing its settings",
         ))
     }
+
     /// Drops `resources` once neither CPU nor memory is limited, since validation
     /// rejects an empty limits block.
     fn clear_empty_resources(service: &mut Service) {

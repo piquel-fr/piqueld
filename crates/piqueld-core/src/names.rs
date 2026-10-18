@@ -1,4 +1,4 @@
-//! Validated names and shared string-newtype scaffolding.
+//! Validated names and shared scaffolding for string-backed types.
 
 // Validators stay with the owning type; the macro only supplies identical
 // construction, wire-format, and standard-trait implementations.
@@ -14,11 +14,18 @@
 //         Name, NameError, "error message", |value: &str| !value.is_empty()
 //     );
 macro_rules! validated_string {
-    ($(#[$meta:meta])* $name:ident, $error:ident, $message:literal, $validate:expr) => {
+    ($(#[$meta:meta])* $name:ident, $error:ident, $message:expr, $validate:expr) => {
         #[doc = concat!("Invalid `", stringify!($name), "` input.")]
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-        #[error($message)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct $error;
+
+        impl std::fmt::Display for $error {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str($message)
+            }
+        }
+
+        impl std::error::Error for $error {}
 
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, utoipa::ToSchema)]
         $(#[$meta])*
@@ -81,17 +88,106 @@ macro_rules! validated_string {
 }
 pub(crate) use validated_string;
 
-validated_string!(
+// Declares a logical name: a `validated_string!` checked by
+// `valid_logical_name`, whose error message starts with `$subject`, such as
+// "service names".
+macro_rules! logical_name {
+    ($(#[$meta:meta])* $name:ident, $error:ident, $subject:literal) => {
+        $crate::names::validated_string!(
+            $(#[$meta])*
+            $name, $error,
+            concat!(
+                $subject,
+                " must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit"
+            ),
+            $crate::resource::valid_logical_name
+        );
+    };
+}
+
+// Declares a fieldless enum whose variants each have one stable string form,
+// taken from a single `Variant => "form"` table, with `ALL`, `as_str`,
+// `parse`, and `Display`, so storage, API, and display values cannot drift
+// apart. A leading `#[serde]` also derives `Deserialize`, `Serialize`, and
+// `ToSchema`, renaming each variant to its form. Further derives, such as
+// `Default` or `Ord`, go with the enum's other attributes. Forms are matched
+// as `tt` rather than `literal`: `ToSchema` ignores a rename whose value
+// arrives as a `literal` fragment, wrapped in an invisible group.
+//
+//     string_enum! {
+//         #[serde]
+//         /// Docs for the enum.
+//         pub enum Outcome {
+//             /// Docs for the variant.
+//             Allowed => "allowed",
+//         }
+//     }
+macro_rules! string_enum {
+    (
+        #[serde]
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident => $value:tt),+ $(,)?
+        }
+    ) => {
+        $crate::names::string_enum! {
+            $(#[$meta])*
+            #[derive(serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+            $vis enum $name {
+                $($(#[$variant_meta])* #[serde(rename = $value)] $variant => $value),+
+            }
+        }
+    };
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $($(#[$variant_meta:meta])* $variant:ident => $value:tt),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        $vis enum $name {
+            $($(#[$variant_meta])* $variant),+
+        }
+
+        impl $name {
+            /// Every value, in declaration order.
+            pub const ALL: [Self; [$($value),+].len()] = [$(Self::$variant),+];
+
+            /// Stable string form, as stored, sent, and shown.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $value),+
+                }
+            }
+
+            /// Parses a stable string form, rejecting unknown ones.
+            #[must_use]
+            pub fn parse(value: &str) -> Option<Self> {
+                match value {
+                    $($value => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+    };
+}
+pub(crate) use string_enum;
+
+logical_name!(
     /// User-facing logical application name.
-    ApplicationName, ApplicationNameError,
-    "application names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    ApplicationName, ApplicationNameError, "application names"
 );
-validated_string!(
+logical_name!(
     /// User-facing environment name, unique within its application.
-    EnvironmentName, EnvironmentNameError,
-    "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    EnvironmentName, EnvironmentNameError, "environment names"
 );
 validated_string!(
     /// A valid Git branch name, such as the branch a preview deploys.
@@ -99,11 +195,9 @@ validated_string!(
     "branch must be a valid Git branch name",
     crate::manifest::valid_git_branch
 );
-validated_string!(
+logical_name!(
     /// Distinguishes several previews of one branch, e.g. one per agent.
-    PreviewSlot, PreviewSlotError,
-    "preview slots must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    PreviewSlot, PreviewSlotError, "preview slots"
 );
 validated_string!(
     /// DNS-safe identifier of a preview, derived once by
@@ -121,36 +215,28 @@ impl From<PreviewSlug> for EnvironmentName {
     }
 }
 
-validated_string!(
+logical_name!(
     /// Logical service name, distinct from an application or volume name.
     ///
     /// ```compile_fail
     /// use piqueld_core::{ServiceName, VolumeName};
     /// let volume: VolumeName = ServiceName::parse("data").unwrap();
     /// ```
-    ServiceName, ServiceNameError,
-    "service names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    ServiceName, ServiceNameError, "service names"
 );
-validated_string!(
+logical_name!(
     /// Logical volume name, including references from service mounts.
-    VolumeName, VolumeNameError,
-    "volume names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    VolumeName, VolumeNameError, "volume names"
 );
-validated_string!(
+logical_name!(
     /// Optional stable name of a route, unique within its application. Every
     /// environment and preview renders the same routes, so a name selects the
     /// same route in each, whatever hostname it renders.
-    RouteName, RouteNameError,
-    "route names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    RouteName, RouteNameError, "route names"
 );
-validated_string!(
+logical_name!(
     /// Logical one-shot job name.
-    JobName, JobNameError,
-    "job names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
-    crate::resource::valid_logical_name
+    JobName, JobNameError, "job names"
 );
 
 #[cfg(test)]

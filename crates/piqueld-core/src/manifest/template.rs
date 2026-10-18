@@ -9,7 +9,7 @@ use super::{
     RepositoryManifest, RouteHostname, SecretSource, ValidatedApplication, ValidationError,
     ValidationErrors,
 };
-use crate::{ApplicationId, ApplicationName, EnvironmentName, codes};
+use crate::{ApplicationId, ApplicationName, EnvironmentName};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
@@ -73,20 +73,7 @@ impl ValidatedTemplate {
     /// Canonicalizes unordered collections and attaches a stable ID.
     #[must_use]
     pub fn normalize(mut self, id: ApplicationId) -> ApplicationTemplate {
-        let spec = &mut self.spec;
-        spec.services
-            .sort_by(|left, right| left.name.cmp(&right.name));
-        for service in &mut spec.services {
-            service.mounts.sort();
-            service.secrets.sort();
-            service.files.sort();
-            service.depends_on.sort();
-        }
-        spec.volumes.sort();
-        spec.routes.sort();
-        spec.secrets.sort();
-        spec.exports.sort();
-        spec.imports.sort();
+        sort_unordered!(self.spec);
         ApplicationTemplate {
             id,
             api_version: APPLICATION_API_VERSION.into(),
@@ -109,11 +96,7 @@ impl ValidatedTemplate {
                 .template()
                 .is_some_and(|template| template.as_literal().is_none())
             {
-                errors.push(ValidationError {
-                    code: codes::VARIABLE_UNRESOLVED.into(),
-                    path: path.into(),
-                    message: "references must be rendered for an environment first".into(),
-                });
+                errors.push(ValidationError::unresolved(path));
             }
         });
         if !errors.is_empty() {
@@ -206,20 +189,8 @@ impl ApplicationTemplate {
         mut self,
         revision: &ManifestRevision,
     ) -> Result<Self, ValidationErrors> {
-        let mut errors = Vec::new();
-        let path = "spec.manifest.repository";
-        match &mut self.spec.manifest {
-            Some(manifest) => {
-                manifest.repository = manifest.repository.at(revision);
-                manifest.repository.validate(path, &mut errors);
-            }
-            None => ManifestRevision::unbacked(path, &mut errors),
-        }
-        if errors.is_empty() {
-            Ok(self)
-        } else {
-            Err(ValidationErrors(errors))
-        }
+        revision.apply(&mut self.spec.manifest)?;
+        Ok(self)
     }
 
     /// Exports editable input; validate it again after changing configuration.
@@ -268,13 +239,7 @@ impl ApplicationTemplate {
             .iter()
             .filter_map(|route| route.hostname.as_literal())
             .filter_map(|hostname| {
-                RouteHostname::parse(
-                    hostname
-                        .strip_suffix('.')
-                        .unwrap_or(&hostname)
-                        .to_ascii_lowercase(),
-                )
-                .ok()
+                RouteHostname::parse(RouteHostname::canonicalize(&hostname)).ok()
             })
             .collect()
     }
@@ -317,11 +282,7 @@ impl ApplicationTemplate {
                     .name
                     .as_literal()
                     .unwrap_or_else(|| secret.name.to_string());
-                let source = if spec.secrets.iter().any(|declared| declared.name == name) {
-                    SecretSource::Generated
-                } else {
-                    SecretSource::Stored
-                };
+                let source = SecretSource::of(&name, &spec.secrets);
                 (name, source)
             })
             .collect()
@@ -414,13 +375,5 @@ impl<'de> Deserialize<'de> for ApplicationTemplate {
         template
             .with_files(wire.files)
             .map_err(serde::de::Error::custom)
-    }
-}
-
-impl ValidationErrors {
-    /// Orders errors by path, then code.
-    pub(super) fn sorted(mut errors: Vec<ValidationError>) -> Self {
-        errors.sort_by(|left, right| left.path.cmp(&right.path).then(left.code.cmp(&right.code)));
-        Self(errors)
     }
 }

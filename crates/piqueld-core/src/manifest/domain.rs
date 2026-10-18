@@ -262,6 +262,18 @@ pub enum SecretSource {
     Stored,
 }
 
+impl SecretSource {
+    /// Where the value of the secret `name` comes from, given the secrets
+    /// `spec.secrets` declares.
+    pub(super) fn of(name: &str, declared: &[input::SecretDeclaration]) -> Self {
+        if declared.iter().any(|secret| secret.name == name) {
+            Self::Generated
+        } else {
+            Self::Stored
+        }
+    }
+}
+
 /// Validated named volume.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 pub struct ValidatedVolume {
@@ -283,20 +295,18 @@ pub struct ValidatedMount {
 impl ValidationErrors {
     /// Wraps a typed name parse failure as a single `NAME_INVALID` error at `path`.
     pub(super) fn invalid_name(path: impl Into<String>, source: impl std::fmt::Display) -> Self {
-        Self(vec![ValidationError {
-            code: codes::NAME_INVALID.into(),
-            path: path.into(),
-            message: source.to_string(),
-        }])
+        ValidationError::new(codes::NAME_INVALID, path, source.to_string()).into()
     }
+}
 
+impl ValidationError {
     /// A value at `path` that still references variables.
     pub(super) fn unresolved(path: impl Into<String>) -> Self {
-        Self(vec![ValidationError {
-            code: codes::VARIABLE_UNRESOLVED.into(),
-            path: path.into(),
-            message: "references must be rendered for an environment first".into(),
-        }])
+        Self::new(
+            codes::VARIABLE_UNRESOLVED,
+            path,
+            "references must be rendered for an environment first",
+        )
     }
 }
 
@@ -304,7 +314,7 @@ impl Template {
     /// The literal text, or an unresolved-reference error at `path`.
     fn into_text(self, path: impl FnOnce() -> String) -> Result<String, ValidationErrors> {
         self.as_literal()
-            .ok_or_else(|| ValidationErrors::unresolved(path()))
+            .ok_or_else(|| ValidationError::unresolved(path()).into())
     }
 
     /// Converts each element; `base` locates error paths.
@@ -315,6 +325,19 @@ impl Template {
             .map(|(index, value)| value.into_text(|| format!("{base}[{index}]")))
             .collect()
     }
+
+    /// The literal template of each value, as exports write them.
+    fn literals(values: &[String]) -> Vec<Self> {
+        values.iter().map(|value| Self::literal(value)).collect()
+    }
+
+    /// The literal template of each map value, keeping its key.
+    fn literal_map(values: &BTreeMap<String, String>) -> BTreeMap<String, Self> {
+        values
+            .iter()
+            .map(|(key, value)| (key.clone(), Self::literal(value)))
+            .collect()
+    }
 }
 
 impl<T> Typed<T> {
@@ -322,7 +345,7 @@ impl<T> Typed<T> {
     fn into_value(self, path: impl FnOnce() -> String) -> Result<T, ValidationErrors> {
         match self {
             Self::Literal(value) => Ok(value),
-            Self::Template(_) => Err(ValidationErrors::unresolved(path())),
+            Self::Template(_) => Err(ValidationError::unresolved(path()).into()),
         }
     }
 }
@@ -384,10 +407,7 @@ impl ValidatedSource {
                 build: input::Build::Docker {
                     dockerfile: Template::literal(dockerfile),
                     context: Template::literal(context),
-                    args: args
-                        .iter()
-                        .map(|(key, value)| (key.clone(), Template::literal(value)))
-                        .collect(),
+                    args: Template::literal_map(args),
                     target: target.as_deref().map(Template::literal),
                 },
             },
@@ -443,10 +463,7 @@ impl ValidatedHealthCheck {
                 interval_seconds,
                 timeout_seconds,
             } => input::HealthCheck::Command {
-                command: command
-                    .iter()
-                    .map(|value| Template::literal(value))
-                    .collect(),
+                command: Template::literals(command),
                 interval_seconds: (*interval_seconds).into(),
                 timeout_seconds: (*timeout_seconds).into(),
             },
@@ -584,11 +601,7 @@ impl ValidatedSpec {
     /// Where the value of the secret `name` comes from.
     #[must_use]
     pub fn secret_source(&self, name: &str) -> SecretSource {
-        if self.secrets.iter().any(|secret| secret.name == name) {
-            SecretSource::Generated
-        } else {
-            SecretSource::Stored
-        }
+        SecretSource::of(name, &self.secrets)
     }
 
     /// Converts back to the editable input shape used for export and plans.
@@ -613,8 +626,8 @@ impl ValidatedSpec {
                 .collect(),
             manifest: self.manifest.clone(),
             secrets: self.secrets.clone(),
-            variables: std::collections::BTreeMap::new(),
-            environments: std::collections::BTreeMap::new(),
+            variables: BTreeMap::new(),
+            environments: BTreeMap::new(),
             previews: input::PreviewConfig::default(),
             services: self
                 .services
@@ -654,11 +667,7 @@ impl ValidatedJob {
         input::Job {
             name: self.name.to_string(),
             service: self.service.to_string(),
-            command: self
-                .command
-                .iter()
-                .map(|value| Template::literal(value))
-                .collect(),
+            command: Template::literals(&self.command),
             run: self.run,
             timeout_seconds: self.timeout_seconds,
             volume_access: self.volume_access,
@@ -707,7 +716,7 @@ impl ValidatedService {
                     Ok(ValidatedMount {
                         volume: VolumeName::parse(mount.volume).map_err(|source| {
                             ValidationErrors::invalid_name(
-                                format!("spec.services[{index}].mounts[{mount_index}].volume"),
+                                format!("{base}.mounts[{mount_index}].volume"),
                                 source,
                             )
                         })?,
@@ -735,7 +744,7 @@ impl ValidatedService {
                 .map(|(dependency_index, name)| {
                     ServiceName::parse(name).map_err(|source| {
                         ValidationErrors::invalid_name(
-                            format!("spec.services[{index}].depends_on[{dependency_index}]"),
+                            format!("{base}.depends_on[{dependency_index}]"),
                             source,
                         )
                     })
@@ -769,21 +778,9 @@ impl ValidatedService {
             name: self.name.to_string(),
             source: self.source.to_input(),
             replicas: self.replicas.into(),
-            environment: self
-                .environment
-                .iter()
-                .map(|(key, value)| (key.clone(), Template::literal(value)))
-                .collect(),
-            command: self
-                .command
-                .iter()
-                .map(|value| Template::literal(value))
-                .collect(),
-            arguments: self
-                .arguments
-                .iter()
-                .map(|value| Template::literal(value))
-                .collect(),
+            environment: Template::literal_map(&self.environment),
+            command: Template::literals(&self.command),
+            arguments: Template::literals(&self.arguments),
             secrets: self
                 .secrets
                 .iter()

@@ -1,37 +1,19 @@
 //! Audit trail contracts: who did what through the API, with what outcome.
+use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Whether an audited request was allowed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AuditOutcome {
-    /// The request was authorized and succeeded.
-    Allowed,
-    /// The request was refused: missing credentials or permission, or a
-    /// target hidden from the caller.
-    Denied,
-    /// The request was authorized but failed.
-    Failed,
-}
-
-impl AuditOutcome {
-    /// Stable storage and wire name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Allowed => "allowed",
-            Self::Denied => "denied",
-            Self::Failed => "failed",
-        }
-    }
-
-    /// Parses a stored name.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        [Self::Allowed, Self::Denied, Self::Failed]
-            .into_iter()
-            .find(|outcome| outcome.as_str() == value)
+string_enum! {
+    #[serde]
+    /// Whether an audited request was allowed.
+    pub enum AuditOutcome {
+        /// The request was authorized and succeeded.
+        Allowed => "allowed",
+        /// The request was refused: missing credentials or permission, or a
+        /// target hidden from the caller.
+        Denied => "denied",
+        /// The request was authorized but failed.
+        Failed => "failed",
     }
 }
 
@@ -94,9 +76,7 @@ impl AuditEvent {
             |operator| operator.to_string(),
         )
     }
-}
 
-impl AuditEvent {
     /// What the request addressed, e.g. `application app-blog` or
     /// `environment env-staging of app-blog`.
     #[must_use]

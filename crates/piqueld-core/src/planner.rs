@@ -1,11 +1,12 @@
 //! Pure, deterministic desired/observed planning for the supported Swarm model.
 
 use crate::manifest::dependencies::StartupOrder;
+use crate::manifest::{JobVolumeAccess, NormalizedApplication, ValidatedHealthCheck};
 use crate::resource::{
     Convergence, DesiredJob, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ResolutionRequirement, ResolvedApplication,
 };
-use crate::{EnvironmentId, InstanceId};
+use crate::{DockerServiceName, EnvironmentId, InstanceId, codes};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,7 +14,8 @@ use std::{
 };
 use utoipa::ToSchema;
 
-use crate::codes;
+/// Replaces sensitive values in plans shown before execution.
+pub(crate) const REDACTED: &str = "<redacted>";
 
 /// Request used to generate a runtime plan.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -324,6 +326,25 @@ pub struct PlanDiagnostic {
     pub blocking: bool,
 }
 
+impl PlanDiagnostic {
+    /// A diagnostic about `resource`. Only errors block execution.
+    #[must_use]
+    pub fn new(
+        code: &str,
+        severity: DiagnosticSeverity,
+        resource: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            severity,
+            resource: resource.into(),
+            message: message.into(),
+            blocking: severity == DiagnosticSeverity::Error,
+        }
+    }
+}
+
 /// Aggregate counts for a generated plan.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -387,26 +408,20 @@ impl Plan {
                 let mut plan = desired
                     .as_ref()
                     .map_or_else(Self::default, |desired| Self::reconcile(desired, observed));
-                let prefix = unresolved
-                    .iter()
-                    .map(|requirement| match requirement {
-                        ResolutionRequirement::BuildGit { service, .. } => PlanAction::new(
-                            ActionKind::BuildGit {
-                                service: service.to_string(),
-                            },
-                            ActionReason::ResolutionRequired,
-                        ),
+                let prefix = unresolved.iter().map(|requirement| {
+                    let kind = match requirement {
+                        ResolutionRequirement::BuildGit { service, .. } => ActionKind::BuildGit {
+                            service: service.to_string(),
+                        },
                         ResolutionRequirement::ResolveImage { service, reference } => {
-                            PlanAction::new(
-                                ActionKind::ResolveImage {
-                                    service: service.to_string(),
-                                    reference: reference.clone(),
-                                },
-                                ActionReason::ResolutionRequired,
-                            )
+                            ActionKind::ResolveImage {
+                                service: service.to_string(),
+                                reference: reference.clone(),
+                            }
                         }
-                    })
-                    .collect::<Vec<_>>();
+                    };
+                    PlanAction::new(kind, ActionReason::ResolutionRequired)
+                });
                 plan.actions.splice(0..0, prefix);
                 plan
             }
@@ -428,67 +443,61 @@ impl Plan {
     /// does not own. `seen` deduplicates reports per resource name.
     fn collision(&mut self, name: &str, seen: &mut BTreeSet<String>) {
         if seen.insert(name.into()) {
-            self.diagnostics.push(PlanDiagnostic {
-                code: codes::UNOWNED_NAME_COLLISION.into(),
-                severity: DiagnosticSeverity::Error,
-                resource: name.into(),
-                message: "a same-name resource is not owned by this piqueld application and will not be changed".into(),
-                blocking: true,
-            });
+            self.diagnostics.push(PlanDiagnostic::new(
+                codes::UNOWNED_NAME_COLLISION,
+                DiagnosticSeverity::Error,
+                name,
+                "a same-name resource is not owned by this piqueld application and will not be changed",
+            ));
         }
     }
 
     /// Records a blocking diagnostic for an owned network or volume whose
     /// settings drifted; Docker cannot update these in place.
     fn immutable_drift(&mut self, name: &str, resource: &str) {
-        self.diagnostics.push(PlanDiagnostic {
-            code: codes::IMMUTABLE_CONFIGURATION_DRIFT.into(),
-            severity: DiagnosticSeverity::Error,
-            resource: name.into(),
-            message: format!(
+        self.diagnostics.push(PlanDiagnostic::new(
+            codes::IMMUTABLE_CONFIGURATION_DRIFT,
+            DiagnosticSeverity::Error,
+            name,
+            format!(
                 "the {resource} configuration differs from the desired immutable settings and cannot be repaired in place"
             ),
-            blocking: true,
-        });
+        ));
     }
 
     /// Records a non-blocking note that an undesired resource is left untouched
     /// because this application does not own it.
     fn ignored(&mut self, name: &str) {
-        self.diagnostics.push(PlanDiagnostic {
-            code: codes::FOREIGN_RESOURCE_IGNORED.into(),
-            severity: DiagnosticSeverity::Info,
-            resource: name.into(),
-            message: "foreign or unowned resource is outside this plan".into(),
-            blocking: false,
-        });
+        self.diagnostics.push(PlanDiagnostic::new(
+            codes::FOREIGN_RESOURCE_IGNORED,
+            DiagnosticSeverity::Info,
+            name,
+            "foreign or unowned resource is outside this plan",
+        ));
     }
 
     /// Records a non-blocking note that an obsolete owned resource is kept until
     /// the desired resources converge.
     fn cleanup_deferred(&mut self, name: &str, resource: &str) {
-        self.diagnostics.push(PlanDiagnostic {
-            code: codes::CLEANUP_DEFERRED.into(),
-            severity: DiagnosticSeverity::Info,
-            resource: name.into(),
-            message: format!(
+        self.diagnostics.push(PlanDiagnostic::new(
+            codes::CLEANUP_DEFERRED,
+            DiagnosticSeverity::Info,
+            name,
+            format!(
                 "the {resource} remains until earlier desired changes converge; cleanup is deferred"
             ),
-            blocking: false,
-        });
+        ));
     }
 
     /// Records a non-blocking note that a link network stays while the
     /// exporting environment's services are still attached to it.
     fn link_cleanup_deferred(&mut self, name: &str) {
-        self.diagnostics.push(PlanDiagnostic {
-            code: codes::CLEANUP_DEFERRED.into(),
-            severity: DiagnosticSeverity::Info,
-            resource: name.into(),
-            message: "the link network remains until the exporting environment's services leave it"
-                .into(),
-            blocking: false,
-        });
+        self.diagnostics.push(PlanDiagnostic::new(
+            codes::CLEANUP_DEFERRED,
+            DiagnosticSeverity::Info,
+            name,
+            "the link network remains until the exporting environment's services leave it",
+        ));
     }
 
     /// Computes action counts from the current plan.
@@ -519,9 +528,6 @@ impl Plan {
         }
     }
 
-    /// Whether desired resources have converged and obsolete backends can be retired.
-    /// Route cutover must succeed at this boundary before cleanup executes.
-    ///
     /// The runtime mutation active-target repair should apply next, if any.
     /// Repair never waits, so it stops at the first convergence wait: services
     /// behind one start only after their dependencies converge.
@@ -644,8 +650,10 @@ impl Plan {
         });
     }
 
-    /// True when the plan is unblocked and only cleanup actions (removals,
-    /// removal waits, and volume retention) remain.
+    /// Whether desired resources have converged and obsolete backends can be
+    /// retired: the plan is unblocked and only cleanup actions (removals,
+    /// removal waits, and volume retention) remain. Route cutover must
+    /// succeed at this boundary before cleanup executes.
     #[must_use]
     pub fn desired_resources_ready(&self) -> bool {
         !self.is_blocked()
@@ -845,13 +853,12 @@ impl Plan {
                         }
                         Convergence::Failed => {
                             ready = false;
-                            self.diagnostics.push(PlanDiagnostic {
-                                code: codes::SERVICE_UPDATE_FAILED.into(),
-                                severity: DiagnosticSeverity::Error,
-                                resource: service.name.to_string(),
-                                message: "service update failed; inspect the operation and Docker task state".into(),
-                                blocking: true,
-                            });
+                            self.diagnostics.push(PlanDiagnostic::new(
+                                codes::SERVICE_UPDATE_FAILED,
+                                DiagnosticSeverity::Error,
+                                service.name.as_str(),
+                                "service update failed; inspect the operation and Docker task state",
+                            ));
                         }
                     }
                     continue;
@@ -1026,6 +1033,153 @@ impl Plan {
             }
         }
         plan
+    }
+
+    /// Adds `diagnostics`, keeping every diagnostic in resource order.
+    pub fn warn(&mut self, diagnostics: impl IntoIterator<Item = PlanDiagnostic>) {
+        self.diagnostics.extend(diagnostics);
+        self.sort_diagnostics();
+    }
+
+    /// Warns about each service of `application` whose explicit start-first
+    /// order lets the old and new task write the same volume at once.
+    pub fn warn_rollouts(&mut self, application: &NormalizedApplication) {
+        self.warn(
+            application
+                .spec()
+                .services
+                .iter()
+                .filter(|service| service.rollout_overlaps_writable_volume())
+                .map(|service| {
+                    PlanDiagnostic::new(
+                        codes::ROLLOUT_START_FIRST_WRITABLE_VOLUME,
+                        DiagnosticSeverity::Warning,
+                        service.name.as_str(),
+                        "start-first rollouts briefly run two tasks on the same writable volume; single-writer stores such as PostgreSQL or SQLite can corrupt their data",
+                    )
+                }),
+        );
+    }
+
+    /// Warns about each import of `links` that would not connect.
+    pub fn warn_links(&mut self, links: &crate::links::LinkReport) {
+        use crate::links::ImportState;
+        self.warn(links.imports.iter().filter_map(|import| {
+            let reason = match import.state {
+                ImportState::Connected => return None,
+                ImportState::Unavailable => format!(
+                    "no deployed environment {} of {} exports {} to this environment; {} stays unreachable until one does",
+                    import.environment, import.application, import.service, import.alias
+                ),
+                ImportState::Full => format!(
+                    "{} {} already links to {} environments; {} stays unreachable until one of them stops importing from it",
+                    import.application,
+                    import.environment,
+                    crate::links::MAX_IMPORTERS,
+                    import.alias
+                ),
+            };
+            Some(PlanDiagnostic::new(
+                codes::IMPORT_UNCONNECTED,
+                DiagnosticSeverity::Warning,
+                import.alias.as_str(),
+                reason,
+            ))
+        }));
+    }
+
+    /// Lists each job where a deployment runs it: after source resolution,
+    /// networks, volumes, and the job's startup dependencies, before any other
+    /// service change. Warns about the services each exclusive job stops.
+    /// Deployments run jobs before planning their rollout, so only previews
+    /// list them.
+    pub fn add_jobs(&mut self, application: &NormalizedApplication, environment: &EnvironmentId) {
+        let spec = application.spec();
+        let mut remaining = std::mem::take(&mut self.actions);
+        for job in &spec.jobs {
+            let dependencies = spec.services.dependencies_of(job.service.as_str());
+            let dependencies = spec
+                .services
+                .iter()
+                .filter(|service| dependencies.contains(service.name.as_str()))
+                .map(|service| DockerServiceName::for_service(environment, &service.name))
+                .collect::<BTreeSet<_>>();
+            let prepares = |action: &PlanAction| match &action.kind {
+                ActionKind::EnsureService { service } => dependencies.contains(&service.name),
+                ActionKind::WaitForService { service } => dependencies
+                    .iter()
+                    .any(|dependency| dependency.as_str() == service),
+                ActionKind::RemoveService { .. }
+                | ActionKind::RemoveNetwork { .. }
+                | ActionKind::WaitForServiceRemoval { .. } => false,
+                _ => true,
+            };
+            let (prerequisites, rest): (Vec<_>, Vec<_>) = remaining.into_iter().partition(prepares);
+            self.actions.extend(prerequisites);
+            self.actions.push(PlanAction::new(
+                ActionKind::RunJob {
+                    job: job.name.to_string(),
+                },
+                ActionReason::DeploymentJob,
+            ));
+            remaining = rest;
+        }
+        self.actions.extend(remaining);
+        self.warn(spec.jobs.iter().filter_map(|job| {
+            let volumes = spec
+                .services
+                .iter()
+                .find(|service| service.name == job.service)?
+                .mounts
+                .iter()
+                .filter(|mount| job.volume_access == JobVolumeAccess::Exclusive && !mount.read_only)
+                .map(|mount| &mount.volume)
+                .collect::<BTreeSet<_>>();
+            let services = spec
+                .services
+                .iter()
+                .filter(|service| service.mounts.iter().any(|mount| volumes.contains(&mount.volume)))
+                .map(|service| service.name.as_str())
+                .collect::<Vec<_>>();
+            (!services.is_empty()).then(|| {
+                PlanDiagnostic::new(
+                    codes::JOB_STOPS_SERVICES,
+                    DiagnosticSeverity::Warning,
+                    job.name.as_str(),
+                    format!(
+                        "job {} uses its volumes exclusively: {} and any other running service mounting them stop before it runs and stay stopped until the rollout",
+                        job.name,
+                        services.join(", ")
+                    ),
+                )
+            })
+        }));
+    }
+
+    /// Removes sensitive configuration from an informational preview's runtime actions.
+    /// Execution always recomputes its own plan from the unredacted desired target.
+    pub fn redact_configuration(&mut self) {
+        for action in &mut self.actions {
+            if let ActionKind::EnsureService { service } = &mut action.kind {
+                for value in service
+                    .environment
+                    .values_mut()
+                    .chain(service.command.iter_mut())
+                    .chain(service.arguments.iter_mut())
+                {
+                    REDACTED.clone_into(value);
+                }
+                match &mut service.healthcheck {
+                    Some(ValidatedHealthCheck::Command { command, .. }) => {
+                        for value in command {
+                            REDACTED.clone_into(value);
+                        }
+                    }
+                    Some(ValidatedHealthCheck::Http { path, .. }) => REDACTED.clone_into(path),
+                    None => {}
+                }
+            }
+        }
     }
 }
 

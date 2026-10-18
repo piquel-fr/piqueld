@@ -1,3 +1,5 @@
+//! Credential-safe TOML parse diagnostics.
+
 use std::fmt;
 
 /// A TOML parse failure reduced to its message and location.

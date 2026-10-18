@@ -9,7 +9,7 @@ use crate::resource::{ResolvedApplication, ResolvedSource, Sha256Digest};
 use crate::{EnvironmentName, ServiceName};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use utoipa::ToSchema;
 
 /// Envelope version of [`Release::content_hash`].
@@ -49,12 +49,7 @@ impl BuildInputs {
     /// Fields whose values differ from `other`'s, including fields only one has.
     #[must_use]
     pub fn differences(&self, other: &Self) -> Vec<String> {
-        self.0
-            .keys()
-            .chain(other.0.keys())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter(|field| self.0.get(*field) != other.0.get(*field))
+        crate::changes::changed_keys(&self.0, &other.0)
             .cloned()
             .collect()
     }
