@@ -256,7 +256,8 @@ impl DirectoryKind {
     /// Opens the directory `component` below `parent` as a path-only handle,
     /// never through a symlink, so even directories the daemon may only
     /// traverse can be checked. A missing [`Self::Data`] component is created
-    /// with mode `0700`. `current` names it in errors.
+    /// with mode `0700`; one a concurrent caller created first is opened and
+    /// checked like any other. `current` names it in errors.
     fn open(self, parent: BorrowedFd<'_>, component: &OsStr, current: &Path) -> io::Result<File> {
         use rustix::{
             fs::{Mode, OFlags},
@@ -272,8 +273,10 @@ impl DirectoryKind {
         };
         let opened = match open() {
             Err(Errno::NOENT) if matches!(self, Self::Data) => {
-                rustix::fs::mkdirat(parent, component, Mode::RWXU)?;
-                open()
+                match rustix::fs::mkdirat(parent, component, Mode::RWXU) {
+                    Ok(()) | Err(Errno::EXIST) => open(),
+                    Err(error) => Err(error),
+                }
             }
             opened => opened,
         };
