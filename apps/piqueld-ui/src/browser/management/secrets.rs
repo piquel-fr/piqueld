@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
-    ApplicationView, Client, ClientError, EnvironmentAccess, EnvironmentId, MountedSecret,
+    ApplicationManifest, Client, ClientError, EnvironmentAccess, EnvironmentId, MountedSecret,
     SecretAccess, SecretMetadata, SecretMount, StoredSecret, Template,
     edit::{ApplicationEdit, ServiceEdit},
 };
@@ -885,15 +885,16 @@ pub(super) fn SecretFileSettings() -> impl IntoView {
     }
 }
 
-/// The secret file references `service` saves in `saved`.
-fn secret_files(saved: &ApplicationView, service: &str) -> Option<Vec<SecretMount>> {
-    saved
-        .application
-        .spec()
+/// The secret file references `service` saves in `manifest`; none once it
+/// is gone.
+fn secret_files(manifest: &ApplicationManifest, service: &str) -> Vec<SecretMount> {
+    manifest
+        .spec
         .services
         .iter()
         .find(|s| s.name.as_str() == service)
         .map(|s| s.secrets.clone())
+        .unwrap_or_default()
 }
 
 /// Editor for one service's secret file references (secret name and container
@@ -901,13 +902,10 @@ fn secret_files(saved: &ApplicationView, service: &str) -> Option<Vec<SecretMoun
 #[component]
 fn SecretFiles(service_name: String) -> impl IntoView {
     let context = editor();
-    let draft = Draft::new(
-        format!("secret-files:{service_name}"),
-        context
-            .saved
-            .with_untracked(|saved| secret_files(saved, &service_name))
-            .unwrap_or_default(),
-    );
+    let read = service_name.clone();
+    let draft = Draft::synced(format!("secret-files:{service_name}"), move |manifest| {
+        secret_files(manifest, &read)
+    });
     let mounts = draft.value;
     let service = StoredValue::new(service_name.clone());
     let save = move || {
@@ -917,11 +915,7 @@ fn SecretFiles(service_name: String) -> impl IntoView {
                 name: name.clone(),
                 edit: ServiceEdit::Secrets(mounts.get_untracked()),
             },
-            move |saved| {
-                if let Some(secrets) = secret_files(&saved, &name) {
-                    draft.reset(secrets);
-                }
-            },
+            move |saved| draft.reset(secret_files(&saved.application.to_manifest(), &name)),
         );
     };
     view! {

@@ -18,7 +18,7 @@ use super::runtime::RuntimeOverview;
 use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
 use super::{
     Alive, ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
-    environment_href, reload,
+    environment_href,
 };
 use crate::state::ApplicationHealth;
 use piqueld_client::sync::short_commit;
@@ -439,13 +439,12 @@ impl EditorContext {
         }
     }
 
-    /// Sends `request` while the editor is busy, then runs `done` with the
-    /// response, or shows the failure. Neither runs once the editor
-    /// unmounted meanwhile.
+    /// Sends `request` while the editor is busy, then runs `done` with its
+    /// result, unless the editor unmounted meanwhile.
     fn run<T: 'static>(
         self,
         request: impl Future<Output = Result<T, ClientError>> + 'static,
-        done: impl FnOnce(T) + 'static,
+        done: impl FnOnce(Result<T, ClientError>) + 'static,
     ) {
         self.set_error(None);
         self.busy.set(true);
@@ -454,25 +453,56 @@ impl EditorContext {
             if !self.mounted() {
                 return;
             }
-            match result {
-                Ok(response) => done(response),
-                Err(error) => self.failure(&error),
-            }
+            done(result);
             self.busy.set(false);
         });
     }
 
     /// Runs one mutation (see `run`): `send` gets a client with a fresh
-    /// request identity.
+    /// request identity, then `done` runs with the response, or the failure
+    /// is shown.
     fn run_mutation<T: 'static>(
         self,
         send: impl AsyncFnOnce(&Mutation) -> Result<T, ClientError> + 'static,
         done: impl FnOnce(T) + 'static,
     ) {
-        match Mutation::new() {
-            Ok(mutation) => self.run(async move { send(&mutation).await }, done),
-            Err(error) => self.set_error(Some(error)),
+        let mutation = match Mutation::new() {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                self.set_error(Some(error));
+                return;
+            }
+        };
+        self.run(
+            async move { send(&mutation).await },
+            move |result| match result {
+                Ok(response) => done(response),
+                Err(error) => self.failure(&error),
+            },
+        );
+    }
+
+    /// Reloads the saved configuration in place. Forms without edits show
+    /// it; edited ones keep their edits, now compared against it (see
+    /// `Draft::synced`). Clears an unknown request outcome and refreshes
+    /// deployment history.
+    fn reload(self) {
+        if self.busy.get_untracked() {
+            return;
         }
+        let id = self.id();
+        self.run(
+            async move { Client::browser().application(&id).await },
+            move |result| match result {
+                Ok(view) => {
+                    self.saved.set(view);
+                    self.uncertain.set(false);
+                    self.notice.set("Reloaded the saved configuration.".into());
+                    self.refresh_dashboard();
+                }
+                Err(error) => self.set_error(Some(error.user_message())),
+            },
+        );
     }
 
     /// Sends one mutation (see `run_mutation`), retrying once on transport
@@ -556,8 +586,8 @@ impl Mutation {
 }
 
 /// One settings group's form: its `value` and the saved `baseline` it
-/// started from. While they differ the group is in the editor's dirty set,
-/// which blocks deploys and guards navigation.
+/// compares against. While they differ the group is in the editor's dirty
+/// set, which blocks deploys and guards navigation.
 struct Draft<T: Send + Sync + 'static> {
     value: RwSignal<T>,
     baseline: RwSignal<T>,
@@ -599,15 +629,19 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
         draft
     }
 
-    /// Starts editing what `read` reads from the saved manifest. Until it is
-    /// edited, the draft follows later saves and fetches.
-    fn synced(key: &str, read: fn(&ApplicationManifest) -> T) -> Self {
+    /// Starts editing what `read` reads from the saved manifest. The
+    /// baseline follows later saves, fetches, and reloads, and so does the
+    /// form until it is edited: edits are kept, and discarding them returns
+    /// to the latest saved value.
+    fn synced(key: impl Into<String>, read: impl Fn(&ApplicationManifest) -> T + 'static) -> Self {
         let context = editor();
         let draft = Self::new(key.into(), read(&context.manifest()));
         Effect::new(move |_| {
             let saved = read(&context.manifest());
             if draft.value.get_untracked() == draft.baseline.get_untracked() {
                 draft.reset(saved);
+            } else {
+                draft.baseline.set(saved);
             }
         });
         draft
@@ -1228,14 +1262,27 @@ fn DeleteApplication() -> impl IntoView {
     }
 }
 
-/// Save status, error with reload button and diagnostic link, and a conflict
-/// notice when the polled listing shows a newer generation than the editor's.
+/// Save status, error with diagnostic link, and a conflict notice when the
+/// polled listing shows a newer generation than the editor's. Both offer to
+/// reload the saved configuration in place, keeping form edits.
 #[component]
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
     let signals = context.signals();
     let show_status = move || {
         context.busy.get() || (context.dirty.get().is_empty() && !context.notice.get().is_empty())
+    };
+    let reload_button = move || {
+        view! {
+            <button
+                type="button"
+                class="btn btn-sm"
+                disabled={move || context.busy.get()}
+                on:click={move |_| context.reload()}
+            >
+                "Reload saved configuration"
+            </button>
+        }
     };
     let conflict = move || {
         signals.applications.with(|rows| {
@@ -1262,16 +1309,10 @@ fn EditorFeedback() -> impl IntoView {
                             view! {
                                 <span>{e}</span>
                                 <span>
-                                    "Your form edits have been kept. Reload to review the latest saved configuration."
+                                    "Your form edits have been kept. Reload to review the latest saved configuration; edits stay until you save or discard them."
                                 </span>
                                 <div class="btn-group">
-                                    <button
-                                        type="button"
-                                        class="btn btn-sm"
-                                        on:click={move |_| reload()}
-                                    >
-                                        "Reload saved configuration"
-                                    </button>
+                                    {reload_button()}
                                     {context
                                         .diagnostic_id
                                         .get()
@@ -1295,7 +1336,12 @@ fn EditorFeedback() -> impl IntoView {
                     .then(|| {
                         notice(
                             Tone::Warn,
-                            "Configuration changed elsewhere. Your edits are preserved; reload to review the latest version.",
+                            view! {
+                                <span>
+                                    "Configuration changed elsewhere. Your edits are preserved; reload to review the latest version."
+                                </span>
+                                <div class="btn-group">{reload_button()}</div>
+                            },
                         )
                     })
             }}
@@ -1308,54 +1354,37 @@ fn EditorFeedback() -> impl IntoView {
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
-    // Forms keep drafts of the saved manifest they were built from. While
-    // managed they are read-only, so rebuild them when a fetch changes it.
-    let fetched = Memo::new(move |_| {
-        context.saved.with(|saved| {
-            saved
-                .application
-                .spec()
-                .manifest
-                .is_some()
-                .then(|| saved.spec_hash.clone())
-        })
-    });
-    // Read, not only tracked: memos are lazy, and one never read never
-    // subscribes to `saved`.
-    let forms = move || {
-        fetched.with(|_| ());
-        view! {
-            <div hidden={move || context.tab.get() != "Services"}>
-                <div class="section-header">
-                    <div>
-                        <h2>"Services"</h2>
-                        <p>
-                            "Each service runs one image as a replicated Swarm service on the application network."
-                        </p>
-                    </div>
-                    <NewService />
+    let forms = view! {
+        <div hidden={move || context.tab.get() != "Services"}>
+            <div class="section-header">
+                <div>
+                    <h2>"Services"</h2>
+                    <p>
+                        "Each service runs one image as a replicated Swarm service on the application network."
+                    </p>
                 </div>
-                <services::ServiceList />
+                <NewService />
             </div>
-            <div hidden={move || context.tab.get() != "Variables"}>
-                <variables::VariableSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Routes"}>
-                <routes::RouteSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Volumes"}>
-                <VolumeSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Jobs"}>
-                <jobs::JobSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Links"}>
-                <links::LinkSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Secrets"}>
-                <SecretFileSettings />
-            </div>
-        }
+            <services::ServiceList />
+        </div>
+        <div hidden={move || context.tab.get() != "Variables"}>
+            <variables::VariableSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Routes"}>
+            <routes::RouteSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Volumes"}>
+            <VolumeSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Jobs"}>
+            <jobs::JobSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Links"}>
+            <links::LinkSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Secrets"}>
+            <SecretFileSettings />
+        </div>
     };
     view! {
         <div hidden={move || {

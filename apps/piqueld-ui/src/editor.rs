@@ -446,6 +446,43 @@ impl ServiceForm {
         })
     }
 
+    /// This form with `section`'s fields taken from `from`. Forms built
+    /// this way from one base differ only in that section.
+    #[must_use]
+    pub fn with_section(&self, section: Section, from: &Self) -> Self {
+        let mut form = self.clone();
+        macro_rules! take {
+            ($($field:ident),+) => {
+                {
+                    $(form.$field.clone_from(&from.$field);)+
+                }
+            };
+        }
+        match section {
+            Section::General => take!(
+                source_kind,
+                image,
+                repository,
+                branch,
+                commit,
+                dockerfile,
+                context,
+                build_args,
+                target,
+                replicas
+            ),
+            Section::Environment => take!(environment),
+            Section::Process => take!(command, arguments),
+            Section::Storage => take!(mounts),
+            Section::Files => take!(files),
+            Section::Health => take!(health_kind, port, path, interval, timeout, health_command),
+            Section::Dependencies => take!(depends_on),
+            Section::Rollout => take!(rollout_order, monitor),
+            Section::Resources => take!(cpu, memory),
+        }
+        form
+    }
+
     /// Applies a single group to a fresh copy of saved configuration.
     /// # Errors
     /// Returns actionable errors for malformed numeric fields or duplicate
@@ -535,6 +572,30 @@ mod tests {
             vec!["argument with spaces", "saved elsewhere"]
         );
         assert!(matches!(saved.source,Source::Image{image} if image=="nginx:new"));
+    }
+    #[test]
+    fn with_section_takes_exactly_what_its_section_saves() {
+        let base = ServiceForm::from(&service());
+        let mut edited = base.clone();
+        edited.replicas = "3".into();
+        edited.environment.push(("PORT".into(), "8080".into()));
+        edited.arguments.push("more".into());
+        edited.depends_on.push("db".into());
+        edited.monitor = "45".into();
+        edited.cpu = "500".into();
+        for section in Section::ALL {
+            let (mut expected, mut taken) = (service(), service());
+            edited.patch(section, &mut expected).unwrap();
+            let form = base.with_section(section, &edited);
+            form.patch(section, &mut taken).unwrap();
+            assert_eq!(taken, expected, "{section:?}");
+            for other in Section::ALL.into_iter().filter(|other| *other != section) {
+                let (mut untouched, mut kept) = (service(), service());
+                base.patch(other, &mut untouched).unwrap();
+                form.patch(other, &mut kept).unwrap();
+                assert_eq!(kept, untouched, "{section:?} changed {other:?}");
+            }
+        }
     }
     #[test]
     fn health_sections_round_trip() {

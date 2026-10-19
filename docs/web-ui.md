@@ -202,7 +202,10 @@ Forms save typed fields or settings sections through individual endpoints, witho
 resubmitting the application manifest. Related fields within a form save atomically.
 All form saves update configuration only; Deploy remains explicit.
 Concurrent edits are rejected using configuration revisions; failed saves retain
-local form values. Navigation warns about unsaved edits. Host settings are
+local form values. **Reload saved configuration**, offered after a failure or a
+change made elsewhere, reloads it in place: forms without edits show the latest
+version, and edited ones keep their edits until saved or discarded, discarding
+back to the latest version. Navigation warns about unsaved edits. Host settings are
 read-only. There is no raw manifest editor or deployment restoration workflow.
 
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and

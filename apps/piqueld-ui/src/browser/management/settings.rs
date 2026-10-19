@@ -66,10 +66,9 @@ impl RepositoryDraft {
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
-    let draft = Draft::new(
-        "repository".into(),
-        RepositoryDraft::new(context.manifest().spec.manifest),
-    );
+    let draft = Draft::synced("repository", |manifest| {
+        RepositoryDraft::new(manifest.spec.manifest.clone())
+    });
     let form = draft.value;
     // Once connected, each environment follows its own branch, changed on its page.
     let connected = move || draft.baseline.with(|saved| saved.enabled);
@@ -445,7 +444,7 @@ fn WebhookSettings() -> impl IntoView {
 pub(super) fn MetadataSettings() -> impl IntoView {
     let context = editor();
     let editing = RwSignal::new(false);
-    let draft = Draft::new("name".into(), context.name());
+    let draft = Draft::synced("name", |manifest| manifest.metadata.name.clone());
     let name = draft.value;
     let save = move || {
         context.save(ApplicationEdit::Name(name.get_untracked()), move |app| {
@@ -508,7 +507,7 @@ fn volume_names(manifest: &ApplicationManifest) -> Vec<String> {
 #[component]
 pub(super) fn VolumeSettings() -> impl IntoView {
     let context = editor();
-    let draft = Draft::new("volumes".into(), volume_names(&context.manifest()));
+    let draft = Draft::synced("volumes", volume_names);
     let volumes = draft.value;
     let save = move || {
         let changed = volumes
@@ -570,17 +569,29 @@ pub(super) fn VolumeSettings() -> impl IntoView {
 #[component]
 pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
     let context = editor();
-    let service = context
+    // Every section's draft keeps the other sections as shown, so it
+    // compares and follows only its own fields. A service removed meanwhile
+    // keeps the form it was shown with.
+    let shown = context
         .manifest()
         .spec
         .services
-        .into_iter()
+        .iter()
         .find(|s| s.name == name)
+        .map(ServiceForm::from)
         .expect("listed service");
-    let draft = Draft::new(
-        format!("{name}:{}", section.title()),
-        ServiceForm::from(&service),
-    );
+    let read = name.clone();
+    let draft = Draft::synced(format!("{name}:{}", section.title()), move |manifest| {
+        manifest
+            .spec
+            .services
+            .iter()
+            .find(|s| s.name == read)
+            .map_or_else(
+                || shown.clone(),
+                |service| shown.with_section(section, &ServiceForm::from(service)),
+            )
+    });
     let form = draft.value;
     let name = StoredValue::new(name);
     let save = move || {
