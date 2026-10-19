@@ -137,17 +137,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         application: &piqueld_core::EnvironmentId,
         names: &[String],
     ) -> Result<(), BoundaryError> {
-        let ownership = std::collections::BTreeMap::from([
-            (piqueld_core::resource::MANAGED_LABEL.into(), "true".into()),
-            (
-                piqueld_core::resource::APPLICATION_LABEL.into(),
-                application.to_string(),
-            ),
-            (
-                piqueld_core::resource::INSTANCE_LABEL.into(),
-                self.instance_id.to_string(),
-            ),
-        ]);
+        let ownership = piqueld_core::resource::Ownership::scope(&self.instance_id, application);
         DockerTimeout::Request
             .run(
                 "remove secrets",

@@ -181,6 +181,35 @@ macro_rules! string_enum {
 }
 pub(crate) use string_enum;
 
+use std::ops::RangeInclusive;
+
+/// Byte lengths of one DNS label.
+pub const DNS_LABEL: RangeInclusive<usize> = 1..=63;
+
+/// Whether `value` has `lengths` bytes of ASCII letters, digits, or hyphens,
+/// and starts and ends with a letter or digit; with [`DNS_LABEL`] lengths, it
+/// is one DNS label.
+///
+/// ```text
+/// "web", "Api-2"     -> label
+/// "-web", "web-", "" -> not a label
+/// ```
+#[must_use]
+pub fn is_label(value: &str, lengths: RangeInclusive<usize>) -> bool {
+    lengths.contains(&value.len())
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+/// [`is_label`] without uppercase letters: the form of piqueld's IDs, names,
+/// and hostnames.
+pub(crate) fn is_lowercase_label(value: &str, lengths: RangeInclusive<usize>) -> bool {
+    is_label(value, lengths) && !value.bytes().any(|byte| byte.is_ascii_uppercase())
+}
+
 logical_name!(
     /// User-facing logical application name.
     ApplicationName, ApplicationNameError, "application names"

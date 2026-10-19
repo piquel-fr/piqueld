@@ -119,7 +119,7 @@ impl Ingress {
     /// Removes the credentials written for `cloudflared`, whenever it is not
     /// meant to run.
     pub(super) async fn remove_tunnel_credentials(&self) -> Result<()> {
-        Self::remove_file(&self.tunnel_directory().join("credentials.json"))
+        crate::directories::remove_file(&self.tunnel_directory().join("credentials.json"))
             .await
             .context("remove the tunnel credentials written for cloudflared")
     }

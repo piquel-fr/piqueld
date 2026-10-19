@@ -204,23 +204,13 @@ impl<D: DockerApi> Controller<D> {
         }
     }
 
-    /// Labels that mark Docker resources as managed by this instance and environment.
-    ///
-    /// ```text
-    /// {MANAGED_LABEL: "true", INSTANCE_LABEL: <store instance id>, APPLICATION_LABEL: <app id>}
-    /// ```
+    /// Labels that mark Docker resources as managed by this instance and
+    /// environment `id`; see [`piqueld_core::resource::Ownership::scope`].
     pub(super) fn ownership_labels(
         &self,
         id: &piqueld_core::EnvironmentId,
     ) -> std::collections::BTreeMap<String, String> {
-        std::collections::BTreeMap::from([
-            (super::MANAGED_LABEL.into(), "true".into()),
-            (
-                super::INSTANCE_LABEL.into(),
-                self.store.instance_id().to_owned(),
-            ),
-            (super::APPLICATION_LABEL.into(), id.to_string()),
-        ])
+        piqueld_core::resource::Ownership::scope(&self.instance_id(), id)
     }
 
     /// Runs a journaled Docker request with exponential backoff.

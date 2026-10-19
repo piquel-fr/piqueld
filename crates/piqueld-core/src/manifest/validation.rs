@@ -8,7 +8,7 @@ use super::{
     RepositoryManifest, ResourceLimits, SecretGenerator, Service, ServiceFile, Source,
     SourceRepository, ValidatedApplication, ValidatedRollout, ValidatedTemplate,
 };
-use crate::{codes, resource::valid_logical_name};
+use crate::{codes, names::is_lowercase_label, resource::valid_logical_name};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1671,15 +1671,9 @@ fn valid_registry_authority(value: &str) -> bool {
     }
     let lowered = host.to_ascii_lowercase();
     lowered == "localhost"
-        || (!lowered.is_empty()
-            && lowered.split('.').all(|label| {
-                !label.is_empty()
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-                    })
-            }))
+        || lowered
+            .split('.')
+            .all(|label| is_lowercase_label(label, 1..=usize::MAX))
 }
 
 /// Returns the leading registry host of an image name, if it has one: a

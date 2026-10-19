@@ -1,6 +1,6 @@
 //! The application's immutable releases, newest first.
 use super::super::ClientErrorExt;
-use super::super::format::{commit, timestamp};
+use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Tone, badge, empty, expander_summary, icon, load_older, notice, when,
 };
@@ -9,6 +9,7 @@ use super::editor;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
+use piqueld_client::sync::short_commit;
 use piqueld_client::{
     Client, ReleaseAvailability, ReleaseView, ResolvedSource, ServiceImage, ValidatedSource,
 };
@@ -144,7 +145,7 @@ pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool)
                             .as_deref()
                             .map_or_else(
                                 || "Saved manifest".to_owned(),
-                                |hash| format!("Commit {}", commit(hash)),
+                                |hash| format!("Commit {}", short_commit(hash)),
                             )}
                     </span>
                     {availability.clone().map(|(tone, label, _)| badge(tone, label))}

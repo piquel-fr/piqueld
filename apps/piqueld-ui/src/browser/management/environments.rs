@@ -5,7 +5,6 @@
 //! it declares exist, and their source and sync when their block sets them,
 //! so those controls are then read-only.
 use super::super::confirm;
-use super::super::format::commit;
 use super::super::ui::{
     Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_field,
     text_input, when,
@@ -16,6 +15,7 @@ use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
+use piqueld_client::sync::short_commit;
 use piqueld_client::{
     Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentChange,
     EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentView, TrackedBranch,
@@ -370,7 +370,7 @@ pub(super) fn last_synced(synced: Option<SyncedHead>) -> AnyView {
         |head| {
             let head_view = match head.commit {
                 Some(head) => {
-                    view! { <code title={head.clone()}>{commit(&head).to_owned()}</code> }
+                    view! { <code title={head.clone()}>{short_commit(&head).to_owned()}</code> }
                         .into_any()
                 }
                 None => view! { <span class="muted">"Not pushed"</span> }.into_any(),

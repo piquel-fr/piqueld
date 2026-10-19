@@ -193,11 +193,6 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     }
 }
 
-/// A commit abbreviated to its first 12 characters.
-pub(crate) fn short_commit(commit: &str) -> &str {
-    &commit[..commit.len().min(12)]
-}
-
 /// `items` joined with `, `, or `empty` when there are none.
 ///
 /// ```text

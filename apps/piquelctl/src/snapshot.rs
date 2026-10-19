@@ -16,11 +16,8 @@
 //!    with a ref, and bundles it, thin against a base the application's
 //!    repository has, or with the whole history only when asked to (see
 //!    [`History`]).
-use crate::{
-    error::{CliError, ErrorKind, Result},
-    support::short_commit,
-};
-use piqueld_client::{LocalSnapshot, SnapshotLimits};
+use crate::error::{CliError, ErrorKind, Result};
+use piqueld_client::{LocalSnapshot, SnapshotLimits, sync::short_commit};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},

@@ -4,7 +4,7 @@
 use super::{ValidationErrors, input, variables::Template};
 use crate::{
     RouteName, ServiceName,
-    names::{string_enum, validated_string},
+    names::{DNS_LABEL, is_lowercase_label, string_enum, validated_string},
 };
 use serde::{Deserialize, Serialize};
 use std::{fmt, num::NonZeroU16};
@@ -16,10 +16,7 @@ validated_string!(
     "hostname must be an exact public DNS name (use ASCII/Punycode, without a scheme, path, wildcard, or port)",
     |value: &str| value.len() <= 253
         && value.contains('.')
-        && value.split('.').all(|label| !label.is_empty() && label.len() <= 63
-            && label.as_bytes()[0].is_ascii_alphanumeric()
-            && label.as_bytes()[label.len()-1].is_ascii_alphanumeric()
-            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+        && value.split('.').all(|label| is_lowercase_label(label, DNS_LABEL))
         && value.rsplit('.').next().is_some_and(|tld| tld.bytes().any(|b| b.is_ascii_lowercase()) && !matches!(tld, "localhost" | "local" | "internal"))
 );
 

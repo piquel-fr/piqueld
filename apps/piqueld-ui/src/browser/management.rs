@@ -13,7 +13,7 @@ mod services;
 mod settings;
 mod variables;
 
-use super::format::{commit, timestamp};
+use super::format::timestamp;
 use super::runtime::RuntimeOverview;
 use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
 use super::{
@@ -21,6 +21,7 @@ use super::{
     environment_href, reload,
 };
 use crate::state::ApplicationHealth;
+use piqueld_client::sync::short_commit;
 
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::prelude::*;
@@ -255,12 +256,12 @@ impl EditorContext {
             DeploymentOrigin::Local(snapshot) => match &snapshot.base {
                 Some(base) => format!(
                     "Local snapshot {} on {}",
-                    commit(&snapshot.commit),
-                    commit(base)
+                    short_commit(&snapshot.commit),
+                    short_commit(base)
                 ),
                 None => format!(
                     "Local snapshot {}, uploaded complete",
-                    commit(&snapshot.commit)
+                    short_commit(&snapshot.commit)
                 ),
             },
         }

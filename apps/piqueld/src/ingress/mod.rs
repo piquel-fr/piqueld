@@ -303,7 +303,7 @@ impl Ingress {
             crate::prepare_data_dir(directory).await?;
         }
         let path = control.join(name);
-        Self::remove_file(&path)
+        crate::directories::remove_file(&path)
             .await
             .with_context(|| format!("remove the previous {name}"))?;
         let previous = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
@@ -331,14 +331,6 @@ impl Ingress {
         tokio::fs::rename(&temporary, path)
             .await
             .with_context(|| format!("replace {}", path.display()))
-    }
-
-    /// Removes the file at `path`; one that does not exist counts as removed.
-    async fn remove_file(path: &Path) -> std::io::Result<()> {
-        match tokio::fs::remove_file(path).await {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
     }
 
     /// The private hostname the gateway forwards to the daemon's dashboard

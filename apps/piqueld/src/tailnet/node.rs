@@ -191,12 +191,9 @@ impl Node {
     /// terminal interrupts stop both, and is killed when piqueld drops it.
     async fn spawn(dir: &Path, socket: &Path) -> Result<Child> {
         // A stale socket from a killed daemon would look ready before it is.
-        match std::fs::remove_file(socket) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err(error).context("failed to remove the stale tailscaled socket");
-            }
-            _ => {}
-        }
+        crate::directories::remove_file(socket)
+            .await
+            .context("failed to remove the stale tailscaled socket")?;
         let mut daemon = Command::new("tailscaled")
             .arg("--tun=userspace-networking")
             .arg("--port=0")

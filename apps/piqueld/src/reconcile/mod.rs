@@ -11,7 +11,7 @@ use crate::{
 use piqueld_core::{
     Plan, PlanRequest, codes,
     planner::ActionKind,
-    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL},
+    resource::{APPLICATION_LABEL, Convergence},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;

@@ -16,6 +16,7 @@ mod secrets;
 pub mod store;
 pub mod tailnet;
 
+mod certificate;
 mod command;
 mod directories;
 mod git;

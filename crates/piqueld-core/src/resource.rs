@@ -47,7 +47,7 @@ validated_string!(
     /// Stable control-plane instance identity.
     InstanceId, InstanceIdError,
     "instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens",
-    |value: &str| crate::identity::valid_id(value, 1..=64)
+    |value: &str| crate::names::is_lowercase_label(value, 1..=64)
 );
 
 validated_string!(
@@ -361,16 +361,29 @@ impl Ownership {
     /// ```
     #[must_use]
     pub fn labels(&self) -> BTreeMap<String, String> {
-        let mut labels = BTreeMap::from([
-            (MANAGED_LABEL.into(), "true".into()),
-            (INSTANCE_LABEL.into(), self.instance_id.to_string()),
-            (APPLICATION_LABEL.into(), self.environment_id.to_string()),
-            (SPEC_HASH_LABEL.into(), self.spec_hash.clone()),
-        ]);
+        let mut labels = Self::scope(&self.instance_id, &self.environment_id);
+        labels.insert(SPEC_HASH_LABEL.into(), self.spec_hash.clone());
         if let Some(service) = &self.service {
             labels.insert(SERVICE_LABEL.into(), service.to_string());
         }
         labels
+    }
+
+    /// The subset of [`Self::labels`] every resource `instance` manages for
+    /// `environment` carries, which scopes Docker lookups and removals to them.
+    ///
+    /// ```text
+    /// io.piqueld.managed     = "true"
+    /// io.piqueld.instance    = <instance>
+    /// io.piqueld.application = <environment>
+    /// ```
+    #[must_use]
+    pub fn scope(instance: &InstanceId, environment: &EnvironmentId) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (MANAGED_LABEL.into(), "true".into()),
+            (INSTANCE_LABEL.into(), instance.to_string()),
+            (APPLICATION_LABEL.into(), environment.to_string()),
+        ])
     }
 
     /// The environment desired ownership `labels` name. `None` unless the
@@ -1147,15 +1160,8 @@ impl ResolvedApplication {
 /// ```
 #[must_use]
 pub fn valid_logical_name(value: &str) -> bool {
-    (1..=63).contains(&value.len())
-        && value
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && !value.ends_with('-')
+    crate::names::is_lowercase_label(value, crate::names::DNS_LABEL)
+        && value.starts_with(|c: char| c.is_ascii_lowercase())
 }
 
 /// Sanitized compilation error for unresolved runtime inputs.

@@ -1,10 +1,6 @@
 //! Typed command results. Human-only context never leaks into JSON schemas.
 use super::HumanWriter;
-use crate::{
-    deployments::Deployed,
-    profiles::ProfileSummary,
-    support::{join_or, short_commit},
-};
+use crate::{deployments::Deployed, profiles::ProfileSummary, support::join_or};
 use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
@@ -16,7 +12,7 @@ use piqueld_client::{
     SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus,
     Template, UrlState, VariableValue,
     links::ImportState,
-    sync::{SyncState, WebhookSecret, WebhookView},
+    sync::{SyncState, WebhookSecret, WebhookView, short_commit},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
