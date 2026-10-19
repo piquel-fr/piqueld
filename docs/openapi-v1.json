@@ -24858,7 +24858,7 @@
     },
     "/api/v1/environments/{id}/branch": {
       "put": {
-        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments of\nan application without a manifest repository fail with\n`manifest_repository_required` (422), and those whose source the saved\nmanifest declares with `environment_declared` (409). The inspected\napplication `expected_generation` goes in the JSON body.",
+        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments of\nan application without a manifest repository fail with\n`manifest_repository_required` (422), those whose source the saved\nmanifest declares with `environment_declared` (409), and promoted ones,\nwhich have no branch, with `environment_promoted` (409). The inspected\napplication `expected_generation` goes in the JSON body.",
         "operationId": "setEnvironmentBranch",
         "parameters": [
           {

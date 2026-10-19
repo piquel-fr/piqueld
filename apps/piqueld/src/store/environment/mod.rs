@@ -178,6 +178,8 @@ impl Store {
 
     /// Points an environment of a repository-backed application at `branch`
     /// (see `set_source_on`), unless the saved manifest declares its source.
+    /// A promoted environment has no branch to change (`Promoted`): making it
+    /// track one again goes through `set_promotion_on`.
     pub(super) async fn set_branch_on(
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
@@ -188,6 +190,7 @@ impl Store {
             &environment.application.application,
             &environment.environment.name,
         )?;
+        environment.tracking()?;
         let connection = environment.application.application.spec().manifest.as_ref();
         let source = EnvironmentSource::select(connection, Some(branch))?;
         Self::set_source_on(tx, environment, source, now).await

@@ -134,8 +134,8 @@ async fn sources_are_other_live_environments_without_cycles() {
     );
 }
 
-/// A promoted environment never builds, and deploying it says how to
-/// promote instead. Tracking again follows the branch `spec.manifest` names,
+/// A promoted environment never builds, and deploying it or changing its
+/// branch says how to promote instead. Tracking again follows the branch `spec.manifest` names,
 /// and connecting or disconnecting the repository leaves promotions alone.
 #[tokio::test]
 async fn a_promoted_environment_never_builds_until_it_tracks_again() {
@@ -159,6 +159,13 @@ async fn a_promoted_environment_never_builds_until_it_tracks_again() {
             .await
             .map(|_| ()),
         store.request_deploy(&production, None).await.map(|_| ()),
+        store
+            .force(Mutation::SetBranch {
+                id: production.clone(),
+                branch: TrackedBranch::new("release".into(), None).unwrap(),
+            })
+            .await
+            .map(|_| ()),
     ] {
         assert!(matches!(
             deploy,

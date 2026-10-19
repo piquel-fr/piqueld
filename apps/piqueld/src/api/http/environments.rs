@@ -201,8 +201,9 @@ pub(super) async fn rename(
 /// of its manifest repository, or pins or unpins a commit. Nothing is fetched
 /// or redeployed: the next deployment fetches the new branch. Environments of
 /// an application without a manifest repository fail with
-/// `manifest_repository_required` (422), and those whose source the saved
-/// manifest declares with `environment_declared` (409). The inspected
+/// `manifest_repository_required` (422), those whose source the saved
+/// manifest declares with `environment_declared` (409), and promoted ones,
+/// which have no branch, with `environment_promoted` (409). The inspected
 /// application `expected_generation` goes in the JSON body.
 #[utoipa::path(put,path="/api/v1/environments/{id}/branch",operation_id="setEnvironmentBranch",
     params(("id"=String,Path),ForceQuery,("Idempotency-Key"=Option<String>,Header)),
