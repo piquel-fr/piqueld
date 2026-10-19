@@ -819,7 +819,14 @@ impl Store {
         let id = current.application.id().clone();
         let mut manifest = current.application.to_manifest();
         edit.clone().apply(&mut manifest)?;
-        Self::declare_edited_on(tx, &id, current.application.spec(), &mut manifest.spec).await?;
+        Self::declare_edited_on(
+            tx,
+            &id,
+            current.application.spec(),
+            &mut manifest.spec,
+            edit.environment(),
+        )
+        .await?;
         let application = manifest.validate_template()?.normalize(id.clone());
         let field = match &edit {
             ApplicationEdit::Name(_) => "name",
@@ -1377,26 +1384,30 @@ mod tests {
         assert_eq!(source.promoted_from(), Some(&staging));
     }
 
-    /// Edits configure existing environments: one adding a block for a name
-    /// no environment has, such as a typo, is refused instead of declaring
-    /// an environment no edit could remove.
+    /// Edits configure existing environments: one naming an environment that
+    /// doesn't exist, such as a typo, is refused instead of declaring an
+    /// environment no edit could remove, or of configuring nothing when it
+    /// would add no block.
     #[tokio::test]
     async fn edits_declare_no_new_environments() {
+        use piqueld_core::manifest::Visibility;
         let (_directory, store) = Store::temporary().await;
         let (application, _) =
             environments(&store, "[spec.environments.staging]\n", ["staging"]).await;
-        let typo = Mutation::Edit {
-            id: application.clone(),
-            edit: Box::new(piqueld_core::edit::ApplicationEdit::EnvironmentVisibility {
-                environment: "stagign".into(),
-                visibility: piqueld_core::manifest::Visibility::Private,
-            }),
-            deploy: false,
-        };
-        assert!(matches!(
-            store.force(typo).await,
-            Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
-        ));
+        for visibility in [Visibility::Private, Visibility::Public] {
+            let typo = Mutation::Edit {
+                id: application.clone(),
+                edit: Box::new(piqueld_core::edit::ApplicationEdit::EnvironmentVisibility {
+                    environment: "stagign".into(),
+                    visibility,
+                }),
+                deploy: false,
+            };
+            assert!(matches!(
+                store.force(typo).await,
+                Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
+            ));
+        }
         assert_eq!(store.environments(&application).await.unwrap().len(), 1);
     }
 

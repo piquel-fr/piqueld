@@ -356,6 +356,15 @@ impl ApplicationEdit {
         )
     }
 
+    /// The environment this edit configures, if any.
+    #[must_use]
+    pub fn environment(&self) -> Option<&str> {
+        match self {
+            Self::EnvironmentVisibility { environment, .. } => Some(environment),
+            _ => None,
+        }
+    }
+
     /// Edits input in memory. The caller must validate the resulting manifest before saving.
     ///
     /// Removing a service also drops its public routes, its jobs, and other

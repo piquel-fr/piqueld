@@ -459,7 +459,8 @@ name. Creating, deleting, or renaming to or from a name the saved manifest
 branch, source or sync of one whose block sets its source, returns 409
 `environment_declared`, naming it in `details.environment`. An application
 edit that would add a `[spec.environments.<name>]` block for a name no
-environment has fails with 422 `environment_unknown`, naming it in
+environment has, or that names one, like setting its visibility, even when it
+would add none, fails with 422 `environment_unknown`, naming it in
 `details.environment`. Creating an
 environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422

@@ -196,17 +196,20 @@ impl Store {
 
     /// Blocks declare environments, so an edit through the CLI or dashboard
     /// configures existing environments only: one adding a block for a name no
-    /// environment has fails with `EnvironmentUnknown`, rather than creating
-    /// an environment no edit could remove. An edit that declares the
-    /// application's first environment declares every existing one too, with
-    /// a block that leaves its source as it is: editing configuration never
-    /// changes which environments the manifest reports, or where they deploy
-    /// from. `before` is the saved manifest, `after` the edited one.
+    /// environment has, or naming one (`named`) even without adding a block,
+    /// fails with `EnvironmentUnknown`, rather than creating an environment no
+    /// edit could remove or silently configuring nothing. An edit that
+    /// declares the application's first environment declares every existing
+    /// one too, with a block that leaves its source as it is: editing
+    /// configuration never changes which environments the manifest reports,
+    /// or where they deploy from. `before` is the saved manifest, `after` the
+    /// edited one.
     pub(in crate::store) async fn declare_edited_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         before: &ApplicationSpec,
         after: &mut ApplicationSpec,
+        named: Option<&str>,
     ) -> Result<(), StoreError> {
         let live = Self::environments_on(tx, application.as_str())
             .await?
@@ -217,10 +220,14 @@ impl Store {
         if let Some(environment) = after
             .environments
             .keys()
-            .find(|name| !before.environments.contains_key(*name) && !live.contains(name))
+            .map(String::as_str)
+            .chain(named)
+            .find(|name| {
+                !before.environments.contains_key(*name) && !live.iter().any(|live| live == name)
+            })
         {
             return Err(StoreError::EnvironmentUnknown {
-                environment: environment.clone(),
+                environment: environment.to_owned(),
             });
         }
         if before.environments.is_empty() && !after.environments.is_empty() {
