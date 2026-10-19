@@ -581,6 +581,10 @@ pub struct EnvironmentStatusView {
     pub state: ApplicationState,
     /// Observed runtime health, independent of operation progress.
     pub runtime_health: Option<String>,
+    /// When `runtime_health` was last observed, in Unix milliseconds; it is
+    /// refreshed on every health scan, so an old value means it is stale.
+    #[serde(default)]
+    pub health_observed_at_ms: Option<i64>,
     /// Optional safe status message.
     pub message: Option<String>,
     /// Last update timestamp in Unix milliseconds.

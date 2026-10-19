@@ -3791,6 +3791,12 @@
                 "description": "Stable environment identifier.",
                 "type": "string"
               },
+              "health_observed_at_ms": {
+                "description": "When `runtime_health` was last observed, in Unix milliseconds; it is\nrefreshed on every health scan, so an old value means it is stale.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
               "message": {
                 "description": "Optional safe status message.",
                 "nullable": true,
@@ -6453,6 +6459,12 @@
           "environment_id": {
             "description": "Stable environment identifier.",
             "type": "string"
+          },
+          "health_observed_at_ms": {
+            "description": "When `runtime_health` was last observed, in Unix milliseconds; it is\nrefreshed on every health scan, so an old value means it is stale.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
           },
           "message": {
             "description": "Optional safe status message.",

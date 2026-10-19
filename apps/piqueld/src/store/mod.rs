@@ -511,6 +511,8 @@ pub struct EnvironmentStatus {
     pub state: ApplicationState,
     /// Last observed runtime health, independent of pending intent.
     pub runtime_health: Option<String>,
+    /// When `runtime_health` was last observed, in Unix milliseconds.
+    pub health_observed_at_ms: Option<i64>,
     /// Latest diagnostic, when present.
     pub message: Option<String>,
     /// Observation timestamp.

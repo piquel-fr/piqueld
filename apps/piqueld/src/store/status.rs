@@ -21,7 +21,7 @@ impl Store {
     ) -> Result<EnvironmentStatus, StoreError> {
         let app_id = id.as_str();
         let row = sqlx::query!(
-            "SELECT state,message,runtime_health,updated_at_ms FROM environment_status WHERE environment_id=?1",
+            "SELECT state,message,runtime_health,health_observed_at_ms,updated_at_ms FROM environment_status WHERE environment_id=?1",
             app_id
         )
         .fetch_optional(connection)
@@ -32,6 +32,7 @@ impl Store {
             environment_id: id.clone(),
             state: decode_name(&row.state)?,
             runtime_health: row.runtime_health,
+            health_observed_at_ms: row.health_observed_at_ms,
             message: row.message,
             updated_at_ms: row.updated_at_ms,
         })
@@ -79,8 +80,11 @@ impl Store {
     }
 
     /// Records a meaningful observed health transition without overwriting intent progress.
-    /// Health is `absent` with no services, `ready` when all converged, else
-    /// `degraded`. The observation time is refreshed on every call, while a
+    /// Health is `absent` with no services, `ready` when every expected
+    /// service is observed and all observed ones converged, else `degraded`.
+    /// Expected are the services of the operation's target while it is in
+    /// progress, else of the environment's active target, and none while it
+    /// is deleted. The observation time is refreshed on every call, while a
     /// `health_changed` event is recorded only when the value changes.
     /// # Errors
     /// Returns a store error. Superseded observations are ignored.
@@ -89,9 +93,27 @@ impl Store {
         operation_id: &str,
         observed: &piqueld_core::ObservedApplication,
     ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let expected = sqlx::query_scalar!(
+            r#"SELECT json_extract(service.value,'$.name') AS "name!: String"
+            FROM operations o JOIN environments e ON e.id=o.environment_id,
+            json_each(CASE WHEN o.kind='delete' THEN NULL
+            WHEN o.state IN ('requested','running') AND o.target_json IS NOT NULL THEN o.target_json
+            ELSE e.resolved_json END,'$.services') service
+            WHERE o.id=?1"#,
+            operation_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
         let health = if observed.services.is_empty() {
             "absent"
-        } else if observed
+        } else if expected.iter().all(|name| {
+            observed
+                .services
+                .iter()
+                .any(|service| &service.name == name)
+        }) && observed
             .services
             .iter()
             .all(|service| service.convergence == piqueld_core::Convergence::Converged)
@@ -100,7 +122,6 @@ impl Store {
         } else {
             "degraded"
         };
-        let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
         let changed=sqlx::query!("UPDATE environment_status SET runtime_health=?1 WHERE runtime_health IS NOT ?1 AND environment_id=(SELECT environment_id FROM operations WHERE id=?2) AND ?2=(SELECT latest.id FROM operations latest WHERE latest.environment_id=environment_status.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",health,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
         sqlx::query!("UPDATE environment_status SET health_observed_at_ms=?1 WHERE environment_id=(SELECT environment_id FROM operations WHERE id=?2) AND ?2=(SELECT id FROM operations WHERE environment_id=environment_status.environment_id ORDER BY created_at_ms DESC,id DESC LIMIT 1)",now,operation_id).execute(&mut *tx).await.map_err(StoreError::database)?;

@@ -13,6 +13,7 @@ impl From<EnvironmentStatus> for EnvironmentStatusView {
             environment_id: status.environment_id.to_string(),
             state: status.state,
             runtime_health: status.runtime_health,
+            health_observed_at_ms: status.health_observed_at_ms,
             message: status.message,
             updated_at_ms: status.updated_at_ms,
         }

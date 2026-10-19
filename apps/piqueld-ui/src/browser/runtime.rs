@@ -131,7 +131,16 @@ fn runtime_status_card(
                 <dt>"State"</dt>
                 <dd>{badge(health.tone(), status.state.to_string())}</dd>
                 <dt>"Runtime health"</dt>
-                <dd>{status.runtime_health.clone().unwrap_or_else(|| "unknown".into())}</dd>
+                <dd>
+                    <span class="btn-group">
+                        <span>
+                            {status.runtime_health.clone().unwrap_or_else(|| "unknown".into())}
+                        </span>
+                        {status
+                            .health_observed_at_ms
+                            .map(|at| view! { <span class="muted">"observed " {when(at)}</span> })}
+                    </span>
+                </dd>
                 <dt>"Latest operation"</dt>
                 <dd>
                     {latest

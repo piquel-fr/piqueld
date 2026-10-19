@@ -164,6 +164,11 @@ waits for.
 
 Operation state describes progress toward intent. Runtime health is recorded
 separately, so a failed replacement can coexist with healthy existing services.
+It is `ready` only when every service the environment expects is running and
+converged: those of the deployment in progress, else of the active target. A missing
+service makes it `degraded`, and no running service `absent`. Status reports
+when health was last observed (`health_observed_at_ms`); health scans refresh
+it, so an old time means it is stale.
 The intent generation and last resolved target generation are exposed separately;
 a resolved generation alone does not assert container convergence.
 
