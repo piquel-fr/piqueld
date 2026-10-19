@@ -477,6 +477,12 @@ impl ApiErrorPayload for Envelope<piqueld_core::api::ReadinessStatus> {
 }
 
 impl ClientError {
+    /// Whether the daemon answered that the requested resource does not exist.
+    #[must_use]
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::Api { status, .. } if *status == http::StatusCode::NOT_FOUND)
+    }
+
     /// Builds an `Endpoint` error for requests rejected before they are sent.
     pub(crate) fn invalid_request(message: impl std::fmt::Display) -> Self {
         Self::Endpoint {

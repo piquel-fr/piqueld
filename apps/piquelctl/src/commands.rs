@@ -19,7 +19,6 @@ use crate::{
     },
 };
 use futures_util::StreamExt;
-use http::StatusCode;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, Client, ClientError, ListApplicationsOptions, Operation,
     OperationState, Page,
@@ -527,10 +526,7 @@ pub(crate) async fn resolve_application(
             Ok(application) => return Ok(application),
             // The value may still be an application name, so fall through to
             // the name lookup.
-            Err(ClientError::Api {
-                status: StatusCode::NOT_FOUND,
-                ..
-            }) => {}
+            Err(error) if error.is_not_found() => {}
             Err(error) => return Err(error.into()),
         }
     }
@@ -636,10 +632,7 @@ where
     let progress = console.start_task(operation_ids.first().map_or("deletion", String::as_str));
     loop {
         match resource().await {
-            Err(ClientError::Api {
-                status: StatusCode::NOT_FOUND,
-                ..
-            }) => {
+            Err(error) if error.is_not_found() => {
                 progress.finish(TaskOutcome::Succeeded, "deleted");
                 return Ok(());
             }
@@ -658,10 +651,7 @@ where
                         return Err(error);
                     }
                 }
-                Err(ClientError::Api {
-                    status: StatusCode::NOT_FOUND,
-                    ..
-                }) => {}
+                Err(error) if error.is_not_found() => {}
                 Err(error) => return Err(error.into()),
             }
         }
