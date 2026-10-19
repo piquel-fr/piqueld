@@ -289,7 +289,9 @@ impl<D: DockerApi> Controller<D> {
     /// Polls observations, from every [`SERVICE_POLL`] backing off to every
     /// [`SERVICE_POLL_MAX`], until the named service has converged (or, with
     /// `removed`, no longer exists). A `Failed` convergence ends the wait with
-    /// `ServiceUpdateFailed`; the deadline yields `ConvergenceTimeout`.
+    /// `ServiceUpdateFailed`, and a service that disappeared fails the
+    /// attempt, which is retried, rather than waiting out the deadline, which
+    /// yields `ConvergenceTimeout`.
     pub(super) async fn wait_service(
         &self,
         operation: &Operation,
@@ -305,6 +307,11 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
             match observed.services.iter().find(|s| s.name == name) {
                 None if removed => return Ok(()),
+                None => {
+                    return Err(OperationError::DockerRequestFailed(
+                        "waiting for a service that disappeared",
+                    ));
+                }
                 Some(s) if !removed && s.convergence == Convergence::Converged => return Ok(()),
                 Some(s) if !removed && s.convergence == Convergence::Failed => {
                     return Err(OperationError::ServiceUpdateFailed);

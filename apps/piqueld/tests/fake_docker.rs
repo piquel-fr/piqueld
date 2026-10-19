@@ -2622,6 +2622,35 @@ async fn deploy_dependents(
     (state, harness.docker.rollout.lock().await.clone())
 }
 
+/// A service that disappears while the deployment waits for it fails the
+/// attempt, which is retried, instead of waiting out the convergence timeout.
+#[tokio::test]
+async fn a_service_removed_while_waiting_for_it_fails_the_attempt() {
+    let harness = ControllerHarness::new().await;
+    harness
+        .docker
+        .stall_convergence
+        .store(true, Ordering::SeqCst);
+    let operation = harness.create().await;
+    let remove = async {
+        eventually(Duration::from_secs(10), POLL, async || {
+            (harness.operation(&operation.id).await.phase.as_deref() == Some("wait_for_service"))
+                .then_some(())
+        })
+        .await
+        .expect("the deployment waits for its service");
+        harness.docker.observed.lock().await.services.clear();
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(harness.scan(), remove)
+    })
+    .await
+    .expect("the wait ends once its service is gone");
+    let failed = harness.operation(&operation.id).await;
+    assert_eq!(failed.state, OperationState::Failed);
+    assert_eq!(failed.error_code.as_deref(), Some("docker_request_failed"));
+}
+
 #[tokio::test]
 async fn dependents_roll_out_once_their_dependencies_converge() {
     // `worker` is independent and sorts after the dependent `server`.
