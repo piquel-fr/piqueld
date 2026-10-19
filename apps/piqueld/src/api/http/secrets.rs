@@ -225,7 +225,8 @@ pub(super) async fn put_stored(
 /// Environments are listed by ID and must belong to the application. A
 /// narrower list fails later deployments that mount the secret with
 /// `secret_access_denied`; running deployments keep their pinned versions.
-#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}/access",operation_id="setSecretAccess",params(("id"=String,Path),("name"=String,Path)),request_body=SecretAccess,responses((status=200,description="Updated metadata; no secret value",body=Envelope<StoredSecret>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+/// Fails with 409 `secret_deleting` while the secret is being deleted.
+#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}/access",operation_id="setSecretAccess",params(("id"=String,Path),("name"=String,Path)),request_body=SecretAccess,responses((status=200,description="Updated metadata; no secret value",body=Envelope<StoredSecret>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn set_access(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,

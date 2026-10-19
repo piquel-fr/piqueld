@@ -16100,7 +16100,7 @@
     },
     "/api/v1/applications/{id}/secrets/{name}/access": {
       "put": {
-        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.",
+        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.\nFails with 409 `secret_deleting` while the secret is being deleted.",
         "operationId": "setSecretAccess",
         "parameters": [
           {
@@ -16162,6 +16162,16 @@
             "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {

@@ -719,7 +719,8 @@ belong to their environment. Secret endpoints expose metadata only:
 - `PUT /api/v1/applications/{id}/secrets/{name}/access` replaces the access list
   with a JSON `SecretAccess` body. Environments must belong to the application
   (400 otherwise).
-  Narrowing it affects later deployments only.
+  Narrowing it affects later deployments only. A secret being deleted keeps its
+  access (409 `secret_deleting`).
 - `GET /api/v1/environments/{id}/secrets` lists an environment's generated secrets
   with the same metadata, without `access`.
   `POST /api/v1/environments/{id}/secrets/{name}/regenerate` with the current

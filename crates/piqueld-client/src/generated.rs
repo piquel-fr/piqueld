@@ -2523,6 +2523,7 @@ impl Client {
     Environments are listed by ID and must belong to the application. A
     narrower list fails later deployments that mount the secret with
     `secret_access_denied`; running deployments keep their pinned versions.
+    Fails with 409 `secret_deleting` while the secret is being deleted.
 
     Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}/access`
 
@@ -2574,6 +2575,9 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             415u16 => Err(Error::ErrorResponse(
