@@ -166,7 +166,11 @@ environment, each linking to its environment, and include application-wide
 events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
 a URLs card, a Links card when it imports services or others import its
-services, observed services, and reconciliation diagnostics. The Links card
+services, a Telemetry card when it is granted the daemon's
+[telemetry](observability.md#receiving-telemetry-in-an-application) or
+deploys a service receiving it (whether it is granted, which service receives
+it, and whether the daemon is connected), observed services, and
+reconciliation diagnostics. The Links card
 lists each import as connected or waiting, with why, and the environments of
 readable applications importing its services; a preview's Overview shows it
 too. The URLs card
@@ -176,12 +180,13 @@ for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports
 it in [URL readiness](api.md#url-readiness). Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
 environment, command and arguments, volume mounts, files, health checks,
-startup dependencies, rollout, resource limits, and logs. Files lists each
+startup dependencies, rollout, telemetry, resource limits, and logs. Files lists each
 read-only file's container path, mode, and inline content; files a
 repository-backed manifest reads show their repository path. Startup dependencies list the
 application's other services as checkboxes. Rollout selects an order (derived
 from mounts, stop first, or start first) and an optional monitor window, blank
-for the 30-second default. Service form drafts are retained when switching tabs.
+for the 30-second default. Telemetry marks the service as the application's
+telemetry receiver. Service form drafts are retained when switching tabs.
 Selecting None for a health check hides its remaining fields.
 The pencil beside the application name opens its rename form.
 An environment's Deployments tab lists expandable deployment rows with Details, Snapshot,
@@ -418,7 +423,10 @@ for a deployment, with the reason) and the branch head of its last
 deployment ("Not pushed" when a local snapshot was deployed before its branch
 existed); **Deploy on push** opts it in without a saved revision, and
 **Stop deploying on push** opts it out. A
-preview's page shows the same, without the opt-out. Events caused by sync name
+preview's page shows the same, without the opt-out. An environment's Overview
+has a **Telemetry** settings card: **Grant telemetry** confirms, then grants the
+environment telemetry, and **Revoke telemetry** revokes it, for holders of
+`telemetry:grant`. Events caused by sync name
 `sync:poll` or `sync:webhook` as their requester.
 
 **Manifest**, beside the deployment actions, downloads the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.
@@ -441,7 +449,9 @@ the bottom only when the reader has not scrolled up.
 
 The main overview and Daemon status group daemon connectivity with deployment
 readiness for SQLite, Docker reachability, Swarm suitability, and HTTPS ingress,
-plus the tailnet node when enabled. A Built images card shows
+plus the tailnet node when enabled. A Telemetry export card per destination
+shows the `[telemetry]` endpoint and the receiving service of each granted
+environment of a readable application, with whether it is connected. A Built images card shows
 how many images this installation built that image cleanup kept, and the size
 of those it removed since the daemon started. Green and red labels state
 each result in text, and one refresh updates the complete dashboard status.

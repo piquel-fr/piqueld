@@ -167,3 +167,31 @@ test('a service Logs tab offers each environment once the application has severa
   await expect(page.getByRole('heading', { name: 'Service logs' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'staging', exact: true })).toBeVisible();
 });
+
+test('a service receives telemetry once its environment is granted it', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('collector'), expected_generation: 0 });
+  const app = saved.application_id as string;
+  await page.goto(`/dashboard/applications/${app}/services/web`);
+  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Telemetry', exact: true }).click();
+  await page.getByLabel('Receive telemetry', { exact: true }).check();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).locator('visible=true').click();
+  await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
+  const { application } = await call(page, 'GET', `applications/${app}`) as {
+    application: { spec: { services: { receives_telemetry?: boolean }[] } };
+  };
+  expect(application.spec.services[0].receives_telemetry).toBe(true);
+
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  const grant = page.getByRole('button', { name: 'Grant telemetry', exact: true });
+  page.once('dialog', async dialog => {
+    expect(dialog.message()).toContain('every application');
+    await dialog.accept();
+  });
+  const granted = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes(`/environments/${app}/telemetry`));
+  await grant.click();
+  expect((await granted).status()).toBe(200);
+  await expect(page.getByRole('button', { name: 'Revoke telemetry', exact: true })).toBeEnabled();
+  const environment = await call(page, 'GET', `environments/${app}`) as { telemetry: boolean };
+  expect(environment.telemetry).toBe(true);
+});

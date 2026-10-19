@@ -346,7 +346,9 @@ headers_file = "otlp-headers"              # optional
 containers = true                          # default
 ```
 
-Without an endpoint, nothing is exported. `http://` sends in plain text, so use
+Without an endpoint, nothing is exported there; an application can still
+[receive telemetry](#receiving-telemetry-in-an-application) from the daemon.
+`http://` sends in plain text, so use
 it only on loopback or a private network. `headers_file` holds gRPC metadata sent
 with every export, such as a collector token, as one `name: value` per line. It
 is a [credential file](configuration.md#credential-files): relative paths
@@ -405,6 +407,12 @@ needs neither the Docker socket nor host mounts, and manifests still cannot
 mount either. Set `containers = false` to export only the daemon's own
 telemetry.
 
+Container telemetry goes to [receiving services](#receiving-telemetry-in-an-application)
+too. Without an endpoint, it is exported only while some environment
+receives telemetry, starting from the present each time one does. A receiving service's own output reaches the endpoint but
+no receiver, so a collector that logs what it receives never receives its own
+output again.
+
 Each container's records carry its own resource:
 
 | Attribute | Value |
@@ -462,12 +470,117 @@ again. Telemetry still queued at shutdown gets five seconds to be sent.
 
 `piquelctl status` and the Daemon status page show each destination: its
 endpoint, the file its headers came from, the last successful export, how many
-records were dropped since the daemon started, and whether it is failing, and
-whether container telemetry is exported. The settings themselves appear
-read-only in the configuration view.
+records were dropped since the daemon started, and whether it is connected or
+failing, and whether container telemetry is exported. They list the
+[receiving services](#receiving-telemetry-in-an-application) of the
+environments you can read too. The settings themselves appear read-only in the
+configuration view.
 
 piqueld no longer serves Prometheus metrics itself: the `[metrics]` table was
 removed, and configurations that still set it fail to load. Set
 `telemetry.endpoint` to a collector instead. Prometheus 3 receives OTLP itself
 (over HTTP, with `--web.enable-otlp-receiver`), so the collector can forward
 metrics to it with its `otlphttp` exporter, without a scrape endpoint.
+
+### Receiving telemetry in an application
+
+A collector deployed as a piqueld application, such as the OpenTelemetry
+Collector, can receive the daemon's telemetry directly. The daemon runs on the
+host and can't reach an overlay network, and piqueld doesn't publish ports, so
+it exports over a Unix socket in a directory it shares with the collector,
+as it does with the [ingress gateway](ingress.md).
+
+1. Mark the collector's service in the manifest. At most one service per
+   application may (`telemetry_receiver_duplicate`), with one replica
+   (`telemetry_receiver_replicas`), and its rollouts stop the old collector
+   before starting the new one:
+
+   ```toml
+   [[spec.services]]
+   name = "collector"
+   receives_telemetry = true
+   [spec.services.source]
+   type = "image"
+   image = "otel/opentelemetry-collector-contrib:0.139.0"
+   ```
+
+   `piquelctl app service telemetry APP SERVICE on|off` and the service's
+   Telemetry settings in the dashboard edit it too.
+
+2. Grant the environment telemetry. This needs the `telemetry:grant`
+   [permission](authorization.md#telemetry-receivers), held only by `admin`,
+   since the receiving service gets the telemetry of every application:
+
+   ```console
+   piquelctl env telemetry observability production on
+   ```
+
+   The environment's Overview has a Grant telemetry button. Previews
+   are never granted; promoted environments can be, as the grant belongs to the
+   environment, not to its releases.
+
+piqueld then creates `<data_dir>/telemetry/<environment-id>/<service>/`, owned
+by the daemon's user with mode `0700`, and bind-mounts it at
+`/run/piqueld/telemetry` in the receiving service. That service runs as the daemon's user and group
+instead of its image's user, so the daemon can connect to the socket the
+collector creates there. Its collector must listen on
+`/run/piqueld/telemetry/otlp.sock`, with an OTLP/gRPC receiver over `unix`:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: /run/piqueld/telemetry/otlp.sock
+        transport: unix
+exporters:
+  debug:
+service:
+  pipelines:
+    traces: { receivers: [otlp], exporters: [debug] }
+    metrics: { receivers: [otlp], exporters: [debug] }
+    logs: { receivers: [otlp], exporters: [debug] }
+```
+
+Mount it with a [file](application-manifest.md#files), for example at
+`/etc/otelcol-contrib/config.yaml`. The daemon exports to every granted
+environment's receiving service alongside `[telemetry] endpoint`, which is
+optional, with the same records, bounded queues and guarantees: it never
+waits, connects lazily, and retries while the collector isn't listening yet.
+When a receiver's socket refuses connections for a second, such as one a
+crashed collector left behind, the daemon removes it, so the collector can
+listen again when it restarts. A receiver failing for a minute raises the same `telemetry_export_failed`
+diagnostic, attributed to its environment and notified under
+`service_degradation`.
+
+The mount follows the grant live, like [links](application-manifest.md#links):
+it is never part of a deployment.
+
+- **Revoking** the grant, or deleting the environment, stops export to its
+  socket at once, with whatever was still queued for it.
+- On its next pass, within seconds, the controller removes the mount and the
+  user override, which restarts the service like any mount change. It then
+  removes the directory, once no service mounts it.
+- **Granting** works the same way: the controller adds the mount within seconds,
+  and the daemon connects once the collector listens.
+- Deploying a receiving service in an environment that isn't granted runs it
+  without the mount, with a `telemetry_not_granted` warning in `app plan`,
+  promotion plans and the deployment. A collector configured as above can't
+  listen without the directory, so it restarts until the environment is
+  granted.
+
+Each receiving service has a socket of its own, so renaming it, or moving
+`receives_telemetry` to another service, takes one deployment: the new service
+listens while the old one still runs, the daemon exports to the new socket
+within seconds of the deployment, and the old directory is removed with the
+old service.
+
+`env show` and the environment Overview show whether the environment is
+granted, which service receives it, and whether the daemon is connected.
+
+The receiving application sees the telemetry of **every** application: their
+names, environments, operations, failures, and the daemon's own logs, which can
+include error details. Grant it only to an application whose writers and
+deployers you trust with that, as you would with `system:read`. Its receiving
+service also runs as the daemon's user, which matters only if it escapes its
+container: nothing of the daemon's beyond the socket directory is mounted.

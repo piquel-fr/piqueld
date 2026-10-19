@@ -2,8 +2,8 @@
 pub use piqueld_core::api::{
     AcceptedPromotion, CreateEnvironmentRequest, DeploymentOrigin, EnvironmentBranchRequest,
     EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView,
-    EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion, RouteUrl, SecretProblem,
-    UrlCondition, UrlState,
+    EnvironmentTelemetryRequest, EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion,
+    RouteUrl, SecretProblem, TelemetryReport, UrlCondition, UrlState,
 };
 pub use piqueld_core::{EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch};
 
@@ -27,6 +27,23 @@ impl Client {
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn environment_detail(&self, id: &str) -> Result<EnvironmentDetailView, ClientError> {
         self.generated.get_environment_detail(id).data().await
+    }
+
+    /// Grants or revokes an environment's telemetry, which its receiving
+    /// service then gets from every application.
+    ///
+    /// # Errors
+    /// Returns transport, API, or decoding errors; previews are not found.
+    pub async fn set_environment_telemetry(
+        &self,
+        id: &str,
+        granted: bool,
+    ) -> Result<EnvironmentView, ClientError> {
+        let request = EnvironmentTelemetryRequest { granted };
+        self.generated
+            .set_environment_telemetry(id, None, &request)
+            .data()
+            .await
     }
 
     /// Fetches current reconciliation status for an environment.

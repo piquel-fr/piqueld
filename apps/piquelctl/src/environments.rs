@@ -5,7 +5,7 @@ use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Target, UrlArgs, WaitArgs, wait_for_accepted},
-    editing::{EditFlags, visibility},
+    editing::{EditFlags, on_off, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
         Console,
@@ -13,7 +13,7 @@ use crate::{
     },
     support::{join_or, retry_transport},
 };
-use clap::{Args, Subcommand, builder::TypedValueParser};
+use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView,
@@ -49,6 +49,12 @@ pub(crate) enum EnvCommand {
     /// never deployed. Pinned environments never sync. Declared environments
     /// take `sync` from the manifest.
     Sync(SyncArgs),
+    /// Grant or revoke the daemon's telemetry. A granted environment's
+    /// receiving service (`app service telemetry`) gets every application's
+    /// traces, metrics and logs; requires telemetry:grant. Revoking stops
+    /// export at once. Either way the socket is mounted or unmounted within
+    /// seconds, which restarts the service. Previews are never granted.
+    Telemetry(TelemetryArgs),
     /// Show one environment and its status.
     Show(EnvironmentArgs),
     /// Cap the visibility of an environment's routes in the saved manifest:
@@ -155,6 +161,7 @@ impl EnvCommand {
             Self::Promote(args) => args.run(client, console).await,
             Self::Branch(args) => args.run(client, console).await,
             Self::Sync(args) => args.run(client, console).await,
+            Self::Telemetry(args) => args.run(client, console).await,
             Self::Show(target) => show(client, console, target).await,
             Self::Visibility(args) => args.run(client, console).await,
             Self::Secret {
@@ -195,11 +202,7 @@ pub(crate) struct SyncArgs {
     #[command(flatten)]
     target: NamedEnvironment,
     /// `on` deploys pushes; `off` deploys only when asked.
-    #[arg(
-        value_name = "on|off",
-        action = clap::ArgAction::Set,
-        value_parser = clap::builder::PossibleValuesParser::new(["on", "off"]).map(|value| value == "on")
-    )]
+    #[arg(value_name = "on|off", action = clap::ArgAction::Set, value_parser = on_off())]
     enabled: bool,
 }
 
@@ -209,6 +212,27 @@ impl SyncArgs {
         let (application, environment) = self.target.resolve(client).await?;
         let id = environment.id.as_str();
         let environment = retry_transport(|| client.set_environment_sync(id, self.enabled)).await?;
+        console.emit(&Named::new(&environment, &application))
+    }
+}
+
+/// `env telemetry` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct TelemetryArgs {
+    #[command(flatten)]
+    target: NamedEnvironment,
+    /// `on` grants every application's telemetry; `off` revokes it.
+    #[arg(value_name = "on|off", action = clap::ArgAction::Set, value_parser = on_off())]
+    granted: bool,
+}
+
+impl TelemetryArgs {
+    /// Grants or revokes the environment's telemetry.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
+        let id = environment.id.as_str();
+        let environment =
+            retry_transport(|| client.set_environment_telemetry(id, self.granted)).await?;
         console.emit(&Named::new(&environment, &application))
     }
 }

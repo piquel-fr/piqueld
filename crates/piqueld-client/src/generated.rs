@@ -4813,6 +4813,103 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/receives-telemetry`
+
+    Arguments:
+    - `id`
+    - `service`
+    - `deploy`: Deploy the changed configuration to the application's only environment
+    or, when its manifest declares environments, every declared one not
+    promoted from another; omitted/false saves only.
+    - `expected_generation`: Required inspected generation unless force is set.
+    - `force`: Explicitly bypass the revision check.
+    - `idempotency_key`
+    - `body`
+    */
+    pub async fn set_service_receives_telemetry<'a>(
+        &'a self,
+        id: &'a str,
+        service: &'a str,
+        deploy: Option<bool>,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::edit::BoolValue,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::SavedApplication>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/applications/{}/services/{}/receives-telemetry",
+            self.baseurl,
+            encode_path(&id.to_string()),
+            encode_path(&service.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .query(&progenitor_client::QueryParam::new("deploy", &deploy))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_service_receives_telemetry",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            413u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            422u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Sends a `PUT` request to `/api/v1/applications/{id}/services/{service}/replicas`
 
     Arguments:
@@ -9018,6 +9115,85 @@ impl Client {
             .build()?;
         let info = OperationInfo {
             operation_id: "set_environment_sync",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Grants or revokes an environment's telemetry
+
+    A granted environment's receiving service (`receives_telemetry`) gets the
+    daemon's traces, metrics and logs from every application, over the socket
+    directory mounted at `/run/piqueld/telemetry`, so granting needs
+    `telemetry:grant` as well as reading the application. Revoking, like
+    deleting the environment, stops export at once; the controller mounts or
+    unmounts the directory within seconds, which rolls the service. Previews
+    are never granted it and are `NotFound`. Needs no application revision.
+
+    Sends a `PUT` request to `/api/v1/environments/{id}/telemetry`
+
+    */
+    pub async fn set_environment_telemetry<'a>(
+        &'a self,
+        id: &'a str,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::EnvironmentTelemetryRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::EnvironmentView>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/telemetry",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .put(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "set_environment_telemetry",
         };
         self.pre(&mut request, &info).await?;
         let result = self.exec(request, &info).await;

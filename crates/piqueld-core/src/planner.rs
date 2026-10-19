@@ -327,6 +327,18 @@ pub struct PlanDiagnostic {
 }
 
 impl PlanDiagnostic {
+    /// The `telemetry_not_granted` warning about `service`, which receives
+    /// telemetry in an environment not granted it.
+    #[must_use]
+    pub fn telemetry_not_granted(service: &str) -> Self {
+        Self::new(
+            codes::TELEMETRY_NOT_GRANTED,
+            DiagnosticSeverity::Warning,
+            service,
+            "this environment is not granted telemetry, so the service runs without the telemetry socket until `piquelctl env telemetry APP ENV on` grants it",
+        )
+    }
+
     /// A diagnostic about `resource`. Only errors block execution.
     #[must_use]
     pub fn new(
@@ -1058,6 +1070,23 @@ impl Plan {
                         "start-first rollouts briefly run two tasks on the same writable volume; single-writer stores such as PostgreSQL or SQLite can corrupt their data",
                     )
                 }),
+        );
+    }
+
+    /// Warns when `application` has a service receiving telemetry but its
+    /// environment is not `granted` it, so the service runs without the
+    /// telemetry socket.
+    pub fn warn_telemetry(&mut self, application: &NormalizedApplication, granted: bool) {
+        if granted {
+            return;
+        }
+        self.warn(
+            application
+                .spec()
+                .services
+                .iter()
+                .filter(|service| service.receives_telemetry)
+                .map(|service| PlanDiagnostic::telemetry_not_granted(service.name.as_str())),
         );
     }
 

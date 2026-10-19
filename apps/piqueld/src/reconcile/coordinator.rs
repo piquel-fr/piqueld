@@ -147,7 +147,8 @@ impl<D: DockerApi> Controller<D> {
         let reported = async {
             let observed = self.docker.observe(&id).await?;
             self.store.record_health(&operation_id, &observed).await?;
-            self.enforce_links(&id, &operation_id, &observed).await
+            self.enforce_links(&id, &operation_id, &observed).await?;
+            self.enforce_telemetry(&id).await
         }
         .await;
         for error in [maintained.err(), reported.err()].into_iter().flatten() {
@@ -255,7 +256,8 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Runs one concurrent observation/reconciliation pass, also used by runtime
-    /// tests. Each environment then enforces its links, as full scans do.
+    /// tests. Each environment then enforces its links and telemetry socket,
+    /// as full scans do.
     ///
     /// # Errors
     /// Returns a store error if environments cannot be discovered or processed.
@@ -270,7 +272,8 @@ impl<D: DockerApi> Controller<D> {
                 let enforced = async {
                     let observed = self.docker.observe(application.id()).await?;
                     self.enforce_links(application.id(), &operation.id, &observed)
-                        .await
+                        .await?;
+                    self.enforce_telemetry(application.id()).await
                 }
                 .await;
                 match enforced {

@@ -3,7 +3,7 @@ use super::format::{relative, timestamp};
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
-use piqueld_client::{BuildState, OperationState, RouteName};
+use piqueld_client::{BuildState, OperationState, RouteName, TelemetryDestinationStatus};
 use std::collections::BTreeSet;
 
 /// Inline stroke icons, drawn on a 24-unit grid.
@@ -220,6 +220,25 @@ pub(super) fn badge(tone: Tone, label: impl Into<String>) -> AnyView {
         </span>
     }
     .into_any()
+}
+
+/// The tone of how export to a telemetry collector is going.
+pub(super) const fn telemetry_tone(destination: &TelemetryDestinationStatus) -> Tone {
+    match (
+        destination.failing,
+        destination.connected,
+        destination.last_success_ms,
+    ) {
+        (true, _, _) => Tone::Bad,
+        (false, true, _) => Tone::Ok,
+        (false, false, Some(_)) => Tone::Warn,
+        (false, false, None) => Tone::Pending,
+    }
+}
+
+/// Badge of how export to a telemetry collector is going.
+pub(super) fn telemetry_badge(destination: &TelemetryDestinationStatus) -> AnyView {
+    badge(telemetry_tone(destination), destination.state())
 }
 
 /// Badge of an application's or environment's health.

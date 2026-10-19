@@ -45,6 +45,9 @@ pub const INGRESS_LABEL: &str = "io.piqueld.ingress";
 /// Only the gateway and the application's own routed services share that
 /// network, so `X-Forwarded-For` from these peers carries the client address.
 pub const INGRESS_PROXIES_ENV: &str = "PIQUELD_INGRESS_PROXIES";
+/// Where a telemetry receiver's socket directory is mounted; the collector
+/// listens on `otlp.sock` inside it.
+pub const TELEMETRY_TARGET: &str = "/run/piqueld/telemetry";
 
 validated_string!(
     /// Stable control-plane instance identity.
@@ -592,6 +595,27 @@ pub struct DesiredService {
     /// default, so targets prepared before the setting existed still decode.
     #[serde(default, skip_serializing_if = "ValidatedRollout::is_default")]
     pub rollout: ValidatedRollout,
+    /// Whether the service receives the daemon's telemetry once its
+    /// environment is granted it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receives_telemetry: bool,
+    /// The telemetry socket directory mounted while the environment is
+    /// granted. Projected at runtime by
+    /// [`ResolvedApplication::with_telemetry`], never prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryMount>,
+}
+
+/// A telemetry receiver's socket directory, bind-mounted at
+/// [`TELEMETRY_TARGET`], and the user the service runs as instead of the
+/// image's, the daemon's, so the daemon can connect to the socket it creates.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryMount {
+    /// Absolute host directory.
+    pub source: String,
+    /// `uid:gid`.
+    pub user: String,
 }
 
 impl DesiredService {
@@ -664,14 +688,23 @@ impl DesiredService {
             labels: ownership.labels(),
             depends_on: service.depends_on.clone(),
             rollout: service.rollout,
+            receives_telemetry: service.receives_telemetry,
+            telemetry: None,
         }
     }
 
-    /// The update policy Docker applies to this service; see [`ValidatedRollout::policy`].
+    /// The update policy Docker applies to this service; see
+    /// [`ValidatedRollout::policy`]. A telemetry receiver's socket counts as
+    /// a writable mount, granted or not, so its order doesn't change with
+    /// the grant.
     #[must_use]
     pub fn rollout_policy(&self) -> RolloutPolicy {
-        self.rollout
-            .policy(self.mounts.iter().map(|mount| mount.read_only))
+        self.rollout.policy(
+            self.mounts
+                .iter()
+                .map(|mount| mount.read_only)
+                .chain(self.receives_telemetry.then_some(false)),
+        )
     }
 
     /// Returns whether the service has a canonical name and identity.
@@ -763,6 +796,7 @@ impl DesiredJob {
         container.healthcheck = None;
         container.depends_on.clear();
         container.rollout = ValidatedRollout::default();
+        container.receives_telemetry = false;
         container.labels = environment_ownership.labels();
         container
             .labels
@@ -1120,6 +1154,28 @@ impl ResolvedApplication {
         }
         self.networks
             .sort_by(|left, right| left.name.cmp(&right.name));
+        self
+    }
+
+    /// The service receiving the daemon's telemetry, if any.
+    #[must_use]
+    pub fn telemetry_receiver(&self) -> Option<&DesiredService> {
+        self.services
+            .iter()
+            .find(|service| service.receives_telemetry)
+    }
+
+    /// Projects `mount`, its receiving service's socket directory while
+    /// it is granted telemetry, onto its receiving service, and removes it
+    /// from every other.
+    ///
+    /// Like links, the mount is never part of a prepared target: project it
+    /// onto a fresh copy each time the target is planned.
+    #[must_use]
+    pub fn with_telemetry(mut self, mount: Option<&TelemetryMount>) -> Self {
+        for service in &mut self.services {
+            service.telemetry = mount.filter(|_| service.receives_telemetry).cloned();
+        }
         self
     }
 
@@ -1529,6 +1585,10 @@ pub struct ObservedService {
     pub labels: BTreeMap<String, String>,
     /// Observed update policy; `None` when Docker reports one piqueld cannot express.
     pub rollout: Option<RolloutPolicy>,
+    /// The bind mount at [`TELEMETRY_TARGET`] and the container's user, if
+    /// either is set; the user is empty without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<TelemetryMount>,
     /// Whether adapter-owned settings remain canonical.
     pub runtime_configuration_matches: bool,
     /// Task observations used to derive convergence.
@@ -1600,6 +1660,7 @@ impl ObservedService {
             ("healthcheck", self.healthcheck_matches(desired)),
             ("resources", self.resources == desired.resources),
             ("rollout", self.rollout == Some(desired.rollout_policy())),
+            ("telemetry", self.telemetry == desired.telemetry),
             ("runtime_policy", self.runtime_configuration_matches),
             ("labels", owned_label_subset(&self.labels, &desired.labels)),
         ]

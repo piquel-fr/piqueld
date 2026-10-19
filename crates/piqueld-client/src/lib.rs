@@ -59,8 +59,9 @@ pub use client::Client;
 pub use environments::{
     AcceptedPromotion, CreateEnvironmentRequest, DeploymentOrigin, EnvironmentBranchRequest,
     EnvironmentDetailView, EnvironmentName, EnvironmentRequest, EnvironmentSource,
-    EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView, PromoteRequest, PromotedFrom,
-    ReleasePlan, ReleasePromotion, RouteUrl, SecretProblem, TrackedBranch, UrlCondition, UrlState,
+    EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentTelemetryRequest, EnvironmentView,
+    PromoteRequest, PromotedFrom, ReleasePlan, ReleasePromotion, RouteUrl, SecretProblem,
+    TelemetryReport, TrackedBranch, UrlCondition, UrlState,
 };
 /// Request size and page size limits the daemon enforces.
 pub use piqueld_core::api::{
@@ -92,7 +93,7 @@ pub use previews::{
 };
 pub use system::{
     CertificateStatus, DnsProviderStatus, DnsStatus, ImageStatus, SnapshotLimits, SystemStatus,
-    TailnetStatus, TelemetryDestinationStatus, TelemetryStatus,
+    TailnetStatus, TelemetryDestinationStatus, TelemetryReceiver, TelemetryStatus,
 };
 
 pub use piqueld_core::api::{

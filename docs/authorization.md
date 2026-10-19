@@ -39,6 +39,7 @@ added later: requests about an environment are checked on its application.
 | `system:operate` | installation | Secret key recovery, notification retries, and DNS provider checks |
 | `accounts:manage` | installation | Other accounts and invitations, within the limits below |
 | `audit:read` | installation | Every account's [audit trail](observability.md#audit-trail); everyone reads their own |
+| `telemetry:grant` | installation | Grant or revoke an environment's [telemetry](#telemetry-receivers), which its receiving service gets from every application |
 
 Every application permission also allows reading that application, so a
 deploy-only token can follow its own deployment. The daemon status, readiness,
@@ -102,6 +103,24 @@ way to its next holder, from the exporter's next deployment.
 Link reports never reveal hidden applications: an import of a missing
 environment and one not exported to it both read `unavailable`, and an
 environment's importers list only applications the caller can read.
+
+## Telemetry receivers
+
+An environment granted telemetry gets the daemon's traces, metrics and logs
+from **every** application in its
+[receiving service](observability.md#receiving-telemetry-in-an-application),
+so the grant can't rest on that application's own permissions. Granting or
+revoking it (`PUT /api/v1/environments/{id}/telemetry`, `piquelctl env telemetry`)
+needs `telemetry:grant`, an installation-wide permission, and reading the
+application. No preset includes it: only `admin` on every application holds it
+unless it's granted on its own. Who may write or deploy the receiving
+application can then read every application's telemetry, so grant it only
+where they're trusted with that.
+
+Marking a service as the receiver is ordinary configuration (`apps:write`), and
+does nothing until the environment is granted. Revoking stops export at once.
+Telemetry status in `piquelctl status` and the Daemon status page lists only
+the receivers of applications the caller can read.
 
 ## Creating applications
 

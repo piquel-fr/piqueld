@@ -2,12 +2,12 @@
 use crate::{Client, ClientError, SavedApplication, client::EnvelopedCall};
 use piqueld_core::{
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, ExportsValue, FilesValue,
-        HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue, OptionalStringValue,
-        ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue,
-        RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess,
-        SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue,
-        VisibilityValue, VolumesValue,
+        ApplicationEdit, BoolValue, CpuValue, EditOptions, EnvironmentValue, ExportsValue,
+        FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
+        OptionalStringValue, ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue,
+        RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral,
+        ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue,
+        VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -62,6 +62,7 @@ edit_method!(set_service_secrets, (id, service), request: SecretsValue);
 edit_method!(set_service_files, (id, service), request: FilesValue);
 edit_method!(set_service_depends_on, (id, service), request: StringsValue);
 edit_method!(set_service_rollout, (id, service), request: RolloutValue);
+edit_method!(set_service_receives_telemetry, (id, service), request: BoolValue);
 edit_method!(set_service_healthcheck, (id, service), request: HealthValue);
 edit_method!(set_service_health_port, (id, service), request: ReplicasValue);
 edit_method!(set_service_health_path, (id, service), request: TemplateValue);
@@ -222,6 +223,9 @@ impl Client {
                 send!(set_service_depends_on, StringsValue, value.clone())
             }
             ServiceEdit::Rollout(value) => send!(set_service_rollout, RolloutValue, value.clone()),
+            ServiceEdit::ReceivesTelemetry(value) => {
+                send!(set_service_receives_telemetry, BoolValue, *value)
+            }
             ServiceEdit::Healthcheck(value) => {
                 send!(set_service_healthcheck, HealthValue, value.clone())
             }

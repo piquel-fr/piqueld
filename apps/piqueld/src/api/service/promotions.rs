@@ -147,10 +147,12 @@ impl ApplicationService {
             })
             .map(|volume| volume.logical_name.to_string())
             .collect();
+        let granted = self.store.telemetry_granted(target.id()).await?;
         let desired = self
             .store
             .with_links(desired.with_ingress(self.ingress_enabled()), &observed)
             .await?;
+        let desired = self.telemetry.project(desired, granted);
         let mut plan = Plan::from_request(
             &PlanRequest::Preview {
                 unresolved: Vec::new(),
@@ -161,6 +163,7 @@ impl ApplicationService {
         plan.redact_configuration();
         plan.warn_rollouts(app);
         plan.add_jobs(app, target.id());
+        plan.warn_telemetry(app, granted);
         let spec = app.spec();
         // Plans only warn about imports, so list no importers.
         plan.warn_links(

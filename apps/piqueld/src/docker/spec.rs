@@ -8,6 +8,7 @@ use super::{
     TaskSpecRestartPolicyConditionEnum,
 };
 use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
+use piqueld_core::resource::TELEMETRY_TARGET;
 
 impl BollardDocker {
     /// Builds the service specification pinned to `node_id`, then resolves
@@ -104,7 +105,9 @@ impl BollardDocker {
         })
     }
 
-    /// Builds the container, network, resource, placement, and restart portions of a service.
+    /// Builds the container, network, resource, placement, and restart
+    /// portions of a service. A telemetry receiver also bind-mounts its
+    /// socket directory and runs as its user.
     fn task_spec(desired: &DesiredService, node_id: &str) -> Result<TaskSpec, DockerError> {
         Ok(TaskSpec {
             placement: Some(bollard::models::TaskSpecPlacement {
@@ -133,8 +136,21 @@ impl BollardDocker {
                             read_only: Some(mount.read_only),
                             ..Default::default()
                         })
+                        .chain(desired.telemetry.as_ref().map(|telemetry| Mount {
+                            target: Some(TELEMETRY_TARGET.into()),
+                            source: Some(telemetry.source.clone()),
+                            typ: Some(MountTypeEnum::BIND),
+                            read_only: Some(false),
+                            ..Default::default()
+                        }))
                         .collect(),
                 ),
+                // A receiver runs as the daemon, so the daemon may connect to
+                // the socket it creates.
+                user: desired
+                    .telemetry
+                    .as_ref()
+                    .map(|telemetry| telemetry.user.clone()),
                 health_check: desired.healthcheck.as_ref().map(Self::health_config),
                 ..Default::default()
             }),

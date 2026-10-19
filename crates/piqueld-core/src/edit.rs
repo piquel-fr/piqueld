@@ -39,6 +39,7 @@ value_request! {
     HealthValue: Option<HealthCheck>;
     ResourcesValue: Option<ResourceLimits>;
     RolloutValue: Rollout;
+    BoolValue: bool;
     EnvironmentValue: BTreeMap<String, Template>;
     MountsValue: Vec<Mount>;
     SecretsValue: Vec<SecretMount>;
@@ -243,6 +244,8 @@ pub enum ServiceEdit {
     DependsOn(Vec<String>),
     /// Replace the rollout settings; omitted fields use their defaults.
     Rollout(Rollout),
+    /// Whether the service receives the daemon's telemetry.
+    ReceivesTelemetry(bool),
 }
 
 /// A declaration identified by a key within its list: services and volumes
@@ -532,6 +535,7 @@ impl ServiceEdit {
             }
             Self::DependsOn(value) => service.depends_on = value,
             Self::Rollout(value) => service.rollout = value,
+            Self::ReceivesTelemetry(value) => service.receives_telemetry = value,
         }
         Ok(())
     }
@@ -677,6 +681,7 @@ mod tests {
             resources: None,
             depends_on: depends_on.iter().map(|&name| name.into()).collect(),
             rollout: crate::manifest::Rollout::default(),
+            receives_telemetry: false,
         };
         let mut manifest = ApplicationManifest {
             api_version: crate::manifest::APPLICATION_API_VERSION.into(),

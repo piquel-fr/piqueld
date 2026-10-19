@@ -36,8 +36,12 @@ pub struct Controller<D> {
     images: images::ImageRetention,
     /// Asks the coordinator for a full scan now, so environments linked to
     /// one whose links changed replan within seconds rather than at the next
-    /// scan interval.
-    relink: Notify,
+    /// scan interval, as do environments granted or revoked telemetry.
+    relink: Arc<Notify>,
+    /// Telemetry receivers' sockets; without them, none is mounted. Their
+    /// directories are created and removed under `mutations`, so cleanup
+    /// never removes one a service update is about to mount.
+    sockets: Option<crate::telemetry::Sockets>,
 }
 
 impl<D> Controller<D> {
@@ -52,8 +56,16 @@ impl<D> Controller<D> {
             ingress: None,
             retry: RetryPolicy::default(),
             images: images::ImageRetention::default(),
-            relink: Notify::new(),
+            relink: Arc::new(Notify::new()),
+            sockets: None,
         }
+    }
+
+    /// Mounts telemetry receivers' sockets from `sockets`.
+    #[must_use]
+    pub fn with_telemetry(mut self, sockets: Option<crate::telemetry::Sockets>) -> Self {
+        self.sockets = sockets;
+        self
     }
 
     /// Attaches installation-owned ingress without coupling its process lifetime.
@@ -69,22 +81,30 @@ impl<D> Controller<D> {
     }
 
     /// `target` as reconciliation plans it against `observed`: with the
-    /// ingress networks its routes and the `accepted` ones need, and the links
-    /// it takes part in. Prepared targets never carry either.
+    /// ingress networks its routes and the `accepted` ones need, the links
+    /// it takes part in, and its telemetry socket while its environment is
+    /// granted telemetry, whose directory the service update creates.
+    /// Prepared targets never carry any of them.
     async fn runtime_target(
         &self,
         target: &piqueld_core::ResolvedApplication,
         accepted: &[piqueld_core::manifest::ValidatedRoute],
         observed: &piqueld_core::ObservedApplication,
     ) -> Result<piqueld_core::ResolvedApplication, StoreError> {
-        self.store
+        let linked = self
+            .store
             .with_links(
                 target
                     .clone()
                     .with_ingress_routes(self.ingress_enabled(), accepted),
                 observed,
             )
-            .await
+            .await?;
+        let Some(sockets) = &self.sockets else {
+            return Ok(linked);
+        };
+        let granted = self.store.telemetry_granted(&target.id).await?;
+        Ok(sockets.project(linked, granted))
     }
 
     /// Applies the daemon's validated reconciliation timing configuration.
@@ -188,14 +208,17 @@ impl<D: DockerApi> Controller<D> {
     /// Shares the controller's I/O limits with API observation and preview.
     #[must_use]
     pub fn runtime(&self, wake: Arc<Notify>) -> Arc<dyn crate::application::RuntimeBoundary> {
-        Arc::new(crate::application::ApplicationRuntime::new(
-            Arc::clone(&self.docker),
-            &self.store,
-            wake,
-            self.prepare_timeout,
-            self.images_lock(),
-            Arc::clone(&self.mutations),
-        ))
+        Arc::new(
+            crate::application::ApplicationRuntime::new(
+                Arc::clone(&self.docker),
+                &self.store,
+                wake,
+                self.prepare_timeout,
+                self.images_lock(),
+                Arc::clone(&self.mutations),
+            )
+            .with_rescan(Arc::clone(&self.relink)),
+        )
     }
 }
 

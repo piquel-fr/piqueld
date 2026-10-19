@@ -33,6 +33,7 @@ mod repository;
 mod secret;
 mod status;
 mod sync;
+mod telemetry;
 pub(crate) use sync::{BranchHead, SyncApplication};
 
 use piqueld_core::{
@@ -962,6 +963,7 @@ struct EnvironmentRow {
     promoted_from: Option<String>,
     preview_slot: Option<String>,
     sync: i64,
+    telemetry: i64,
     synced_commit: Option<String>,
     synced_at_ms: Option<i64>,
     resolved_generation: Option<i64>,
@@ -1007,6 +1009,7 @@ impl EnvironmentRow {
             source,
             kind,
             sync: self.sync != 0,
+            telemetry: self.telemetry != 0,
             // An empty commit records that the branch was absent.
             synced: match (self.synced_commit, self.synced_at_ms) {
                 (Some(commit), Some(at_ms)) => Some(piqueld_core::sync::SyncedHead {
@@ -1040,6 +1043,7 @@ struct StoredEnvironmentRow {
     promoted_from: Option<String>,
     preview_slot: Option<String>,
     sync: i64,
+    telemetry: i64,
     synced_commit: Option<String>,
     synced_at_ms: Option<i64>,
     manifest_json: Option<String>,
@@ -1077,6 +1081,7 @@ impl StoredEnvironmentRow {
             promoted_from: self.promoted_from,
             preview_slot: self.preview_slot,
             sync: self.sync,
+            telemetry: self.telemetry,
             synced_commit: self.synced_commit,
             synced_at_ms: self.synced_at_ms,
             resolved_generation: self.resolved_generation,

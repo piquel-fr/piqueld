@@ -17,7 +17,8 @@ use piqueld_core::access::AppPermission;
 use piqueld_core::api::{
     AcceptedOperation, AcceptedPromotion, CreateEnvironmentRequest, Envelope,
     EnvironmentBranchRequest, EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest,
-    EnvironmentStatusView, EnvironmentView, PlanView, PromoteRequest, PromotionSelection,
+    EnvironmentStatusView, EnvironmentTelemetryRequest, EnvironmentView, PlanView, PromoteRequest,
+    PromotionSelection,
 };
 use piqueld_core::sync::EnvironmentSyncRequest;
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, ReleaseId, TrackedBranch};
@@ -259,6 +260,37 @@ pub(super) async fn sync(
     let mutation = Mutation::SetSync {
         id: EnvironmentId::parse(id)?,
         enabled: request.enabled,
+    };
+    accept_mutation(&state, &identity, mutation, None, false, &headers).await
+}
+
+/// Grants or revokes an environment's telemetry.
+///
+/// A granted environment's receiving service (`receives_telemetry`) gets the
+/// daemon's traces, metrics and logs from every application, over the socket
+/// directory mounted at `/run/piqueld/telemetry`, so granting needs
+/// `telemetry:grant` as well as reading the application. Revoking, like
+/// deleting the environment, stops export at once; the controller mounts or
+/// unmounts the directory within seconds, which rolls the service. Previews
+/// are never granted it and are `NotFound`. Needs no application revision.
+#[utoipa::path(put,path="/api/v1/environments/{id}/telemetry",operation_id="setEnvironmentTelemetry",
+    params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
+    request_body=EnvironmentTelemetryRequest,
+    responses((status=200,description="Environment telemetry changed",body=Envelope<EnvironmentView>),
+    (status=400,response=inline(ApiErrorResponse)),(status=403,response=inline(ApiErrorResponse)),
+    (status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),
+    (status=415,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),
+    (status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn telemetry(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(id): ApiPath<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<EnvironmentTelemetryRequest>,
+) -> Result<Response, ApiError> {
+    let mutation = Mutation::SetTelemetry {
+        id: EnvironmentId::parse(id)?,
+        granted: request.granted,
     };
     accept_mutation(&state, &identity, mutation, None, false, &headers).await
 }

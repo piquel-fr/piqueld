@@ -55,26 +55,7 @@ impl ApplicationService {
             BollardDocker::connect(&config.docker.socket)
                 .context("failed to connect to Docker Engine")?,
         );
-        // Actions left open by a previous process can never finish; close them first.
-        store.interrupt_actions(None).await?;
-        let bootstrap = store.begin_action(None, "ensure_swarm", None).await?;
-        store.action_request(&bootstrap, 1).await?;
-        let result = docker
-            .ensure_swarm(config.docker.auto_initialize_swarm)
-            .await;
-        store
-            .finish_action(
-                &bootstrap,
-                result.as_ref().err().map(|error| {
-                    piqueld_core::observability::Diagnostic::new(
-                        crate::operations::diagnostic_id(),
-                        error.diagnostic_code(),
-                        error.to_string(),
-                    )
-                }),
-            )
-            .await?;
-        result.context("failed to establish single-node Docker Swarm readiness")?;
+        Self::ensure_swarm(&store, &docker, config).await?;
         store.configure_deliveries().await?;
         // Webhooks never follow redirects, so a target cannot bounce requests elsewhere.
         let webhook_client = reqwest::Client::builder()
@@ -95,7 +76,8 @@ impl ApplicationService {
         let reconciler = Controller::new(docker, Arc::clone(&store))
             .with_config(&config.reconciliation)
             .with_images(&config.images)
-            .with_ingress(Arc::clone(&ingress));
+            .with_ingress(Arc::clone(&ingress))
+            .with_telemetry(telemetry.sockets().cloned());
         let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))
             .with_image_status(reconciler.image_status())
             .with_configuration(config.view())
@@ -149,6 +131,35 @@ impl ApplicationService {
         Ok((service, auth, controller))
     }
 
+    /// Closes actions a previous process left open, which can never finish,
+    /// then ensures a Swarm manager, journaled as an `ensure_swarm` action.
+    async fn ensure_swarm(
+        store: &Store,
+        docker: &BollardDocker,
+        config: &DaemonConfig,
+    ) -> anyhow::Result<()> {
+        store.interrupt_actions(None).await?;
+        let bootstrap = store.begin_action(None, "ensure_swarm", None).await?;
+        store.action_request(&bootstrap, 1).await?;
+        let result = docker
+            .ensure_swarm(config.docker.auto_initialize_swarm)
+            .await;
+        store
+            .finish_action(
+                &bootstrap,
+                result.as_ref().err().map(|error| {
+                    piqueld_core::observability::Diagnostic::new(
+                        crate::operations::diagnostic_id(),
+                        error.diagnostic_code(),
+                        error.to_string(),
+                    )
+                }),
+            )
+            .await?;
+        result.context("failed to establish single-node Docker Swarm readiness")?;
+        Ok(())
+    }
+
     /// Opens the control-plane state with the daemon's settings, starts
     /// `telemetry` export now that it names the installation, so even a
     /// start that fails later is exported, and reads where the journal stands
@@ -168,6 +179,16 @@ impl ApplicationService {
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         telemetry.start(store.instance_id());
         let journaled = store.journal_position().await?;
+        // A daemon stopped as a deletion ended may have left the deleted
+        // environment's socket directories behind.
+        if let Some(sockets) = telemetry.sockets() {
+            for id in sockets.environments() {
+                if matches!(store.get(&id).await, Err(StoreError::NotFound)) {
+                    sockets.remove(&id);
+                }
+            }
+        }
+        telemetry.receive(store.telemetry_receivers()).await?;
         Ok((Arc::new(store), journaled))
     }
 

@@ -465,17 +465,37 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
     }
 }
 
-/// Each destination shows its state, and its headers only by their file.
+/// Each destination shows its state, and its headers only by their file;
+/// a receiver is named by its environment.
 #[test]
 fn telemetry_status_lists_destinations() {
     let status = piqueld_client::TelemetryStatus {
-        destinations: vec![piqueld_client::TelemetryDestinationStatus {
-            endpoint: "unix:///run/otel/otlp.sock".into(),
-            headers: Some("from /run/credentials/piqueld.service/otlp-headers".into()),
-            last_success_ms: Some(9),
-            dropped: 3,
-            failing: true,
-        }],
+        destinations: vec![
+            piqueld_client::TelemetryDestinationStatus {
+                endpoint: "unix:///run/otel/otlp.sock".into(),
+                headers: Some("from /run/credentials/piqueld.service/otlp-headers".into()),
+                receiver: None,
+                last_success_ms: Some(9),
+                dropped: 3,
+                connected: false,
+                failing: true,
+            },
+            piqueld_client::TelemetryDestinationStatus {
+                endpoint: "unix:///var/lib/piqueld/telemetry/app-otel/collector/otlp.sock".into(),
+                headers: None,
+                receiver: Some(piqueld_client::TelemetryReceiver {
+                    environment_id: piqueld_client::EnvironmentId::parse("app-otel").unwrap(),
+                    application: Some(piqueld_client::ApplicationName::parse("otel").unwrap()),
+                    environment: Some(
+                        piqueld_client::EnvironmentName::parse("production").unwrap(),
+                    ),
+                }),
+                last_success_ms: Some(10),
+                dropped: 0,
+                connected: true,
+                failing: false,
+            },
+        ],
         containers: true,
     };
     let stdout = Capture::default();
@@ -483,7 +503,7 @@ fn telemetry_status_lists_destinations() {
     console.emit(&status).unwrap();
     assert_eq!(
         stdout.text(),
-        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at Unix ms 9, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\nTelemetry exports: daemon traces, metrics and logs; container logs and resource usage\n"
+        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at Unix ms 9, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\nTelemetry: otel production at unix:///var/lib/piqueld/telemetry/app-otel/collector/otlp.sock (connected, last export at Unix ms 10, 0 records dropped)\nTelemetry exports: daemon traces, metrics and logs; container logs and resource usage\n"
     );
 }
 

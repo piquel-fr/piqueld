@@ -26,12 +26,14 @@ pub enum Section {
     Dependencies,
     /// Update order and monitor window.
     Rollout,
+    /// Whether the service receives the daemon's telemetry.
+    Telemetry,
     /// CPU and memory limits.
     Resources,
 }
 impl Section {
     /// All form groups in display order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::General,
         Self::Environment,
         Self::Process,
@@ -40,6 +42,7 @@ impl Section {
         Self::Health,
         Self::Dependencies,
         Self::Rollout,
+        Self::Telemetry,
         Self::Resources,
     ];
     /// Human-readable form heading.
@@ -54,6 +57,7 @@ impl Section {
             Self::Health => "Health check",
             Self::Dependencies => "Startup dependencies",
             Self::Rollout => "Rollout",
+            Self::Telemetry => "Telemetry",
             Self::Resources => "Resource limits",
         }
     }
@@ -174,6 +178,8 @@ pub struct ServiceForm {
     pub rollout_order: String,
     /// Optional rollout monitor window in seconds.
     pub monitor: String,
+    /// Whether the service receives the daemon's telemetry.
+    pub receives_telemetry: bool,
     /// Optional CPU limit in millicores.
     pub cpu: String,
     /// Optional memory limit in bytes.
@@ -229,6 +235,7 @@ impl FileForm {
 impl From<&Service> for ServiceForm {
     /// Seeds a draft from saved configuration. Fields for the unused source or
     /// health check kind get editable defaults (branch `main`, port `8080`, …).
+    #[expect(clippy::too_many_lines, reason = "one field per form input")]
     fn from(service: &Service) -> Self {
         let mut form = Self {
             source_kind: SourceKind::Image,
@@ -263,6 +270,7 @@ impl From<&Service> for ServiceForm {
                 .as_ref()
                 .map_or_else(|| "derived".into(), ToString::to_string),
             monitor: optional_text(service.rollout.monitor_seconds.as_ref()),
+            receives_telemetry: service.receives_telemetry,
             cpu: optional_text(
                 service
                     .resources
@@ -478,6 +486,7 @@ impl ServiceForm {
             Section::Health => take!(health_kind, port, path, interval, timeout, health_command),
             Section::Dependencies => take!(depends_on),
             Section::Rollout => take!(rollout_order, monitor),
+            Section::Telemetry => take!(receives_telemetry),
             Section::Resources => take!(cpu, memory),
         }
         form
@@ -513,6 +522,7 @@ impl ServiceForm {
             Section::Health => service.healthcheck = self.healthcheck()?,
             Section::Dependencies => service.depends_on.clone_from(&self.depends_on),
             Section::Rollout => service.rollout = self.rollout()?,
+            Section::Telemetry => service.receives_telemetry = self.receives_telemetry,
             Section::Resources => {
                 let cpu = optional(
                     &self.cpu,
@@ -556,6 +566,7 @@ mod tests {
             resources: None,
             depends_on: Vec::new(),
             rollout: Rollout::default(),
+            receives_telemetry: false,
         }
     }
     #[test]

@@ -541,6 +541,7 @@ mod tests {
             kind: crate::EnvironmentKind::Environment,
             sync,
             synced: None,
+            telemetry: false,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 0,

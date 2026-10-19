@@ -494,27 +494,35 @@ fn images_card(images: &ImageStatus) -> AnyView {
     }
 }
 
-/// Cards for telemetry export: one per collector, with its endpoint, last
-/// export and dropped records, or one saying export is off. Headers appear
-/// only as the file they were read from.
+/// Cards for telemetry export: one per collector, the configured endpoint
+/// and each granted environment's receiving service, with its endpoint,
+/// last export and dropped records, or one saying export is off. Headers
+/// appear only as the file they were read from.
 fn telemetry_cards(telemetry: &TelemetryStatus) -> AnyView {
     if telemetry.destinations.is_empty() {
         return status_card(
             "Telemetry export",
             Tone::Neutral,
             "Off",
-            "Set an endpoint under [telemetry] in the daemon configuration to export traces, metrics and logs over OTLP.",
+            "Set an endpoint under [telemetry] in the daemon configuration, or grant an environment with a receiving service telemetry, to export traces, metrics and logs over OTLP.",
         );
     }
     telemetry
         .destinations
         .iter()
         .map(|destination| {
-            let (tone, label) = match (destination.failing, destination.last_success_ms) {
-                (true, _) => (Tone::Bad, "Failing"),
-                (false, Some(_)) => (Tone::Ok, "Exporting"),
-                (false, None) => (Tone::Pending, "Waiting"),
-            };
+            let receiver = destination
+                .receiver
+                .as_ref()
+                .map(
+                    |receiver| match (&receiver.application, &receiver.environment) {
+                        (Some(application), Some(environment)) => {
+                            format!("Received by {application} {environment} at ")
+                        }
+                        _ => format!("Received by {} at ", receiver.environment_id),
+                    },
+                )
+                .unwrap_or_default();
             let last = destination.last_success_ms.map_or_else(
                 || "Nothing exported yet.".to_owned(),
                 |at| format!("Last export {}.", super::format::relative(at)),
@@ -526,10 +534,10 @@ fn telemetry_cards(telemetry: &TelemetryStatus) -> AnyView {
                 .unwrap_or_default();
             status_card(
                 "Telemetry export",
-                tone,
-                label,
+                super::ui::telemetry_tone(destination),
+                destination.state(),
                 &format!(
-                    "{}. {last} {} records dropped since the daemon started.{headers} Exports {}.",
+                    "{receiver}{}. {last} {} records dropped since the daemon started.{headers} Exports {}.",
                     destination.endpoint,
                     destination.dropped,
                     telemetry.exported()

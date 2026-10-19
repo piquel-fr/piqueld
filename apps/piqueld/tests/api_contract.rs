@@ -6885,3 +6885,48 @@ async fn previews_permissions_never_widen() {
     assert_eq!(f.router.call(&f.owner, "POST", manage, revoke).await.0, 200);
     assert_eq!(f.router.status(&f.agent, "GET", &preview).await, 401);
 }
+
+/// Granting telemetry takes `telemetry:grant`, which `apps:write` does not
+/// include, and reading the application, which stays hidden otherwise.
+#[tokio::test]
+async fn telemetry_grants_need_the_telemetry_grant_permission() {
+    use piqueld::api::{Actor, ApplicationError, Mutation, MutationResponse};
+    use piqueld::store::{Caller, StoreError};
+    use piqueld_core::access::Denied;
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let database = database(&temp);
+    let saved = save(&state, manifest()).await;
+    let id = piqueld_core::EnvironmentId::parse(saved.application_id).unwrap();
+    let account = |name| {
+        Actor::Account(Caller {
+            credential_id: name,
+            user_id: name,
+        })
+    };
+    seed_account(&database, "writer", &[("apps:write", None)]).await;
+    seed_account(&database, "blind", &[("telemetry:grant", None)]).await;
+    let grants = [("telemetry:grant", None), ("apps:read", None)];
+    seed_account(&database, "granter", &grants).await;
+    let grant = |actor| {
+        let mutation = Mutation::SetTelemetry {
+            id: id.clone(),
+            granted: true,
+        };
+        state.accept(actor, mutation, None, false, None)
+    };
+    assert!(matches!(
+        grant(account("writer")).await,
+        Err(ApplicationError::Store(StoreError::Denied(
+            Denied::Missing(_)
+        )))
+    ));
+    assert!(matches!(
+        grant(account("blind")).await,
+        Err(ApplicationError::Store(StoreError::Denied(Denied::Hidden)))
+    ));
+    let Ok(MutationResponse::Environment(environment)) = grant(account("granter")).await else {
+        panic!("granted");
+    };
+    assert!(environment.telemetry);
+}

@@ -89,6 +89,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
                 networks: service.network_attachments(),
                 labels: service.labels.clone(),
                 rollout: Some(service.rollout_policy()),
+                telemetry: service.telemetry.clone(),
                 runtime_configuration_matches: true,
                 tasks: vec![ObservedTask {
                     state: TaskState::Running,
@@ -237,6 +238,33 @@ fn changed_rollout_settings_drift_until_applied() {
         ..updated
     };
     assert_eq!(unexpressible.drift(&desired.services[0]), ["rollout"]);
+}
+
+/// Only the receiving service gets the telemetry mount, which a granted
+/// environment projects and a revoked one removes, as drift both ways.
+#[test]
+fn telemetry_mounts_follow_the_grant_onto_the_receiver_only() {
+    let mut desired =
+        compile_application(&application(), &environment(), instance(), &resolutions()).unwrap();
+    let unmounted = observed(&desired).services.remove(0);
+    desired.services[0].receives_telemetry = true;
+    let mount = piqueld_core::resource::TelemetryMount {
+        source: "/var/lib/piqueld/telemetry/app-notes-01".into(),
+        user: "990:990".into(),
+    };
+    let granted = desired.clone().with_telemetry(Some(&mount));
+    assert_eq!(granted.services[0].telemetry.as_ref(), Some(&mount));
+    assert_eq!(unmounted.drift(&granted.services[0]), ["telemetry"]);
+    let mounted = observed(&granted).services.remove(0);
+    let revoked = granted.with_telemetry(None);
+    assert_eq!(revoked.services[0].telemetry, None);
+    assert_eq!(mounted.drift(&revoked.services[0]), ["telemetry"]);
+
+    desired.services[0].receives_telemetry = false;
+    assert_eq!(
+        desired.with_telemetry(Some(&mount)).services[0].telemetry,
+        None
+    );
 }
 
 #[test]
@@ -406,6 +434,8 @@ fn desired_identity_matrices_reject_non_canonical_resources() {
         resources: None,
         depends_on: Vec::new(),
         rollout: Rollout::default(),
+        receives_telemetry: false,
+        telemetry: None,
         networks: vec![
             piqueld_core::DockerNetworkName::parse(piqueld_core::docker_resource_name(
                 &id,

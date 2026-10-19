@@ -243,6 +243,13 @@ pub const IMPORT_DUPLICATE: &str = "import_duplicate";
 /// An import does not connect: its environment is missing, does not export
 /// the service to the importer, or already links to the most importers.
 pub const IMPORT_UNCONNECTED: &str = "import_unconnected";
+/// More than one service of an application receives telemetry.
+pub const TELEMETRY_RECEIVER_DUPLICATE: &str = "telemetry_receiver_duplicate";
+/// A service receiving telemetry runs more than one replica.
+pub const TELEMETRY_RECEIVER_REPLICAS: &str = "telemetry_receiver_replicas";
+/// A service receives telemetry, but its environment is not granted it, so
+/// it runs without the telemetry socket.
+pub const TELEMETRY_NOT_GRANTED: &str = "telemetry_not_granted";
 /// A release's manifest renders a build input differently for another
 /// environment than for the release, so its images do not apply there.
 pub const RELEASE_INCOMPATIBLE: &str = "release_incompatible";

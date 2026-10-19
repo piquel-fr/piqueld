@@ -7,6 +7,7 @@ use super::{
 };
 use bollard::models::{HealthStatusEnum, ServiceSpecUpdateConfigOrderEnum};
 use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
+use piqueld_core::resource::{TELEMETRY_TARGET, TelemetryMount};
 
 impl BollardDocker {
     /// Converts one Docker task into the backend-neutral observation contract.
@@ -155,6 +156,7 @@ impl BollardDocker {
             networks: Self::observed_networks(spec),
             labels,
             rollout: Self::observed_rollout(spec),
+            telemetry: Self::observed_telemetry(container),
             runtime_configuration_matches,
             tasks,
             convergence,
@@ -215,6 +217,26 @@ impl BollardDocker {
                 })
             })
             .collect()
+    }
+
+    /// Returns the bind mount at the telemetry target and the container's
+    /// user, if either is set. Either alone never matches a desired receiver,
+    /// so it is drift.
+    pub(super) fn observed_telemetry(container: &TaskSpecContainerSpec) -> Option<TelemetryMount> {
+        let source = container
+            .mounts
+            .iter()
+            .flatten()
+            .find(|mount| {
+                mount.typ == Some(MountTypeEnum::BIND)
+                    && mount.target.as_deref() == Some(TELEMETRY_TARGET)
+            })
+            .map(|mount| mount.source.clone().unwrap_or_default());
+        let user = container.user.clone().filter(|user| !user.is_empty());
+        (source.is_some() || user.is_some()).then(|| TelemetryMount {
+            source: source.unwrap_or_default(),
+            user: user.unwrap_or_default(),
+        })
     }
 
     /// Converts Docker's update order and monitor back into a rollout policy,

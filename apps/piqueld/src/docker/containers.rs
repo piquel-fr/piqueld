@@ -18,6 +18,7 @@ use piqueld_core::{
     api::LogStream,
     resource::{
         APPLICATION_LABEL, INGRESS_LABEL, INSTANCE_LABEL, JOB_LABEL, MANAGED_LABEL, SERVICE_LABEL,
+        TELEMETRY_TARGET,
     },
 };
 
@@ -41,6 +42,9 @@ pub struct ManagedContainer {
     pub task: Option<String>,
     /// What it runs.
     pub workload: Workload,
+    /// Whether it mounts the daemon's telemetry socket: a task of an
+    /// environment's receiving service.
+    pub receiver: bool,
 }
 
 /// Whether a container has output to read.
@@ -201,6 +205,11 @@ impl BollardDocker {
             },
             created: container.created.unwrap_or_default(),
             task: label(SWARM_TASK_LABEL).map(str::to_owned),
+            receiver: container
+                .mounts
+                .iter()
+                .flatten()
+                .any(|mount| mount.destination.as_deref() == Some(TELEMETRY_TARGET)),
             name,
             workload,
         })

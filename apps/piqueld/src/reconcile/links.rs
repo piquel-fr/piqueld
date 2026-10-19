@@ -71,6 +71,32 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
+    /// Removes environment `id`'s telemetry socket directories no service
+    /// mounts but its receiving service while granted: a revoked or deleted
+    /// environment's, once the next repair unmounts them, and a renamed
+    /// receiver's, once its old service is removed. Export to them stopped
+    /// as soon as they stopped being the receiver. Holds the mutation lock
+    /// and observes afresh, so no mount lands between the observation and
+    /// the removal. Runs on full scans and as an environment's deletion ends.
+    pub(super) async fn enforce_telemetry(&self, id: &EnvironmentId) -> Result<(), OperationError> {
+        let Some(sockets) = self.sockets.as_ref().filter(|sockets| sockets.exists(id)) else {
+            return Ok(());
+        };
+        let receiver = self.store.telemetry_receiver(id).await?;
+        if !sockets.stale(id, receiver.as_ref()) {
+            return Ok(());
+        }
+        let _mutations = self.mutations.lock().await;
+        let observed = self.docker.observe(id).await?;
+        let mounts: Vec<_> = observed
+            .services
+            .into_iter()
+            .filter_map(|service| service.telemetry)
+            .collect();
+        sockets.remove_unmounted(id, &mounts);
+        Ok(())
+    }
+
     /// Runs `change` under the mutation lock as a journaled `action` on
     /// `resource`.
     async fn journaled_link_change<F: Future<Output = Result<(), DockerError>>>(

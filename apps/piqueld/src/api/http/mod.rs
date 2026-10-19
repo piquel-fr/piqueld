@@ -327,6 +327,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => environments::rename))
         .routes(granted!(App(Write) => environments::branch))
         .routes(granted!(App(Write) => environments::sync))
+        .routes(granted!(Global(TelemetryGrant) => environments::telemetry))
         .routes(granted!(App(Read) => webhooks::get))
         .routes(granted!(App(Write) => webhooks::generate_secret))
         .routes(granted!(App(Write) => environments::source))

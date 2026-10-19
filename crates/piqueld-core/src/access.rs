@@ -119,6 +119,9 @@ permissions! {
         AccountsManage => "accounts:manage", "Manage accounts with equal or less access, and invitations",
         /// Read every account's audit trail; everyone reads their own.
         AuditRead => "audit:read", "Read every account's audit trail",
+        /// Grant an environment the daemon's telemetry, which its receiving
+        /// service then gets from every application.
+        TelemetryGrant => "telemetry:grant", "Grant environments every application's telemetry",
     }
 }
 

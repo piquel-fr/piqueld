@@ -4,6 +4,7 @@
 //! application or its repository. The manifest decides whether environments
 //! it declares exist, and their source and sync when their block sets them,
 //! so those controls are then read-only.
+use super::super::access::can;
 use super::super::confirm;
 use super::super::ui::{
     Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_field,
@@ -20,6 +21,7 @@ use piqueld_client::{
     ApplicationManifest, ApplicationSpec, Client, ClientError, CreateEnvironmentRequest,
     EnvironmentBranchRequest, EnvironmentChange, EnvironmentName, EnvironmentRequest,
     EnvironmentSourceRequest, EnvironmentView, TrackedBranch, Visibility,
+    access::{GlobalPermission, Permission},
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
 };
@@ -46,6 +48,11 @@ enum EnvironmentEdit {
     Sync {
         id: String,
         enabled: bool,
+    },
+    /// Grants or revokes the daemon's telemetry, without a revision.
+    Telemetry {
+        id: String,
+        granted: bool,
     },
     /// Promoted from the given environment, or `None` to track its own source.
     Source {
@@ -130,6 +137,10 @@ impl EnvironmentEdit {
                     .map(Some)
             }
             Self::Sync { id, enabled } => client.set_environment_sync(id, *enabled).await.map(Some),
+            Self::Telemetry { id, granted } => client
+                .set_environment_telemetry(id, *granted)
+                .await
+                .map(Some),
             Self::Source { id, promote_from } => {
                 let request = EnvironmentSourceRequest {
                     promote_from: promote_from.clone(),
@@ -171,7 +182,9 @@ impl EditorContext {
         // later edits stay guarded by it.
         let advances = !matches!(
             change,
-            EnvironmentEdit::RetryDeletion(_) | EnvironmentEdit::Sync { .. }
+            EnvironmentEdit::RetryDeletion(_)
+                | EnvironmentEdit::Sync { .. }
+                | EnvironmentEdit::Telemetry { .. }
         );
         let deleted = match &change {
             EnvironmentEdit::Delete(id) => Some(id.clone()),
@@ -833,6 +846,76 @@ fn SourceSettings() -> impl IntoView {
     }
 }
 
+/// Whether the environment page's environment is granted the daemon's
+/// telemetry, with a button granting or revoking it for holders of
+/// `telemetry:grant`.
+#[component]
+fn EnvironmentTelemetry() -> impl IntoView {
+    let context = editor();
+    let id = StoredValue::new(context.environment_id());
+    let allowed = can(Permission::Global(GlobalPermission::TelemetryGrant));
+    let granted = move || {
+        context
+            .selected_environment()
+            .is_some_and(|environment| environment.telemetry)
+    };
+    let toggle = move |_| {
+        let granted = !granted();
+        if granted
+            && !confirm(&format!(
+                "Grant environment {} the daemon's telemetry? Its receiving service will get the traces, metrics and logs of every application.",
+                context.selected_name()
+            ))
+        {
+            return;
+        }
+        let change = EnvironmentEdit::Telemetry {
+            id: id.get_value(),
+            granted,
+        };
+        context.change_environment(change, |_| {});
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Telemetry"</h3>
+                    <p>
+                        "A granted environment's receiving service, the one that sets receives_telemetry, gets the daemon's traces, metrics and logs from every application over a socket mounted at /run/piqueld/telemetry. Revoking stops export at once; either way the socket is mounted or unmounted within seconds, which restarts the service."
+                    </p>
+                </div>
+            </header>
+            <dl class="kv">
+                <dt>"Grant"</dt>
+                <dd>
+                    {move || {
+                        if granted() {
+                            badge(Tone::Ok, "granted")
+                        } else {
+                            badge(Tone::Neutral, "not granted")
+                        }
+                    }}
+                </dd>
+            </dl>
+            <div class="form-actions">
+                <button
+                    type="button"
+                    class="btn"
+                    disabled={move || {
+                        !allowed.get() || context.action_blocked() || context.selected_deleting()
+                    }}
+                    title={move || {
+                        (!allowed.get()).then_some("Requires the telemetry:grant permission.")
+                    }}
+                    on:click={toggle}
+                >
+                    {move || if granted() { "Revoke telemetry" } else { "Grant telemetry" }}
+                </button>
+            </div>
+        </section>
+    }
+}
+
 impl EditorContext {
     /// The visibility ceiling `[spec.environments.<name>]` gives the shown
     /// environment: in the `saved` manifest its form saves to, or while
@@ -979,6 +1062,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
     view! {
         <SourceSettings />
         <EnvironmentVisibility />
+        <EnvironmentTelemetry />
         <section class="card">
             <header>
                 <div>

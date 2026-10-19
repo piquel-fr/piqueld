@@ -5,16 +5,25 @@ use super::ApplicationService;
 use crate::store::{JournalPosition, StoreError, Visibility, now_ms};
 use crate::telemetry::{EventContext, Journal, ServiceSample};
 use piqueld_core::EnvironmentId;
+use piqueld_core::access::Scope;
+use piqueld_core::api::TelemetryStatus;
 use piqueld_core::observability::EventFilter;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+/// The diagnostic and condition key of a collector that keeps failing.
+const TELEMETRY_EXPORT_FAILED: &str = "telemetry_export_failed";
 
 /// Events read from the journal at once.
 const EVENT_PAGE: usize = 100;
 
 /// How long names stay cached, so renames reach labels.
 const NAMES_TTL: Duration = Duration::from_secs(300);
+
+/// How often receivers are refreshed, so one deployed or removed reaches
+/// export within seconds. Grants and deletions refresh them at once.
+const RECEIVERS_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Names labelling an environment's telemetry, looked up when first needed
 /// and forgotten every [`NAMES_TTL`].
@@ -42,13 +51,13 @@ struct Tail {
 
 impl ApplicationService {
     /// Exports journal events after `start` every second, samples daemon and
-    /// service gauges every 30 seconds, and exports the containers' output
-    /// and usage when enabled, until cancelled. Each runs on its own, so a
-    /// slow Docker observation never holds up the journal or export health,
-    /// and none holds up reconciliation or requests. Without telemetry, only
-    /// closes a failure left from when it was configured. Without container
-    /// export, forgets where it stopped reading, so enabling it again starts
-    /// from the present.
+    /// service gauges every 30 seconds, refreshes receivers every
+    /// [`RECEIVERS_INTERVAL`], and exports the containers' output and usage
+    /// while enabled and anything receives it, until cancelled. Each runs on
+    /// its own, so a slow Docker observation never holds up the journal or
+    /// export health, and none holds up reconciliation or requests. Without
+    /// container export, forgets where it stopped reading, so enabling it
+    /// again starts from the present.
     pub(super) async fn export_telemetry(
         &self,
         start: JournalPosition,
@@ -60,11 +69,6 @@ impl ApplicationService {
             tracing::error!(?error, "container log cursors could not be cleared");
         }
         let Some(journal) = self.telemetry.journal(start.running) else {
-            // Close a failure left open while export was configured.
-            let healthy = self.observe_export(false).await;
-            if let Err(error) = healthy {
-                tracing::error!(?error, "telemetry export health could not be recorded");
-            }
             return;
         };
         let mut tail = Tail {
@@ -75,6 +79,9 @@ impl ApplicationService {
         let mut journal_tick = interval(Duration::from_secs(1));
         let mut daemon_tick = interval(Duration::from_secs(30));
         let mut services_tick = interval(Duration::from_secs(30));
+        let mut receivers_tick = interval(RECEIVERS_INTERVAL);
+        // A failure left open while an endpoint was configured closes.
+        let mut exported = HashSet::from([None]);
         tokio::join!(
             async {
                 while step(
@@ -85,13 +92,24 @@ impl ApplicationService {
                 .await
                 {}
             },
-            async { while step(&mut daemon_tick, &cancellation, self.sample_daemon()).await {} },
+            async {
+                while step(
+                    &mut daemon_tick,
+                    &cancellation,
+                    self.sample_daemon(&mut exported),
+                )
+                .await
+                {}
+            },
+            async {
+                while step(&mut receivers_tick, &cancellation, self.receive_telemetry()).await {}
+            },
             async {
                 while step(&mut services_tick, &cancellation, self.sample_services()).await {}
             },
             async {
                 if self.telemetry.containers() {
-                    self.export_containers(&cancellation).await;
+                    self.export_received_containers(&cancellation).await;
                 }
             },
         );
@@ -150,18 +168,73 @@ impl ApplicationService {
         }
     }
 
-    /// Records whether export is `failing`, as the `telemetry_export_failed`
-    /// condition.
-    async fn observe_export(&self, failing: bool) -> Result<(), StoreError> {
-        self.store
-            .observe_condition("telemetry_export_failed", None, failing, now_ms(), 90_000)
+    /// Exports to the receiving service of every granted environment that
+    /// deploys one, and to no other.
+    pub(super) async fn receive_telemetry(&self) -> Result<(), StoreError> {
+        self.telemetry
+            .receive(self.store.telemetry_receivers())
             .await
     }
 
-    /// Samples daemon statistics for the gauges, and reports a collector
-    /// that keeps failing.
-    async fn sample_daemon(&self) -> Result<(), StoreError> {
-        self.observe_export(self.telemetry.failing()).await?;
+    /// Export state of the configured endpoint and of the receivers of
+    /// `readable` applications, named.
+    pub(super) async fn telemetry_status(&self, readable: &Scope) -> TelemetryStatus {
+        let mut status = self.telemetry.status();
+        let mut destinations = Vec::new();
+        for mut destination in status.destinations {
+            if let Some(receiver) = &mut destination.receiver {
+                let Ok(stored) = self.store.get(&receiver.environment_id).await else {
+                    continue;
+                };
+                if !readable.contains(stored.application.application.id()) {
+                    continue;
+                }
+                receiver.application = Some(stored.application.application.metadata().name.clone());
+                receiver.environment = Some(stored.environment.name);
+            }
+            destinations.push(destination);
+        }
+        status.destinations = destinations;
+        status
+    }
+
+    /// Records whether export to `receiver`'s receiving service, or the
+    /// configured endpoint, is `failing`, as its `telemetry_export_failed`
+    /// condition.
+    async fn observe_export(
+        &self,
+        receiver: Option<&EnvironmentId>,
+        failing: bool,
+    ) -> Result<(), StoreError> {
+        let key = receiver.map_or_else(
+            || TELEMETRY_EXPORT_FAILED.to_owned(),
+            |id| format!("{TELEMETRY_EXPORT_FAILED}:{id}"),
+        );
+        let environment = receiver.map(EnvironmentId::as_str);
+        self.store
+            .observe_condition(&key, environment, failing, now_ms(), 90_000)
+            .await
+    }
+
+    /// Samples daemon statistics for the gauges, and reports whether each
+    /// collector keeps failing. One `exported` to at the last sample but no
+    /// longer counts as recovered; `exported` is updated in place.
+    async fn sample_daemon(
+        &self,
+        exported: &mut HashSet<Option<EnvironmentId>>,
+    ) -> Result<(), StoreError> {
+        let failures = self.telemetry.failures();
+        for gone in exported
+            .iter()
+            .filter(|known| !failures.iter().any(|(receiver, _)| receiver == *known))
+        {
+            self.observe_export(gone.as_ref(), false).await?;
+        }
+        exported.clear();
+        for (receiver, failed) in failures {
+            self.observe_export(receiver.as_ref(), failed).await?;
+            exported.insert(receiver);
+        }
         let stats = self
             .store
             .daemon_stats()
@@ -176,6 +249,9 @@ impl ApplicationService {
     /// from [`Self::sample_daemon`], since slow Docker observations must not
     /// delay it.
     async fn sample_services(&self) -> Result<(), StoreError> {
+        if !self.telemetry.exporting() {
+            return Ok(());
+        }
         let mut services = Vec::new();
         for stored in self.store.every_environment().await? {
             if stored.resolved.is_none() || stored.delete_intent() {

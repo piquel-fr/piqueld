@@ -196,6 +196,10 @@ impl<D: DockerApi> Controller<D> {
                 for (name, value) in secrets {
                     self.docker.ensure_secret(name, value, ownership).await?;
                 }
+                // Under the mutation lock, as is telemetry cleanup.
+                if let (Some(sockets), Some(mount)) = (&self.sockets, &service.telemetry) {
+                    sockets.prepare(mount);
+                }
                 self.docker.ensure_service(service).await
             }
             ActionKind::RemoveService { name } => self.docker.remove_service(name, ownership).await,

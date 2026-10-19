@@ -914,6 +914,10 @@
           "description": "Logical service name.",
           "type": "string"
         },
+        "receives_telemetry": {
+          "description": "Whether the service receives the daemon's telemetry on the socket\ndirectory mounted at `/run/piqueld/telemetry`, once its environment is\ngranted it. At most one service per application.",
+          "type": "boolean"
+        },
         "replicas": {
           "$ref": "#/definitions/Typed_u16",
           "description": "Desired replica count."

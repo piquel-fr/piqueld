@@ -10,7 +10,7 @@ use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::ingress::{DashboardSocket, Ingress};
 use piqueld::tailnet::Node;
 use piqueld::tailnet::TailnetLookup;
-use piqueld::telemetry::Telemetry;
+use piqueld::telemetry::{Sockets, Telemetry};
 use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf, sync::Arc};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
@@ -99,7 +99,8 @@ async fn main() -> Result<()> {
         None => {
             let config = load_config(args.config.as_deref())?;
             let telemetry =
-                Telemetry::new(&config.telemetry).context("failed to prepare telemetry export")?;
+                Telemetry::new(&config.telemetry, Sockets::new(&config.server.data_dir))
+                    .context("failed to prepare telemetry export")?;
             piqueld::config::init_tracing(args.open_log_file()?, &telemetry)
                 .context("failed to initialize tracing")?;
             let result = serve(config, telemetry.clone()).await;

@@ -195,6 +195,7 @@ impl<D: DockerApi> Controller<D> {
             let observed = self.docker.observe(&operation.environment_id).await?;
             Box::pin(self.enforce_links(&operation.environment_id, &operation.id, &observed))
                 .await?;
+            self.enforce_telemetry(&operation.environment_id).await?;
         }
         Ok(())
     }
@@ -281,6 +282,9 @@ impl<D: DockerApi> Controller<D> {
             return Err(OperationError::Superseded);
         }
         if let PlanRequest::Reconcile { desired } = &request {
+            self.store
+                .warn_ungranted_receiver(&operation.id, desired)
+                .await?;
             self.run_jobs(operation, desired, cancellation).await?;
         }
         // Jobs have their own timeouts; convergence starts after them.

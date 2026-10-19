@@ -10,12 +10,12 @@ use piqueld_core::{
     ApplicationId,
     api::{Envelope, SavedApplication},
     edit::{
-        ApplicationEdit, CpuValue, EditOptions, EnvironmentValue, ExportsValue, FilesValue,
-        HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue, OptionalStringValue,
-        ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue, RolloutValue,
-        RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess,
-        SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue, VariablesValue,
-        VisibilityValue, VolumesValue,
+        ApplicationEdit, BoolValue, CpuValue, EditOptions, EnvironmentValue, ExportsValue,
+        FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
+        OptionalStringValue, ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue,
+        RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral,
+        ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue,
+        VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -145,6 +145,7 @@ edit_endpoint!(set_service_files, put, "/api/v1/applications/{id}/services/{serv
 edit_endpoint!(set_service_depends_on, put, "/api/v1/applications/{id}/services/{service}/depends-on", (id: String = "id", service: String = "service"), StringsValue, |(_, service), body: StringsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::DependsOn(body.value) });
 edit_endpoint!(set_service_secrets, put, "/api/v1/applications/{id}/services/{service}/secrets", (id: String = "id", service: String = "service"), SecretsValue, |(_, service), body: SecretsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Secrets(body.value) });
 edit_endpoint!(set_service_rollout, put, "/api/v1/applications/{id}/services/{service}/rollout", (id: String = "id", service: String = "service"), RolloutValue, |(_, service), body: RolloutValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Rollout(body.value) });
+edit_endpoint!(set_service_receives_telemetry, put, "/api/v1/applications/{id}/services/{service}/receives-telemetry", (id: String = "id", service: String = "service"), BoolValue, |(_, service), body: BoolValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::ReceivesTelemetry(body.value) });
 edit_endpoint!(set_service_healthcheck, put, "/api/v1/applications/{id}/services/{service}/healthcheck", (id: String = "id", service: String = "service"), HealthValue, |(_, service), body: HealthValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Healthcheck(body.value) });
 edit_endpoint!(set_service_health_port, put, "/api/v1/applications/{id}/services/{service}/healthcheck/port", (id: String = "id", service: String = "service"), ReplicasValue, |(_, service), body: ReplicasValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthPort(body.value) });
 edit_endpoint!(set_service_health_path, put, "/api/v1/applications/{id}/services/{service}/healthcheck/path", (id: String = "id", service: String = "service"), TemplateValue, |(_, service), body: TemplateValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthPath(body.value) });
@@ -254,6 +255,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_service_files))
         .routes(granted!(App(Write) => set_service_depends_on))
         .routes(granted!(App(Write) => set_service_rollout))
+        .routes(granted!(App(Write) => set_service_receives_telemetry))
         .routes(granted!(App(Write) => set_service_healthcheck))
         .routes(granted!(App(Write) => set_service_health_port))
         .routes(granted!(App(Write) => set_service_health_path))

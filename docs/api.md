@@ -60,8 +60,8 @@ is `{ "type": "preview", "branch": "feat/login", "slot": "agent-2", "slug":
 "notes-feat-login-agent-2-503aa8" }`; environments have `{ "type": "environment" }`.
 A preview's `name` is its slug and its `source` is its branch. Application
 views list previews separately in `previews`, never in `environments`, and the
-environment mutation endpoints (deploy, rename, branch, source, sync, promote,
-delete, reconcile) return 404 for a preview's ID, as the preview endpoints do for an
+environment mutation endpoints (deploy, rename, branch, source, sync, telemetry,
+promote, delete, reconcile) return 404 for a preview's ID, as the preview endpoints do for an
 environment's. The environment read endpoints (`GET /environments/{id}`,
 `detail`, `status`, `deployments` and their attempts, `logs`, `secrets`) accept
 a preview's ID. Preview creation,
@@ -111,6 +111,7 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment; 409 `repository_managed` for a repository-backed one |
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`). A `commit` without `branch` is 400 `revision_invalid`. 409 `environment_declared` for a name the saved manifest declares |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }`; 409 `environment_promoted` for a promoted environment |
+| PUT | `/api/v1/environments/{id}/telemetry` | Grant or revoke an environment's [telemetry](observability.md#receiving-telemetry-in-an-application): `{ "granted": true }`; needs `telemetry:grant` and no `expected_generation`. Revoking stops export at once. 404 for previews, which are never granted |
 | PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
 | GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
 | POST | `/api/v1/applications/{id}/webhook/secret` | Generate a new webhook secret, replacing the previous one (`apps:write`); the `WebhookSecret` response is the only time it is shown |
@@ -223,6 +224,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/file` | `ServiceFile`, e.g. `{ "target": "/etc/app/motd", "content": "hello" }`; adds/replaces by container target |
 | DELETE | `/services/{service}/file` | `{ "value": "/container/target" }` |
 | PUT | `/services/{service}/depends-on` | `{ "value": ["db"] }`; replaces the services that must be healthy before this one rolls out |
+| PUT | `/services/{service}/receives-telemetry` | `{ "value": true }`; makes the service the application's [telemetry receiver](application-manifest.md#telemetry-receivers) |
 | PUT | `/services/{service}/rollout` | `{ "value": { "order": "stop-first", "monitor_seconds": 30 } }`; replaces the rollout block, and omitted fields use their defaults |
 | PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
@@ -273,8 +275,8 @@ Apply and plan accept JSON `{ "manifest": ..., "expected_generation": 3,
 `Content-Type: application/toml` or `text/toml`. TOML preconditions use
 `X-Expected-Generation` and `X-Expected-Application-Id`.
 
-Every mutation of an application or one of its environments, except sync opt-ins
-and previews, is conditioned on the inspected application revision. Apply, deploy, delete, rename, and environment
+Every mutation of an application or one of its environments, except sync opt-ins,
+telemetry grants and previews, is conditioned on the inspected application revision. Apply, deploy, delete, rename, and environment
 creation require preconditions unless the endpoint is explicitly
 called with the query parameter `force=true`. Missing preconditions return 400
 `precondition_required`. Apply requires generation zero to create an absent name,
@@ -507,7 +509,9 @@ a non-blocking `rollout_start_first_writable_volume` warning to the plan. Each j
 appears as a `run_job` action where the deployment runs it, and an exclusive job
 adds a non-blocking `job_stops_services` warning naming the services it stops. For an existing
 environment, each import that would not connect adds a non-blocking
-`import_unconnected` warning, as do promotion plans. Manifest
+`import_unconnected` warning, as do promotion plans. A service receiving
+telemetry in an environment not granted it adds a non-blocking
+`telemetry_not_granted` warning, to plans and to the deployment. Manifest
 differences and the runtime plan compare with the environment selected by
 `environment=ID` (by default the application's only environment): its last
 deployment snapshot, not saved configuration, and its observed runtime. Without a
