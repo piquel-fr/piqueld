@@ -13,6 +13,8 @@ use tracing::Instrument;
 type Discovered = (bool, Vec<(StoredEnvironment, Operation)>);
 /// Application/diagnostic-code pairs already recorded during one discovery pass.
 type ScanFailures = Arc<tokio::sync::Mutex<HashSet<(EnvironmentId, String)>>>;
+/// Time running operations get on shutdown to record their outcome.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 impl<D: DockerApi> Controller<D> {
     /// One event loop polls environment futures and discovery concurrently. No
@@ -26,7 +28,12 @@ impl<D: DockerApi> Controller<D> {
     /// Panics if the scan interval is zero.
     ///
     /// # Errors
-    /// Store failures are logged and retried; shutdown cancels pending local work.
+    /// Store failures are logged and retried. Shutdown cancels running
+    /// operations and gives them [`SHUTDOWN_GRACE`] to record their outcome,
+    /// such as a job run's result, instead of dropping them mid-way. Health
+    /// refreshes and discovery hold no job run and are dropped first, so
+    /// neither holds a lock the operations need; startup closes whatever
+    /// any of them left open.
     pub async fn run(
         &self,
         wake: Arc<Notify>,
@@ -64,7 +71,12 @@ impl<D: DockerApi> Controller<D> {
                 }
             };
             tokio::select! {
-                () = cancellation.cancelled() => return Ok(()),
+                () = cancellation.cancelled() => {
+                    // Unpolled, they could hold the mutation lock or store writer.
+                    drop((health_jobs, discovery));
+                    Self::finish_on_shutdown(jobs).await;
+                    return Ok(());
+                }
                 () = wake.notified() => requested = true,
                 () = self.relink.notified() => {
                     next_scan = tokio::time::Instant::now();
@@ -117,7 +129,12 @@ impl<D: DockerApi> Controller<D> {
                             {
                                 self.relink.notify_one();
                             }
-                            jobs.push(self.scan_job(application, token, Arc::clone(&failures)));
+                            jobs.push(self.scan_job(
+                                application,
+                                operation,
+                                token,
+                                Arc::clone(&failures),
+                            ));
                         }
                     }
                 }
@@ -129,6 +146,18 @@ impl<D: DockerApi> Controller<D> {
                     requested = true;
                 }
             }
+        }
+    }
+
+    /// Waits up to [`SHUTDOWN_GRACE`] for the running operation `jobs`, whose
+    /// tokens shutdown cancelled, to stop at their next cancellation check and
+    /// record their outcome; drops the rest.
+    async fn finish_on_shutdown(jobs: FuturesUnordered<impl Future<Output = EnvironmentId>>) {
+        if tokio::time::timeout(SHUTDOWN_GRACE, jobs.for_each(|_| async {}))
+            .await
+            .is_err()
+        {
+            tracing::warn!("operations still running at shutdown were dropped");
         }
     }
 
@@ -163,16 +192,20 @@ impl<D: DockerApi> Controller<D> {
         id
     }
 
-    /// Scans `application` until `token` cancels it, reporting a journal
-    /// failure as a diagnostic, then asks the environments it links to to
-    /// replan when its links changed. Resolves to the environment's ID.
+    /// Scans `application` and its discovered `operation` until `token`
+    /// cancels it, reporting a journal failure as a diagnostic, then asks the
+    /// environments it links to to replan when its links changed. Resolves to
+    /// the environment's ID.
     async fn scan_job(
         &self,
         application: StoredEnvironment,
+        operation: Operation,
         token: CancellationToken,
         failures: ScanFailures,
     ) -> EnvironmentId {
-        if let Err(error) = Box::pin(self.scan_application(&application, &token, &failures)).await {
+        if let Err(error) =
+            Box::pin(self.scan_application(&application, &operation, &token, &failures)).await
+        {
             let failure = OperationError::Journal(error);
             self.store
                 .report_diagnostic(&failure.diagnostic(), Some(application.id()))
@@ -268,7 +301,13 @@ impl<D: DockerApi> Controller<D> {
         for (application, operation) in applications {
             let scan_failures = Arc::clone(&failures);
             jobs.push(async move {
-                Box::pin(self.scan_application(&application, cancellation, &scan_failures)).await?;
+                Box::pin(self.scan_application(
+                    &application,
+                    &operation,
+                    cancellation,
+                    &scan_failures,
+                ))
+                .await?;
                 let enforced = async {
                     let observed = self.docker.observe(application.id()).await?;
                     self.enforce_links(application.id(), &operation.id, &observed)
@@ -340,13 +379,15 @@ impl<D: DockerApi> Controller<D> {
             || Self::failure(operation) == Some(DiagnosticCode::IngressUnavailable)
     }
 
-    /// Retries pending cleanup before processing the environment's latest
-    /// operation. Cleanup alone never reopens a terminal job failure. Normal
-    /// execution still runs when due, enforcing its backoff and cleanup fence.
-    #[tracing::instrument(skip_all, fields(environment_id = %application.id(), generation = application.application.generation))]
+    /// Retries pending cleanup before processing `operation`, the latest
+    /// operation discovery found for the environment. Cleanup alone never
+    /// reopens a terminal job failure. Normal execution still runs when due,
+    /// enforcing its backoff and cleanup fence.
+    #[tracing::instrument(skip_all, fields(environment_id = %application.id(), operation_id = %operation.id, generation = application.application.generation))]
     async fn scan_application(
         &self,
         application: &StoredEnvironment,
+        operation: &Operation,
         cancellation: &CancellationToken,
         failures: &ScanFailures,
     ) -> Result<(), StoreError> {
@@ -354,11 +395,16 @@ impl<D: DockerApi> Controller<D> {
             self.record_scan_diagnostic(application.id(), &error.diagnostic(), failures)
                 .await?;
         }
-        self.scan_latest_operation(application, cancellation, failures)
+        self.scan_latest_operation(application, operation, cancellation, failures)
             .await
     }
 
-    /// Processes the latest operation during a scan.
+    /// Processes `discovered`, the operation discovery found, never one
+    /// requested since: the coordinator tracks and cancels this scan by its
+    /// ID, and the next pass picks up newer operations. Its state is read
+    /// again first, since an earlier scan may have finished it after
+    /// discovery read it. Every transition rechecks that it is still the
+    /// latest, so a superseded one changes nothing.
     ///
     /// 1. Repairs drift in the active target while a newer target is unpromoted.
     /// 2. Runs requested, cleanly running, or retry-due operations.
@@ -370,30 +416,33 @@ impl<D: DockerApi> Controller<D> {
     async fn scan_latest_operation(
         &self,
         application: &StoredEnvironment,
+        discovered: &Operation,
         cancellation: &CancellationToken,
         failures: &ScanFailures,
     ) -> Result<(), StoreError> {
-        let Some(latest) = self
-            .store
-            .latest_operation_for_environment(application.id())
-            .await?
-        else {
-            return Ok(());
+        let latest = &match self.store.operation(&discovered.id).await {
+            // Deleted with its environment since.
+            Err(StoreError::NotFound) => return Ok(()),
+            operation => operation?,
         };
         self.repair_before_execution(application, &latest.id, failures)
             .await?;
+        let running = latest.state == OperationState::Running;
         if latest.state == OperationState::Requested
-            || (latest.state == OperationState::Running && latest.error_code.is_none())
+            || (running && (latest.error_code.is_none() || Self::retry_due(latest)))
         {
-            return Box::pin(self.run_operation(&latest, cancellation)).await;
+            return Box::pin(self.run_operation(latest, cancellation)).await;
         }
-        if Self::retry_due(&latest) {
-            let operation = if latest.state == OperationState::Running {
-                latest
-            } else {
-                self.store.retry_operation(&latest).await?
-            };
-            return Box::pin(self.run_operation(&operation, cancellation)).await;
+        if Self::retry_due(latest) {
+            // Reopens it only while it is still the latest and terminal.
+            if let Some(operation) = self
+                .store
+                .request_reconcile(application.id(), &latest.id)
+                .await?
+            {
+                Box::pin(self.run_operation(&operation, cancellation)).await?;
+            }
+            return Ok(());
         }
         let application = self.store.get(application.id()).await?;
         let observed = match self.docker.observe(application.id()).await {
@@ -437,7 +486,7 @@ impl<D: DockerApi> Controller<D> {
         }
         if !plan_requires_execution(&plan)
             && !application.delete_intent()
-            && !Self::failure_outlives_converged_plan(&latest)
+            && !Self::failure_outlives_converged_plan(latest)
         {
             self.store
                 .set_status_for_operation(&latest.id, ApplicationState::Ready, None)
@@ -446,7 +495,7 @@ impl<D: DockerApi> Controller<D> {
         // Permanent failures are reconsidered only when fresh planning shows
         // their blocker has disappeared. Transient failures respect backoff.
         let was_blocked = matches!(
-            Self::failure(&latest),
+            Self::failure(latest),
             Some(
                 DiagnosticCode::OwnershipConflict
                     | DiagnosticCode::DockerConfigurationConflict
@@ -457,8 +506,8 @@ impl<D: DockerApi> Controller<D> {
         if (latest.state == OperationState::Succeeded && plan_requires_execution(&plan))
             || was_blocked
         {
-            if latest.state == OperationState::Running {
-                return Box::pin(self.run_operation(&latest, cancellation)).await;
+            if running {
+                return Box::pin(self.run_operation(latest, cancellation)).await;
             }
             if let Some(operation) = self
                 .store

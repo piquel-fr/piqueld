@@ -93,6 +93,8 @@ struct FakeDocker {
     fail_job_cleanup: Arc<AtomicBool>,
     /// Blocks removing an operation's own run while held.
     hold_job_cleanup: Arc<Mutex<()>>,
+    /// Counts removals of an operation's own run, including held ones.
+    job_cleanups: Arc<std::sync::atomic::AtomicUsize>,
     /// The engine's images; builds and pulls add theirs.
     local_images: Arc<Mutex<Vec<LocalImage>>>,
     /// Holds builds once their image exists, until released.
@@ -791,6 +793,7 @@ impl DockerApi for FakeDocker {
         runs: JobRuns<'_>,
     ) -> Result<(), DockerError> {
         if matches!(runs, JobRuns::Of(_)) {
+            self.job_cleanups.fetch_add(1, Ordering::SeqCst);
             let _held = self.hold_job_cleanup.lock().await;
             if self.fail_job_cleanup.load(Ordering::SeqCst) {
                 return Err(DockerError::Request("remove jobs"));
@@ -1282,6 +1285,39 @@ impl ControllerHarness {
         })
         .await
         .expect("job starts");
+    }
+
+    /// Fails a job and its cleanup, leaving the cleanup pending for scans.
+    async fn leave_job_cleanup_pending(&self) {
+        self.docker.job_exit.store(3, Ordering::SeqCst);
+        self.docker.fail_job_cleanup.store(true, Ordering::SeqCst);
+        let failed = self
+            .apply(manifest_with_jobs(&["migrate"], 300), None)
+            .await;
+        assert_eq!(
+            self.scan_result(&failed).await,
+            (OperationState::Failed, Some("job_failed".into()))
+        );
+        self.docker.fail_job_cleanup.store(false, Ordering::SeqCst);
+    }
+
+    /// Scans once, running `meanwhile` after discovery, while the scan
+    /// retries pending job cleanup.
+    async fn scan_during_cleanup(&self, meanwhile: impl Future<Output = ()>) {
+        let cleanups = self.docker.job_cleanups.load(Ordering::SeqCst);
+        let held = self.docker.hold_job_cleanup.lock().await;
+        let shutdown = CancellationToken::new();
+        let scan = self.controller.scan(&shutdown);
+        tokio::pin!(scan);
+        tokio::select! {
+            result = &mut scan => panic!("scan finished while cleanup was held: {result:?}"),
+            retrying = eventually(Duration::from_secs(10), POLL, async || {
+                (self.docker.job_cleanups.load(Ordering::SeqCst) > cleanups).then_some(())
+            }) => retrying.expect("the scan retries the failed run's cleanup"),
+        }
+        meanwhile.await;
+        drop(held);
+        scan.await.unwrap();
     }
 
     /// The application's newest build record and its retained output.
@@ -4291,6 +4327,120 @@ async fn retried_operation_skips_jobs_that_already_succeeded() {
     *harness.docker.conflicting_job.lock().await = None;
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate", "seed"]);
+}
+
+/// A scan processes the operation discovery found. One requested while the
+/// scan retried cleanup is left to the next pass, rather than running under
+/// the scan of the operation it replaced.
+#[tokio::test]
+async fn a_scan_leaves_operations_requested_after_discovery_to_the_next_pass() {
+    let harness = ControllerHarness::new().await;
+    harness.leave_job_cleanup_pending().await;
+    let mut newer = None;
+    harness
+        .scan_during_cleanup(async {
+            newer = Some(harness.apply(manifest(), None).await);
+        })
+        .await;
+    let newer = newer.unwrap();
+    assert_eq!(
+        harness.operation(&newer.id).await.state,
+        OperationState::Requested
+    );
+    harness.finish(&newer).await;
+}
+
+/// A scan acts on the current state of the operation discovery found. One
+/// an earlier scan finished meanwhile is not run again, so its environment
+/// isn't reported degraded by a failed journal write.
+#[tokio::test]
+async fn a_scan_leaves_an_operation_finished_since_discovery_alone() {
+    let harness = ControllerHarness::new().await;
+    harness.leave_job_cleanup_pending().await;
+    let operation = harness.apply(manifest(), None).await;
+    harness
+        .store
+        .transition_operation(
+            &operation.id,
+            OperationState::Requested,
+            OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    let status = async || {
+        harness
+            .store
+            .status(&operation.environment_id)
+            .await
+            .unwrap()
+            .state
+    };
+    let before = status().await;
+    harness
+        .scan_during_cleanup(async {
+            harness
+                .store
+                .transition_operation(
+                    &operation.id,
+                    OperationState::Running,
+                    OperationState::Succeeded,
+                    None,
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+    assert_eq!(status().await, before);
+    assert_eq!(
+        harness.operation(&operation.id).await.state,
+        OperationState::Succeeded
+    );
+}
+
+/// Shutdown lets a deployment waiting for its job record that the run was
+/// interrupted, instead of dropping it mid-way.
+#[tokio::test]
+async fn shutdown_lets_a_running_job_record_its_interruption() {
+    let harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let operation = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    let shutdown = CancellationToken::new();
+    let run = harness.controller.run(
+        Arc::default(),
+        Duration::from_mins(1),
+        0,
+        0,
+        shutdown.clone(),
+    );
+    let stop = async {
+        harness.wait_for_job_starts(1).await;
+        shutdown.cancel();
+    };
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, stop) })
+            .await
+            .expect("shutdown finishes within its grace period");
+    result.unwrap();
+    let builds = harness
+        .store
+        .builds(
+            None,
+            Some(&operation.environment_id),
+            &piqueld_core::access::Scope::All,
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        builds.items[0].state,
+        piqueld_core::api::BuildState::Interrupted
+    );
+    // The run is kept for the retried deployment to resume.
+    assert_eq!(harness.docker.jobs.lock().await.len(), 1);
 }
 
 #[tokio::test]
