@@ -58,7 +58,7 @@ pub(super) struct Node {
     /// The node's `LocalAPI`, over the socket in its `run` directory.
     api: UnixApi,
     /// Login URL last relayed to daemon logs.
-    login_url: std::sync::Mutex<Option<String>>,
+    login_url: parking_lot::Mutex<Option<String>>,
 }
 
 /// The fields piqueld reads from the `LocalAPI` at `/localapi/v0/status`.
@@ -94,7 +94,7 @@ impl Node {
                 crate::docker::DockerTimeout::Request.duration(),
             )
             .with_host("local-tailscaled.sock"),
-            login_url: std::sync::Mutex::new(None),
+            login_url: parking_lot::Mutex::new(None),
         })
     }
 
@@ -216,7 +216,7 @@ impl Ingress {
         )
         .context("decode the apps node status")?;
         let login_url = Some(status.auth_url.clone()).filter(|url| !url.is_empty());
-        let mut relayed = node.login_url.lock().expect("login URL lock");
+        let mut relayed = node.login_url.lock();
         if login_url.is_some() && *relayed != login_url {
             tracing::warn!(node=%node.hostname, url=%status.auth_url,
                 "the apps tailnet node needs login; open the URL, or set [ingress.private] auth_key_file");

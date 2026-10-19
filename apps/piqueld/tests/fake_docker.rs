@@ -1405,11 +1405,11 @@ impl EnvironmentHarness {
 
 /// Captures traces written as JSON lines.
 #[derive(Clone, Default)]
-struct TraceCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+struct TraceCapture(Arc<parking_lot::Mutex<Vec<u8>>>);
 
 impl std::io::Write for TraceCapture {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
+        self.0.lock().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 
@@ -3397,7 +3397,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
         harness.scan().await;
         (harness.application.id().to_string(), operation.id)
     };
-    let text = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+    let text = String::from_utf8(capture.0.lock().clone()).unwrap();
     assert!(!text.contains("must-not-appear-in-traces"));
     let events: Vec<serde_json::Value> = text
         .lines()

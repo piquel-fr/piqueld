@@ -3,12 +3,13 @@
 #[path = "support/daemon.rs"]
 mod daemon;
 
+use parking_lot::Mutex;
 use piqueld::DirectoryLock;
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
     process::{Child, Command, Stdio},
-    sync::{Arc, Barrier, Mutex},
+    sync::{Arc, Barrier},
 };
 
 // A concurrent spawn can inherit another test's flock until exec closes the
@@ -18,7 +19,7 @@ static PROCESS_TEST: Mutex<()> = Mutex::new(());
 
 #[test]
 fn simultaneous_acquisition_has_one_owner() {
-    let _process_test = PROCESS_TEST.lock().unwrap();
+    let _process_test = PROCESS_TEST.lock();
     let directory = tempfile::tempdir().unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let successes = std::thread::scope(|scope| {
@@ -51,7 +52,7 @@ fn simultaneous_acquisition_has_one_owner() {
 
 #[test]
 fn competing_daemon_preserves_database_and_live_socket() {
-    let _process_test = PROCESS_TEST.lock().unwrap();
+    let _process_test = PROCESS_TEST.lock();
     let directory = tempfile::tempdir_in(".").unwrap();
     let path = directory.path().canonicalize().unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -114,7 +115,7 @@ impl Drop for LockProcess {
 
 #[test]
 fn process_death_releases_the_directory_lock() {
-    let _process_test = PROCESS_TEST.lock().unwrap();
+    let _process_test = PROCESS_TEST.lock();
     let directory = tempfile::tempdir().unwrap();
     let process = LockProcess::start(directory.path());
     assert_eq!(

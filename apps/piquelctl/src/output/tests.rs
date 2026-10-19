@@ -10,10 +10,10 @@ struct Recorded {
 struct Capture(Arc<Mutex<Recorded>>);
 impl Capture {
     fn text(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().bytes.clone()).unwrap()
+        String::from_utf8(self.0.lock().bytes.clone()).unwrap()
     }
     fn flushes(&self) -> usize {
-        self.0.lock().unwrap().flushes
+        self.0.lock().flushes
     }
     fn writer(&self) -> Writer {
         Box::new(anstream::StripStream::new(Box::new(self.clone()) as Writer))
@@ -25,11 +25,11 @@ impl Capture {
 }
 impl Write for Capture {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().bytes.extend_from_slice(bytes);
+        self.0.lock().bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.lock().unwrap().flushes += 1;
+        self.0.lock().flushes += 1;
         Ok(())
     }
 }

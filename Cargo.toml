@@ -37,6 +37,7 @@ hickory-resolver = { version = "0.26.3", default-features = false, features = ["
 # ACME on ring, matching reqwest's rustls provider; rcgen generates keys and CSRs.
 instant-acme = { version = "0.8.5", default-features = false, features = ["hyper-rustls", "rcgen", "ring"] }
 openssl = "0.10.81"
+parking_lot = "0.12.5"
 webauthn-rs-core = "=0.5.5"
 bytes = "1.10.1"
 bollard = "0.19.1"
