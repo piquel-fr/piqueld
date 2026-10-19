@@ -54,7 +54,8 @@ impl Feedback {
     }
 
     /// Sends `request` while the editor is busy, replacing the last outcome,
-    /// then runs `done` with its response or `failed` with its error.
+    /// then runs `done` with its response or `failed` with its error, unless
+    /// the editor unmounted meanwhile.
     fn send<T: 'static>(
         self,
         context: EditorContext,
@@ -65,7 +66,11 @@ impl Feedback {
         context.busy.set(true);
         self.clear();
         spawn_local(async move {
-            match request.await {
+            let result = request.await;
+            if !context.mounted() {
+                return;
+            }
+            match result {
                 Ok(response) => done(response),
                 Err(error) => failed(error),
             }
@@ -906,16 +911,17 @@ fn SecretFiles(service_name: String) -> impl IntoView {
     let mounts = draft.value;
     let service = StoredValue::new(service_name.clone());
     let save = move || {
+        let name = service.get_value();
         context.save(
             ApplicationEdit::Service {
-                name: service.get_value(),
+                name: name.clone(),
                 edit: ServiceEdit::Secrets(mounts.get_untracked()),
             },
-            Callback::new(move |saved: ApplicationView| {
-                if let Some(secrets) = secret_files(&saved, &service.get_value()) {
+            move |saved| {
+                if let Some(secrets) = secret_files(&saved, &name) {
                     draft.reset(secrets);
                 }
-            }),
+            },
         );
     };
     view! {

@@ -1,9 +1,9 @@
 //! The application's immutable releases, newest first.
-use super::super::ClientErrorExt;
 use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Tone, badge, empty, expander_summary, icon, load_older, notice, when,
 };
+use super::super::{Alive, ClientErrorExt};
 use super::deployments::PromoteAction;
 use super::editor;
 use leptos::prelude::*;
@@ -26,17 +26,23 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
     let requested = StoredValue::new(
         leptos_router::hooks::use_query_map().with_untracked(|q| q.get("release")),
     );
+    let alive = Alive::new();
     // `None` reloads the first page; a cursor appends the page after it.
     let load = move |mut next: Option<String>| {
         loading.set(true);
+        let (application, requested) = (application.get_value(), requested.get_value());
+        let alive = alive.clone();
         spawn_local(async move {
             // A refresh replaces the list once its first page arrives.
             let mut replace = next.is_none();
             loop {
-                match Client::browser()
-                    .releases(&application.get_value(), next.as_deref())
-                    .await
-                {
+                let result = Client::browser()
+                    .releases(&application, next.as_deref())
+                    .await;
+                if !alive.get() {
+                    return;
+                }
+                match result {
                     Ok(page) => {
                         if std::mem::take(&mut replace) {
                             releases.set(page.items);
@@ -45,11 +51,9 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
                         }
                         cursor.set(page.next_cursor.clone());
                         error.set(None);
-                        let shown = requested.with_value(|requested| {
-                            requested.as_ref().is_none_or(|id| {
-                                releases.with_untracked(|items| {
-                                    items.iter().any(|release| release.id.as_str() == id)
-                                })
+                        let shown = requested.as_ref().is_none_or(|id| {
+                            releases.with_untracked(|items| {
+                                items.iter().any(|release| release.id.as_str() == id)
                             })
                         });
                         match page.next_cursor {
@@ -67,6 +71,7 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
         });
     };
     load(None);
+    let refresh = load.clone();
     view! {
         <section class="stack-sm" aria-label="Releases">
             <div class="toolbar">
@@ -78,7 +83,7 @@ pub(super) fn ReleaseHistory(application: String) -> impl IntoView {
                         type="button"
                         class="btn btn-sm"
                         disabled={move || loading.get()}
-                        on:click={move |_| load(None)}
+                        on:click={move |_| refresh(None)}
                     >
                         {icon(Icon::Refresh)}
                         "Refresh"

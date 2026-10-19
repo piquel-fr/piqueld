@@ -141,7 +141,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         let href = app_href();
         context.save(
             ApplicationEdit::RemoveService(remove_name.clone()),
-            Callback::new(move |_| navigate(&href, NavigateOptions::default())),
+            move |_| navigate(&href, NavigateOptions::default()),
         );
     };
     let selected = RwSignal::new(Section::General.title());

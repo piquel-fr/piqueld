@@ -260,7 +260,7 @@ pub(super) fn PreviewList() -> impl IntoView {
                                     view! {
                                         <PreviewRow
                                             view={view}
-                                            deleted={Callback::new(move |()| data.refetch())}
+                                            list={data}
                                         />
                                     }
                                 })
@@ -348,10 +348,13 @@ fn NewPreview() -> impl IntoView {
 }
 
 /// One preview's row, opening its page, with its slug, slot, branch state,
-/// sync state with the head it last synced, and status. Delete runs `deleted`
+/// sync state with the head it last synced, and status. Delete reloads `list`
 /// once accepted.
 #[component]
-fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
+fn PreviewRow(
+    view: PreviewView,
+    list: LocalResource<Result<Vec<PreviewView>, String>>,
+) -> impl IntoView {
     let context = editor();
     let preview = StoredValue::new(view.preview.clone());
     let name = view.preview.name.to_string();
@@ -395,7 +398,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
                 on:click={move |_| {
                     preview
                         .with_value(|preview| {
-                            context.delete_preview(preview, move || deleted.run(()));
+                            context.delete_preview(preview, move || list.refetch());
                         });
                 }}
             >

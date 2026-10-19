@@ -8,8 +8,8 @@ use super::{Draft, editor};
 use crate::editor::{Choice, FileForm, HealthKind, Section, ServiceForm, SourceKind};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationManifest, ApplicationView, Client, FileSource, GitRepository, Mount,
-    RepositoryManifest, Rollout, Service, Source, Typed, Volume,
+    ApplicationManifest, Client, FileSource, GitRepository, Mount, RepositoryManifest, Rollout,
+    Service, Source, Typed, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
     sync::RepositorySync,
 };
@@ -103,9 +103,10 @@ pub(super) fn RepositorySettings() -> impl IntoView {
             )));
             return;
         }
+        let sent = value.clone();
         context.save(
             ApplicationEdit::Repository(value.enabled.then_some(value.manifest)),
-            Callback::new(move |_| draft.baseline.set(form.get_untracked())),
+            move |_| draft.baseline.set(sent),
         );
     };
     view! {
@@ -447,13 +448,10 @@ pub(super) fn MetadataSettings() -> impl IntoView {
     let draft = Draft::new("name".into(), context.name());
     let name = draft.value;
     let save = move || {
-        context.save(
-            ApplicationEdit::Name(name.get_untracked()),
-            Callback::new(move |app: ApplicationView| {
-                draft.reset(app.application.metadata().name.to_string());
-                editing.set(false);
-            }),
-        );
+        context.save(ApplicationEdit::Name(name.get_untracked()), move |app| {
+            draft.reset(app.application.metadata().name.to_string());
+            editing.set(false);
+        });
     };
     view! {
         <h1 hidden={move || editing.get()}>{move || context.name()}</h1>
@@ -614,10 +612,9 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             Section::Rollout => ServiceEdit::Rollout(service.rollout.clone()),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
-        context.save(
-            ApplicationEdit::Service { name, edit },
-            Callback::new(move |_| draft.baseline.set(sent.clone())),
-        );
+        context.save(ApplicationEdit::Service { name, edit }, move |_| {
+            draft.baseline.set(sent);
+        });
     };
     view! {
         <section class="card">
@@ -1219,13 +1216,10 @@ pub(super) fn NewService() -> impl IntoView {
             depends_on: Vec::new(),
             rollout: Rollout::default(),
         };
-        context.save(
-            ApplicationEdit::AddService(Box::new(service)),
-            Callback::new(move |_| {
-                draft.discard();
-                opened.set(false);
-            }),
-        );
+        context.save(ApplicationEdit::AddService(Box::new(service)), move |_| {
+            draft.discard();
+            opened.set(false);
+        });
     };
     view! {
         <button

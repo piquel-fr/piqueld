@@ -827,7 +827,7 @@ fn EnvironmentVisibility() -> impl IntoView {
                 environment: name(),
                 visibility: draft.get_untracked(),
             },
-            Callback::new(|_| {}),
+            |_| {},
         );
     };
     view! {

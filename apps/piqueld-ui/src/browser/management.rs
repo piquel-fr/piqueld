@@ -17,7 +17,7 @@ use super::format::timestamp;
 use super::runtime::RuntimeOverview;
 use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
 use super::{
-    ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
+    Alive, ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
     environment_href, reload,
 };
 use crate::state::ApplicationHealth;
@@ -330,6 +330,12 @@ impl EditorContext {
         self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
     }
 
+    /// Whether the editor is still mounted. Reading its disposed handles
+    /// panics, so async work checks this after every await.
+    fn mounted(self) -> bool {
+        !self.saved.is_disposed()
+    }
+
     /// Whether this is an environment page rather than the application page.
     fn environment_page(self) -> bool {
         self.page
@@ -357,7 +363,7 @@ impl EditorContext {
     /// Applies `edit` to the saved manifest, validates it locally, then sends it
     /// guarded by the saved generation (see `mutate`). On success the saved view is
     /// updated locally, `on_saved` runs, and the dashboard refreshes.
-    fn save(self, edit: ApplicationEdit, on_saved: Callback<ApplicationView>) {
+    fn save(self, edit: ApplicationEdit, on_saved: impl FnOnce(ApplicationView) + 'static) {
         if self.blocked() {
             return;
         }
@@ -394,7 +400,7 @@ impl EditorContext {
                     ..saved
                 };
                 self.saved.set(updated.clone());
-                on_saved.run(updated);
+                on_saved(updated);
                 self.notice.set("Saved.".into());
                 self.refresh_dashboard();
             },
@@ -414,30 +420,40 @@ impl EditorContext {
         }
     }
 
-    /// Runs one mutation while the editor is busy: `send` gets a client with a
-    /// fresh request identity, then `done` runs with the response, or the
-    /// failure is shown.
-    fn run_mutation<T: 'static>(
+    /// Sends `request` while the editor is busy, then runs `done` with the
+    /// response, or shows the failure. Neither runs once the editor
+    /// unmounted meanwhile.
+    fn run<T: 'static>(
         self,
-        send: impl AsyncFnOnce(&Mutation) -> Result<T, ClientError> + 'static,
+        request: impl Future<Output = Result<T, ClientError>> + 'static,
         done: impl FnOnce(T) + 'static,
     ) {
         self.set_error(None);
-        let mutation = match Mutation::new() {
-            Ok(mutation) => mutation,
-            Err(error) => {
-                self.set_error(Some(error));
-                return;
-            }
-        };
         self.busy.set(true);
         spawn_local(async move {
-            match send(&mutation).await {
+            let result = request.await;
+            if !self.mounted() {
+                return;
+            }
+            match result {
                 Ok(response) => done(response),
                 Err(error) => self.failure(&error),
             }
             self.busy.set(false);
         });
+    }
+
+    /// Runs one mutation (see `run`): `send` gets a client with a fresh
+    /// request identity.
+    fn run_mutation<T: 'static>(
+        self,
+        send: impl AsyncFnOnce(&Mutation) -> Result<T, ClientError> + 'static,
+        done: impl FnOnce(T) + 'static,
+    ) {
+        match Mutation::new() {
+            Ok(mutation) => self.run(async move { send(&mutation).await }, done),
+            Err(error) => self.set_error(Some(error)),
+        }
     }
 
     /// Sends one mutation (see `run_mutation`), retrying once on transport
@@ -598,12 +614,9 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
     /// Saves `edit` as the group's change, then restarts the form at what
     /// `read` reads from the saved manifest.
     fn save(self, edit: ApplicationEdit, read: fn(&ApplicationManifest) -> T) {
-        editor().save(
-            edit,
-            Callback::new(move |saved: ApplicationView| {
-                self.reset(read(&saved.application.to_manifest()));
-            }),
-        );
+        editor().save(edit, move |saved| {
+            self.reset(read(&saved.application.to_manifest()));
+        });
     }
 
     /// Save and discard buttons, shown only while the form has edits.
@@ -681,6 +694,7 @@ pub(super) fn CreateApplication() -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let navigate = use_navigate();
     let refresh = dashboard_context().refresh;
+    let alive = Alive::new();
     let create = move || {
         if busy.get_untracked() {
             return;
@@ -704,7 +718,7 @@ pub(super) fn CreateApplication() -> impl IntoView {
                 return;
             }
         };
-        let navigate = navigate.clone();
+        let (navigate, alive) = (navigate.clone(), alive.clone());
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -715,6 +729,9 @@ pub(super) fn CreateApplication() -> impl IntoView {
                     async move { client.create_application(&name, false).await }
                 })
                 .await;
+            if !alive.get() {
+                return;
+            }
             match result {
                 Ok(saved) => {
                     refresh.run(());
@@ -883,6 +900,7 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
                 let id = application.id.to_string();
                 spawn_local(async move {
                     if let Ok(view) = Client::browser().application(&id).await
+                        && context.mounted()
                         && context.dirty.get_untracked().is_empty()
                     {
                         context.saved.set(view);
