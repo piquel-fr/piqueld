@@ -260,10 +260,11 @@ impl ApplicationService {
                 }
             };
             if interval && starts.is_none() {
-                starts = Some(Box::pin(docker.container_starts()));
                 // Starts while unsubscribed went unseen, so every container
-                // may have new output.
+                // may have new output; Docker replays those from now on.
+                let since = now_ns().div_euclid(1_000_000_000);
                 exports.lock().values_mut().for_each(Exported::started);
+                starts = Some(Box::pin(docker.container_starts(since)));
             }
             if !interval
                 && discovery

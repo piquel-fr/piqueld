@@ -148,15 +148,18 @@ impl LimitedDocker<BollardDocker> {
             })
     }
 
-    /// Yields the ID of each container that starts, when Docker names it,
-    /// until the stream fails.
+    /// Yields the ID of each container that starts from `since`, in Unix
+    /// seconds, when Docker names it, until the stream fails. Docker replays
+    /// starts since then, so none is missed while the stream connects.
     pub(crate) fn container_starts(
         &self,
+        since: i64,
     ) -> impl Stream<Item = Result<Option<String>, DockerError>> + use<> {
         self.inner
             .docker
             .events(Some(
                 EventsOptionsBuilder::default()
+                    .since(&since.to_string())
                     .filters(&HashMap::from([
                         ("type", vec!["container"]),
                         ("event", vec!["start"]),
