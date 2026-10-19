@@ -17,7 +17,7 @@ It applies the same parsing and validation as startup and exits nonzero with a
 diagnostic on the first problem. It touches nothing on the host: no state,
 sockets, Docker, or network. Credential files are only located, not read, so it
 runs where they are absent, such as a Nix build: relative `_file` paths are
-accepted without `$CREDENTIALS_DIRECTORY`, and their contents (readable,
+accepted without `$CREDENTIALS_DIRECTORY`, and their contents (readable regular files,
 non-empty, a valid tunnel credentials file or webhook URL) are checked at
 startup.
 
@@ -432,8 +432,10 @@ max_token_days = 90
 Settings that carry credentials, such as webhook `url`, also accept a `_file`
 variant (`url_file`) that reads the value from a file at startup. Setting both
 variants is an error. Surrounding whitespace, such as a trailing newline, is
-removed, and an empty file is rejected.
-Relative paths resolve against `$CREDENTIALS_DIRECTORY`, so systemd
+removed, and an empty file is rejected, as is anything but a regular file
+(symlinks to one are followed).
+Relative paths resolve against `$CREDENTIALS_DIRECTORY` and may not contain
+`.` or `..` components, so systemd
 `LoadCredential=`, agenix and sops-nix work unchanged:
 
 ```toml
