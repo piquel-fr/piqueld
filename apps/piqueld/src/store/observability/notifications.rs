@@ -52,6 +52,7 @@ impl Store {
         limit: usize,
     ) -> Result<Page<NotificationDelivery>, StoreError> {
         let paging = Paging::new(limit)?;
+        let cursor = Paging::cursor(cursor)?;
         let mut rows = sqlx::query!(
             "SELECT id AS \"id!\",event_id,destination,category,state,attempts,created_at_ms,next_attempt_ms,updated_at_ms,last_error
             FROM notification_deliveries
@@ -63,9 +64,7 @@ impl Store {
         .fetch_all(&self.pool)
         .await
         .map_err(StoreError::database)?;
-        // Delivery cursors are bare IDs, without the `v1:` prefix.
-        let more = paging.truncate(&mut rows);
-        let next_cursor = more.then(|| rows.last().map(|r| r.id.clone())).flatten();
+        let next_cursor = paging.next_cursor(&mut rows, |r| r.id.clone());
         Ok(Page {
             items: rows
                 .into_iter()

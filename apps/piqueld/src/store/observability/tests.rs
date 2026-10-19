@@ -178,6 +178,18 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
     let deliveries = store.deliveries(None, 100).await.unwrap();
     assert_eq!(deliveries.items.len(), 2);
     assert_eq!(deliveries.items[0].category, NotificationCategory::Recovery);
+    // Deliveries page like other listings, with opaque `v1:` cursors.
+    let cursor = store
+        .deliveries(None, 1)
+        .await
+        .unwrap()
+        .next_cursor
+        .unwrap();
+    assert_eq!(cursor, format!("v1:{}", deliveries.items[0].id));
+    let older = store.deliveries(Some(&cursor), 1).await.unwrap();
+    assert_eq!(older.items[0].id, deliveries.items[1].id);
+    let bare = store.deliveries(Some(&deliveries.items[0].id), 1).await;
+    assert!(matches!(bare, Err(StoreError::InvalidInput)));
 }
 
 #[tokio::test]
