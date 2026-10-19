@@ -2523,6 +2523,7 @@ impl Client {
     Environments are listed by ID and must belong to the application. A
     narrower list fails later deployments that mount the secret with
     `secret_access_denied`; running deployments keep their pinned versions.
+    Fails with 409 `secret_deleting` while the secret is being deleted.
 
     Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}/access`
 
@@ -2574,6 +2575,9 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             415u16 => Err(Error::ErrorResponse(
@@ -7824,8 +7828,9 @@ impl Client {
     of its manifest repository, or pins or unpins a commit. Nothing is fetched
     or redeployed: the next deployment fetches the new branch. Environments of
     an application without a manifest repository fail with
-    `manifest_repository_required` (422), and those whose source the saved
-    manifest declares with `environment_declared` (409). The inspected
+    `manifest_repository_required` (422), those whose source the saved
+    manifest declares with `environment_declared` (409), and promoted ones,
+    which have no branch, with `environment_promoted` (409). The inspected
     application `expected_generation` goes in the JSON body.
 
     Sends a `PUT` request to `/api/v1/environments/{id}/branch`
@@ -9864,8 +9869,18 @@ impl Client {
 
     Discards every application's stored secret values, every environment's
     generated secret values, and the repository webhook secrets (applications
-    generate new ones); metadata and running services are kept. Fails with 409
-    while the current key still works. The next value write generates a new key.
+    generate new ones); metadata and running services are kept. Only a lost key
+    is recovered: while something is encrypted (the key verifier, a value or a
+    webhook secret), one that is missing, does not hold 32 bytes, or decrypts
+    none of it. Fails with 409 while the key decrypts the verifier, when there
+    is no verifier but it decrypts a value or webhook secret, or when nothing
+    is encrypted and the key file is missing or loads. When nothing is
+    encrypted but the key file does not hold 32 bytes, moves it aside and
+    succeeds with nothing discarded. Fails with 503 `secret_storage_unavailable`, discarding
+    nothing, when it decrypts a value or webhook secret but not a corrupt
+    verifier, or can't be read for another reason, such as an I/O error or a
+    key file that is not private.
+    The next value write generates a new key.
 
     Sends a `POST` request to `/api/v1/system/secrets/recover-key`
 

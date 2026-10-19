@@ -16,6 +16,10 @@ use sqlx::{QueryBuilder, SqliteConnection};
 const COLUMNS: &str = "id,created_at_ms,action,outcome,status,user_id,username,credential_id,\
     credential_kind,scoped,peer,request_id,application_id,environment_id,permission,link,tailnet,operator_uid";
 
+/// Most audit rows one pruning transaction deletes, so that pruning a large
+/// backlog never holds the writer for long.
+const AUDIT_PRUNE_BATCH: i64 = 1_000;
+
 /// An audited request to record.
 pub(crate) struct NewAuditEvent {
     /// Method and route template.
@@ -385,8 +389,10 @@ impl Store {
         Ok(Page { items, next_cursor })
     }
 
-    /// Prunes the oldest audit rows, through the newest one past the
-    /// configured retention, keeping it as the chain's new anchor. Zero days
+    /// Prunes the oldest audit rows past the configured retention, keeping
+    /// the newest pruned one as the chain's new anchor. Only rows before the
+    /// oldest retained one are pruned, so one recorded after the clock
+    /// stepped back waits until every row before it expired. Zero days
     /// disables pruning. Rows are only pruned while the chain through them
     /// verifies, so pruning never erases evidence of tampering; a broken
     /// chain is logged and left alone, without stopping other pruning.
@@ -397,16 +403,25 @@ impl Store {
             return Ok(());
         }
         let cutoff = days_ago_ms(self.audit_days);
+        while self.prune_audit_batch(cutoff).await? {}
+        Ok(())
+    }
+
+    /// Prunes up to [`AUDIT_PRUNE_BATCH`] of the rows [`Self::prune_audit`]
+    /// prunes, those before the oldest one created at or after `cutoff`,
+    /// returning whether it pruned any.
+    async fn prune_audit_batch(&self, cutoff: i64) -> Result<bool, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let newest = sqlx::query_scalar!(
-            r#"SELECT id AS "id!" FROM audit_events WHERE created_at_ms < ?1 ORDER BY id DESC LIMIT 1"#,
+            r#"SELECT MAX(id) AS "id: i64" FROM (SELECT id FROM audit_events WHERE id < IFNULL((SELECT MIN(id) FROM audit_events WHERE created_at_ms >= ?1),id+1) ORDER BY id LIMIT ?2)"#,
             cutoff,
+            AUDIT_PRUNE_BATCH,
         )
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
         .map_err(StoreError::database)?;
         let Some(newest) = newest else {
-            return Ok(());
+            return Ok(false);
         };
         let verified = Self::verify_audit_on(&mut tx, newest).await?;
         let Some(anchor) = verified.head.filter(|_| verified.broken_at.is_none()) else {
@@ -414,7 +429,7 @@ impl Store {
                 broken_at = verified.broken_at,
                 "the audit trail is broken; it is not pruned, to keep the evidence"
             );
-            return Ok(());
+            return Ok(false);
         };
         sqlx::query!("DELETE FROM audit_events WHERE id <= ?1", anchor.id)
             .execute(&mut *tx)
@@ -428,6 +443,7 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(true)
     }
 }

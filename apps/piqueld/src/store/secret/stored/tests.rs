@@ -342,6 +342,29 @@ async fn access_lists_keep_renamed_environments_and_drop_deleted_ones() {
     ));
 }
 
+/// A secret being deleted keeps the access it had, like its value.
+#[tokio::test]
+async fn access_is_fixed_while_a_secret_is_deleted() {
+    let (_temp, store, _, staging) = fixture().await;
+    let application = template().id().clone();
+    store
+        .put_stored_secret(Daemon, &application, "shared", 0, b"all".to_vec(), None)
+        .await
+        .unwrap();
+    store
+        .begin_stored_secret_deletion(Daemon, &application, "shared", 1)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .set_secret_access(Daemon, &application, "shared", &only([&staging]))
+            .await,
+        Err(StoreError::SecretDeleting)
+    ));
+    let secret = &store.stored_secrets(&application).await.unwrap()[0];
+    assert_eq!(secret.access, SecretAccess::default());
+}
+
 /// A schema-20 database `db` in `dir` with application `app-migrated-01`: its
 /// production environment has the manually set `stripe` (versions 1 and 2,
 /// with the last deployment pinning version 1), the generated `session`,

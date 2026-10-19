@@ -78,7 +78,8 @@ impl Store {
 
     /// Stores the fetched manifest and commit for the latest running operation,
     /// copying it, its rendering, and `warnings` into deployment history,
-    /// pinning its secret versions, recording the `branch_head` sync follows
+    /// storing values generated for its secrets and pinning their versions
+    /// (see `pin_secrets_on`), recording the `branch_head` sync follows
     /// from (see `record_branch_head_on`), and re-checking hostname
     /// reservations. Fetching happens once: a second save, or one for
     /// superseded work, fails with `StoreError::IllegalTransition`.
@@ -94,7 +95,8 @@ impl Store {
         let (manifest, variables) = Self::snapshot_json(Some(rendering))?;
         let warnings = serde_json::to_string(warnings).map_err(StoreError::corrupt)?;
         let application = &rendering.application;
-        self.generate_secrets(&operation.environment_id, application)
+        let generated = self
+            .generated_secrets(&operation.environment_id, application)
             .await?;
         let (_writer, mut tx) = self.begin_immediate().await?;
         let app_id = operation.environment_id.as_str();
@@ -118,7 +120,8 @@ impl Store {
         if let Some(head) = branch_head {
             Self::record_branch_head_on(&mut tx, &operation.environment_id, head, now).await?;
         }
-        Self::pin_secrets_on(&mut tx, operation, application).await?;
+        self.pin_secrets_on(&mut tx, operation, application, &generated)
+            .await?;
         Self::commit_environment_changes(tx, [app_id]).await
     }
 
@@ -127,12 +130,13 @@ impl Store {
     /// still follows a branch. Other environments keep their own.
     ///
     /// While the application is still repository-backed, a manifest an
-    /// environment fetched from the branch and commit `spec.manifest` names,
-    /// with the application's own connection, also becomes its saved manifest:
-    /// what application-wide views show, what environments deploy after
-    /// disconnecting, and what declares its environments, to which they are
-    /// converged (see `converge_environments_on`). Other branches, one-off
-    /// revisions and previews never do. Records `application_applied` when
+    /// environment fetched from the path, branch and commit `spec.manifest`
+    /// names, with the application's own connection, also becomes its saved
+    /// manifest: what application-wide views show, what environments deploy
+    /// after disconnecting, and what declares its environments, to which they
+    /// are converged (see `converge_environments_on`). Other paths, branches,
+    /// one-off revisions and previews never do, so a manifest fetched before
+    /// the connection changed never replaces it. Records `application_applied` when
     /// either manifest changed; neither advances the application revision,
     /// since repository-backed configuration cannot be edited, unless
     /// converging changed the source of an environment with a deployment in
@@ -227,9 +231,10 @@ impl Store {
     }
 
     /// Whether `fetched`, the manifest `operation` fetched, came from the
-    /// revision `connection` names. Its own connection is the revision it was
-    /// fetched from; sync pins the head it listed of a branch it follows, so
-    /// its deployments of the connection's unpinned branch count too.
+    /// path and revision `connection` names. Its own connection is the path
+    /// and revision it was fetched from; sync pins the head it listed of a
+    /// branch it follows, so its deployments of the connection's unpinned
+    /// branch count too.
     async fn fetched_connection_on(
         tx: &mut Transaction<'_, Sqlite>,
         operation: &Operation,
@@ -240,6 +245,7 @@ impl Store {
             .spec()
             .manifest
             .as_ref()
+            .filter(|fetched| fetched.path == connection.path)
             .map(|fetched| &fetched.repository)
         else {
             return Ok(false);
@@ -390,20 +396,7 @@ mod tests {
         id: &str,
         spec: &str,
     ) -> (Operation, piqueld_core::ResolvedApplication) {
-        let op = store.operation(id).await.unwrap();
-        store.mark_running(&op.id).await;
-        let current = store.get(environment).await.unwrap();
-        // As fetching does, the connection replaces the file's own before validation.
-        let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
-        ))
-        .unwrap();
-        fetched.spec.manifest = current.tracking().unwrap().repository();
-        let fetched = fetched
-            .validate_template()
-            .unwrap()
-            .normalize(current.application.application.id().clone());
-        let rendering = current.render(&fetched, &op.id).unwrap();
+        let (op, fetched, rendering) = rendered(store, environment, id, spec).await;
         store
             .save_deployment_input(
                 &op,
@@ -434,6 +427,71 @@ mod tests {
         )
         .unwrap();
         (op, target)
+    }
+
+    /// Marks operation `id` of `environment` running and renders a manifest
+    /// with `spec` fetched for it, returning the operation, the manifest and
+    /// its rendering.
+    async fn rendered(
+        store: &Store,
+        environment: &EnvironmentId,
+        id: &str,
+        spec: &str,
+    ) -> (Operation, ApplicationTemplate, Rendering) {
+        let op = store.operation(id).await.unwrap();
+        store.mark_running(&op.id).await;
+        let current = store.get(environment).await.unwrap();
+        // As fetching does, the connection replaces the file's own before validation.
+        let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
+        ))
+        .unwrap();
+        fetched.spec.manifest = current.tracking().unwrap().repository();
+        let fetched = fetched
+            .validate_template()
+            .unwrap()
+            .normalize(current.application.application.id().clone());
+        let rendering = current.render(&fetched, &op.id).unwrap();
+        (op, fetched, rendering)
+    }
+
+    /// A fetch saved for superseded work stores none of the secret values
+    /// generated for it, so rejected candidates never use up the quota.
+    #[tokio::test]
+    async fn rejected_fetches_store_no_generated_secrets() {
+        let (_directory, store) = Store::temporary().await;
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let deploy = async || {
+            let (MutationResponse::Operation(accepted), _) = store
+                .accept(
+                    Daemon,
+                    Mutation::deploy(production.clone()),
+                    None,
+                    true,
+                    None,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("operation")
+            };
+            accepted.operation_id
+        };
+        let first = deploy().await;
+        let spec = format!(
+            "{}\n[[spec.services.secrets]]\nname='token'\ntarget='/run/secrets/token'",
+            token_spec(true)
+        );
+        let (op, fetched, rendering) = rendered(&store, &production, &first, &spec).await;
+        deploy().await;
+        assert!(matches!(
+            store
+                .save_deployment_input(&op, &fetched, &rendering, (None, None), &[])
+                .await,
+            Err(StoreError::IllegalTransition)
+        ));
+        assert!(store.secrets(&production).await.unwrap().is_empty());
     }
 
     /// A manifest fetched before a rename is accepted under the new name, as
@@ -483,6 +541,57 @@ mod tests {
             current.manifest().unwrap().metadata().name.as_str(),
             "journal"
         );
+    }
+
+    /// A manifest fetched before the connection changed never replaces the
+    /// configuration saved since: it came from the old path.
+    #[tokio::test]
+    async fn fetches_requested_before_a_save_keep_the_saved_configuration() {
+        let (_directory, store) = Store::temporary().await;
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let (op, target) = fetched(&store, &production, &token_spec(false)).await;
+        store
+            .force(Mutation::Edit {
+                id: application.clone(),
+                edit: Box::new(piqueld_core::edit::ApplicationEdit::RepositoryPath(
+                    "fixed.toml".into(),
+                )),
+                deploy: false,
+            })
+            .await
+            .unwrap();
+        store.save_prepared(&op, &target).await.unwrap();
+        let saved = store
+            .get(&production)
+            .await
+            .unwrap()
+            .application
+            .application;
+        assert_eq!(saved.spec().manifest.as_ref().unwrap().path, "fixed.toml");
+        assert_eq!(saved.spec().services, Vec::new());
+    }
+
+    /// Environment changes advance the revision, but leave the connection a
+    /// manifest was fetched from, so one fetched meanwhile is still saved.
+    #[tokio::test]
+    async fn fetches_are_saved_across_environment_changes() {
+        let (_directory, store) = Store::temporary().await;
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let (op, target) = fetched(&store, &production, &token_spec(false)).await;
+        store
+            .force(Mutation::CreateEnvironment {
+                application,
+                name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
+                source: None,
+            })
+            .await
+            .unwrap();
+        store.save_prepared(&op, &target).await.unwrap();
+        let saved = store.get(&production).await.unwrap().application;
+        assert!(saved.generation > op.generation);
+        assert_eq!(saved.application.spec().services.len(), 1);
     }
 
     /// Each environment's hostname reservations and rename checks read its

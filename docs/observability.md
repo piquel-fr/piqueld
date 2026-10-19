@@ -144,7 +144,11 @@ Newest: 3037 6f1c…
 
 Pruning by `retention.audit_days` removes the oldest records only while the
 chain through them verifies, so it never erases evidence of tampering; the
-newest pruned record becomes the anchor the remaining chain extends. The chain
+newest pruned record becomes the anchor the remaining chain extends. It stops at
+the oldest record still retained: a record written after the clock stepped back
+stays until every record before it has expired, and one dated in the future,
+written while the clock ran ahead, holds back every record after it until that
+date has passed retention too. The chain
 detects changes to the database, but cannot tell who wrote it: someone who
 controls the host could rewrite the whole trail, remove the newest records, or
 prune more and move the anchor. Keep the reported anchor and newest record

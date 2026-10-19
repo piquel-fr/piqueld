@@ -110,7 +110,7 @@ when the complete normalized manifest is needed.
 | DELETE | `/api/v1/applications/{id}` | Request deletion of every environment and preview; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment; 409 `repository_managed` for a repository-backed one |
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`). A `commit` without `branch` is 400 `revision_invalid`. 409 `environment_declared` for a name the saved manifest declares |
-| PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }` |
+| PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }`; 409 `environment_promoted` for a promoted environment |
 | PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
 | GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
 | POST | `/api/v1/applications/{id}/webhook/secret` | Generate a new webhook secret, replacing the previous one (`apps:write`); the `WebhookSecret` response is the only time it is shown |
@@ -387,7 +387,8 @@ deploys an earlier release of the application instead, with the environment's
 current secrets and no source check. Both together return 400
 `promotion_invalid`. Like Deploy, it requires `expected_generation` unless
 forced, needs `apps:deploy`, and supersedes pending work; it never advances the
-application revision. Before anything is captured, it checks that the source's
+application revision. Before anything is captured, and after checking those
+and the revision, it checks that the source's
 current deployment succeeded, recorded a release, and its services run as
 deployed and healthy now (409 `promotion_source_not_ready`, `details.environment`),
 that the release instantiates for the environment (422, `release_incompatible`),
@@ -459,7 +460,8 @@ name. Creating, deleting, or renaming to or from a name the saved manifest
 branch, source or sync of one whose block sets its source, returns 409
 `environment_declared`, naming it in `details.environment`. An application
 edit that would add a `[spec.environments.<name>]` block for a name no
-environment has fails with 422 `environment_unknown`, naming it in
+environment has, or that names one, like setting its visibility, even when it
+would add none, fails with 422 `environment_unknown`, naming it in
 `details.environment`. Creating an
 environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422
@@ -719,7 +721,8 @@ belong to their environment. Secret endpoints expose metadata only:
 - `PUT /api/v1/applications/{id}/secrets/{name}/access` replaces the access list
   with a JSON `SecretAccess` body. Environments must belong to the application
   (400 otherwise).
-  Narrowing it affects later deployments only.
+  Narrowing it affects later deployments only. A secret being deleted keeps its
+  access (409 `secret_deleting`).
 - `GET /api/v1/environments/{id}/secrets` lists an environment's generated secrets
   with the same metadata, without `access`.
   `POST /api/v1/environments/{id}/secrets/{name}/regenerate` with the current
@@ -732,8 +735,10 @@ belong to their environment. Secret endpoints expose metadata only:
   references in saved configuration, the current runnable deployment, or the
   active target of any environment that uses the secret (409 `secret_referenced`).
   The captured deployment manifest protects references even before version pinning.
-  Deletion reserves the secret, releases the database writer lock, then removes
-  Docker versions before encrypted records. Partial failure or restart leaves
+  Deletion waits for deployments' Docker changes in progress and holds off new
+  ones, for every application, until it finishes: up to 30 seconds per
+  environment whose Docker secrets it removes. It reserves the secret, releases the database writer
+  lock, then removes Docker versions before encrypted records. Partial failure or restart leaves
   `deleting: true`; retry DELETE to finish. Replacement and new configuration
   references return 409 `secret_deleting` until cleanup completes. A missing
   `X-Expected-Generation` returns 400 `secret_generation_required`, and a version
@@ -763,10 +768,22 @@ Quota enforcement never evicts pinned versions. To retire a secret, save and dep
 configuration without its references, then delete it. An existing database above
 the quota remains readable and deployable; new writes require freeing space.
 
-`POST /api/v1/system/secrets/recover-key` recovers from a lost or unusable master
-key by discarding stored and generated values for **all applications and
-environments**. It returns 409
-`secret_key_usable` while the current key still works. Discarded versions are
+`POST /api/v1/system/secrets/recover-key` recovers from a lost master key by
+discarding stored and generated values for **all applications and
+environments**. A key is lost, and recovered, only when something is
+encrypted (the database's key verifier, a stored or generated value, or a
+webhook secret) and `secrets.key` is missing, does not hold exactly 32 bytes,
+or decrypts none of it. It returns 409 `secret_key_usable` while the key
+decrypts the verifier, when there is no verifier but the key decrypts a
+stored value or webhook secret, or when nothing is encrypted and the key file
+is missing or loads. When nothing is encrypted but the key file does not hold
+32 bytes, it moves that file aside and returns 200 with nothing discarded, so
+the next value write generates a new key. It returns 503
+`secret_storage_unavailable`, discarding nothing, when the key decrypts a
+stored value or webhook secret but not a corrupt verifier (restore the
+database from backup), or can't be read for another reason, such as an I/O
+error or a key file that is not private to the daemon user (fix the host and
+retry the request that failed). Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
 preserved. Every application's [webhook secret](ingress.md#push-webhooks) is deleted
 too; generate a new one. Supplying replacement stored values creates new versions, and an
@@ -776,4 +793,5 @@ discarded stored values fail with `secret_unavailable` and the logical names. Th
 `affected_environments`, `affected_applications`, `affected_secrets` and
 `discarded_versions`; no key or
 secret value is returned. Repeating the request after a lost response returns
-`secret_key_usable`, because no stored value then needs the old key.
+`secret_key_usable`, because no stored value then needs the old key; it never
+creates a key.

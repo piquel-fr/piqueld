@@ -1068,6 +1068,26 @@ async fn operator_and_anonymous_refusals_burst_separately() {
     );
 }
 
+/// Pruning stops at the oldest retained record: one recorded after the
+/// clock stepped back keeps it, rather than taking it along.
+#[tokio::test]
+async fn audit_pruning_keeps_records_after_a_retained_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = Store::open(temp.path().join("db")).await.unwrap();
+    store.audit_days = 1;
+    for (peer, at) in [("a", 0), ("b", now_ms()), ("c", 0)] {
+        store.record_audit_at(&refused(peer), at).await.unwrap();
+    }
+    store.prune_audit().await.unwrap();
+    let kept = sqlx::query_scalar::<_, String>("SELECT peer FROM audit_events ORDER BY id")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(kept, ["b", "c"]);
+    let verified = store.verify_audit().await.unwrap();
+    assert_eq!((verified.checked, verified.broken_at), (2, None));
+}
+
 /// The audit chain detects edited, renumbered, inserted, and removed records,
 /// and pruning keeps it verifiable without ever erasing a broken part.
 #[tokio::test]

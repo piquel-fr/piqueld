@@ -156,10 +156,11 @@ impl Store {
         Ok((accepted.response, accepted.wake))
     }
 
-    /// Returns the stored response when `request_id` replays a request with
-    /// one of `fingerprints` that `actor` may still submit (see
-    /// `check_request_on`), so callers can return it before checking
-    /// preconditions that may have changed since it was accepted.
+    /// Checks that `actor` may submit `mutation` (see `check_request_on`), and
+    /// returns the stored response when `request_id` replays a request with
+    /// one of `fingerprints`, so callers can return it before checking
+    /// preconditions that may have changed since it was accepted, and refuse
+    /// a caller before doing any work for it.
     pub(crate) async fn replay(
         &self,
         actor: Actor<'_>,
@@ -168,9 +169,6 @@ impl Store {
         force: bool,
         request_id: Option<&str>,
     ) -> Result<Option<MutationResponse>, StoreError> {
-        if request_id.is_none() {
-            return Ok(None);
-        }
         let mut tx = self.snapshot().await?;
         let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
         let checked = Self::check_request_on(
@@ -695,24 +693,20 @@ impl Store {
         current.ok_or(StoreError::NotFound)
     }
 
-    /// Loads an environment after checking the revision precondition against
+    /// Loads an environment, then checks the revision precondition against
     /// its application's revision. Previews are `NotFound`: environment
-    /// changes never act on them.
+    /// changes never act on them. Absence wins over a stale revision.
     pub(super) async fn checked_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
         expected: Option<u64>,
     ) -> Result<super::StoredEnvironment, StoreError> {
-        let current = Self::environment_on(tx, id.as_str()).await?;
-        Self::check_generation(
-            expected,
-            current
-                .as_ref()
-                .map_or(0, |environment| environment.application.generation),
-        )?;
-        current
+        let current = Self::environment_on(tx, id.as_str())
+            .await?
             .filter(|current| current.environment.preview().is_none())
-            .ok_or(StoreError::NotFound)
+            .ok_or(StoreError::NotFound)?;
+        Self::check_generation(expected, current.application.generation)?;
+        Ok(current)
     }
 
     /// Advances the application revision past `current` after an environment
@@ -823,7 +817,14 @@ impl Store {
         let id = current.application.id().clone();
         let mut manifest = current.application.to_manifest();
         edit.clone().apply(&mut manifest)?;
-        Self::declare_edited_on(tx, &id, current.application.spec(), &mut manifest.spec).await?;
+        Self::declare_edited_on(
+            tx,
+            &id,
+            current.application.spec(),
+            &mut manifest.spec,
+            edit.environment(),
+        )
+        .await?;
         let application = manifest.validate_template()?.normalize(id.clone());
         let field = match &edit {
             ApplicationEdit::Name(_) => "name",
@@ -1381,26 +1382,30 @@ mod tests {
         assert_eq!(source.promoted_from(), Some(&staging));
     }
 
-    /// Edits configure existing environments: one adding a block for a name
-    /// no environment has, such as a typo, is refused instead of declaring
-    /// an environment no edit could remove.
+    /// Edits configure existing environments: one naming an environment that
+    /// doesn't exist, such as a typo, is refused instead of declaring an
+    /// environment no edit could remove, or of configuring nothing when it
+    /// would add no block.
     #[tokio::test]
     async fn edits_declare_no_new_environments() {
+        use piqueld_core::manifest::Visibility;
         let (_directory, store) = Store::temporary().await;
         let (application, _) =
             environments(&store, "[spec.environments.staging]\n", ["staging"]).await;
-        let typo = Mutation::Edit {
-            id: application.clone(),
-            edit: Box::new(piqueld_core::edit::ApplicationEdit::EnvironmentVisibility {
-                environment: "stagign".into(),
-                visibility: piqueld_core::manifest::Visibility::Private,
-            }),
-            deploy: false,
-        };
-        assert!(matches!(
-            store.force(typo).await,
-            Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
-        ));
+        for visibility in [Visibility::Private, Visibility::Public] {
+            let typo = Mutation::Edit {
+                id: application.clone(),
+                edit: Box::new(piqueld_core::edit::ApplicationEdit::EnvironmentVisibility {
+                    environment: "stagign".into(),
+                    visibility,
+                }),
+                deploy: false,
+            };
+            assert!(matches!(
+                store.force(typo).await,
+                Err(StoreError::EnvironmentUnknown { environment }) if environment == "stagign"
+            ));
+        }
         assert_eq!(store.environments(&application).await.unwrap().len(), 1);
     }
 

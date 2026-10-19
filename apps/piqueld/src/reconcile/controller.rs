@@ -506,6 +506,7 @@ impl<D: DockerApi> Controller<D> {
             Arc::new(tokio::sync::Notify::new()),
             self.prepare_timeout,
             self.images_lock(),
+            Arc::clone(&self.mutations),
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone())
         .with_build_priority(&application.environment.kind);
@@ -761,6 +762,53 @@ mod tests {
         .unwrap();
         result.unwrap();
         finished.unwrap();
+    }
+
+    /// Deleting a secret waits for Docker mutations in progress before it
+    /// checks that nothing uses the secret.
+    #[tokio::test]
+    async fn secret_deletion_waits_for_docker_mutations() {
+        let harness = Harness::new().await;
+        let store = &harness.store;
+        let manifest = piqueld_core::manifest::parse_template_toml(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='secrets'\n[spec]",
+        ).unwrap();
+        let (MutationResponse::Saved(saved), _) = store
+            .accept(
+                crate::api::Actor::Daemon,
+                Mutation::save(manifest, None, true),
+                Some(0),
+                false,
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("saved deployment")
+        };
+        let operation = store.operation(&saved.operation_id.unwrap()).await.unwrap();
+        let environment = &operation.environment_id;
+        let daemon = crate::api::Actor::Daemon;
+        store
+            .put_secret(daemon, environment, "token", 0, b"value".to_vec())
+            .await
+            .unwrap();
+        let controller = harness.controller();
+        let service = crate::api::ApplicationService::new(
+            Arc::clone(store),
+            controller.runtime(Arc::default()),
+        );
+        let deleting = async || store.secrets(environment).await.unwrap()[0].deleting;
+        let guard = controller.mutations.lock().await;
+        let deletion = service.delete_secret(daemon, environment, "token", 1);
+        tokio::pin!(deletion);
+        let wait = std::time::Duration::from_millis(200);
+        assert!(tokio::time::timeout(wait, &mut deletion).await.is_err());
+        assert!(!deleting().await);
+        drop(guard);
+        // Docker never answers, so deletion stops at removing the versions.
+        assert!(tokio::time::timeout(wait, &mut deletion).await.is_err());
+        assert!(deleting().await);
     }
 
     #[tokio::test]

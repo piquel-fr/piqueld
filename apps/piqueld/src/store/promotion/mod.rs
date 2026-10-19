@@ -208,21 +208,20 @@ impl Store {
     /// source's current deployment, it must be the one requested, succeeded,
     /// and have recorded a release; the caller checks its health. Only
     /// promoted environments receive a source's deployment; plans of an
-    /// earlier release may target any environment.
+    /// earlier release may target any environment. The target's application
+    /// revision must be `expected`, when given, before anything else is read.
     ///
     /// # Errors
-    /// `NotFound` for previews and releases of other applications, and the
-    /// promotion errors above.
+    /// `NotFound` for previews and releases of other applications,
+    /// `GenerationConflict`, and the promotion errors above.
     pub async fn promotion_candidate(
         &self,
         target: &EnvironmentId,
         selection: &PromotionSelection,
+        expected: Option<u64>,
     ) -> Result<PromotionCandidate, StoreError> {
         let mut snapshot = self.snapshot().await?;
-        let target = Self::environment_on(&mut snapshot, target.as_str())
-            .await?
-            .filter(|target| target.environment.preview().is_none())
-            .ok_or(StoreError::NotFound)?;
+        let target = Self::checked_environment_on(&mut snapshot, target, expected).await?;
         let (source, release, origin) = match selection {
             PromotionSelection::Source { deployment } => {
                 let from = target.environment.source.promoted_from().ok_or_else(|| {
@@ -489,9 +488,9 @@ impl Store {
             }
             .into());
         }
-        self.store_generated_on(tx, target.id(), &promotion.generated)
+        let pins = self
+            .pin_secrets_on(tx, &operation, &rendering.application, &promotion.generated)
             .await?;
-        let pins = Self::pin_secrets_on(tx, &operation, &rendering.application).await?;
         let mut resolved = compile_release(
             &rendering.application,
             target.id(),

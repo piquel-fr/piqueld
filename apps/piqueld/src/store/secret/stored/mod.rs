@@ -195,12 +195,12 @@ impl Store {
 
     /// Replaces the access list of a stored secret. A narrower list only
     /// affects later deployments; running ones keep their pinned versions.
-    /// `actor` needs `secrets:write` on the application, checked in the
-    /// transaction.
+    /// Rejected while the secret is being deleted. `actor` needs
+    /// `secrets:write` on the application, checked in the transaction.
     ///
     /// # Errors
-    /// Returns refusal, absence, unknown environments (`InvalidInput`), or
-    /// database errors.
+    /// Returns refusal, absence, deletion in progress (`SecretDeleting`),
+    /// unknown environments (`InvalidInput`), or database errors.
     pub async fn set_secret_access(
         &self,
         actor: Actor<'_>,
@@ -210,7 +210,13 @@ impl Store {
     ) -> Result<StoredSecret, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         Self::require_secrets_write_on(&mut tx, actor, application).await?;
-        Self::stored_secret_on(&mut tx, application, name).await?;
+        if Self::stored_secret_on(&mut tx, application, name)
+            .await?
+            .metadata
+            .deleting
+        {
+            return Err(StoreError::SecretDeleting);
+        }
         let description = Self::write_access_on(&mut tx, application, name, access).await?;
         let (scope, by) = (SecretScope::Application(application), actor.attribution());
         let message = format!("Allowed {description} to mount the secret");

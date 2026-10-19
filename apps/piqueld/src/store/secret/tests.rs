@@ -433,6 +433,12 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
         .find(|path| path.to_string_lossy().contains("secrets.key.retired-"))
         .expect("the unusable key is kept aside");
     assert_eq!(std::fs::read(retired).unwrap(), [42; 32]);
+    // Repeating it finds nothing that needs a key, and creates none.
+    assert!(matches!(
+        store.recover_secret_key(Daemon).await,
+        Err(StoreError::SecretKeyUsable)
+    ));
+    assert!(!key.exists());
     assert!(
         store.stored_secrets(app.id()).await.unwrap()[0]
             .metadata
@@ -466,6 +472,151 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
     );
     assert!(matches!(
         store.recover_secret_key(Daemon,).await,
+        Err(StoreError::SecretKeyUsable)
+    ));
+}
+
+/// Only a lost key is recovered: one that is merely not private is fixed on
+/// the host, so recovery discards nothing.
+#[tokio::test]
+async fn key_recovery_keeps_values_of_a_key_that_is_not_lost() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let key = temp.path().join("secrets.key");
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let app = with_secret(&application());
+    store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
+    store
+        .put_stored_secret(Daemon, app.id(), "token", 0, b"original".to_vec(), None)
+        .await
+        .unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(
+        store.recover_secret_key(Daemon).await,
+        Err(StoreError::SecretSource(_))
+    ));
+    let stored = store.stored_secrets(app.id()).await.unwrap();
+    assert!(!stored[0].metadata.unavailable);
+    assert!(key.exists());
+}
+
+/// A key that still decrypts a stored value or webhook secret is not lost,
+/// even when the verifier is corrupt: recovery refuses and discards nothing.
+#[tokio::test]
+async fn key_recovery_keeps_values_behind_a_corrupt_verifier() {
+    for webhook in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let key = temp.path().join("secrets.key");
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let app = with_secret(&application());
+        store
+            .save_application(&ApplicationTemplate::from(&app), None, None)
+            .await
+            .unwrap();
+        if webhook {
+            store
+                .generate_webhook_secret(Daemon, app.id())
+                .await
+                .unwrap();
+        } else {
+            store
+                .put_stored_secret(Daemon, app.id(), "token", 0, b"original".to_vec(), None)
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE secret_key_verification SET ciphertext=zeroblob(length(ciphertext))")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let Err(StoreError::SecretSource(error)) = store.recover_secret_key(Daemon).await else {
+            panic!("recovery refused expected");
+        };
+        assert!(matches!(
+            crate::secrets::KeyFailure::of(&error),
+            Some(crate::secrets::KeyFailure::VerifierCorrupt)
+        ));
+        assert!(key.exists());
+        let kept = sqlx::query_scalar::<_, i64>(
+            "SELECT (SELECT COUNT(*) FROM webhook_secrets)+(SELECT COUNT(*) FROM application_secret_versions WHERE available=1)",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(kept, 1);
+    }
+}
+
+/// Values need their key even without a verifier, so a missing key is
+/// recovered then too.
+#[tokio::test]
+async fn key_recovery_needs_no_verifier() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let app = with_secret(&application());
+    store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
+    store
+        .put_stored_secret(Daemon, app.id(), "token", 0, b"original".to_vec(), None)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM secret_key_verification")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
+    let recovery = store.recover_secret_key(Daemon).await.unwrap();
+    assert_eq!(recovery.discarded_versions, 1);
+}
+
+/// Without a verifier, a write binds no key over values it can't decrypt,
+/// neither a wrong one nor a new one for a missing key, but binds the
+/// original again.
+#[tokio::test]
+async fn writes_bind_only_the_key_of_values_without_a_verifier() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let key = temp.path().join("secrets.key");
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let app = with_secret(&application());
+    store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
+    store
+        .put_stored_secret(Daemon, app.id(), "token", 0, b"original".to_vec(), None)
+        .await
+        .unwrap();
+    let original = Zeroizing::new(std::fs::read(&key).unwrap());
+    sqlx::query("DELETE FROM secret_key_verification")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let write = async || {
+        store
+            .put_stored_secret(Daemon, app.id(), "other", 0, b"value".to_vec(), None)
+            .await
+    };
+    std::fs::write(&key, [42; 32]).unwrap();
+    let Err(StoreError::SecretSource(error)) = write().await else {
+        panic!("a wrong key must not be bound");
+    };
+    assert!(matches!(
+        crate::secrets::KeyFailure::of(&error),
+        Some(crate::secrets::KeyFailure::AuthenticationFailed)
+    ));
+    std::fs::remove_file(&key).unwrap();
+    assert!(matches!(write().await, Err(StoreError::SecretSource(_))));
+    assert!(!key.exists(), "no key is generated over stored values");
+    std::fs::write(&key, &*original).unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    write().await.unwrap();
+    assert!(matches!(
+        store.recover_secret_key(Daemon).await,
         Err(StoreError::SecretKeyUsable)
     ));
 }
@@ -559,7 +710,7 @@ async fn deployments_replace_generated_values_discarded_by_key_recovery() {
     let accepted = ApplicationTemplate::from(&application());
     let first = store.save_application(&accepted, None, None).await.unwrap();
     let (app, env) = (with_generated_secret(&application()), &first.environment_id);
-    store.generate_secrets(env, &app).await.unwrap();
+    store.pin_secrets(&first, &app).await.unwrap();
     std::fs::write(temp.path().join("secrets.key"), [42; 32]).unwrap();
     store.recover_secret_key(Daemon).await.unwrap();
     assert!(store.secrets(env).await.unwrap()[0].unavailable);

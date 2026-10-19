@@ -36,6 +36,8 @@ pub struct ApplicationRuntime<D> {
     snapshot: Option<crate::git::snapshot::SnapshotSource>,
     /// The lock image cleanup takes exclusively; see `ImagesInUse`.
     images: Arc<tokio::sync::RwLock<()>>,
+    /// The controller's lock around Docker mutations; see `lock_mutations`.
+    mutations: Arc<tokio::sync::Mutex<()>>,
     /// Admission for the checkouts Git sources build in.
     checkouts: Arc<crate::git::Checkouts>,
 }
@@ -43,7 +45,8 @@ pub struct ApplicationRuntime<D> {
 impl<D> ApplicationRuntime<D> {
     /// Creates application runtime orchestration for `store`'s instance with
     /// the supplied preparation budget, sharing `images`, the lock image cleanup takes,
-    /// and `store`'s checkout admission.
+    /// `mutations`, the controller's lock around Docker mutations, and
+    /// `store`'s checkout admission.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
@@ -51,6 +54,7 @@ impl<D> ApplicationRuntime<D> {
         wake: Arc<Notify>,
         prepare_timeout: Duration,
         images: Arc<tokio::sync::RwLock<()>>,
+        mutations: Arc<tokio::sync::Mutex<()>>,
     ) -> Self {
         Self {
             docker,
@@ -61,6 +65,7 @@ impl<D> ApplicationRuntime<D> {
             priority: BuildPriority::Environment,
             snapshot: None,
             images,
+            mutations,
             checkouts: Arc::clone(store.checkouts()),
         }
     }
@@ -124,6 +129,10 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
                 .await
                 .is_ok_and(|r| r.is_ok());
         (docker, swarm)
+    }
+
+    async fn lock_mutations(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.mutations).lock_owned().await
     }
 
     /// Removes secrets only when they carry this instance's and application's

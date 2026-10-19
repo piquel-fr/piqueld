@@ -394,6 +394,69 @@ impl Mutation {
         }
     }
 
+    /// Checks what submitting this change needs before any state is read or
+    /// work is done for it: the revision precondition unless `force`d (see
+    /// `lacks_precondition`), a well-formed idempotency key `request_id`, and
+    /// a valid name for a rename.
+    ///
+    /// # Errors
+    /// `PreconditionRequired`, or invalid input.
+    pub fn check_submission(
+        &self,
+        expected_generation: Option<u64>,
+        force: bool,
+        request_id: Option<&str>,
+    ) -> Result<(), ApplicationError> {
+        if !force && self.lacks_precondition(expected_generation) {
+            return Err(ApplicationError::PreconditionRequired);
+        }
+        // Request IDs are idempotency keys: 1–128 chars of `[A-Za-z0-9-_.:]`.
+        if request_id.is_some_and(|id| {
+            id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+        }) {
+            return Err(StoreError::InvalidInput.into());
+        }
+        if let Self::Rename { name, .. } = self
+            && !piqueld_core::valid_logical_name(name)
+        {
+            return Err(StoreError::InvalidInput.into());
+        }
+        Ok(())
+    }
+
+    /// Whether submitting this change without `force` lacks the revision
+    /// precondition it needs: every change but reconcile, sync and previews
+    /// needs the inspected revision, and saves over a nonzero one also the
+    /// inspected identity.
+    const fn lacks_precondition(&self, expected_generation: Option<u64>) -> bool {
+        match self {
+            Self::Save {
+                expected_application_id,
+                ..
+            } => {
+                expected_generation.is_none()
+                    || (!matches!(expected_generation, Some(0))
+                        && expected_application_id.is_none())
+            }
+            Self::Edit { .. }
+            | Self::Rename { .. }
+            | Self::DeleteApplication { .. }
+            | Self::CreateEnvironment { .. }
+            | Self::RenameEnvironment { .. }
+            | Self::SetBranch { .. }
+            | Self::Promotion(_)
+            | Self::Deploy { .. }
+            | Self::Delete { .. } => expected_generation.is_none(),
+            Self::Reconcile { .. } | Self::SetSync { .. } | Self::Sync(_) | Self::Preview(_) => {
+                false
+            }
+        }
+    }
+
     /// Deploys saved configuration at its configured manifest revision.
     #[must_use]
     pub fn deploy(id: EnvironmentId) -> Self {
@@ -578,9 +641,10 @@ impl ApplicationService {
     }
 
     /// Recovers from a lost master key by discarding every stored and generated
-    /// secret value and every webhook secret.
+    /// secret value and every webhook secret; see `Store::recover_secret_key`.
     /// # Errors
-    /// Returns an error if the current key still works, or storage errors.
+    /// Returns an error if the current key still works or is not lost, or
+    /// storage errors.
     pub async fn recover_secret_key(
         &self,
         actor: Actor<'_>,
@@ -665,8 +729,9 @@ impl ApplicationService {
             .await?)
     }
 
-    /// Removes an unreferenced generated secret and all of its runtime versions.
-    /// See `remove_secret_versions`.
+    /// Removes an unreferenced generated secret and all of its runtime versions,
+    /// holding off the controller's Docker mutations throughout (see
+    /// `RuntimeBoundary::lock_mutations`). See `remove_secret_versions`.
     ///
     /// # Errors
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
@@ -677,6 +742,7 @@ impl ApplicationService {
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
+        let _mutations = self.runtime.lock_mutations().await;
         let deletion = self
             .store
             .begin_secret_deletion(actor, environment, name, expected_generation)
@@ -689,7 +755,8 @@ impl ApplicationService {
     }
 
     /// Removes an application's secret that no environment uses, and every
-    /// environment's Docker secrets for it. See `remove_secret_versions`.
+    /// environment's Docker secrets for it, holding off the controller's
+    /// Docker mutations as `delete_secret` does. See `remove_secret_versions`.
     ///
     /// # Errors
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
@@ -700,6 +767,7 @@ impl ApplicationService {
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
+        let _mutations = self.runtime.lock_mutations().await;
         let deletion = self
             .store
             .begin_stored_secret_deletion(actor, application, name, expected_generation)
@@ -769,48 +837,7 @@ impl ApplicationService {
         force: bool,
         request_id: Option<&str>,
     ) -> Result<MutationResponse, ApplicationError> {
-        if !force {
-            let missing = match &mutation {
-                Mutation::Save {
-                    expected_application_id,
-                    ..
-                } => {
-                    expected_generation.is_none()
-                        || (expected_generation != Some(0) && expected_application_id.is_none())
-                }
-                Mutation::Edit { .. }
-                | Mutation::Rename { .. }
-                | Mutation::DeleteApplication { .. }
-                | Mutation::CreateEnvironment { .. }
-                | Mutation::RenameEnvironment { .. }
-                | Mutation::SetBranch { .. }
-                | Mutation::Promotion(_)
-                | Mutation::Deploy { .. }
-                | Mutation::Delete { .. } => expected_generation.is_none(),
-                Mutation::Reconcile { .. }
-                | Mutation::SetSync { .. }
-                | Mutation::Sync(_)
-                | Mutation::Preview(_) => false,
-            };
-            if missing {
-                return Err(ApplicationError::PreconditionRequired);
-            }
-        }
-        // Request IDs are idempotency keys: 1–128 chars of `[A-Za-z0-9-_.:]`.
-        if request_id.is_some_and(|id| {
-            id.is_empty()
-                || id.len() > 128
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
-        }) {
-            return Err(StoreError::InvalidInput.into());
-        }
-        if let Mutation::Rename { name, .. } = &mutation
-            && !piqueld_core::valid_logical_name(name)
-        {
-            return Err(StoreError::InvalidInput.into());
-        }
+        mutation.check_submission(expected_generation, force, request_id)?;
         let (response, wake) = self
             .store
             .accept(actor, mutation, expected_generation, force, request_id)

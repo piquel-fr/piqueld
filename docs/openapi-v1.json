@@ -16100,7 +16100,7 @@
     },
     "/api/v1/applications/{id}/secrets/{name}/access": {
       "put": {
-        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.",
+        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.\nFails with 409 `secret_deleting` while the secret is being deleted.",
         "operationId": "setSecretAccess",
         "parameters": [
           {
@@ -16162,6 +16162,16 @@
             "description": "TCP authority or browser origin is not trusted"
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -24848,7 +24858,7 @@
     },
     "/api/v1/environments/{id}/branch": {
       "put": {
-        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments of\nan application without a manifest repository fail with\n`manifest_repository_required` (422), and those whose source the saved\nmanifest declares with `environment_declared` (409). The inspected\napplication `expected_generation` goes in the JSON body.",
+        "description": "Points an environment of a repository-backed application at another branch\nof its manifest repository, or pins or unpins a commit. Nothing is fetched\nor redeployed: the next deployment fetches the new branch. Environments of\nan application without a manifest repository fail with\n`manifest_repository_required` (422), those whose source the saved\nmanifest declares with `environment_declared` (409), and promoted ones,\nwhich have no branch, with `environment_promoted` (409). The inspected\napplication `expected_generation` goes in the JSON body.",
         "operationId": "setEnvironmentBranch",
         "parameters": [
           {
@@ -27721,7 +27731,7 @@
     },
     "/api/v1/system/secrets/recover-key": {
       "post": {
-        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones); metadata and running services are kept. Fails with 409\nwhile the current key still works. The next value write generates a new key.",
+        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones); metadata and running services are kept. Only a lost key\nis recovered: while something is encrypted (the key verifier, a value or a\nwebhook secret), one that is missing, does not hold 32 bytes, or decrypts\nnone of it. Fails with 409 while the key decrypts the verifier, when there\nis no verifier but it decrypts a value or webhook secret, or when nothing\nis encrypted and the key file is missing or loads. When nothing is\nencrypted but the key file does not hold 32 bytes, moves it aside and\nsucceeds with nothing discarded. Fails with 503 `secret_storage_unavailable`, discarding\nnothing, when it decrypts a value or webhook secret but not a corrupt\nverifier, or can't be read for another reason, such as an I/O error or a\nkey file that is not private.\nThe next value write generates a new key.",
         "operationId": "recoverSecretKey",
         "responses": {
           "200": {

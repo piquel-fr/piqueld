@@ -206,6 +206,11 @@ impl RuntimeBoundary for FakeRuntime {
         (true, !self.unavailable.load(Ordering::Relaxed))
     }
 
+    /// Nothing else mutates the fake runtime.
+    async fn lock_mutations(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::new(tokio::sync::Mutex::new(())).lock_owned().await
+    }
+
     async fn remove_secrets(
         &self,
         _application: &piqueld_core::EnvironmentId,
