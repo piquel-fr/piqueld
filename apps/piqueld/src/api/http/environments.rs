@@ -21,7 +21,10 @@ use piqueld_core::api::{
     PromotionSelection,
 };
 use piqueld_core::sync::EnvironmentSyncRequest;
-use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, ReleaseId, TrackedBranch};
+use piqueld_core::{
+    ApplicationId, EnvironmentId, EnvironmentName, ReleaseId, TrackedBranch, ValidationErrors,
+    codes,
+};
 
 /// Adds an environment to an application.
 ///
@@ -50,9 +53,7 @@ pub(super) async fn create(
     ApiJson(request): ApiJson<CreateEnvironmentRequest>,
 ) -> Result<Response, ApiError> {
     let source = match (request.branch, request.commit, request.promote_from) {
-        (Some(branch), commit, None) => {
-            Some(SourceChoice::Branch(TrackedBranch::new(branch, commit)?))
-        }
+        (Some(branch), commit, None) => Some(SourceChoice::Branch(tracked_branch(branch, commit)?)),
         (None, None, Some(source)) => {
             Some(SourceChoice::PromoteFrom(EnvironmentId::parse(source)?))
         }
@@ -226,7 +227,7 @@ pub(super) async fn branch(
         &identity,
         Mutation::SetBranch {
             id: EnvironmentId::parse(id)?,
-            branch: TrackedBranch::new(request.branch, request.commit)?,
+            branch: tracked_branch(request.branch, request.commit)?,
         },
         request.expected_generation,
         query.force,
@@ -332,6 +333,24 @@ pub(super) async fn source(
         &headers,
     )
     .await
+}
+
+/// A request's `branch` and pinned `commit`, refused like other malformed
+/// request fields, previews' branches included: 400 `git_branch_invalid`,
+/// or `git_commit_invalid` when only the commit is.
+fn tracked_branch(branch: String, commit: Option<String>) -> Result<TrackedBranch, ApiError> {
+    TrackedBranch::new(branch, commit).map_err(|ValidationErrors(errors)| {
+        let code = if errors
+            .iter()
+            .any(|error| error.code == codes::GIT_BRANCH_INVALID)
+        {
+            codes::GIT_BRANCH_INVALID
+        } else {
+            codes::GIT_COMMIT_INVALID
+        };
+        let messages: Vec<_> = errors.into_iter().map(|error| error.message).collect();
+        ApiError::new(StatusCode::BAD_REQUEST, code, messages.join("; "))
+    })
 }
 
 /// What a promotion request selects: the source's current deployment

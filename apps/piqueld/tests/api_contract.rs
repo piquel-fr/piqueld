@@ -1730,6 +1730,38 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     assert_lifecycle(&client).await;
 }
 
+/// Environments refuse an invalid branch or commit like previews do, as a
+/// malformed request field rather than a manifest validation failure.
+#[tokio::test]
+async fn environment_branches_are_validated_like_preview_branches() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let saved = server
+        .client()
+        .apply_and_deploy(&new_application())
+        .await
+        .unwrap();
+    let id = &saved.environment_id;
+    let json = [("content-type", "application/json")];
+    for (method, path, body, code) in [
+        (
+            Method::POST,
+            format!("/api/v1/applications/{id}/environments"),
+            r#"{"name":"staging","branch":"bad..branch","expected_generation":1}"#,
+            "git_branch_invalid",
+        ),
+        (
+            Method::PUT,
+            format!("/api/v1/environments/{id}/branch"),
+            r#"{"branch":"main","commit":"abc","expected_generation":1}"#,
+            "git_commit_invalid",
+        ),
+    ] {
+        let response = server.send(method, &path, &json, body.into()).await;
+        response.assert_error(StatusCode::BAD_REQUEST, code);
+    }
+}
+
 #[tokio::test]
 async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contract() {
     let temp = tempfile::tempdir().unwrap();

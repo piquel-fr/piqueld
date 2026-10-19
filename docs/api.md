@@ -470,8 +470,8 @@ would add none, fails with 422 `environment_unknown`, naming it in
 environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422
 `manifest_validation_failed` and `manifest_repository_required` in
-`details.errors`, as does an invalid branch or commit (`git_branch_invalid`,
-`git_commit_invalid`). Changing a branch or source
+`details.errors`. An invalid branch or commit fails with 400
+`git_branch_invalid` or `git_commit_invalid`, as for previews. Changing a branch or source
 advances the application revision and leaves that environment unresolved until
 it deploys or is promoted into.
 
@@ -721,9 +721,9 @@ belong to their environment. Secret endpoints expose metadata only:
   422 `manifest_validation_failed` with `secret_name_conflict` in `details.errors`. Each store
   (and each environment's generated secrets) supports at most 100 logical secrets,
   1,000 retained values and 100 MiB of ciphertext. Discarded unavailable versions
-  do not consume this value quota. Creating a 101st secret returns 400
-  `invalid_request`; exceeding the retained-version or byte quota returns 409
-  `secret_quota_exceeded`; delete unused secrets to free space.
+  do not consume this value quota. Creating a 101st secret or exceeding the
+  retained-version or byte quota returns 409 `secret_quota_exceeded`; delete
+  unused secrets to free space.
 - `PUT /api/v1/applications/{id}/secrets/{name}/access` replaces the access list
   with a JSON `SecretAccess` body. Environments must belong to the application
   (400 otherwise).

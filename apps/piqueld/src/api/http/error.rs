@@ -130,7 +130,7 @@ impl ApiError {
             StoreError::SecretQuota => Self::new(
                 StatusCode::CONFLICT,
                 "secret_quota_exceeded",
-                "Secret storage quota exceeded (1000 versions or 100 MiB per environment or application store); delete unused secrets to free space",
+                "Secret storage quota exceeded (100 secrets, 1000 versions or 100 MiB per environment or application store); delete unused secrets to free space",
             ),
             StoreError::SecretReferenced => Self::new(
                 StatusCode::CONFLICT,

@@ -124,9 +124,10 @@ pub enum StoreError {
     /// Runtime cleanup is pending and may already have removed some versions.
     #[error("secret deletion is in progress; retry deletion to finish cleanup")]
     SecretDeleting,
-    /// Retained ciphertext is bounded without evicting deployment pins.
+    /// A store holds a bounded number of secrets and retained ciphertext,
+    /// without evicting deployment pins.
     #[error(
-        "secret storage quota exceeded (1000 versions or 100 MiB per environment or application store); delete unused secrets to free space"
+        "secret storage quota exceeded (100 secrets, 1000 versions or 100 MiB per environment or application store); delete unused secrets to free space"
     )]
     SecretQuota,
     /// A secret changed after the caller inspected its metadata.

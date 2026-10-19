@@ -159,7 +159,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
             if count >= 100 {
-                return Err(StoreError::InvalidInput);
+                return Err(StoreError::SecretQuota);
             }
         }
         let usage = sqlx::query!("SELECT COUNT(*) AS versions, COALESCE(SUM(length(ciphertext)),0) AS bytes FROM secret_versions WHERE environment_id=?1 AND available=1",id)
