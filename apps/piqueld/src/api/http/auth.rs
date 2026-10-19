@@ -1,5 +1,5 @@
 //! Authentication HTTP boundary shared by both daemon transports.
-use super::ApiError;
+use super::{ApiError, ApiJson};
 use crate::auth::{Auth, AuthCookie, AuthError, Identity};
 use crate::store::StoreError;
 use crate::tailnet::{LookupTimedOut, TailnetLookup};
@@ -496,7 +496,7 @@ pub(super) async fn sign_in_link(
 #[utoipa::path(post,path="/api/v1/auth/login/operator",operation_id="authOperatorSignIn",request_body=OperatorSignIn,responses((status=200,body=Session),(status=401,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn operator_sign_in(
     Extension(auth): Extension<Auth>,
-    Json(input): Json<OperatorSignIn>,
+    ApiJson(input): ApiJson<OperatorSignIn>,
 ) -> Result<Response, ApiError> {
     let (operator, token) = auth.operator_sign_in(&input.secret).await?;
     let session = Identity::operator(operator, None).session();
@@ -527,7 +527,7 @@ pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<Session
 pub(super) async fn register_start(
     Extension(auth): Extension<Auth>,
     identity: Option<Extension<Identity>>,
-    Json(input): Json<RegistrationStart>,
+    ApiJson(input): ApiJson<RegistrationStart>,
 ) -> Result<Response, ApiError> {
     let binding = Auth::secret()?;
     let ceremony = auth
@@ -550,7 +550,7 @@ pub(super) async fn register_finish(
     Extension(auth): Extension<Auth>,
     identity: Option<Extension<Identity>>,
     headers: HeaderMap,
-    Json(input): Json<CeremonyFinish>,
+    ApiJson(input): ApiJson<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
     let (user, token) = auth
         .registration_finish(
@@ -579,7 +579,7 @@ pub(super) async fn login_start(Extension(auth): Extension<Auth>) -> Result<Resp
 pub(super) async fn login_finish(
     Extension(auth): Extension<Auth>,
     headers: HeaderMap,
-    Json(input): Json<CeremonyFinish>,
+    ApiJson(input): ApiJson<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
     let (user, token) = auth.login_finish(input, binding(&auth, &headers)?).await?;
     Ok(session_response(&auth, user, Some(token)))
@@ -617,7 +617,7 @@ pub(super) async fn directory(
 pub(super) async fn manage(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
-    Json(input): Json<Manage>,
+    ApiJson(input): ApiJson<Manage>,
 ) -> Result<Json<Managed>, ApiError> {
     Ok(Json(auth.manage(&identity, input).await?))
 }
@@ -675,7 +675,7 @@ pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
 #[utoipa::path(post,path="/api/v1/auth/device/poll",operation_id="authDevicePoll",request_body=DevicePoll,responses((status=200,body=DeviceToken)))]
 pub(super) async fn device_poll(
     Extension(auth): Extension<Auth>,
-    Json(input): Json<DevicePoll>,
+    ApiJson(input): ApiJson<DevicePoll>,
 ) -> Result<Response, ApiError> {
     let token = auth.device_poll(&input.device_code).await?;
     let signed_in = token
@@ -695,7 +695,7 @@ pub(super) async fn device_poll(
 #[utoipa::path(post,path="/api/v1/auth/device/inspect",operation_id="authDeviceInspect",request_body=DeviceApprove,responses((status=200,body=DeviceRequest)))]
 pub(super) async fn device_inspect(
     Extension(auth): Extension<Auth>,
-    Json(input): Json<DeviceApprove>,
+    ApiJson(input): ApiJson<DeviceApprove>,
 ) -> Result<Json<DeviceRequest>, ApiError> {
     Ok(Json(auth.device_inspect(&input.user_code).await?))
 }
@@ -706,7 +706,7 @@ pub(super) async fn device_inspect(
 pub(super) async fn device_approve(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
-    Json(input): Json<DeviceApprove>,
+    ApiJson(input): ApiJson<DeviceApprove>,
 ) -> Result<Json<Managed>, ApiError> {
     auth.device_approve(&input.user_code, &identity).await?;
     Ok(Json(Managed::default()))

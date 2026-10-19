@@ -5537,6 +5537,33 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
     transaction.rollback().await.unwrap();
 }
 
+/// Authentication endpoints answer undecodable bodies with the usual JSON
+/// error, code, and request ID.
+#[tokio::test]
+async fn authentication_bodies_fail_with_structured_errors() {
+    let temp = TempDir::new().unwrap();
+    let store = Store::open(database(&temp)).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let unix = api_router(state(&temp).await, auth);
+    for (content_type, body, status, code) in [
+        ("application/json", "{", 400, "json_malformed"),
+        ("text/plain", "{}", 415, "content_type_unsupported"),
+    ] {
+        let request = Request::post("/api/v1/auth/device/poll")
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+        let response = unix.send(request).await;
+        assert_eq!(response.status.as_u16(), status);
+        let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(error.code, code);
+        assert_eq!(
+            response.header("x-request-id"),
+            Some(error.request_id.as_str())
+        );
+    }
+}
+
 /// Secret lifecycle history names secrets, never values. A stored secret no
 /// environment deployed has no Docker secrets to clean up.
 async fn assert_secret_history(client: &Client, application_id: &str) {
