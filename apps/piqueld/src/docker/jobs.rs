@@ -87,9 +87,11 @@ impl BollardDocker {
     }
 
     /// Replaces any existing service of the job with this operation's run,
-    /// labelled with when its timeout expires. An exclusive run starts only
-    /// once no other service mounts its volumes and their containers stopped.
-    /// The controller's mutation lock covers this and every service write, so
+    /// labelled with when its timeout expires. Fails while a run of the job
+    /// is still live, or, for an exclusive run, while another service mounts
+    /// its volumes or their tasks and containers have not stopped; callers
+    /// wait for those with `DockerApi::wait_volumes_released` first. The
+    /// controller's mutation lock covers this and every service write, so
     /// with [`Self::check_volumes_free`] a service never shares a volume with
     /// an exclusive run.
     pub(super) async fn create_job(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
@@ -100,10 +102,20 @@ impl BollardDocker {
         let ownership = &job.container.labels;
         self.remove_owned_service(name, ownership, ResourceKind::Job)
             .await?;
-        self.wait_jobs_stopped(ownership, Some(job.logical_name.as_str()), JobRuns::All)
-            .await?;
+        if !self
+            .jobs_stopped(ownership, Some(job.logical_name.as_str()), JobRuns::All)
+            .await?
+        {
+            return Err(DockerError::Request(
+                "start a job while an earlier run is stopping",
+            ));
+        }
         self.check_volumes_unused(job).await?;
-        self.wait_volumes_released(job).await?;
+        if !self.volumes_released(job).await? {
+            return Err(DockerError::Request(
+                "start an exclusive job while its volume is in use",
+            ));
+        }
         let node_id = self.local_node_id().await?;
         let mut spec = Self::job_spec(self.runtime_service_spec(&job.container, &node_id).await?);
         let deadline = SystemTime::now() + Duration::from_secs(u64::from(job.timeout_seconds));
@@ -164,7 +176,7 @@ impl BollardDocker {
             .await?
             .iter()
             .any(|job| Self::spec_mounts(job).any(writes))
-            || self.live_tasks(Some(&labels)).await?.iter().any(|task| {
+            || self.live_tasks(&labels).await?.iter().any(|task| {
                 Self::has_labels(task.labels.as_ref(), &labels)
                     && Self::container_mounts(task).any(writes)
             })
@@ -189,24 +201,22 @@ impl BollardDocker {
     }
 
     /// Container specifications of tasks that have not stopped, of services
-    /// carrying every label in `labels` when given; job runs carry the same
-    /// labels on their service and container. Tasks of removed services keep
-    /// their specification until Swarm stops them, and a task may not have
-    /// created its container yet, so only tasks tell whether a container may
-    /// still start. Swarm can also report a task stopped, or reap it, before
-    /// its container exits, so callers read running containers after tasks.
+    /// carrying every label in `labels`; job runs carry the same labels on
+    /// their service and container. Tasks of removed services keep their
+    /// specification until Swarm stops them, and a task may not have created
+    /// its container yet, so only tasks tell whether a container may still
+    /// start. Swarm can also report a task stopped, or reap it, before its
+    /// container exits, so callers read running containers after tasks.
     async fn live_tasks(
         &self,
-        labels: Option<&[String]>,
+        labels: &[String],
     ) -> Result<Vec<TaskSpecContainerSpec>, DockerError> {
-        let options = labels.map(|labels| {
-            ListTasksOptionsBuilder::default()
-                .filters(&HashMap::from([("label", labels.to_vec())]))
-                .build()
-        });
+        let options = ListTasksOptionsBuilder::default()
+            .filters(&HashMap::from([("label", labels.to_vec())]))
+            .build();
         let tasks = self
             .docker
-            .list_tasks(options)
+            .list_tasks(Some(options))
             .await
             .or_request("list tasks")?;
         Ok(tasks
@@ -292,40 +302,49 @@ impl BollardDocker {
             .into())
     }
 
-    /// Waits until no task that has not stopped, and no running container,
-    /// mounts a volume `job` holds exclusively. Swarm stops the tasks of
-    /// removed services asynchronously; the caller's request timeout bounds
-    /// the wait.
-    async fn wait_volumes_released(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
-        for volume in job.exclusive_volumes() {
+    /// Whether no task of the application's services that has not stopped,
+    /// and no running container, mounts a volume `job` holds exclusively.
+    /// Swarm stops the tasks of removed services asynchronously. Only the
+    /// application's services mount its volumes, so only their tasks are
+    /// listed.
+    pub(super) async fn volumes_released(&self, job: &DesiredJobRun) -> Result<bool, DockerError> {
+        let volumes = job.exclusive_volumes().collect::<Vec<_>>();
+        if volumes.is_empty() {
+            return Ok(true);
+        }
+        // Tasks before containers: see `live_tasks`.
+        let tasks = self
+            .live_tasks(&Self::ownership_filter(&job.container.labels)?)
+            .await?;
+        for volume in volumes {
             let options = ListContainersOptionsBuilder::default()
                 .filters(&HashMap::from([("volume", vec![volume.to_string()])]))
                 .build();
-            while self.live_tasks(None).await?.iter().any(|task| {
+            if tasks.iter().any(|task| {
                 Self::container_mounts(task).any(|(mounted, _)| mounted == volume.as_str())
             }) || !self
                 .docker
-                .list_containers(Some(options.clone()))
+                .list_containers(Some(options))
                 .await
                 .or_request("list volume containers")?
                 .is_empty()
             {
-                tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
+                return Ok(false);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
-    /// Waits until no selected run of the application's jobs, or of one job,
-    /// can still run: no task of it has not stopped and no container of it is
+    /// Whether no selected run of the application's jobs, or of one job, can
+    /// still run: no task of it has not stopped and no container of it is
     /// running. Swarm stops a removed service's tasks asynchronously, after
-    /// their grace period; the caller's request timeout bounds the wait.
-    async fn wait_jobs_stopped(
+    /// their grace period.
+    pub(super) async fn jobs_stopped(
         &self,
         ownership: &BTreeMap<String, String>,
         job: Option<&str>,
         runs: JobRuns<'_>,
-    ) -> Result<(), DockerError> {
+    ) -> Result<bool, DockerError> {
         let mut labels = Self::ownership_filter(ownership)?;
         labels.push(job.map_or_else(|| JOB_LABEL.to_owned(), |job| format!("{JOB_LABEL}={job}")));
         let selected = |run: Option<&HashMap<String, String>>| {
@@ -336,8 +355,8 @@ impl BollardDocker {
                 )
         };
         // Tasks before containers: see `live_tasks`.
-        while self
-            .live_tasks(Some(&labels))
+        Ok(!(self
+            .live_tasks(&labels)
             .await?
             .iter()
             .any(|task| selected(task.labels.as_ref()))
@@ -345,8 +364,15 @@ impl BollardDocker {
                 .labelled_containers(labels.clone())
                 .await?
                 .iter()
-                .any(|container| selected(container.labels.as_ref()))
-        {
+                .any(|container| selected(container.labels.as_ref()))))
+    }
+
+    /// Polls `released` every [`JOB_STOP_POLL_INTERVAL`] until it reports
+    /// `true`. The caller bounds the wait.
+    pub(super) async fn poll_until<F: Future<Output = Result<bool, DockerError>>>(
+        mut released: impl FnMut() -> F,
+    ) -> Result<(), DockerError> {
+        while !released().await? {
             tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
         }
         Ok(())
@@ -460,8 +486,7 @@ impl BollardDocker {
     }
 
     /// Deletes the selected job services of the application named by
-    /// `ownership`, then waits for their containers to stop, including those
-    /// of services an earlier attempt already deleted.
+    /// `ownership`. Their containers may still be stopping.
     pub(super) async fn remove_owned_jobs(
         &self,
         ownership: &BTreeMap<String, String>,
@@ -503,7 +528,7 @@ impl BollardDocker {
                 Err(error) => return Err(error),
             }
         }
-        self.wait_jobs_stopped(ownership, None, runs).await
+        Ok(())
     }
 }
 

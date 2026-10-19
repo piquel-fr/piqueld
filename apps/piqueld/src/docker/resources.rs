@@ -986,6 +986,19 @@ impl DockerApi for BollardDocker {
             .run("remove jobs", self.remove_owned_jobs(ownership, runs))
             .await
     }
+    async fn wait_jobs_stopped(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        runs: super::JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        Self::poll_until(|| self.jobs_stopped(ownership, None, runs)).await
+    }
+    async fn wait_volumes_released(
+        &self,
+        job: &piqueld_core::DesiredJobRun,
+    ) -> Result<(), DockerError> {
+        Self::poll_until(|| self.volumes_released(job)).await
+    }
     /// Removes the private network by its inspected ID after rechecking
     /// ownership, role, and canonical name. A missing network counts as removed.
     async fn remove_network(

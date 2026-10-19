@@ -95,6 +95,10 @@ struct FakeDocker {
     hold_job_cleanup: Arc<Mutex<()>>,
     /// Counts removals of an operation's own run, including held ones.
     job_cleanups: Arc<std::sync::atomic::AtomicUsize>,
+    /// Blocks waiting for removed job runs to stop while held.
+    hold_job_stop: Arc<Mutex<()>>,
+    /// Counts waits for removed job runs to stop, including held ones.
+    job_stop_waits: Arc<std::sync::atomic::AtomicUsize>,
     /// The engine's images; builds and pulls add theirs.
     local_images: Arc<Mutex<Vec<LocalImage>>>,
     /// Holds builds once their image exists, until released.
@@ -803,6 +807,23 @@ impl DockerApi for FakeDocker {
             .lock()
             .await
             .retain(|_, (operation, ..)| !runs.selects(Some(operation)));
+        Ok(())
+    }
+
+    async fn wait_jobs_stopped(
+        &self,
+        _ownership: &BTreeMap<String, String>,
+        _runs: JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        self.job_stop_waits.fetch_add(1, Ordering::SeqCst);
+        let _held = self.hold_job_stop.lock().await;
+        Ok(())
+    }
+
+    async fn wait_volumes_released(
+        &self,
+        _job: &piqueld_core::DesiredJobRun,
+    ) -> Result<(), DockerError> {
         Ok(())
     }
 
@@ -4472,6 +4493,38 @@ async fn retried_operation_skips_jobs_that_already_succeeded() {
     *harness.docker.conflicting_job.lock().await = None;
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate", "seed"]);
+}
+
+/// Waiting for removed job runs to stop leaves the Docker mutation lock
+/// free, so other environments' changes and secret deletion carry on.
+#[tokio::test]
+async fn waiting_for_job_runs_to_stop_leaves_docker_mutations_free() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    let held = harness.docker.hold_job_stop.lock().await;
+    let shutdown = CancellationToken::new();
+    let scan = harness.controller.scan(&shutdown);
+    tokio::pin!(scan);
+    tokio::select! {
+        result = &mut scan => panic!("scan finished while job runs were stopping: {result:?}"),
+        waiting = eventually(Duration::from_secs(10), POLL, async || {
+            (harness.docker.job_stop_waits.load(Ordering::SeqCst) > 0).then_some(())
+        }) => waiting.expect("the deployment waits for earlier job runs to stop"),
+    }
+    let runtime = harness.controller.runtime(Arc::default());
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), runtime.lock_mutations())
+            .await
+            .expect("the mutation lock is free while job runs stop"),
+    );
+    drop(held);
+    scan.await.unwrap();
+    assert_eq!(
+        harness.operation(&operation.id).await.state,
+        OperationState::Succeeded
+    );
 }
 
 /// A scan processes the operation discovery found. One requested while the
