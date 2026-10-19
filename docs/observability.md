@@ -329,6 +329,10 @@ within the configured window (24 hours by default). Integer `Retry-After` values
 are honored up to one hour. Other non-2xx responses fail permanently. Manual retry
 starts a new retry window while preserving identity, creation time and attempt
 count. Delivery history exposes safe failure summaries, never response bodies.
+Deliveries are sent one at a time, back to back while any is due. After a
+downgrade, a category this version does not know is not delivered: startup drops
+its routes, a queued delivery of it fails instead of holding up the rest, and
+history leaves it out.
 
 Disabling a category/destination or changing its URL cancels pending deliveries
 at startup. Re-enabling activates new events only, without replaying historical
