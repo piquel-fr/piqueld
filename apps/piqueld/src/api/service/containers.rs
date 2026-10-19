@@ -56,6 +56,9 @@ struct Exported {
     /// restart reads stopped containers once more from their cursor, since a
     /// restarted ingress container keeps its ID.
     done: bool,
+    /// Whether Docker reported it starting since its follower started, so
+    /// output may follow what that follower read even once it is done.
+    restarted: bool,
     /// Reads its output until it stops.
     follower: Option<JoinHandle<Result<(), DockerError>>>,
     /// Whether a failure to read its output was logged, so a container whose
@@ -75,6 +78,26 @@ impl Exported {
     /// Notes how its follower ended, if it did, and starts one when there
     /// may be output to read.
     fn keep_following(&mut self, service: &ApplicationService, docker: &Docker) {
+        self.reap();
+        if self.needs_follower() {
+            self.follower = Some(tokio::spawn(follow(
+                Arc::clone(docker),
+                service.telemetry.clone(),
+                self.container.id.clone(),
+                Arc::clone(&self.resource),
+                (Arc::clone(&self.read), Arc::clone(&self.handled)),
+            )));
+        }
+    }
+
+    /// Notes that Docker reported it starting.
+    fn started(&mut self) {
+        self.restarted = true;
+        self.done = false;
+    }
+
+    /// Notes how its follower ended, if it did.
+    fn reap(&mut self) {
         if let Some(result) = self
             .follower
             .as_mut()
@@ -82,8 +105,11 @@ impl Exported {
         {
             self.follower = None;
             match result {
-                // A follower ends once its container stops.
-                Ok(Ok(())) => self.done = self.container.state == ContainerState::Stopped,
+                // A follower ends once its container stops, having read all
+                // its output unless it started again since.
+                Ok(Ok(())) => {
+                    self.done = self.container.state == ContainerState::Stopped && !self.restarted;
+                }
                 Ok(Err(error)) if !self.warned => {
                     self.warned = true;
                     tracing::warn!(container = %self.container.name, ?error, "container output could not be exported; retrying");
@@ -94,20 +120,21 @@ impl Exported {
                 }
             }
         }
+    }
+
+    /// Whether a follower should start now: it has none, and it has output
+    /// to read. Starting one covers any restart reported so far.
+    fn needs_follower(&mut self) -> bool {
         match self.container.state {
-            ContainerState::Created => return,
+            ContainerState::Created => return false,
             ContainerState::Running => self.done = false,
             ContainerState::Stopped => {}
         }
-        if self.follower.is_none() && !self.done {
-            self.follower = Some(tokio::spawn(follow(
-                Arc::clone(docker),
-                service.telemetry.clone(),
-                self.container.id.clone(),
-                Arc::clone(&self.resource),
-                (Arc::clone(&self.read), Arc::clone(&self.handled)),
-            )));
+        let needed = self.follower.is_none() && !self.done;
+        if needed {
+            self.restarted = false;
         }
+        needed
     }
 }
 
@@ -222,7 +249,7 @@ impl ApplicationService {
                         // It may have stopped already, with new output.
                         Some(Ok(Some(id))) => {
                             if let Some(exported) = exports.lock().get_mut(&id) {
-                                exported.done = false;
+                                exported.started();
                             }
                         }
                         Some(Ok(None)) => {}
@@ -297,6 +324,7 @@ impl ApplicationService {
                     read: Arc::new(AtomicI64::new(cursor)),
                     handled: Arc::new(AtomicI64::new(cursor)),
                     done: false,
+                    restarted: false,
                     follower: None,
                     warned: false,
                     container: container.clone(),
@@ -403,5 +431,49 @@ impl ApplicationService {
             self.telemetry.export_container_usage(&samples);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A container that stopped, started and stopped again before its first
+    /// follower was reaped gets a new follower for the second run's output.
+    #[tokio::test]
+    async fn a_restart_reported_before_reaping_reads_the_new_output() {
+        let follower = tokio::spawn(async { Ok(()) });
+        while !follower.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let mut exported = Exported {
+            container: ManagedContainer {
+                id: "gateway-id".into(),
+                name: "piqueld-ingress-0123".into(),
+                state: ContainerState::Stopped,
+                created: 0,
+                task: None,
+                workload: Workload::Infrastructure("piqueld-gateway"),
+            },
+            resource: Arc::new(Mutex::new(ContainerResource::new([]))),
+            read: Arc::default(),
+            handled: Arc::default(),
+            done: false,
+            restarted: false,
+            follower: Some(follower),
+            warned: false,
+        };
+        exported.started();
+        exported.reap();
+        assert!(exported.needs_follower());
+        exported.follower = Some(tokio::spawn(async { Ok(()) }));
+        while !exported.follower.as_ref().unwrap().is_finished() {
+            tokio::task::yield_now().await;
+        }
+        exported.reap();
+        assert!(
+            !exported.needs_follower(),
+            "the second run was read to the end"
+        );
     }
 }
