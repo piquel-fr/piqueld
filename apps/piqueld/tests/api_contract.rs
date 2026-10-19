@@ -4213,10 +4213,12 @@ async fn every_documented_operation_requires_authentication() {
                     StatusCode::UNAUTHORIZED,
                     "{method} {path} must require authentication"
                 );
-                assert_eq!(response.header("x-request-id"), Some("anonymous-contract"));
+                // The daemon replaces a client-supplied request ID.
+                let request_id = response.header("x-request-id").unwrap();
+                assert_ne!(request_id, "anonymous-contract");
                 let error: piqueld_core::api::ErrorBody =
                     serde_json::from_slice(&response.body).unwrap();
-                assert_eq!(error.request_id, "anonymous-contract");
+                assert_eq!(error.request_id, request_id);
                 checked += 1;
             }
         }
@@ -5514,11 +5516,12 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
             .await
             .expect("authentication errors must not wait for a diagnostic write");
             assert_eq!(response.status.as_u16(), status);
-            assert_eq!(response.header("x-request-id"), Some("auth-correlation"));
+            let request_id = response.header("x-request-id").unwrap();
+            assert_ne!(request_id, "auth-correlation");
             let error: piqueld_core::api::ErrorBody =
                 serde_json::from_slice(&response.body).unwrap();
             assert_eq!(error.code, code);
-            assert_eq!(error.request_id, "auth-correlation");
+            assert_eq!(error.request_id, request_id);
             if status == 503 {
                 let id = error.details["diagnostic_id"].as_str().unwrap();
                 assert!(id.starts_with("diagnostic-"));

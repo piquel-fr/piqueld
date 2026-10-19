@@ -185,10 +185,10 @@ pub fn health_router() -> Router<ApiState> {
 ///
 /// Layers, innermost first: route authorization, authentication guard,
 /// browser trust policy (TCP only, when `browser_policy` is set), audit
-/// trail, state and `OpenAPI` 3.0
-/// document extension, request ID propagation, error request ID binding and
-/// diagnostic recording, request ID generation, body size limit, latency
-/// metrics, and tracing.
+/// trail, state and `OpenAPI` 3.0 document extension, request ID propagation,
+/// error request ID binding and diagnostic recording, request ID generation,
+/// removal of client-supplied request IDs, body size limit, latency metrics,
+/// and tracing.
 fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
@@ -237,7 +237,13 @@ fn finish_router(
         // echoes that same identifier in every structured error body.
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn_with_state(state.clone(), bind_error_request_id))
-        .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
+        .layer(SetRequestIdLayer::new(request_id.clone(), MakeRequestUuid))
+        // Request IDs are always the daemon's own: one a client supplied
+        // could pose as another request in logs and the audit trail.
+        .layer(middleware::map_request(move |mut request: Request| {
+            request.headers_mut().remove(&request_id);
+            std::future::ready(request)
+        }))
         .layer(DefaultBodyLimit::max(
             piqueld_core::api::MAX_REQUEST_BODY_BYTES,
         ))
