@@ -84,6 +84,25 @@ impl Store {
             .map(OperationRow::decode).transpose()
     }
 
+    /// Fetches the newest operation of every environment that has one, by
+    /// environment, in one query.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub async fn latest_operations(
+        &self,
+    ) -> Result<std::collections::HashMap<EnvironmentId, Operation>, StoreError> {
+        sqlx::query_as!(OperationRow,
+            r#"SELECT o.id AS "id!",o.environment_id,o.kind,o.state,o.generation,o.attempt,o.consecutive_failures,o.phase,o.resource,o.error_code,o.error_message,o.created_at_ms,o.updated_at_ms,o.started_at_ms,o.finished_at_ms FROM environments e JOIN operations o ON o.id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=e.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)"#)
+            .fetch_all(&self.pool).await.map_err(StoreError::database)?
+            .into_iter()
+            .map(|row| {
+                let operation = row.decode()?;
+                Ok((operation.environment_id.clone(), operation))
+            })
+            .collect()
+    }
+
     /// Records a transition only if this is still the latest operation.
     /// `error` must be present exactly when moving to `Failed`. Entering
     /// `Running` counts a new attempt; failures and successes update
@@ -471,4 +490,37 @@ pub(crate) struct JournalPosition {
     pub(crate) event: i64,
     /// Operation ID, attempt and start time of every attempt running.
     pub(crate) running: Vec<(String, u64, i64)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{api::Mutation, store::testing::template};
+
+    /// Saves and deploys the empty application `name`, returning its operation.
+    async fn deployed(store: &Store, name: &str) -> Operation {
+        let saved = store.save_template(template(name, "[spec]"), true).await;
+        store.operation(&saved.operation_id.unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn latest_operations_hold_the_newest_operation_of_every_environment() {
+        let (_directory, store) = Store::temporary().await;
+        let alpha = deployed(&store, "alpha").await;
+        let beta = deployed(&store, "beta").await;
+        store
+            .force(Mutation::deploy(alpha.environment_id.clone()))
+            .await
+            .unwrap();
+        let latest = store.latest_operations().await.unwrap();
+        assert_eq!(latest.len(), 2);
+        for id in [&alpha.environment_id, &beta.environment_id] {
+            let expected = store.latest_operation_for_environment(id).await.unwrap();
+            assert_eq!(
+                Some(&latest[id].id),
+                expected.map(|operation| operation.id).as_ref()
+            );
+        }
+        assert_ne!(latest[&alpha.environment_id].id, alpha.id);
+    }
 }

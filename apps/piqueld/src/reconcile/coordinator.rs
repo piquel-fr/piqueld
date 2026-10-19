@@ -265,17 +265,16 @@ impl<D: DockerApi> Controller<D> {
 
     /// Selects the environments needing work among all of them. A full scan
     /// selects every environment with an operation; otherwise only requested,
-    /// cleanly running, or retry-due operations are selected.
+    /// cleanly running, or retry-due operations are selected. Reads every
+    /// latest operation at once, as discovery runs every second.
     async fn discover(
         &self,
         full: bool,
     ) -> Result<Vec<(StoredEnvironment, Operation)>, StoreError> {
+        let mut latest = self.store.latest_operations().await?;
         let mut applications = Vec::new();
         for app in self.store.every_environment().await? {
-            if let Some(operation) = self
-                .store
-                .latest_operation_for_environment(app.id())
-                .await?
+            if let Some(operation) = latest.remove(app.id())
                 && (full
                     || operation.state == OperationState::Requested
                     || (operation.state == OperationState::Running

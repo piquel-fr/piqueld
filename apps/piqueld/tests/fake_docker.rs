@@ -2647,12 +2647,12 @@ async fn dependents_roll_out_once_their_dependencies_converge() {
 
 #[tokio::test]
 async fn each_dependency_gets_the_full_convergence_timeout() {
-    // Each link converges in about 1.25s of 250ms polls: well within the 3s
-    // timeout alone, but the chain as a whole takes longer.
+    // Each link converges in about 1.75s of backed-off polls: well within
+    // the 4s timeout alone, but the chain as a whole takes longer.
     let rollout = deploy_dependents(
         &[("db", &[]), ("api", &["db"]), ("web", &["api"])],
-        &[("db", 6), ("api", 6), ("web", 6)],
-        Duration::from_secs(3),
+        &[("db", 5), ("api", 5), ("web", 5)],
+        Duration::from_secs(4),
     )
     .await;
     assert_eq!(
@@ -4055,9 +4055,10 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
         .slow_services
         .lock()
         .await
-        // Each dependency waits about two seconds, with room for journal I/O.
-        // Their combined wait still exceeds the three-second budget.
-        .extend([("storage".into(), 9), ("db".into(), 9)]);
+        // Each dependency waits about 1.75s of backed-off polls, with room
+        // for journal I/O. Their combined wait still exceeds the three-second
+        // budget.
+        .extend([("storage".into(), 5), ("db".into(), 5)]);
     let mut input = manifest_with_job_dependencies();
     // A prerequisite's own job must succeed before that service is started.
     let mut storage_job = input.spec.jobs[0].clone();
