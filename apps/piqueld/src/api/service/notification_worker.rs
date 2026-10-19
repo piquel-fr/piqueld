@@ -268,7 +268,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (service, _docker) = ApplicationService::unconnected(store.clone(), temp.path());
+        let service = ApplicationService::unconnected(store.clone(), temp.path());
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let worker = tokio::spawn(async move {

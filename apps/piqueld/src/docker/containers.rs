@@ -116,8 +116,8 @@ impl BollardDocker {
         &self,
         instance: &InstanceId,
     ) -> Result<Vec<ManagedContainer>, DockerError> {
-        let services: HashMap<_, _> = self
-            .docker
+        let client = self.client()?;
+        let services: HashMap<_, _> = client
             .list_services(Some(
                 ListServicesOptionsBuilder::default()
                     .filters(&HashMap::from([(
@@ -134,8 +134,7 @@ impl BollardDocker {
             .into_iter()
             .filter_map(|service| Some((service.id?, service.spec?.labels?)))
             .collect();
-        Ok(self
-            .docker
+        Ok(client
             .list_containers(Some(
                 ListContainersOptionsBuilder::default().all(true).build(),
             ))
@@ -215,49 +214,66 @@ impl BollardDocker {
         })
     }
 
+    /// The stream `open` reads from the client, or, until Docker's socket
+    /// exists, one yielding only why there is none, so the caller retries
+    /// as it would after any failed stream.
+    fn client_stream<T: Send + 'static>(
+        &self,
+        open: impl FnOnce(&bollard::Docker) -> BoxStream<'static, Result<T, DockerError>>,
+    ) -> BoxStream<'static, Result<T, DockerError>> {
+        match self.client() {
+            Ok(docker) => open(docker),
+            Err(error) => futures_util::stream::once(std::future::ready(Err(error))).boxed(),
+        }
+    }
+
     /// Follows a container's stdout and stderr from `since`, in Unix seconds,
     /// until it stops; a stopped container's ends at once.
     pub(super) fn follow_container_logs(&self, id: &str, since: i32) -> ContainerLogs {
-        self.docker
-            .logs(
-                id,
-                Some(
-                    LogsOptionsBuilder::default()
-                        .follow(true)
-                        .stdout(true)
-                        .stderr(true)
-                        .timestamps(true)
-                        .since(since)
-                        .build(),
-                ),
-            )
-            .map(|item| {
-                item.map(|output| Self::log_lines(&output))
-                    .or_request("follow container logs")
-            })
-            .boxed()
+        self.client_stream(|docker| {
+            docker
+                .logs(
+                    id,
+                    Some(
+                        LogsOptionsBuilder::default()
+                            .follow(true)
+                            .stdout(true)
+                            .stderr(true)
+                            .timestamps(true)
+                            .since(since)
+                            .build(),
+                    ),
+                )
+                .map(|item| {
+                    item.map(|output| Self::log_lines(&output))
+                        .or_request("follow container logs")
+                })
+                .boxed()
+        })
     }
 
     /// Yields the ID of each container that starts from `since`, in Unix
     /// seconds, until the stream fails. Docker replays starts since then, so
     /// none is missed while the stream connects.
     pub(super) fn watch_container_starts(&self, since: i64) -> ContainerStarts {
-        self.docker
-            .events(Some(
-                EventsOptionsBuilder::default()
-                    .since(&since.to_string())
-                    .filters(&HashMap::from([
-                        ("type", vec!["container"]),
-                        ("event", vec!["start"]),
-                    ]))
-                    .build(),
-            ))
-            .map(|event| {
-                event
-                    .map(|event| event.actor.and_then(|actor| actor.id))
-                    .or_request("watch container starts")
-            })
-            .boxed()
+        self.client_stream(|docker| {
+            docker
+                .events(Some(
+                    EventsOptionsBuilder::default()
+                        .since(&since.to_string())
+                        .filters(&HashMap::from([
+                            ("type", vec!["container"]),
+                            ("event", vec!["start"]),
+                        ]))
+                        .build(),
+                ))
+                .map(|event| {
+                    event
+                        .map(|event| event.actor.and_then(|actor| actor.id))
+                        .or_request("watch container starts")
+                })
+                .boxed()
+        })
     }
 
     /// Splits one chunk of timestamped output into lines. A line whose
@@ -291,7 +307,7 @@ impl BollardDocker {
         &self,
         id: &str,
     ) -> Result<Option<ContainerUsage>, DockerError> {
-        let mut stats = self.docker.stats(
+        let mut stats = self.client()?.stats(
             id,
             Some(
                 StatsOptionsBuilder::default()
@@ -386,6 +402,24 @@ fn unix_nanos(timestamp: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn streams_fail_until_docker_creates_its_socket_then_connect() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("docker.sock");
+        let docker = BollardDocker::connect(&socket).unwrap();
+
+        let mut starts = docker.watch_container_starts(0);
+        assert!(matches!(
+            starts.next().await,
+            Some(Err(DockerError::UnavailableSource { .. }))
+        ));
+        assert!(starts.next().await.is_none());
+
+        // Nothing was cached: once the socket exists, the client is created.
+        let _listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        assert!(docker.client().is_ok());
+    }
 
     #[test]
     fn docker_timestamps_read_as_unix_nanoseconds() {

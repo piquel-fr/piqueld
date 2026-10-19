@@ -48,7 +48,7 @@ impl BollardDocker {
         container_id: &str,
     ) -> Result<Option<bool>, DockerError> {
         Ok(self
-            .docker
+            .client()?
             .inspect_container(
                 container_id,
                 Some(InspectContainerOptionsBuilder::default().build()),

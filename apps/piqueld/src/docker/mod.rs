@@ -64,8 +64,9 @@ const IMAGE_RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(100);
 #[derive(Clone)]
 /// A shared connection to the Docker Engine.
 pub struct BollardDocker {
-    /// Typed Bollard client used for most Engine requests.
-    docker: Arc<Docker>,
+    /// Typed Bollard client used for most Engine requests, created by
+    /// `client` once the socket exists.
+    docker: Arc<std::sync::OnceLock<Docker>>,
     /// Engine socket path, reused for raw service requests and `docker buildx build`.
     socket: Arc<Path>,
 }

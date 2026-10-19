@@ -79,25 +79,39 @@ impl WireError {
 }
 
 impl BollardDocker {
-    /// Opens one shared, cheaply cloneable Bollard connection handle.
+    /// Opens one shared, cheaply cloneable Bollard connection handle. The
+    /// socket need not exist yet: the client is created on first use.
     ///
     /// # Errors
-    /// Returns a sanitized unavailable error for invalid/non-Unix socket paths.
+    /// Returns a sanitized unavailable error for a non-UTF-8 socket path.
     pub fn connect(socket: &Path) -> Result<Self, DockerError> {
-        let socket_path = socket.to_path_buf();
-        let socket = socket_path
+        socket
             .to_str()
             .ok_or(DockerError::Unavailable("connect to Docker Engine"))?;
-        Docker::connect_with_unix(
+        Ok(Self {
+            docker: Arc::default(),
+            socket: Arc::from(socket),
+        })
+    }
+
+    /// The typed Bollard client, created on first use. Bollard refuses a
+    /// socket that does not exist, so until Docker creates it, every call
+    /// fails as unavailable and the next one tries again.
+    pub(crate) fn client(&self) -> Result<&Docker, DockerError> {
+        if let Some(docker) = self.docker.get() {
+            return Ok(docker);
+        }
+        let socket = self
+            .socket
+            .to_str()
+            .ok_or(DockerError::Unavailable("connect to Docker Engine"))?;
+        let docker = Docker::connect_with_unix(
             socket,
             BOLLARD_HEADER_TIMEOUT_SECS,
             bollard::API_DEFAULT_VERSION,
         )
-        .map(|docker| Self {
-            docker: Arc::new(docker),
-            socket: Arc::from(socket_path),
-        })
-        .map_err(|error| DockerError::unavailable("connect to Docker Engine", error))
+        .map_err(|error| DockerError::unavailable("connect to Docker Engine", error))?;
+        Ok(self.docker.get_or_init(|| docker))
     }
 
     /// Performs one raw service request through Docker's Unix socket.
@@ -424,7 +438,7 @@ impl BollardDocker {
     /// reachable, active manager.
     pub(super) async fn validate_single_node_manager(&self) -> Result<(), DockerError> {
         let nodes = self
-            .docker
+            .client()?
             .list_nodes(None::<ListNodesOptions>)
             .await
             .or_request("list Swarm nodes")?;
@@ -440,7 +454,7 @@ impl BollardDocker {
         operation: &'static str,
     ) -> Result<bollard::models::SwarmInfo, DockerError> {
         let info = self
-            .docker
+            .client()?
             .info()
             .await
             .map_err(|source| DockerError::unavailable(operation, source))?;

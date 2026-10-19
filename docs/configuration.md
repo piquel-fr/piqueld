@@ -25,6 +25,14 @@ startup.
 created with mode `0600`. Standard output keeps its format: plain text on a
 terminal or the systemd journal, JSON elsewhere.
 
+The daemon serves its API and dashboard even while Docker is down, not yet
+started (its socket missing), or not a Swarm manager. Reconciliation, image
+cleanup and ingress start once Docker answers
+as a single-node Swarm manager, retried with backoff up to 10 seconds apart and
+journaled as an `ensure_swarm` action. Until then requested deployments wait.
+Readiness probes Docker and Swarm directly, so once they recover it can report
+ready up to 10 seconds before deployments resume.
+
 SIGINT or SIGTERM stops the daemon gracefully: open connections get 10
 seconds, and every task one minute, before it exits anyway. A second signal
 exits at once.

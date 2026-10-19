@@ -105,8 +105,9 @@ pub struct Ingress {
     docker: UnixApi,
     /// Caddy's private admin API socket inside the control mount.
     caddy: UnixApi,
-    /// Docker client used only for streaming image pulls.
-    images: bollard::Docker,
+    /// Docker client used only for streaming image pulls, which needs
+    /// Docker's socket only once it pulls.
+    images: crate::docker::BollardDocker,
     /// Public HTTPS client for route probes; never follows redirects or proxies.
     client: reqwest::Client,
     store: Arc<Store>,
@@ -184,11 +185,8 @@ impl Ingress {
             caddy: UnixApi::new(directory.join("control/admin.sock"), request_timeout),
             directory,
             docker: UnixApi::new(socket.into(), request_timeout),
-            images: bollard::Docker::connect_with_unix(
-                socket.to_str().context("Docker socket is not UTF-8")?,
-                request_timeout.as_secs(),
-                bollard::API_DEFAULT_VERSION,
-            )?,
+            images: crate::docker::BollardDocker::connect(socket)
+                .context("Docker socket is not UTF-8")?,
             client: Self::probe_client().build()?,
             store,
             update: Mutex::new(()),

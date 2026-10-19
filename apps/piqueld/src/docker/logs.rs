@@ -40,7 +40,7 @@ impl BollardDocker {
             return Ok(ApplicationLogs::default());
         }
         let tasks = self
-            .docker
+            .client()?
             .list_tasks(Some(
                 ListTasksOptionsBuilder::default()
                     .filters(&HashMap::from([(
@@ -72,7 +72,7 @@ impl BollardDocker {
                 result.truncated = true;
                 continue;
             };
-            let mut logs = self.docker.logs(
+            let mut logs = self.client()?.logs(
                 container,
                 Some(
                     LogsOptionsBuilder::default()
@@ -155,7 +155,7 @@ impl BollardDocker {
         service: Option<&str>,
     ) -> Result<HashMap<String, String>, DockerError> {
         Ok(self
-            .docker
+            .client()?
             .list_services(Some(
                 ListServicesOptionsBuilder::default()
                     .filters(&HashMap::from([(

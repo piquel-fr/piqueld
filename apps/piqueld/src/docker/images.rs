@@ -12,7 +12,7 @@ impl BollardDocker {
     /// non-SHA-256 store) are skipped, so such images are never removed.
     pub(super) async fn list_local_images(&self) -> Result<Vec<LocalImage>, DockerError> {
         let used = self
-            .docker
+            .client()?
             .list_containers(Some(
                 ListContainersOptionsBuilder::default().all(true).build(),
             ))
@@ -22,7 +22,7 @@ impl BollardDocker {
             .filter_map(|container| container.image_id)
             .collect::<BTreeSet<_>>();
         let images = self
-            .docker
+            .client()?
             .list_images(Some(
                 ListImagesOptionsBuilder::default()
                     .all(true)
@@ -57,7 +57,7 @@ impl BollardDocker {
         id: &piqueld_core::Sha256Digest,
     ) -> Result<(), DockerError> {
         let Some(image) = self
-            .docker
+            .client()?
             .inspect_image(id.as_str())
             .await
             .found()
@@ -74,7 +74,7 @@ impl BollardDocker {
         if !LocalImage::labelled_for(&labels, instance) {
             return Err(DockerError::OwnershipConflict);
         }
-        self.docker
+        self.client()?
             .remove_image(
                 id.as_str(),
                 Some(

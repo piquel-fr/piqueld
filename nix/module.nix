@@ -545,7 +545,10 @@ in
       description = "piqueld application control plane";
       wantedBy = [ "multi-user.target" ];
       after = [ "docker.service" ] ++ lib.optional usesTailscale "tailscaled.service";
-      requires = [ "docker.service" ];
+      # Wanted, not required: piqueld serves its API while Docker is down
+      # and starts deploying once it is back, so a Docker failure or restart
+      # must not stop it.
+      wants = [ "docker.service" ];
       path = [
         pkgs.git
         pkgs.openssh
