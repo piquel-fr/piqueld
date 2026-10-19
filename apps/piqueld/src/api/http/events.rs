@@ -6,7 +6,7 @@ use super::{
     ok,
     openapi::ApiErrorResponse,
 };
-use crate::{auth::Identity, store::Visibility};
+use crate::{api::Expensive, auth::Identity, store::Visibility};
 use axum::{
     Extension,
     extract::State,
@@ -151,11 +151,13 @@ pub(super) async fn stream(
     let after = crate::store::Store::event_cursor(&cursor)?;
     let filter = query.filter();
     let batch_size = query.limit.unwrap_or(crate::store::MAX_PAGE_SIZE);
+    let admitted = state.admit(Expensive::EventStream)?;
     // Validate before sending headers; all later errors explicitly terminate the stream.
     let (initial, checkpoint) = state
         .stream_events(&filter, &visible, after, batch_size)
         .await?;
     let follow = Follow {
+        _admitted: admitted,
         lease: Lease::new(state.clone(), identity, source),
         state,
         filter,
@@ -175,6 +177,8 @@ pub(super) async fn stream(
 
 /// A live event stream's position and access.
 struct Follow {
+    /// The stream's share of the event stream budget, while it is open.
+    _admitted: tokio::sync::OwnedSemaphorePermit,
     state: ApiState,
     lease: Lease,
     filter: EventFilter,

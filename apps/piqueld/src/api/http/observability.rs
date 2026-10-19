@@ -65,6 +65,7 @@ pub(super) async fn analytics(
     ApiQuery(query): ApiQuery<AnalyticsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let until = query.until_ms.unwrap_or_else(crate::store::now_ms);
+    let _admitted = state.admit(crate::api::Expensive::Analytics)?;
     Ok(ok(state
         .deployment_analytics(
             query.environment_id.as_deref(),

@@ -12594,6 +12594,16 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -12771,6 +12781,16 @@
             },
             "description": "TCP authority or browser origin is not trusted"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -12930,6 +12950,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -13295,6 +13325,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -13469,6 +13509,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -13646,6 +13696,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -13821,6 +13881,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -13995,6 +14065,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -14265,6 +14345,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -14489,6 +14579,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -14769,6 +14869,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -14984,6 +15094,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -15276,6 +15396,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -15450,6 +15580,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -15626,6 +15766,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -15801,6 +15951,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -15975,6 +16135,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -16296,6 +16466,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -16423,6 +16603,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -16569,6 +16759,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -16908,6 +17108,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -17090,6 +17300,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -17274,6 +17494,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -17456,6 +17686,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -17809,6 +18049,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -17992,6 +18242,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -18172,6 +18432,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -18356,6 +18626,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -18538,6 +18818,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -18722,6 +19012,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -18904,6 +19204,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -19088,6 +19398,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -19270,6 +19590,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -19454,6 +19784,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -19636,6 +19976,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -19820,6 +20170,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -20000,6 +20360,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -20184,6 +20554,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -20366,6 +20746,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -20550,6 +20940,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -20732,6 +21132,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -20916,6 +21326,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -21098,6 +21518,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -21282,6 +21712,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -21464,6 +21904,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -21648,6 +22098,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -21830,6 +22290,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -22014,6 +22484,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -22196,6 +22676,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -22380,6 +22870,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -22562,6 +23062,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -22746,6 +23256,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -22928,6 +23448,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -23112,6 +23642,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -23286,6 +23826,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -23462,6 +24012,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -23634,6 +24194,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -24206,6 +24776,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "summary": "Approves a pending device sign-in.",
@@ -24246,6 +24826,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "summary": "Inspects a pending device sign-in.",
@@ -24286,6 +24876,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "security": [],
@@ -24327,6 +24927,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "413": {
             "content": {
@@ -24408,6 +25018,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "security": [],
@@ -24459,6 +25079,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "security": [],
@@ -24561,6 +25191,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "summary": "Applies one account management action as the signed-in user.",
@@ -24682,6 +25322,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "security": [],
@@ -24723,6 +25373,16 @@
               }
             },
             "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           }
         },
         "security": [],
@@ -25374,6 +26034,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -25879,6 +26549,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
           }
         },
         "x-piqueld-access": "apps:exec"
@@ -26090,6 +26770,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -26219,6 +26909,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -26484,6 +27184,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {
@@ -26866,6 +27576,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -27075,6 +27795,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -27192,6 +27922,16 @@
               }
             },
             "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
           },
           "409": {
             "content": {

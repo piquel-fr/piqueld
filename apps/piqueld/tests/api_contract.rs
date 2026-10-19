@@ -5606,21 +5606,29 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
     transaction.rollback().await.unwrap();
 }
 
-/// Authentication endpoints answer undecodable bodies with the usual JSON
-/// error, code, and request ID.
+/// Authentication endpoints answer undecodable bodies, and bodies over the
+/// small limit of public sign-in endpoints, with the usual JSON error, code,
+/// and request ID.
 #[tokio::test]
 async fn authentication_bodies_fail_with_structured_errors() {
     let temp = TempDir::new().unwrap();
     let store = Store::open(database(&temp)).await.unwrap();
     let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
     let unix = api_router(state(&temp).await, auth);
+    let oversized = format!(r#"{{"device_code":"{}"}}"#, "x".repeat(64 * 1024));
     for (content_type, body, status, code) in [
         ("application/json", "{", 400, "json_malformed"),
         ("text/plain", "{}", 415, "content_type_unsupported"),
+        (
+            "application/json",
+            oversized.as_str(),
+            413,
+            "request_body_too_large",
+        ),
     ] {
         let request = Request::post("/api/v1/auth/device/poll")
             .header("content-type", content_type)
-            .body(Body::from(body))
+            .body(Body::from(body.to_owned()))
             .unwrap();
         let response = unix.send(request).await;
         assert_eq!(response.status.as_u16(), status);
@@ -5631,6 +5639,26 @@ async fn authentication_bodies_fail_with_structured_errors() {
             Some(error.request_id.as_str())
         );
     }
+}
+
+/// Expensive requests beyond their kind's budget answer 503 `server_busy`
+/// at once, without recording a diagnostic, until the budget frees up.
+#[tokio::test]
+async fn expensive_requests_beyond_their_budget_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let server = Server::tcp(router(state.clone(), FakeAuth)).await;
+    let analytics = async || {
+        let path = "/api/v1/analytics/deployments";
+        server.send(Method::GET, path, &[], Vec::new()).await
+    };
+    let analysing = piqueld::api::Expensive::Analytics;
+    let held: Vec<_> = std::iter::from_fn(|| state.admit(analysing).ok()).collect();
+    let refused = analytics().await;
+    refused.assert_error(StatusCode::SERVICE_UNAVAILABLE, "server_busy");
+    assert!(refused.json()["details"].get("diagnostic_id").is_none());
+    drop(held);
+    assert_eq!(analytics().await.status, StatusCode::OK);
 }
 
 /// Secret lifecycle history names secrets, never values. A stored secret no

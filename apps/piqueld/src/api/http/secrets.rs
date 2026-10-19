@@ -1,6 +1,6 @@
 //! Write-only values and metadata-only secret lifecycle endpoints: generated
 //! secrets per environment, and each application's store of manually set secrets.
-use super::extract::single_header;
+use super::extract::{body_timeout, single_header};
 use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse,
 };
@@ -199,11 +199,13 @@ pub(super) async fn put_stored(
         ));
     }
     let body = Bytes::from_request(request, &state).await.map_err(|e| {
-        ApiError::new(
-            e.status(),
-            "secret_body_invalid",
-            "Secret body could not be read within the request limit",
-        )
+        body_timeout(&e).unwrap_or_else(|| {
+            ApiError::new(
+                e.status(),
+                "secret_body_invalid",
+                "Secret body could not be read within the request limit",
+            )
+        })
     })?;
     if body.is_empty() || body.len() > MAX_SECRET_VALUE_BYTES {
         return Err(ApiError::new(

@@ -121,7 +121,8 @@ pub fn openapi_document() -> Value {
 /// Besides schema downgrading, it drops the license `identifier` (3.1 only),
 /// declares bearer-token and session-cookie security as the default (public
 /// endpoints clear it, see `access::Access::declare`), strips
-/// `nullable` from optional parameters, and documents the TCP 403 response.
+/// `nullable` from optional parameters, and documents the TCP 403 and body
+/// timeout 408 responses.
 fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
     let mut document = serde_json::to_value(document).expect("OpenAPI serialization cannot fail");
     convert_to_openapi_30(&mut document);
@@ -221,17 +222,30 @@ fn convert_to_openapi_30(value: &mut Value) {
 }
 
 /// Adds the 403 returned by the TCP browser trust middleware
-/// (`browser::BrowserPolicy`) to every documented operation.
+/// (`browser::BrowserPolicy`) to every documented operation, and the 408 of
+/// a request body that stopped arriving to those that take one.
 fn complete_http_contract(document: &mut Value) {
+    let error = |description: &str| {
+        serde_json::json!({
+            "description": description,
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
+        })
+    };
     for operation in operations_mut(document) {
+        let has_body = operation.contains_key("requestBody");
         if let Some(responses) = operation
             .get_mut("responses")
             .and_then(Value::as_object_mut)
         {
-            responses.insert("403".into(), serde_json::json!({
-                "description": "TCP authority or browser origin is not trusted",
-                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
-            }));
+            responses.insert(
+                "403".into(),
+                error("TCP authority or browser origin is not trusted"),
+            );
+            if has_body {
+                responses
+                    .entry("408")
+                    .or_insert_with(|| error("The request body stopped arriving"));
+            }
         }
     }
 }

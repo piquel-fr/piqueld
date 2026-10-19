@@ -7,7 +7,11 @@ use super::{
     lease::{Ended, Lease},
     openapi::ApiErrorResponse,
 };
-use crate::{api::ExecSession, auth::Identity, docker::ExecIo};
+use crate::{
+    api::{ExecSession, Expensive},
+    auth::Identity,
+    docker::ExecIo,
+};
 use axum::{
     Extension,
     body::Bytes,
@@ -32,6 +36,9 @@ use tokio_util::sync::CancellationToken;
 
 /// How long the daemon waits to deliver the final message and close.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a client may take to send its `ExecRequest` once connected, so
+/// a connection that sends nothing never keeps its exec slot.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often the daemon pings a client, which notices one that left within
 /// two intervals even while it is not reading the client's input.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
@@ -59,7 +66,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ExecUpgrade {
 #[utoipa::path(get,path="/api/v1/environments/{id}/exec",operation_id="execEnvironmentCommand",params(("id"=String,Path)),
  description="Opens a WebSocket whose first message is a JSON ExecRequest; see piqueld_core::exec.",
  responses((status=101,description="Switched to a WebSocket streaming the command"),
- (status=400,response=inline(ApiErrorResponse)),(status=426,response=inline(ApiErrorResponse))))]
+ (status=400,response=inline(ApiErrorResponse)),(status=426,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn exec(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
@@ -72,10 +79,13 @@ pub(super) async fn exec(
     let mut tailnet = tailnet.map(|Extension(peer)| peer);
     let id = EnvironmentId::parse(id)?;
     let request_id = audit.request_id().map(str::to_owned);
+    let admitted = state.admit(Expensive::Exec)?;
     Ok(upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .on_failed_upgrade(|error| tracing::warn!(?error, "exec connection upgrade failed"))
         .on_upgrade(move |socket| async move {
+            // The command's share of the exec budget, while it runs.
+            let _admitted = admitted;
             let (mut writer, mut reader) = socket.split();
             let result = async {
                 let request = read_request(&mut reader).await?;
@@ -148,21 +158,33 @@ pub(super) async fn exec(
         }))
 }
 
-/// Reads the first message, which names the command to start.
+/// Reads the first message, which names the command to start, failing with
+/// 408 `exec_request_timeout` when none arrives within [`REQUEST_TIMEOUT`].
 async fn read_request(reader: &mut SplitStream<WebSocket>) -> Result<ExecRequest, ApiError> {
-    loop {
-        match reader.next().await {
-            Some(Ok(Message::Text(text))) => return decode_json(text.as_bytes()),
-            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-            _ => {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "exec_request_missing",
-                    "The first exec message must be a JSON ExecRequest",
-                ));
+    let first = async {
+        loop {
+            match reader.next().await {
+                Some(Ok(Message::Text(text))) => return decode_json(text.as_bytes()),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                _ => {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "exec_request_missing",
+                        "The first exec message must be a JSON ExecRequest",
+                    ));
+                }
             }
         }
-    }
+    };
+    tokio::time::timeout(REQUEST_TIMEOUT, first)
+        .await
+        .unwrap_or_else(|_| {
+            Err(ApiError::new(
+                StatusCode::REQUEST_TIMEOUT,
+                "exec_request_timeout",
+                "No ExecRequest arrived within 30 seconds of connecting",
+            ))
+        })
 }
 
 /// Relays messages between the client and the running command until it

@@ -171,10 +171,14 @@ pub(super) fn content_type(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Unwraps a buffered body, reporting the size limit as 413
-/// `request_body_too_large` and other read failures as 400.
+/// `request_body_too_large`, a body that stopped arriving (see
+/// `BODY_IDLE_TIMEOUT`) as 408 `request_body_timeout`, and other read
+/// failures as 400.
 pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, ApiError> {
     body.map_err(|rejection| {
-        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        if let Some(timed_out) = body_timeout(&rejection) {
+            timed_out
+        } else if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request_body_too_large",
@@ -187,6 +191,23 @@ pub(super) fn request_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes,
                 "request body could not be read",
             )
         }
+    })
+}
+
+/// 408 `request_body_timeout` when reading a body failed because it stopped
+/// arriving (see `BODY_IDLE_TIMEOUT`); `None` for any other failure.
+pub(super) fn body_timeout(rejection: &BytesRejection) -> Option<ApiError> {
+    std::iter::successors(
+        Some(rejection as &(dyn std::error::Error + 'static)),
+        |error| error.source(),
+    )
+    .any(<dyn std::error::Error>::is::<tower_http::timeout::TimeoutError>)
+    .then(|| {
+        ApiError::new(
+            StatusCode::REQUEST_TIMEOUT,
+            "request_body_timeout",
+            "request body stopped arriving before it was complete",
+        )
     })
 }
 
@@ -240,4 +261,25 @@ pub(super) fn single_header<'a>(
         return Err(repeated());
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A body that stops arriving times out as 408 `request_body_timeout`,
+    /// not as an unreadable body.
+    #[tokio::test]
+    async fn stalled_bodies_time_out() {
+        let stalled = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
+        let body = tower_http::timeout::TimeoutBody::new(
+            Duration::from_millis(10),
+            axum::body::Body::from_stream(stalled),
+        );
+        let request = Request::new(axum::body::Body::new(body));
+        let error = request_body(Bytes::from_request(request, &()).await).unwrap_err();
+        assert_eq!(error.status, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(error.body().code, "request_body_timeout");
+    }
 }

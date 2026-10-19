@@ -582,6 +582,11 @@ impl From<ApplicationError> for ApiError {
                 )
             }
             ApplicationError::Snapshot(error) => error.into(),
+            ApplicationError::Busy(_) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server_busy",
+                "Too many requests like this one are running; try again shortly",
+            ),
         }
     }
 }

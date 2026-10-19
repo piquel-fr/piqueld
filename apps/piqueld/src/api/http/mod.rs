@@ -16,6 +16,7 @@ use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    timeout::RequestBodyTimeoutLayer,
     trace::TraceLayer,
 };
 use utoipa_axum::router::OpenApiRouter;
@@ -56,6 +57,10 @@ pub use ui::{EmbeddedBundle, UiAssets};
 const JSON: &str = "application/json";
 /// Media type accepted for raw TOML manifest uploads.
 const TOML: &str = "application/toml";
+/// Longest a request body may go without sending anything; reading it then
+/// fails with 408 `request_body_timeout`. Longer than snapshot uploads' own
+/// idle timeout, which reports theirs as `snapshot_timed_out`.
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// Builds the TCP router, registering the dashboard when the binary embeds it.
 pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
@@ -185,10 +190,10 @@ pub fn health_router() -> Router<ApiState> {
 ///
 /// Layers, innermost first: route authorization, authentication guard,
 /// browser trust policy (TCP only, when `browser_policy` is set), audit
-/// trail, state and `OpenAPI` 3.0 document extension, request ID propagation,
-/// error request ID binding and diagnostic recording, request ID generation,
-/// removal of client-supplied request IDs, body size limit, latency metrics,
-/// and tracing.
+/// trail, `no-store` marking, state and `OpenAPI` 3.0 document extension,
+/// request ID propagation, error request ID binding and diagnostic
+/// recording, request ID generation, removal of client-supplied request IDs,
+/// body size limit, body idle timeout, latency metrics, and tracing.
 fn finish_router(
     router: Router<ApiState>,
     state: ApiState,
@@ -247,6 +252,7 @@ fn finish_router(
         .layer(DefaultBodyLimit::max(
             piqueld_core::api::MAX_REQUEST_BODY_BYTES,
         ))
+        .layer(RequestBodyTimeoutLayer::new(BODY_IDLE_TIMEOUT))
         .layer(middleware::from_fn_with_state(state, record_latency))
         .layer(
             TraceLayer::new_for_http()
@@ -304,16 +310,16 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(public!(auth::recover_admin))
         .routes(public!(auth::sign_in_link))
         .routes(authenticated!(auth::me))
-        .routes(public!(auth::register_start))
-        .routes(public!(auth::register_finish))
+        .routes(auth::sign_in_route(public!(auth::register_start)))
+        .routes(auth::sign_in_route(public!(auth::register_finish)))
         .routes(public!(auth::login_start))
-        .routes(public!(auth::login_finish))
-        .routes(public!(auth::operator_sign_in))
+        .routes(auth::sign_in_route(public!(auth::login_finish)))
+        .routes(auth::sign_in_route(public!(auth::operator_sign_in)))
         .routes(authenticated!(auth::logout))
         .routes(authenticated!(auth::directory))
         .routes(authenticated!(auth::manage))
         .routes(auth::device_start_route(public!(auth::device_start)))
-        .routes(public!(auth::device_poll))
+        .routes(auth::sign_in_route(public!(auth::device_poll)))
         .routes(authenticated!(auth::device_inspect))
         .routes(authenticated!(auth::device_approve))
         .routes(authenticated!(system::status))
@@ -418,7 +424,8 @@ async fn record_latency(
 /// 2. Runs the inner handler.
 /// 3. For 4xx/5xx JSON `ErrorBody` responses, rewrites `request_id` to the
 ///    `x-request-id` value.
-/// 4. For 5xx responses (except `configuration_unavailable`), records a
+/// 4. For 5xx responses (except `configuration_unavailable`, `server_busy` and
+///    `tailnet_unavailable`), records a
 ///    diagnostic (the handler's, or a synthesized one) and exposes its ID as
 ///    `details.diagnostic_id`. Storage failures (`storage_unavailable`,
 ///    `schema_mismatch`) are only logged, since the store cannot persist them.
@@ -494,8 +501,10 @@ async fn bind_error_request_id(
 impl ApiState {
     /// Records a server error's diagnostic (`diagnostic`, or a synthesized one)
     /// in `environment`'s history, attributed to the request's `actor`, and
-    /// exposes its ID as `details.diagnostic_id`. Client errors and
-    /// `configuration_unavailable` are left untouched.
+    /// exposes its ID as `details.diagnostic_id`. Client errors,
+    /// `configuration_unavailable`, `server_busy` and `tailnet_unavailable`
+    /// are left untouched: the last two would only add writes to a daemon
+    /// that is overloaded or whose `tailscaled` hangs.
     async fn record_failure(
         &self,
         status: StatusCode,
@@ -504,7 +513,12 @@ impl ApiState {
         environment: Option<&piqueld_core::EnvironmentId>,
         actor: crate::store::Attribution<'_>,
     ) {
-        if !status.is_server_error() || error.code == "configuration_unavailable" {
+        if !status.is_server_error()
+            || matches!(
+                error.code.as_str(),
+                "configuration_unavailable" | "server_busy" | "tailnet_unavailable"
+            )
+        {
             return;
         }
         let diagnostic = diagnostic.unwrap_or_else(|| {

@@ -23,6 +23,14 @@ Responses use a `data` envelope; lists contain `items` and an opaque
 `next_cursor`. Errors expose a safe message, code, details, and request ID.
 Clients poll for progress.
 
+Request bodies are limited to 2 MiB, and to 64 KiB on the public sign-in
+endpoints (16 KiB for device starts); larger ones fail with `413
+request_body_too_large`. A body that sends nothing for a minute fails with
+`408 request_body_timeout`. Deployment analytics, logs, commands and event
+streams each run a bounded number at once across all listeners (4 analytics
+reads, 8 log reads, 32 commands, 128 event streams); more fail at once with
+`503 server_busy`, which records no diagnostic. Retry them shortly.
+
 An application owns the saved manifest and its configuration revision
 (`generation`). Its environments deploy that manifest; each owns its deployment
 history, operations, status, volumes, generated secrets, routes, and Docker
@@ -601,7 +609,8 @@ handshakes must send the configured `Origin`, like mutations.
 The client's first message is a JSON text message such as `{ "service": "auth",
 "command": ["auth-service", "invite", "create"], "stdin": false, "tty": null }`;
 `tty` takes an initial `{ "width", "height" }` size and reports terminal output
-as stdout. Every later message is binary: a one-byte tag, then the payload, at
+as stdout. Without it within 30 seconds, the session fails with 408
+`exec_request_timeout`. Every later message is binary: a one-byte tag, then the payload, at
 most 1 MiB per message. Clients send stdin bytes (1), stdin end (2; ignored with
 a terminal, where disconnecting detaches) and terminal resizes (3, `u16` width
 then height). Closing the connection, rather than sending stdin end, stops the

@@ -5,7 +5,7 @@ use crate::store::StoreError;
 use crate::tailnet::{LookupTimedOut, TailnetLookup};
 use axum::{
     Extension, Json, Router,
-    extract::{ConnectInfo, Request},
+    extract::{ConnectInfo, DefaultBodyLimit, Request},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -17,6 +17,7 @@ use piqueld_core::auth::{
 };
 use piqueld_core::tailnet::TailnetPeer;
 use std::{net::SocketAddr, sync::Arc};
+use utoipa_axum::router::UtoipaMethodRouter;
 
 /// Authentication boundary that every API router requires and applies itself.
 /// Daemon listeners use the passkey [`Auth`] service; tests may supply a fake.
@@ -643,18 +644,33 @@ pub(super) async fn device_start(
     };
     Ok(Json(auth.device_start(requester, request.grants).await?))
 }
-/// Bodies [`device_start`] accepts; larger ones answer 413 while they are
-/// read, before anything is buffered beyond it.
+/// Bodies [`device_start`] accepts: pending logins are kept in memory.
 const DEVICE_START_LIMIT_BYTES: usize = 16 * 1024;
+/// Bodies the other public sign-in endpoints accept: anyone may send them
+/// before signing in, and their JSON, passkey responses included, is small.
+const SIGN_IN_LIMIT_BYTES: usize = 64 * 1024;
+/// Caps the bodies `routes` accept at `bytes`; larger ones answer 413 while
+/// they are read, before anything is buffered beyond it.
+fn limit_body<S: Clone + Send + Sync + 'static>(
+    (schemas, paths, router): UtoipaMethodRouter<S>,
+    bytes: usize,
+) -> UtoipaMethodRouter<S> {
+    (schemas, paths, router.layer(DefaultBodyLimit::max(bytes)))
+}
+/// Registers public sign-in `routes` with the [`SIGN_IN_LIMIT_BYTES`] body
+/// limit.
+pub(super) fn sign_in_route<S: Clone + Send + Sync + 'static>(
+    routes: UtoipaMethodRouter<S>,
+) -> UtoipaMethodRouter<S> {
+    limit_body(routes, SIGN_IN_LIMIT_BYTES)
+}
 /// Registers [`device_start`] with its [`DEVICE_START_LIMIT_BYTES`] body
 /// limit, marking the body optional in the `OpenAPI` document: older clients
 /// send none.
 pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
-    (schemas, mut paths, router): utoipa_axum::router::UtoipaMethodRouter<S>,
-) -> utoipa_axum::router::UtoipaMethodRouter<S> {
-    let router = router.layer(axum::extract::DefaultBodyLimit::max(
-        DEVICE_START_LIMIT_BYTES,
-    ));
+    routes: UtoipaMethodRouter<S>,
+) -> UtoipaMethodRouter<S> {
+    let (schemas, mut paths, limited) = limit_body(routes, DEVICE_START_LIMIT_BYTES);
     for item in paths.paths.values_mut() {
         if let Some(body) = item
             .post
@@ -664,7 +680,7 @@ pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
             body.required = Some(utoipa::openapi::Required::False);
         }
     }
-    (schemas, paths, router)
+    (schemas, paths, limited)
 }
 /// Polls a device sign-in.
 ///
