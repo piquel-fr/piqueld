@@ -148,8 +148,11 @@ impl LimitedDocker<BollardDocker> {
             })
     }
 
-    /// Yields whenever a container starts, until the stream fails.
-    pub(crate) fn container_starts(&self) -> impl Stream<Item = Result<(), DockerError>> + use<> {
+    /// Yields the ID of each container that starts, when Docker names it,
+    /// until the stream fails.
+    pub(crate) fn container_starts(
+        &self,
+    ) -> impl Stream<Item = Result<Option<String>, DockerError>> + use<> {
         self.inner
             .docker
             .events(Some(
@@ -160,7 +163,11 @@ impl LimitedDocker<BollardDocker> {
                     ]))
                     .build(),
             ))
-            .map(|event| event.map(drop).or_request("watch container starts"))
+            .map(|event| {
+                event
+                    .map(|event| event.actor.and_then(|actor| actor.id))
+                    .or_request("watch container starts")
+            })
     }
 }
 

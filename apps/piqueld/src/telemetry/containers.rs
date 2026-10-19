@@ -19,6 +19,7 @@ use piqueld_core::api::LogStream;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
 
 /// Instrumentation scope of every container record.
@@ -38,19 +39,32 @@ pub struct ContainerCursors {
     /// a container without a cursor was created after it. `None` before the
     /// first save, when export starts from the present.
     pub watermark: Option<i64>,
-    /// Cursors by container ID.
-    pub containers: BTreeMap<String, ContainerCursor>,
+    /// By container ID, Docker's timestamp of the last line sent or dropped,
+    /// or where reading started, in Unix nanoseconds. Resuming skips lines
+    /// before it but not at it, so a line may be sent twice and none is
+    /// missed.
+    pub containers: BTreeMap<String, i64>,
 }
 
-/// Where log export stopped reading one container.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ContainerCursor {
-    /// Docker's timestamp of the last line read, or where reading started, in
-    /// Unix nanoseconds. Resuming skips lines before it but not at it, so a
-    /// line may be sent twice and none is missed.
-    pub at: i64,
-    /// Whether the container stopped and its output was read to the end.
-    pub done: bool,
+/// Moves a container's cursor to a queued line's timestamp once every copy
+/// of the line queued for export was sent or dropped, which drops this.
+/// Queues are sent in order, so the cursor never passes a line still queued.
+/// A line a full queue refused leaves the cursor alone, since lines queued
+/// before it may still wait.
+#[derive(Debug)]
+pub(super) struct Handled {
+    cursor: Arc<AtomicI64>,
+    at: i64,
+    /// Cleared when a queue refused a copy.
+    queued: AtomicBool,
+}
+
+impl Drop for Handled {
+    fn drop(&mut self) {
+        if self.queued.load(Ordering::Relaxed) {
+            self.cursor.fetch_max(self.at, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The current time in Unix nanoseconds.
@@ -63,7 +77,7 @@ pub(crate) fn now_ns() -> i64 {
 }
 
 /// The resource of one container's records: who runs it and what it runs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ContainerResource(Arc<Resource>);
 
 impl ContainerResource {
@@ -303,13 +317,17 @@ fn bounded(mut line: String) -> String {
     line
 }
 
-/// A queued container log record with its resource.
-pub(super) type ContainerLog = (ContainerResource, LogRecord);
+/// A queued container log record with its resource, and what moves its
+/// container's cursor once it is sent or dropped.
+pub(super) type ContainerLog = (ContainerResource, LogRecord, Arc<Handled>);
 
-/// Groups queued container records by resource, in queue order.
-pub(super) fn group_logs(logs: Vec<ContainerLog>) -> Vec<ResourceLogs> {
+/// Groups queued container records by resource, in queue order. Returns what
+/// moves their containers' cursors too, to drop once they are sent.
+pub(super) fn group_logs(logs: Vec<ContainerLog>) -> (Vec<ResourceLogs>, Vec<Arc<Handled>>) {
     let mut grouped: Vec<(ContainerResource, Vec<LogRecord>)> = Vec::new();
-    for (resource, record) in logs {
+    let mut handled = Vec::with_capacity(logs.len());
+    for (resource, record, line) in logs {
+        handled.push(line);
         match grouped
             .iter_mut()
             .find(|(seen, _)| Arc::ptr_eq(&seen.0, &resource.0))
@@ -318,7 +336,7 @@ pub(super) fn group_logs(logs: Vec<ContainerLog>) -> Vec<ResourceLogs> {
             None => grouped.push((resource, vec![record])),
         }
     }
-    grouped
+    let grouped = grouped
         .into_iter()
         .map(|(resource, log_records)| ResourceLogs {
             resource: Some((*resource.0).clone()),
@@ -329,7 +347,8 @@ pub(super) fn group_logs(logs: Vec<ContainerLog>) -> Vec<ResourceLogs> {
             }],
             ..Default::default()
         })
-        .collect()
+        .collect();
+    (grouped, handled)
 }
 
 impl Telemetry {
@@ -340,12 +359,15 @@ impl Telemetry {
     }
 
     /// Queues one line of a container's output, taken from `limit`, on every
-    /// destination; a line past the limit is dropped and counted. The line is
-    /// cut to [`MAX_LINE_BYTES`] and its severity left unset.
+    /// destination, moving `handled` to its `timestamp` once every copy was
+    /// sent or dropped. A line past the limit is dropped and counted, and
+    /// leaves `handled` alone. The line is cut to [`MAX_LINE_BYTES`] and its
+    /// severity left unset.
     pub(crate) fn export_container_line(
         &self,
         resource: &ContainerResource,
         limit: &mut LineLimit,
+        handled: &Arc<AtomicI64>,
         stream: LogStream,
         timestamp: i64,
         line: String,
@@ -370,11 +392,16 @@ impl Telemetry {
             )],
             ..Default::default()
         };
+        let handled = Arc::new(Handled {
+            cursor: Arc::clone(handled),
+            at: timestamp,
+            queued: AtomicBool::new(true),
+        });
         hub.destinations.each(|destination| {
-            destination.push_log(super::LogItem::Container((
-                resource.clone(),
-                record.clone(),
-            )));
+            let log = (resource.clone(), record.clone(), Arc::clone(&handled));
+            if !destination.push_log(super::LogItem::Container(log)) {
+                handled.queued.store(false, Ordering::Relaxed);
+            }
         });
     }
 
@@ -485,15 +512,23 @@ mod tests {
     fn container_logs_are_grouped_by_resource() {
         let web = ContainerResource::new([("service.name", "web".into())]);
         let worker = ContainerResource::new([("service.name", "worker".into())]);
-        let grouped = group_logs(vec![
-            (web.clone(), LogRecord::default()),
-            (worker, LogRecord::default()),
-            (web, LogRecord::default()),
-        ]);
+        let cursor = Arc::new(AtomicI64::new(0));
+        let line = |resource: &ContainerResource, at| {
+            let handled = Arc::new(Handled {
+                cursor: Arc::clone(&cursor),
+                at,
+                queued: AtomicBool::new(true),
+            });
+            (resource.clone(), LogRecord::default(), handled)
+        };
+        let (grouped, handled) = group_logs(vec![line(&web, 1), line(&worker, 2), line(&web, 3)]);
         let counts: Vec<_> = grouped
             .iter()
             .map(|logs| logs.scope_logs[0].log_records.len())
             .collect();
         assert_eq!(counts, [2, 1]);
+        assert_eq!(cursor.load(Ordering::Relaxed), 0, "lines not yet sent");
+        drop(handled);
+        assert_eq!(cursor.load(Ordering::Relaxed), 3);
     }
 }

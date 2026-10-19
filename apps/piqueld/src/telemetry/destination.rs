@@ -227,11 +227,14 @@ impl Destination {
         })
     }
 
-    /// Queues `item` on `queue`, counting it as dropped when the queue is full.
-    fn push<T>(&self, queue: &Queue<T>, item: T) {
-        if queue.sender.try_send(item).is_err() {
+    /// Queues `item` on `queue`, counting it as dropped when the queue is
+    /// full. Returns whether it was queued.
+    fn push<T>(&self, queue: &Queue<T>, item: T) -> bool {
+        let queued = queue.sender.try_send(item).is_ok();
+        if !queued {
             self.health.drop_records(1);
         }
+        queued
     }
 
     /// Counts `count` records dropped before reaching a queue.
@@ -243,8 +246,8 @@ impl Destination {
         self.push(&self.spans, span);
     }
 
-    pub(super) fn push_log(&self, log: LogItem) {
-        self.push(&self.logs, log);
+    pub(super) fn push_log(&self, log: LogItem) -> bool {
+        self.push(&self.logs, log)
     }
 
     pub(super) fn push_metrics(&self, metrics: ExportMetricsServiceRequest) {
@@ -427,11 +430,16 @@ impl Signal for LogItem {
                 resource,
             );
         }
-        resource_logs.extend(super::containers::group_logs(containers));
+        let (containers, handled) = super::containers::group_logs(containers);
+        resource_logs.extend(containers);
         let request = ExportLogsServiceRequest { resource_logs };
         let response = LogsServiceClient::new(destination.channel.clone())
             .export(destination.request(request))
-            .await?;
+            .await;
+        // Container cursors pass these lines only now that they are sent, or
+        // dropped by a failed export.
+        drop(handled);
+        let response = response?;
         Ok(response
             .into_inner()
             .partial_success

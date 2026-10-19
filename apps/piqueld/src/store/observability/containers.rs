@@ -46,7 +46,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::ContainerCursor;
 
     #[tokio::test]
     async fn container_cursors_are_replaced_and_cleared() {
@@ -58,7 +57,7 @@ mod tests {
         for at in [1, 2] {
             let cursors = ContainerCursors {
                 watermark: Some(at),
-                containers: [("container".to_owned(), ContainerCursor { at, done: false })].into(),
+                containers: [("container".to_owned(), at)].into(),
             };
             store.save_container_cursors(&cursors).await.unwrap();
             assert_eq!(store.container_cursors().await.unwrap(), cursors);

@@ -425,12 +425,13 @@ piqueld starts following a container as soon as Docker reports it starting, and
 lists containers every 10 seconds besides, reading each container's output from
 its start, so a short job's output is read even after it exits.
 
-Delivery is at least once across daemon restarts: piqueld saves where it stopped
-reading each container, ten seconds late, and resumes from there, so lines read
-just before a restart may be sent again, but none the container wrote while
-piqueld was down are missed, as long as Docker still has them. When export is
-first enabled, it starts from the present. Within one run, lines are dropped
-like any other record when the queue is full or the collector fails.
+Delivery is at least once across daemon restarts: every 10 seconds, piqueld
+saves the last line of each container that was sent, or dropped as described
+below, and resumes from there, so lines sent just before a restart may be sent
+again, but none still queued or written while piqueld was down are missed, as
+long as Docker still has them. When export is first enabled, or enabled again
+after `containers = false`, it starts from the present. Within one run, lines
+are dropped like any other record when the queue is full or the collector fails.
 
 **Metrics**, polled every 30 seconds with one-shot Docker stats for every running
 container, with cumulative temporality and counters starting at the container's

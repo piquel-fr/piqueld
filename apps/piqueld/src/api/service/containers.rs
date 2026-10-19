@@ -3,18 +3,17 @@
 //!
 //! Discovery lists the containers every [`DISCOVERY_INTERVAL`], and as soon
 //! as Docker reports one starting. Each container with output to read gets a
-//! follower, which reads from its cursor until the container stops. Cursors
-//! are saved one discovery late, so a record queued but not yet sent when the
-//! daemon dies is read again after the restart rather than lost.
+//! follower, which reads from its cursor until the container stops. The
+//! cursors saved for restarts only pass a line once every copy queued for
+//! export was sent or dropped, so a line still queued when the daemon dies is
+//! read again after the restart rather than lost.
 use super::ApplicationService;
 use super::telemetry::{Names, interval, step};
 use crate::docker::{
     BollardDocker, ContainerState, DockerError, LimitedDocker, ManagedContainer, Workload,
 };
 use crate::store::StoreError;
-use crate::telemetry::{
-    ContainerCursor, ContainerCursors, ContainerResource, ContainerSample, LineLimit, now_ns,
-};
+use crate::telemetry::{ContainerCursors, ContainerResource, ContainerSample, LineLimit, now_ns};
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap};
@@ -39,13 +38,23 @@ pub(super) type Docker = Arc<LimitedDocker<BollardDocker>>;
 /// Every container being exported, by ID, shared with the usage poll.
 type Exports = Arc<Mutex<HashMap<String, Exported>>>;
 
+/// A container's resource, shared with its follower and replaced when its
+/// environment is renamed.
+type SharedResource = Arc<Mutex<ContainerResource>>;
+
 /// One container being exported.
 struct Exported {
     container: ManagedContainer,
-    resource: ContainerResource,
-    /// Where its output was read up to, shared with its follower.
-    cursor: Arc<AtomicI64>,
-    /// Whether it stopped and its output was read to the end.
+    resource: SharedResource,
+    /// Docker's timestamp of the last line read, or where reading starts, in
+    /// Unix nanoseconds; shared with its follower.
+    read: Arc<AtomicI64>,
+    /// The last line every copy of which was sent or dropped, or where
+    /// reading started: where reading resumes after a restart.
+    handled: Arc<AtomicI64>,
+    /// Whether it stopped and its output was read to the end. Not saved: a
+    /// restart reads stopped containers once more from their cursor, since a
+    /// restarted ingress container keeps its ID.
     done: bool,
     /// Reads its output until it stops.
     follower: Option<JoinHandle<Result<(), DockerError>>>,
@@ -95,23 +104,23 @@ impl Exported {
                 Arc::clone(docker),
                 service.telemetry.clone(),
                 self.container.id.clone(),
-                self.resource.clone(),
-                Arc::clone(&self.cursor),
+                Arc::clone(&self.resource),
+                (Arc::clone(&self.read), Arc::clone(&self.handled)),
             )));
         }
     }
 }
 
-/// Exports a container's output from `cursor` until it stops, moving the
-/// cursor past each line read.
+/// Exports a container's output from its `read` cursor until it stops,
+/// moving the cursor past each line read; the queued lines move `handled`.
 async fn follow(
     docker: Docker,
     telemetry: crate::telemetry::Telemetry,
     id: String,
-    resource: ContainerResource,
-    cursor: Arc<AtomicI64>,
+    resource: SharedResource,
+    (read, handled): (Arc<AtomicI64>, Arc<AtomicI64>),
 ) -> Result<(), DockerError> {
-    let resume = cursor.load(Ordering::Relaxed);
+    let resume = read.load(Ordering::Relaxed);
     // Docker reads from whole seconds; lines before the cursor are skipped.
     let since = i32::try_from(resume.div_euclid(1_000_000_000).max(0)).unwrap_or(i32::MAX);
     let mut limit = LineLimit::default();
@@ -126,8 +135,10 @@ async fn follow(
                 continue;
             }
             let line = piqueld_core::api::LogRecord::clean_message(&line);
-            telemetry.export_container_line(&resource, &mut limit, stream, timestamp, line);
-            cursor.fetch_max(timestamp, Ordering::Relaxed);
+            let resource = resource.lock().clone();
+            telemetry
+                .export_container_line(&resource, &mut limit, &handled, stream, timestamp, line);
+            read.fetch_max(timestamp, Ordering::Relaxed);
         }
     }
     Ok(())
@@ -136,7 +147,7 @@ async fn follow(
 /// Discovery's state between runs.
 struct Discovery {
     /// Cursors saved by the previous process, used once per container.
-    saved: BTreeMap<String, ContainerCursor>,
+    saved: BTreeMap<String, i64>,
     /// Where containers the previous process did not know start reading.
     start: i64,
     /// When the last successful discovery started, in Unix nanoseconds.
@@ -185,9 +196,8 @@ impl ApplicationService {
         );
     }
 
-    /// Discovers containers every [`DISCOVERY_INTERVAL`] and when one starts,
-    /// saving the cursors of the previous interval each time, until
-    /// cancelled.
+    /// Discovers containers every [`DISCOVERY_INTERVAL`], saving their
+    /// cursors, and when one starts, until cancelled.
     async fn discover_containers(
         &self,
         docker: &Docker,
@@ -197,7 +207,6 @@ impl ApplicationService {
     ) {
         let mut tick = interval(DISCOVERY_INTERVAL);
         let mut starts = None;
-        let mut pending: Option<ContainerCursors> = None;
         loop {
             let started = async {
                 match &mut starts {
@@ -210,7 +219,13 @@ impl ApplicationService {
                 _ = tick.tick() => true,
                 event = started => {
                     match event {
-                        Some(Ok(())) => {}
+                        // It may have stopped already, with new output.
+                        Some(Ok(Some(id))) => {
+                            if let Some(exported) = exports.lock().get_mut(&id) {
+                                exported.done = false;
+                            }
+                        }
+                        Some(Ok(None)) => {}
                         // Resubscribed at the next interval.
                         Some(Err(_)) | None => starts = None,
                     }
@@ -237,30 +252,22 @@ impl ApplicationService {
             let Some(scanned) = discovery.scanned else {
                 continue;
             };
-            let snapshot = ContainerCursors {
+            let cursors = ContainerCursors {
                 watermark: Some(scanned),
                 containers: exports
                     .lock()
                     .iter()
-                    .map(|(id, exported)| {
-                        let cursor = ContainerCursor {
-                            at: exported.cursor.load(Ordering::Relaxed),
-                            done: exported.done,
-                        };
-                        (id.clone(), cursor)
-                    })
+                    .map(|(id, exported)| (id.clone(), exported.handled.load(Ordering::Relaxed)))
                     .collect(),
             };
-            if let Some(cursors) = pending.replace(snapshot)
-                && let Err(error) = self.store.save_container_cursors(&cursors).await
-            {
+            if let Err(error) = self.store.save_container_cursors(&cursors).await {
                 tracing::error!(?error, "container log cursors could not be saved");
             }
         }
     }
 
-    /// Lists the containers, starts following new ones and forgets removed
-    /// ones.
+    /// Lists the containers, starts following new ones, forgets removed ones,
+    /// and refreshes their resources.
     async fn discover(
         &self,
         docker: &Docker,
@@ -270,40 +277,37 @@ impl ApplicationService {
         discovery.ran = Some(Instant::now());
         let scanned = now_ns();
         let containers = docker.managed_containers(self.store.instance_id()).await?;
-        let known: Vec<_> = {
-            let exports = exports.lock();
-            containers
-                .iter()
-                .map(|container| exports.contains_key(&container.id))
-                .collect()
-        };
-        let mut fresh = HashMap::new();
-        for (container, known) in containers.iter().zip(known) {
-            if !known {
-                let resource = self
-                    .container_resource(container, &mut discovery.names)
-                    .await;
-                fresh.insert(container.id.clone(), resource);
-            }
+        let mut resources = Vec::with_capacity(containers.len());
+        for container in &containers {
+            resources.push(
+                self.container_resource(container, &mut discovery.names)
+                    .await,
+            );
         }
         let mut exports = exports.lock();
         exports.retain(|id, _| containers.iter().any(|container| &container.id == id));
-        for container in containers {
+        for (container, resource) in containers.into_iter().zip(resources) {
             let exported = exports.entry(container.id.clone()).or_insert_with(|| {
-                let cursor = discovery.saved.remove(&container.id);
+                let cursor = discovery
+                    .saved
+                    .remove(&container.id)
+                    .unwrap_or(discovery.start);
                 Exported {
-                    resource: fresh
-                        .remove(&container.id)
-                        .expect("unknown containers have a resource"),
-                    cursor: Arc::new(AtomicI64::new(
-                        cursor.map_or(discovery.start, |cursor| cursor.at),
-                    )),
-                    done: cursor.is_some_and(|cursor| cursor.done),
+                    resource: Arc::new(Mutex::new(resource.clone())),
+                    read: Arc::new(AtomicI64::new(cursor)),
+                    handled: Arc::new(AtomicI64::new(cursor)),
+                    done: false,
                     follower: None,
                     warned: false,
                     container: container.clone(),
                 }
             });
+            {
+                let mut current = exported.resource.lock();
+                if *current != resource {
+                    *current = resource;
+                }
+            }
             exported.container = container;
             exported.keep_following(self, docker);
         }
@@ -360,7 +364,7 @@ impl ApplicationService {
                 (
                     exported.container.id.clone(),
                     exported.container.created.saturating_mul(1_000_000_000),
-                    exported.resource.clone(),
+                    exported.resource.lock().clone(),
                 )
             })
             .collect();

@@ -25,7 +25,7 @@ mod destination;
 mod journal;
 mod metrics;
 
-pub use containers::{ContainerCursor, ContainerCursors};
+pub use containers::ContainerCursors;
 pub(crate) use containers::{ContainerResource, ContainerSample, LineLimit, now_ns};
 use destination::{Destination, LogItem};
 pub use destination::{Headers, HeadersError};
