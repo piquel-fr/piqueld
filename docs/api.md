@@ -732,8 +732,10 @@ belong to their environment. Secret endpoints expose metadata only:
   references in saved configuration, the current runnable deployment, or the
   active target of any environment that uses the secret (409 `secret_referenced`).
   The captured deployment manifest protects references even before version pinning.
-  Deletion reserves the secret, releases the database writer lock, then removes
-  Docker versions before encrypted records. Partial failure or restart leaves
+  Deletion waits for deployments' Docker changes in progress and holds off new
+  ones, for every application, until it finishes: up to 30 seconds per
+  environment whose Docker secrets it removes. It reserves the secret, releases the database writer
+  lock, then removes Docker versions before encrypted records. Partial failure or restart leaves
   `deleting: true`; retry DELETE to finish. Replacement and new configuration
   references return 409 `secret_deleting` until cleanup completes. A missing
   `X-Expected-Generation` returns 400 `secret_generation_required`, and a version

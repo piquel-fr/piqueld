@@ -23,8 +23,9 @@ pub struct Controller<D> {
     docker: Arc<crate::docker::LimitedDocker<D>>,
     /// Serializes plan-action Docker mutations across applications (operation
     /// execution and active-target repair), so each journaled request is checked
-    /// against the latest operation. Secret removal does not take it.
-    mutations: tokio::sync::Mutex<()>,
+    /// against the latest operation. Secret deletion takes it too, through
+    /// `RuntimeBoundary::lock_mutations`.
+    mutations: Arc<tokio::sync::Mutex<()>>,
     /// Deadline for resolving images, building sources, and fetching manifests.
     prepare_timeout: Duration,
     store: Arc<Store>,
@@ -45,7 +46,7 @@ impl<D> Controller<D> {
     pub fn new(docker: Arc<D>, store: Arc<Store>) -> Self {
         Self {
             docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
-            mutations: tokio::sync::Mutex::new(()),
+            mutations: Arc::default(),
             prepare_timeout: Duration::from_mins(5),
             store,
             ingress: None,
@@ -193,6 +194,7 @@ impl<D: DockerApi> Controller<D> {
             wake,
             self.prepare_timeout,
             self.images_lock(),
+            Arc::clone(&self.mutations),
         ))
     }
 }

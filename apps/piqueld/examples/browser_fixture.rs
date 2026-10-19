@@ -50,6 +50,10 @@ impl RuntimeBoundary for Runtime {
     async fn readiness(&self) -> (bool, bool) {
         (false, false)
     }
+    /// Nothing else mutates the fixture's runtime.
+    async fn lock_mutations(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::new(tokio::sync::Mutex::new(())).lock_owned().await
+    }
     async fn remove_secrets(
         &self,
         _: &EnvironmentId,

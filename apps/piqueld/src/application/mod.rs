@@ -58,6 +58,10 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Returns separate Engine and Swarm probe results.
     async fn readiness(&self) -> (bool, bool);
 
+    /// Waits for the Docker mutations of operations and repair in progress,
+    /// and keeps new ones from starting until the guard drops. Secret
+    /// deletion holds it from checking references to finishing.
+    async fn lock_mutations(&self) -> tokio::sync::OwnedMutexGuard<()>;
     /// Removes the supplied versions after logical-reference checks succeed.
     async fn remove_secrets(
         &self,

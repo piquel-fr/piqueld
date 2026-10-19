@@ -666,8 +666,9 @@ impl ApplicationService {
             .await?)
     }
 
-    /// Removes an unreferenced generated secret and all of its runtime versions.
-    /// See `remove_secret_versions`.
+    /// Removes an unreferenced generated secret and all of its runtime versions,
+    /// holding off the controller's Docker mutations throughout (see
+    /// `RuntimeBoundary::lock_mutations`). See `remove_secret_versions`.
     ///
     /// # Errors
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
@@ -678,6 +679,7 @@ impl ApplicationService {
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
+        let _mutations = self.runtime.lock_mutations().await;
         let deletion = self
             .store
             .begin_secret_deletion(actor, environment, name, expected_generation)
@@ -690,7 +692,8 @@ impl ApplicationService {
     }
 
     /// Removes an application's secret that no environment uses, and every
-    /// environment's Docker secrets for it. See `remove_secret_versions`.
+    /// environment's Docker secrets for it, holding off the controller's
+    /// Docker mutations as `delete_secret` does. See `remove_secret_versions`.
     ///
     /// # Errors
     /// Returns when the secret is referenced or storage or runtime cleanup fails.
@@ -701,6 +704,7 @@ impl ApplicationService {
         name: &str,
         expected_generation: i64,
     ) -> Result<(), ApplicationError> {
+        let _mutations = self.runtime.lock_mutations().await;
         let deletion = self
             .store
             .begin_stored_secret_deletion(actor, application, name, expected_generation)
