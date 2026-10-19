@@ -1227,14 +1227,7 @@ async fn middleware_authenticates_api_and_enforces_cookie_csrf() {
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), expected);
-        // Rejections are marked too, so no API response is ever cached.
-        let cache_control = response
-            .headers()
-            .get("cache-control")
-            .map(|value| value.to_str().unwrap());
-        let expected_cache_control = path.starts_with("/api/").then_some("no-store");
-        assert_eq!(cache_control, expected_cache_control, "{method} {path}");
+        assert_eq!(response.status(), expected, "{method} {path}");
     }
     // Browsers send cookies on cross-site WebSocket handshakes, which use GET.
     for (origin, expected) in [
@@ -1350,6 +1343,50 @@ async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessi
         router.oneshot(request).await.unwrap().status(),
         StatusCode::OK
     );
+}
+
+/// Cross-site starts are refused before the throttle counts them, so they
+/// cannot spend a peer's sign-in allowance. Only a bearer token that
+/// authenticates lets a ceremony go without the configured origin.
+#[tokio::test]
+async fn cross_site_starts_spend_no_sign_in_allowance() {
+    use axum::{
+        Router,
+        body::Body,
+        extract::ConnectInfo,
+        http::{Request, StatusCode},
+        routing::post,
+    };
+    use tower::ServiceExt;
+    let f = Fixture::new().await;
+    let (_, token) = f
+        .account("alice", CredentialKind::Token, None, &Grants::admin())
+        .await;
+    let router = f
+        .auth
+        .clone()
+        .guard(Router::new().route("/api/v1/auth/login/start", post(|| async { "ok" })));
+    let start = |header: (&str, String)| {
+        let request = Request::post("/api/v1/auth/login/start")
+            .header(header.0, header.1)
+            .extension(ConnectInfo(
+                "192.0.2.1:1234".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::empty())
+            .unwrap();
+        let router = router.clone();
+        async move { router.oneshot(request).await.unwrap().status() }
+    };
+    for _ in 0..31 {
+        let foreign = ("origin", "https://attacker.example".to_owned());
+        assert_eq!(start(foreign).await, StatusCode::FORBIDDEN);
+        let unusable = ("authorization", format!("Bearer {}", "x".repeat(43)));
+        assert_eq!(start(unusable).await, StatusCode::FORBIDDEN);
+    }
+    let bearer = ("authorization", format!("Bearer {token}"));
+    assert_eq!(start(bearer).await, StatusCode::OK);
+    let same_origin = ("origin", f.auth.origin().to_owned());
+    assert_eq!(start(same_origin).await, StatusCode::OK);
 }
 
 #[tokio::test]

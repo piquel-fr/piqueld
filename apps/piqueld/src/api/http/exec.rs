@@ -2,7 +2,7 @@
 use super::{
     ApiError, ApiPath, ApiState,
     access::Audit,
-    auth::{FreshTailnet, TailnetSource, binding_mismatch},
+    auth::{FreshTailnet, TailnetSource},
     extract::decode_json,
     lease::{Ended, Lease},
     openapi::ApiErrorResponse,
@@ -82,11 +82,8 @@ pub(super) async fn exec(
                 // Like grants, a tailnet binding is rechecked once the command
                 // arrives, against the peer as it is now.
                 if let Some(fresh) = FreshTailnet::check(&identity, source.as_ref()).await {
-                    let matches = fresh.matches(&identity);
-                    tailnet = fresh.0;
-                    if !matches {
-                        return Err(binding_mismatch());
-                    }
+                    tailnet = fresh.peer().cloned();
+                    fresh.verify(&identity)?;
                 }
                 // The command ends as soon as its caller may no longer start
                 // it. Watching starts before the command is created, and

@@ -370,7 +370,7 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - The node has its own tailnet IP, so it never competes with managed ingress
   for port 443.
 - piqueld asks its `tailscaled` who each peer is (`tailscale whois`, one
-  lookup at a time). The [audit trail](observability.md#audit-trail) records
+  lookup per address at a time). The [audit trail](observability.md#audit-trail) records
   that tailnet user or tag and node, cached for a minute per address. API
   tokens can be [bound to a tailnet identity](authorization.md#tailnet-bound-tokens),
   which is always checked with a fresh lookup.

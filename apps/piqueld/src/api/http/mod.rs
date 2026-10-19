@@ -183,8 +183,8 @@ pub fn health_router() -> Router<ApiState> {
 
 /// Wraps a route set with the layers shared by every transport.
 ///
-/// Layers, innermost first: browser trust policy (TCP only, when
-/// `browser_policy` is set), route authorization, authentication guard, audit
+/// Layers, innermost first: route authorization, authentication guard,
+/// browser trust policy (TCP only, when `browser_policy` is set), audit
 /// trail, state and `OpenAPI` 3.0
 /// document extension, request ID propagation, error request ID binding and
 /// diagnostic recording, request ID generation, body size limit, latency
@@ -207,6 +207,17 @@ fn finish_router(
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, matched.as_ref()) }
     });
+    // Authorization runs after authentication, which may reject requests
+    // without reaching a handler. The browser trust policy runs before both,
+    // so untrusted requests are refused before they spend sign-in allowance
+    // or tailnet lookups. Auditing wraps all three to record their refusals.
+    // Keep them inside the shared request tracing and error/diagnostic
+    // response layers.
+    let router = router.layer(middleware::from_fn_with_state(
+        (Arc::clone(&route_access), state.clone()),
+        access::enforce,
+    ));
+    let router = auth.guard(router);
     let router = if let Some(policy) = browser_policy {
         router.layer(middleware::from_fn(move |request, next| {
             policy.clone().enforce(request, next)
@@ -214,19 +225,12 @@ fn finish_router(
     } else {
         router
     };
-    // Authorization runs after authentication, which may reject requests
-    // without reaching a handler; auditing wraps both to record either's
-    // refusals. Keep all three inside the shared request tracing and
-    // error/diagnostic response layers.
-    let router = router.layer(middleware::from_fn_with_state(
-        (Arc::clone(&route_access), state.clone()),
-        access::enforce,
-    ));
-    auth.guard(router)
+    router
         .layer(middleware::from_fn_with_state(
             (route_access, state.clone()),
             access::audit,
         ))
+        .layer(middleware::from_fn(no_store))
         .with_state(state.clone())
         .layer(Extension(Arc::new(openapi)))
         // The propagator stamps errors with their request ID, and the binder
@@ -365,6 +369,20 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Read) => secrets::list_stored))
         .routes(granted!(App(SecretsWrite) => secrets::put_stored, secrets::delete_stored))
         .routes(granted!(App(SecretsWrite) => secrets::set_access))
+}
+
+/// Middleware marking every API response, refusals included, `Cache-Control:
+/// no-store`; other paths, like dashboard assets, keep their own caching.
+async fn no_store(request: Request, next: Next) -> Response {
+    let api = ui::is_api_path(request.uri().path());
+    let mut response = next.run(request).await;
+    if api {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-store"),
+        );
+    }
+    response
 }
 
 /// Middleware recording each request's latency, under its route template,

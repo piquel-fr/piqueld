@@ -1481,6 +1481,19 @@ async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
             serde_json::from_value::<piqueld_core::auth::Ceremony>(response.json()).unwrap();
         }
     }
+    // The browser trust policy runs before authentication, so an untrusted
+    // host learns nothing about the route's credentials. Like every API
+    // response, the refusal is never cached.
+    let response = server
+        .send(
+            Method::GET,
+            "/api/v1/system/status",
+            &[("host", "attacker.example")],
+            Vec::new(),
+        )
+        .await;
+    response.assert_error(StatusCode::FORBIDDEN, "browser_access_denied");
+    assert_eq!(response.header("cache-control"), Some("no-store"));
 }
 
 #[tokio::test]
@@ -4188,6 +4201,7 @@ async fn every_documented_operation_requires_authentication() {
                         Request::builder()
                             .method(method.as_str())
                             .uri(&uri)
+                            .header("host", "localhost")
                             .header("content-type", "application/json")
                             .header("x-request-id", "anonymous-contract")
                             .body(Body::from("{}"))
@@ -5206,8 +5220,9 @@ async fn credentials_presented_by_the_host_operator_keep_their_meaning() {
 
 /// A fixed tailnet: `100.64.0.1` is Alice's laptop, `100.64.0.2` a CI runner,
 /// `100.64.0.3` a runner that just lost `tag:ci`, which only a cached (not
-/// fresh) lookup still reports, and `100.64.0.4` a runner that just left the
-/// tailnet, which only a cached lookup still finds.
+/// fresh) lookup still reports, `100.64.0.4` a runner that just left the
+/// tailnet, which only a cached lookup still finds, and `100.64.0.5` a runner
+/// whose fresh lookups time out.
 struct FakeTailnet;
 
 #[async_trait]
@@ -5216,21 +5231,23 @@ impl piqueld::tailnet::TailnetLookup for FakeTailnet {
         &self,
         peer: std::net::SocketAddr,
         fresh: bool,
-    ) -> Option<piqueld_core::tailnet::TailnetPeer> {
+    ) -> Result<Option<piqueld_core::tailnet::TailnetPeer>, piqueld::tailnet::LookupTimedOut> {
         let (login, node, tags) = match peer.ip().to_string().as_str() {
             "100.64.0.1" => (Some("alice@example.com".into()), "laptop", Vec::new()),
             "100.64.0.2" => (None, "runner", vec!["tag:ci".to_owned()]),
             "100.64.0.3" if fresh => (None, "retired", vec!["tag:old".to_owned()]),
             "100.64.0.3" => (None, "retired", vec!["tag:ci".to_owned()]),
-            "100.64.0.4" if fresh => return None,
+            "100.64.0.4" if fresh => return Ok(None),
             "100.64.0.4" => (None, "vanished", vec!["tag:ci".to_owned()]),
-            _ => return None,
+            "100.64.0.5" if fresh => return Err(piqueld::tailnet::LookupTimedOut),
+            "100.64.0.5" => (None, "busy", vec!["tag:ci".to_owned()]),
+            _ => return Ok(None),
         };
-        Some(piqueld_core::tailnet::TailnetPeer {
+        Ok(Some(piqueld_core::tailnet::TailnetPeer {
             login,
             node: node.into(),
             tags,
-        })
+        }))
     }
 }
 
@@ -5305,6 +5322,8 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
     assert_eq!(retagged, 401, "a cached identity never authorizes");
     let vanished = me(&tailnet, Some([100, 64, 0, 4])).await;
     assert_eq!(vanished, 401, "nor stands in for a failed lookup");
+    let busy = me(&tailnet, Some([100, 64, 0, 5])).await;
+    assert_eq!(busy, 503, "a lookup that timed out is no mismatch");
     assert_eq!(me(&unix, None).await, 401, "outside the tailnet");
     let from = refusals(&state, |events| {
         (events.len() >= 4).then(|| {
@@ -5359,8 +5378,8 @@ async fn the_dashboard_socket_names_clients_by_the_gateways_header() {
     assert_eq!(through_gateway(None).await, 403, "not through the gateway");
 }
 
-/// A runner whose tag is `tag:ci` when it connects, and `tag:old` on every
-/// later fresh lookup.
+/// A runner whose tag is `tag:ci` on the first lookup, and `tag:old` on every
+/// later one, so authorizing a connection must look it up only once.
 struct Retagged(std::sync::atomic::AtomicUsize);
 
 #[async_trait]
@@ -5368,19 +5387,15 @@ impl piqueld::tailnet::TailnetLookup for Retagged {
     async fn whois(
         &self,
         _: std::net::SocketAddr,
-        fresh: bool,
-    ) -> Option<piqueld_core::tailnet::TailnetPeer> {
-        let lookups = if fresh {
-            self.0.fetch_add(1, Ordering::SeqCst)
-        } else {
-            0
-        };
+        _: bool,
+    ) -> Result<Option<piqueld_core::tailnet::TailnetPeer>, piqueld::tailnet::LookupTimedOut> {
+        let lookups = self.0.fetch_add(1, Ordering::SeqCst);
         let tag = if lookups == 0 { "tag:ci" } else { "tag:old" };
-        Some(piqueld_core::tailnet::TailnetPeer {
+        Ok(Some(piqueld_core::tailnet::TailnetPeer {
             login: None,
             node: "runner".into(),
             tags: vec![tag.to_owned()],
-        })
+        }))
     }
 }
 
@@ -5472,19 +5487,29 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
                 503,
                 "storage_unavailable",
             ),
+            // A bearer that could not be checked is no reason to require
+            // the ceremony's Origin.
+            (
+                "POST",
+                "/api/v1/auth/register/start",
+                "x".repeat(43),
+                "",
+                503,
+                "storage_unavailable",
+            ),
         ] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("host", "localhost")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("x-request-id", "auth-correlation");
+            if !origin.is_empty() {
+                request = request.header("origin", origin);
+            }
             let response = tokio::time::timeout(
                 Duration::from_secs(2),
-                listener.send(
-                    Request::builder()
-                        .method(method)
-                        .uri(path)
-                        .header("authorization", format!("Bearer {bearer}"))
-                        .header("origin", origin)
-                        .header("x-request-id", "auth-correlation")
-                        .body(Body::empty())
-                        .unwrap(),
-                ),
+                listener.send(request.body(Body::empty()).unwrap()),
             )
             .await
             .expect("authentication errors must not wait for a diagnostic write");

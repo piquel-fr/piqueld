@@ -238,7 +238,9 @@ hostname) on every request (and again when an
 `app exec` command starts), so removing a tag or signing a device out takes
 effect immediately. Anywhere else, including the Unix socket,
 plain TCP listeners, and other tailnet devices, it is refused with 401
-`tailnet_binding_mismatch`, and the refusal is audited. A leaked CI token is
+`tailnet_binding_mismatch`, and the refusal is audited. When `tailscaled` does
+not answer in time, the request fails with 503 `tailnet_unavailable` instead;
+retry it. A leaked CI token is
 then useless outside the tailnet's CI runners.
 
 ```console

@@ -544,9 +544,9 @@ socket. Only setup/login endpoints and TCP `/health` are public; see
 [authentication](authentication.md). What each caller may do is decided by its
 [grants](authorization.md); every operation names its requirement in the
 contract's `x-piqueld-access` extension. TCP requests also validate Host and browser
-Fetch Metadata headers; DNS names need `server.allowed_hosts` (see
+Fetch Metadata headers before authentication; DNS names need `server.allowed_hosts` (see
 [configuration](configuration.md)). Rejected requests return
-`403 browser_access_denied`. Authentication checks API mutation origins against
+`403 browser_access_denied`, even without credentials. Authentication checks API mutation origins against
 `auth.public_url`, returning `403 origin_mismatch` for rejected origins.
 Undecodable URL path parameters return `400 path_invalid`, and malformed IDs
 `400 application_id_invalid` or `environment_id_invalid`, with the usual JSON
