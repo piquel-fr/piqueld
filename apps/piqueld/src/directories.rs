@@ -1,7 +1,8 @@
 //! Shared validation and process exclusivity for daemon directories, and
-//! removal of the files the daemon manages in them.
+//! writing and removal of the files the daemon manages in them.
 
 use std::{
+    ffi::OsString,
     fs::File,
     io,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -34,6 +35,123 @@ pub(crate) async fn remove_file(path: &Path) -> io::Result<()> {
     match tokio::fs::remove_file(path).await {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
+    }
+}
+
+/// A file only the daemon may read, replaced atomically and durably. Its
+/// directory may be writable by a container running as the daemon's user (the
+/// gateway's Caddy), so no operation follows a symlink planted there.
+pub(crate) struct PrivateFile(PathBuf);
+
+impl PrivateFile {
+    /// The private file at `path`.
+    pub(crate) fn at(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+
+    /// Replaces the file with `bytes`, through a temporary file that `O_EXCL`
+    /// creates with mode `0600` and an unpredictable name, so never through a
+    /// symlink. The temporary is synced and renamed over the file, then the
+    /// directory is synced. Temporaries a crash left behind are removed
+    /// first, so no secret outlives its file.
+    ///
+    /// # Errors
+    /// Returns the I/O error, with the file's path as context.
+    pub(crate) async fn write(self, bytes: impl Into<Vec<u8>>) -> anyhow::Result<()> {
+        let bytes = bytes.into();
+        self.run("write", move |file| {
+            use std::io::Write;
+            file.remove_temporaries()?;
+            let mut temporary = tempfile::Builder::new()
+                .prefix(&file.temporary_prefix())
+                .tempfile_in(file.directory())?;
+            temporary.write_all(&bytes)?;
+            temporary.as_file().sync_all()?;
+            temporary.persist(&file.0)?;
+            file.sync_directory()
+        })
+        .await
+    }
+
+    /// Removes the file and any temporaries left beside it, durably. A missing
+    /// file counts as removed.
+    ///
+    /// # Errors
+    /// Returns the I/O error, with the file's path as context.
+    pub(crate) async fn remove(self) -> anyhow::Result<()> {
+        self.run("remove", |file| {
+            let removed =
+                file.remove_temporaries()? | Self::removed(std::fs::remove_file(&file.0))?;
+            if removed {
+                file.sync_directory()?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Runs the blocking `operation` off the async runtime, naming the file
+    /// and `action` in its error.
+    async fn run(
+        self,
+        action: &'static str,
+        operation: impl FnOnce(&Self) -> io::Result<()> + Send + 'static,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        tokio::task::spawn_blocking(move || {
+            operation(&self).with_context(|| format!("{action} {}", self.0.display()))
+        })
+        .await?
+    }
+
+    /// Removes temporaries of this file left by an interrupted write,
+    /// including the fixed `.tmp` name earlier versions used. Returns whether
+    /// any existed.
+    fn remove_temporaries(&self) -> io::Result<bool> {
+        let entries = match std::fs::read_dir(self.directory()) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            entries => entries?,
+        };
+        let prefix = self.temporary_prefix();
+        let mut removed = Self::removed(std::fs::remove_file(self.0.with_extension("tmp")))?;
+        for entry in entries {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(prefix.as_encoded_bytes())
+            {
+                removed |= Self::removed(std::fs::remove_file(entry.path()))?;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Whether a removal deleted something; a missing file was not.
+    fn removed(result: io::Result<()>) -> io::Result<bool> {
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Start of every temporary file name: `.<name>.tmp-`.
+    fn temporary_prefix(&self) -> OsString {
+        let mut prefix = OsString::from(".");
+        prefix.push(self.0.file_name().unwrap_or_default());
+        prefix.push(".tmp-");
+        prefix
+    }
+
+    /// The directory holding the file.
+    fn directory(&self) -> &Path {
+        self.0.parent().unwrap_or_else(|| Path::new("."))
+    }
+
+    /// Makes renames and removals in the file's directory durable.
+    fn sync_directory(&self) -> io::Result<()> {
+        File::open(self.directory())?.sync_all()
     }
 }
 
@@ -262,8 +380,49 @@ impl DirectoryLock {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryKind, protected_ancestor};
+    use super::{DirectoryKind, PrivateFile, protected_ancestor};
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn private_writes_never_follow_a_planted_temporary() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("autosave.json");
+        let victim = directory.path().join("piqueld.db");
+        std::fs::write(&victim, "database").unwrap();
+        // The fixed temporary name earlier versions wrote through.
+        std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).unwrap();
+
+        PrivateFile::at(&path).write("secret").await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "database");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn removing_a_private_file_removes_temporaries_a_crash_left() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credentials.json");
+        let leftovers = [
+            directory.path().join(".credentials.json.tmp-a1B2c3"),
+            path.with_extension("tmp"),
+        ];
+        for file in leftovers
+            .iter()
+            .chain([&path, &directory.path().join("config.json")])
+        {
+            std::fs::write(file, "secret").unwrap();
+        }
+
+        PrivateFile::at(&path).remove().await.unwrap();
+
+        let remaining: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(remaining, ["config.json"]);
+    }
 
     #[tokio::test]
     async fn unusable_owner_permissions_are_rejected_without_modification() {

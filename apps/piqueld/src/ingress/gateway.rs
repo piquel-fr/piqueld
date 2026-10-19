@@ -14,7 +14,7 @@ use super::{
     node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
     wire::Journaled,
 };
-use crate::store::ingress::RoutingTable;
+use crate::{directories::PrivateFile, store::ingress::RoutingTable};
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
 use hyper::Method;
@@ -722,8 +722,7 @@ impl Ingress {
             })?;
             return Err(error.context("gateway replacement failed; previous gateway restored"));
         }
-        tokio::fs::remove_file(self.rollback_path()).await?;
-        Ok(())
+        PrivateFile::at(self.rollback_path()).remove().await
     }
 
     /// Runs `caddy validate` on the candidate configuration in a temporary
@@ -854,11 +853,9 @@ impl Ingress {
     /// Atomically writes a JSON file under `config/caddy`, readable only by the
     /// daemon since it can hold DNS-01 private keys.
     async fn write_configuration(&self, file: &str, configuration: &Value) -> Result<()> {
-        Self::write_private(
-            &self.directory.join("config/caddy").join(file),
-            &serde_json::to_vec(configuration)?,
-        )
-        .await
+        PrivateFile::at(self.directory.join("config/caddy").join(file))
+            .write(serde_json::to_vec(configuration)?)
+            .await
     }
 
     /// Writes the configuration for `table` as the autosave and starts the gateway.

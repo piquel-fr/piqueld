@@ -317,25 +317,6 @@ impl Ingress {
         Ok(listener)
     }
 
-    /// Writes a file readable only by the daemon, replacing it atomically.
-    async fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-        let temporary = path.with_extension("tmp");
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)
-            .await
-            .with_context(|| format!("create {}", temporary.display()))?;
-        file.write_all(bytes).await?;
-        file.sync_all().await?;
-        tokio::fs::rename(&temporary, path)
-            .await
-            .with_context(|| format!("replace {}", path.display()))
-    }
-
     /// The private hostname the gateway forwards to the daemon's dashboard
     /// socket. Configuration only allows one with private ingress enabled.
     #[must_use]

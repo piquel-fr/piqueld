@@ -28,6 +28,7 @@
 
 use super::{Ingress, TAILSCALE_IMAGE, gateway::TMPFS, wire::UnixApi};
 use crate::config::{Credential, PrivateIngressConfig};
+use crate::directories::PrivateFile;
 use crate::tailnet::ProxyListener;
 use anyhow::{Context, Result};
 use piqueld_core::api::PrivateIngressStatus;
@@ -190,15 +191,14 @@ impl Ingress {
             crate::prepare_data_dir(&directory.join(name)).await?;
         }
         let config = directory.join("config");
-        Self::write_private(
-            &config.join("serve.json"),
-            &serde_json::to_vec(&self.serve_configuration())?,
-        )
-        .await?;
-        let key = config.join("auth-key");
+        PrivateFile::at(config.join("serve.json"))
+            .write(serde_json::to_vec(&self.serve_configuration())?)
+            .await?;
+        let key = PrivateFile::at(config.join("auth-key"));
         match &node.auth_key {
-            Some(key_value) => Self::write_private(&key, key_value.expose().as_bytes()).await?,
-            None => crate::directories::remove_file(&key)
+            Some(key_value) => key.write(key_value.expose()).await?,
+            None => key
+                .remove()
                 .await
                 .context("remove the unconfigured auth key")?,
         }
