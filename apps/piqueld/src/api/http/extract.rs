@@ -229,7 +229,7 @@ pub(super) fn optional_header(headers: &HeaderMap, name: &str) -> Result<Option<
 
 /// The value of header `name`, which may occur at most once; `repeated`
 /// builds the error when it occurs more often.
-fn single_header<'a>(
+pub(super) fn single_header<'a>(
     headers: &'a HeaderMap,
     name: &str,
     repeated: impl FnOnce() -> ApiError,

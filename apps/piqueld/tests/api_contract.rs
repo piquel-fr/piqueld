@@ -5662,6 +5662,29 @@ fn put_stored_token(
         .unwrap()
 }
 
+/// Secret uploads refuse a repeated `X-Expected-Generation` rather than
+/// trusting the first, and the wrong content type before reading the body.
+#[tokio::test]
+async fn stored_secret_uploads_check_their_headers_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = router(state(&temp).await, FakeAuth);
+    let server = Server::tcp(api.clone()).await;
+    let app = create_and_inspect(&server.client(), &manifest()).await;
+    let mut repeated = put_stored_token(&app.environment_id, "", 0, "value");
+    let headers = repeated.headers_mut();
+    headers.append("x-expected-generation", "1".parse().unwrap());
+    let response = api.send(repeated).await;
+    response.assert_error(StatusCode::BAD_REQUEST, "secret_generation_required");
+    // A body over the request limit would fail with 413 once read.
+    let mut text = put_stored_token(&app.environment_id, "", 0, "value");
+    text.headers_mut()
+        .insert("content-type", "text/plain".parse().unwrap());
+    let oversized = vec![b'x'; piqueld_core::api::MAX_REQUEST_BODY_BYTES + 1];
+    *text.body_mut() = Body::from(oversized);
+    let response = api.send(text).await;
+    response.assert_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "secret_content_type");
+}
+
 #[tokio::test]
 async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};

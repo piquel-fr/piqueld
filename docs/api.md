@@ -744,7 +744,7 @@ belong to their environment. Secret endpoints expose metadata only:
   environment whose Docker secrets it removes. It reserves the secret, releases the database writer
   lock, then removes Docker versions before encrypted records. Partial failure or restart leaves
   `deleting: true`; retry DELETE to finish. Replacement and new configuration
-  references return 409 `secret_deleting` until cleanup completes. A missing
+  references return 409 `secret_deleting` until cleanup completes. A missing or repeated
   `X-Expected-Generation` returns 400 `secret_generation_required`, and a version
   conflict 409 `secret_generation_conflict` (`details.expected_generation`,
   `details.actual_generation`); missing or invalid key material returns 503 `secret_storage_unavailable`
