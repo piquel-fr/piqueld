@@ -929,6 +929,8 @@ fn manifest_with_job_dependencies() -> ApplicationManifest {
             command: vec!["ready".into()],
             interval_seconds: 1.into(),
             timeout_seconds: 1.into(),
+            start_period_seconds: 0.into(),
+            retries: 3.into(),
         });
         input.spec.services.push(service);
     }

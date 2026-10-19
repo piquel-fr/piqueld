@@ -236,7 +236,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/rollout` | `{ "value": { "order": "stop-first", "monitor_seconds": 30 } }`; replaces the rollout block, and omitted fields use their defaults |
 | PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
-| PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout}` | Typed `{ "value": ... }` |
+| PUT | `/services/{service}/healthcheck/{port,path,command,interval,timeout,start-period,retries}` | Typed `{ "value": ... }` |
 | PUT | `/services/{service}/resources/{cpu,memory}` | `{ "value": 500 }`; null clears the selected limit |
 | PUT / DELETE | `/repository` | PUT: `{ "value": RepositoryManifest }`; DELETE: disconnect |
 | PUT | `/repository/{url,path}` | `{ "value": "..." }`; every environment fetches from them. Branches belong to environments: see `/api/v1/environments/{id}/branch` |

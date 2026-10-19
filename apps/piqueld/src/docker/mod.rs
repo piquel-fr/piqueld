@@ -50,8 +50,6 @@ const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 const NANO_CPUS_PER_MILLICORE: i64 = 1_000_000;
 /// Delay Swarm waits before restarting an exited task.
 const RESTART_DELAY: i64 = 2 * NANOSECONDS_PER_SECOND;
-/// Consecutive failed health probes before a container is marked unhealthy.
-const HEALTH_RETRIES: i64 = 3;
 
 /// Concurrent per-service inspections performed during one observation.
 const OBSERVATION_INSPECT_CONCURRENCY: usize = 8;

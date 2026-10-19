@@ -6,7 +6,7 @@ use super::{
     ResourceLimits, ServiceSpec, TaskDiagnostic, TaskSpecContainerSpec, TaskState,
 };
 use bollard::models::{HealthStatusEnum, ServiceSpecUpdateConfigOrderEnum};
-use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
+use piqueld_core::manifest::{HealthTiming, RolloutOrder, RolloutPolicy};
 use piqueld_core::resource::{TELEMETRY_TARGET, TelemetryMount};
 
 impl BollardDocker {
@@ -376,7 +376,8 @@ impl BollardDocker {
     /// `CMD` vectors become a command check unless they are exactly the
     /// `piqueld-probe` vector piqueld authors for HTTP checks; `CMD-SHELL` is
     /// read as HTTP from its last word.
-    /// Returns `None` for unsupported forms or missing timings.
+    /// Returns `None` for unsupported forms or missing timings. Unset retries
+    /// and start period are Docker's defaults: 3 retries and no start period.
     ///
     /// ```text
     /// ["CMD","/run/piqueld/probe","http","--port","8080","--path","/health","--timeout","3"]
@@ -385,22 +386,30 @@ impl BollardDocker {
     /// ```
     pub(super) fn observed_health(config: &HealthConfig) -> Option<HealthCheck> {
         let test = config.test.as_ref()?;
-        let interval = u32::try_from(config.interval? / NANOSECONDS_PER_SECOND).ok()?;
-        let timeout = u32::try_from(config.timeout? / NANOSECONDS_PER_SECOND).ok()?;
+        let seconds = |nanoseconds: i64| u32::try_from(nanoseconds / NANOSECONDS_PER_SECOND).ok();
+        let timing = HealthTiming {
+            interval_seconds: seconds(config.interval?)?,
+            timeout_seconds: seconds(config.timeout?)?,
+            start_period_seconds: seconds(config.start_period.unwrap_or(0))?,
+            retries: match config.retries {
+                None | Some(0) => HealthCheck::DEFAULT_RETRIES,
+                Some(retries) => u32::try_from(retries).ok()?,
+            },
+        };
         match test.first().map(String::as_str) {
-            Some("CMD") => Some(
-                Self::observed_probe_health(test, interval, timeout).unwrap_or(
-                    HealthCheck::Command {
-                        command: test[1..].to_vec(),
-                        interval_seconds: interval,
-                        timeout_seconds: timeout,
-                    },
-                ),
-            ),
+            Some("CMD") => Some(Self::observed_probe_health(test, timing).unwrap_or(
+                HealthCheck::Command {
+                    command: test[1..].to_vec(),
+                    interval_seconds: timing.interval_seconds,
+                    timeout_seconds: timing.timeout_seconds,
+                    start_period_seconds: timing.start_period_seconds,
+                    retries: timing.retries,
+                },
+            )),
             Some("CMD-SHELL") => {
                 let shell = test.get(1)?;
                 let url = shell.split_whitespace().last()?;
-                Self::observed_http_health(url, interval, timeout)
+                Self::observed_http_health(url, timing)
             }
             _ => None,
         }
@@ -410,23 +419,14 @@ impl BollardDocker {
     /// checks. Near matches, such as reordered flags or a timeout differing
     /// from Docker's, stay command checks so that authoring the observed check
     /// reproduces Docker's vector exactly.
-    fn observed_probe_health(
-        test: &[String],
-        interval_seconds: u32,
-        timeout_seconds: u32,
-    ) -> Option<HealthCheck> {
+    fn observed_probe_health(test: &[String], timing: HealthTiming) -> Option<HealthCheck> {
         let (executable, arguments) = test.get(1..)?.split_first()?;
         if executable != piqueld_probe::CONTAINER_PATH {
             return None;
         }
         let probe = piqueld_probe::HttpProbe::parse(arguments.iter().cloned()).ok()?;
-        Some(HealthCheck::Http {
-            port: probe.port,
-            path: probe.path,
-            interval_seconds,
-            timeout_seconds,
-        })
-        .filter(|health| health.execution().command == test[1..])
+        Some(Self::http_health(probe.port, probe.path, timing))
+            .filter(|health| health.execution().command == test[1..])
     }
 
     /// Parses a loopback health URL into an HTTP check.
@@ -435,21 +435,24 @@ impl BollardDocker {
     /// http://127.0.0.1:8080/health → port 8080, path /health
     /// http://127.0.0.1:8080        → port 8080, path /
     /// ```
-    fn observed_http_health(
-        url: &str,
-        interval_seconds: u32,
-        timeout_seconds: u32,
-    ) -> Option<HealthCheck> {
+    fn observed_http_health(url: &str, timing: HealthTiming) -> Option<HealthCheck> {
         let url = url.strip_prefix("http://127.0.0.1:")?;
         let (port, path) = url
             .split_once('/')
             .map_or((url, "/"), |(port, _)| (port, &url[port.len()..]));
-        Some(HealthCheck::Http {
-            port: port.parse().ok()?,
-            path: path.into(),
-            interval_seconds,
-            timeout_seconds,
-        })
+        Some(Self::http_health(port.parse().ok()?, path.into(), timing))
+    }
+
+    /// An HTTP check probing `port` at `path` with `timing`.
+    fn http_health(port: u16, path: String, timing: HealthTiming) -> HealthCheck {
+        HealthCheck::Http {
+            port,
+            path,
+            interval_seconds: timing.interval_seconds,
+            timeout_seconds: timing.timeout_seconds,
+            start_period_seconds: timing.start_period_seconds,
+            retries: timing.retries,
+        }
     }
 }
 

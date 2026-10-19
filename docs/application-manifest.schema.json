@@ -326,6 +326,14 @@
               "$ref": "#/definitions/Typed_u16",
               "description": "Container port to probe."
             },
+            "retries": {
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Consecutive failed probes that make the container unhealthy."
+            },
+            "start_period_seconds": {
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Startup grace in seconds, during which failed probes do not count."
+            },
             "timeout_seconds": {
               "$ref": "#/definitions/Typed_u32",
               "description": "Probe timeout in seconds."
@@ -356,6 +364,14 @@
             "interval_seconds": {
               "$ref": "#/definitions/Typed_u32",
               "description": "Probe interval in seconds."
+            },
+            "retries": {
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Consecutive failed probes that make the container unhealthy."
+            },
+            "start_period_seconds": {
+              "$ref": "#/definitions/Typed_u32",
+              "description": "Startup grace in seconds, during which failed probes do not count."
             },
             "timeout_seconds": {
               "$ref": "#/definitions/Typed_u32",

@@ -2,8 +2,8 @@
 use crate::{Client, ClientError, SavedApplication, client::EnvelopedCall};
 use piqueld_core::{
     edit::{
-        ApplicationEdit, BoolValue, CpuValue, EditOptions, EnvironmentValue, ExportsValue,
-        FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
+        ApplicationEdit, BoolValue, CountValue, CpuValue, EditOptions, EnvironmentValue,
+        ExportsValue, FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
         OptionalStringValue, ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue,
         RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral,
         ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue,
@@ -69,6 +69,8 @@ edit_method!(set_service_health_path, (id, service), request: TemplateValue);
 edit_method!(set_service_health_command, (id, service), request: TemplatesValue);
 edit_method!(set_service_health_interval, (id, service), request: SecondsValue);
 edit_method!(set_service_health_timeout, (id, service), request: SecondsValue);
+edit_method!(set_service_health_start_period, (id, service), request: SecondsValue);
+edit_method!(set_service_health_retries, (id, service), request: CountValue);
 edit_method!(set_service_resources, (id, service), request: ResourcesValue);
 edit_method!(set_service_cpu, (id, service), request: CpuValue);
 edit_method!(set_service_memory, (id, service), request: MemoryValue);
@@ -177,6 +179,7 @@ impl Client {
     }
     /// Routes a `ServiceEdit` to the field endpoint of the named service. Environment
     /// entries map to set or remove depending on whether a value is supplied.
+    #[expect(clippy::too_many_lines, reason = "one flat arm per field endpoint")]
     async fn edit_service(
         &self,
         id: &str,
@@ -243,6 +246,12 @@ impl Client {
             }
             ServiceEdit::HealthTimeout(value) => {
                 send!(set_service_health_timeout, SecondsValue, value.clone())
+            }
+            ServiceEdit::HealthStartPeriod(value) => {
+                send!(set_service_health_start_period, SecondsValue, value.clone())
+            }
+            ServiceEdit::HealthRetries(value) => {
+                send!(set_service_health_retries, CountValue, value.clone())
             }
             ServiceEdit::Resources(value) => {
                 send!(set_service_resources, ResourcesValue, value.clone())

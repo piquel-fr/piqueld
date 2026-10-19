@@ -1,8 +1,7 @@
 use super::{
-    BTreeSet, BollardDocker, HEALTH_RETRIES, HealthConfig, HealthProbe, MountTypeEnum,
-    NANO_CPUS_PER_MILLICORE, RESTART_DELAY, SERVICE_LABEL, ServiceSpec,
-    ServiceSpecUpdateConfigFailureActionEnum, TaskSpec, TaskSpecContainerSpec,
-    TaskSpecRestartPolicyConditionEnum,
+    BTreeSet, BollardDocker, HealthConfig, HealthProbe, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
+    RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum, TaskSpec,
+    TaskSpecContainerSpec, TaskSpecRestartPolicyConditionEnum,
 };
 
 /// The runtime policy emitted by the desired-service Docker specification builder.
@@ -292,17 +291,15 @@ impl ServiceRuntimePolicy {
                 .is_none_or(Vec::is_empty)
     }
 
-    /// Returns whether a health config uses piqueld's retry count, positive
-    /// timings, no start period, and re-authors to the identical `test` vector
-    /// and timings.
+    /// Returns whether a health config uses positive timings, no start
+    /// interval, and re-authors to the identical `test` vector, timings,
+    /// retries and start period, where unset and zero are the same.
     ///
     /// The config is parsed with `observed_health` and rebuilt with
     /// `health_config`, so hand-written variants of the same check register as drift.
     fn supported_health_config(health: &HealthConfig) -> bool {
-        if health.retries != Some(HEALTH_RETRIES)
-            || health.interval.is_none_or(|value| value <= 0)
+        if health.interval.is_none_or(|value| value <= 0)
             || health.timeout.is_none_or(|value| value <= 0)
-            || health.start_period.is_some_and(|value| value != 0)
             || health.start_interval.is_some_and(|value| value != 0)
         {
             return false;
@@ -312,6 +309,8 @@ impl ServiceRuntimePolicy {
             health.test == canonical.test
                 && health.interval == canonical.interval
                 && health.timeout == canonical.timeout
+                && health.retries == canonical.retries
+                && health.start_period.unwrap_or(0) == canonical.start_period.unwrap_or(0)
         })
     }
 }
@@ -452,6 +451,7 @@ mod tests {
         assert!(!ServiceRuntimePolicy::matches(&spec, "local-node"));
     }
 
+    /// Including a start period and retries other than Docker's defaults.
     #[test]
     fn generated_http_health_check_round_trips_through_observation() {
         let health_check = HealthCheck::Http {
@@ -459,6 +459,8 @@ mod tests {
             path: "/health".into(),
             interval_seconds: 10,
             timeout_seconds: 3,
+            start_period_seconds: 30,
+            retries: 5,
         };
         let config = BollardDocker::health_config(&health_check);
 
@@ -488,6 +490,8 @@ mod tests {
             ]),
             interval_seconds: 10,
             timeout_seconds: 3,
+            start_period_seconds: 0,
+            retries: 3,
         };
 
         let config = BollardDocker::health_config(&health_check);
@@ -537,6 +541,8 @@ mod tests {
                 command,
                 interval_seconds: 10,
                 timeout_seconds: 3,
+                start_period_seconds: 0,
+                retries: 3,
             };
 
             let config = BollardDocker::health_config(&health_check);

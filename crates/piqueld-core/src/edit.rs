@@ -31,6 +31,7 @@ value_request! {
     TemplatesValue: Vec<Template>;
     ReplicasValue: Typed<u16>;
     SecondsValue: Typed<u32>;
+    CountValue: Typed<u32>;
     CpuValue: Option<Typed<u32>>;
     MemoryValue: Option<Typed<u64>>;
     StringsValue: Vec<String>;
@@ -230,6 +231,10 @@ pub enum ServiceEdit {
     HealthInterval(Typed<u32>),
     /// Health timeout seconds.
     HealthTimeout(Typed<u32>),
+    /// Health start period seconds.
+    HealthStartPeriod(Typed<u32>),
+    /// Consecutive health failures before unhealthy.
+    HealthRetries(Typed<u32>),
     /// Replace resource limits.
     Resources(Option<ResourceLimits>),
     /// Set or clear CPU millicores.
@@ -515,7 +520,9 @@ impl ServiceEdit {
             | Self::HealthPath(_)
             | Self::HealthCommand(_)
             | Self::HealthInterval(_)
-            | Self::HealthTimeout(_) => self.apply_health(Self::health(service)?)?,
+            | Self::HealthTimeout(_)
+            | Self::HealthStartPeriod(_)
+            | Self::HealthRetries(_) => self.apply_health(Self::health(service)?)?,
             Self::Resources(value) => service.resources = value,
             Self::Cpu(value) => {
                 Self::resources(service).cpu_millis = value;
@@ -549,24 +556,12 @@ impl ServiceEdit {
             (Self::HealthCommand(value), HealthCheck::Command { command, .. }) => {
                 *command = value;
             }
-            (
-                Self::HealthInterval(value),
-                HealthCheck::Http {
-                    interval_seconds, ..
-                }
-                | HealthCheck::Command {
-                    interval_seconds, ..
-                },
-            ) => *interval_seconds = value,
-            (
-                Self::HealthTimeout(value),
-                HealthCheck::Http {
-                    timeout_seconds, ..
-                }
-                | HealthCheck::Command {
-                    timeout_seconds, ..
-                },
-            ) => *timeout_seconds = value,
+            (Self::HealthInterval(value), check) => *check.timing_mut().interval_seconds = value,
+            (Self::HealthTimeout(value), check) => *check.timing_mut().timeout_seconds = value,
+            (Self::HealthStartPeriod(value), check) => {
+                *check.timing_mut().start_period_seconds = value;
+            }
+            (Self::HealthRetries(value), check) => *check.timing_mut().retries = value,
             (Self::HealthPort(_), _) => {
                 return Err(EditError::Incompatible(
                     "port requires an HTTP health check",

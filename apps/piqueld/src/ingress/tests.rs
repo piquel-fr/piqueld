@@ -897,6 +897,8 @@ impl Scenario {
             command: vec!["test".into(), "-f".into(), "/tmp/ready".into()],
             interval_seconds: 3.into(),
             timeout_seconds: 1.into(),
+            start_period_seconds: 0.into(),
+            retries: 3.into(),
         });
         changed.spec.services.push(next);
         changed.spec.routes[0].service = Some("next".into());

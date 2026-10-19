@@ -170,11 +170,7 @@ impl SwarmScenario {
                 "test $(cat /run/secrets/token) = mounted-value || exit 1; test \"$(cat /etc/piqueld-motd)\" = 'hello ${HOME}' || exit 1; if echo changed 2>/dev/null >/etc/piqueld-motd; then exit 1; fi; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
             mounts: vec![],
-            healthcheck: Some(ValidatedHealthCheck::Command {
-                command: vec!["true".into()],
-                interval_seconds: 1,
-                timeout_seconds: 1,
-            }),
+            healthcheck: Some(Self::passing_healthcheck()),
             resources: None,
             networks: vec![network.name.clone()],
             labels: service_labels,
@@ -200,6 +196,17 @@ impl SwarmScenario {
             network,
             volume,
             service,
+        }
+    }
+
+    /// A command health check that passes every second.
+    fn passing_healthcheck() -> ValidatedHealthCheck {
+        ValidatedHealthCheck::Command {
+            command: vec!["true".into()],
+            interval_seconds: 1,
+            timeout_seconds: 1,
+            start_period_seconds: 0,
+            retries: 3,
         }
     }
 
@@ -512,6 +519,8 @@ impl SwarmScenario {
             path: "/health".into(),
             interval_seconds: 1,
             timeout_seconds: 1,
+            start_period_seconds: 0,
+            retries: 3,
         });
         self.engine.ensure_service_eventually(&http_service).await;
 

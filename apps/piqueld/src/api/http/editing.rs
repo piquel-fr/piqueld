@@ -10,8 +10,8 @@ use piqueld_core::{
     ApplicationId,
     api::{Envelope, SavedApplication},
     edit::{
-        ApplicationEdit, BoolValue, CpuValue, EditOptions, EnvironmentValue, ExportsValue,
-        FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
+        ApplicationEdit, BoolValue, CountValue, CpuValue, EditOptions, EnvironmentValue,
+        ExportsValue, FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
         OptionalStringValue, ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue,
         RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral,
         ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue,
@@ -152,6 +152,8 @@ edit_endpoint!(set_service_health_path, put, "/api/v1/applications/{id}/services
 edit_endpoint!(set_service_health_command, put, "/api/v1/applications/{id}/services/{service}/healthcheck/command", (id: String = "id", service: String = "service"), TemplatesValue, |(_, service), body: TemplatesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthCommand(body.value) });
 edit_endpoint!(set_service_health_interval, put, "/api/v1/applications/{id}/services/{service}/healthcheck/interval", (id: String = "id", service: String = "service"), SecondsValue, |(_, service), body: SecondsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthInterval(body.value) });
 edit_endpoint!(set_service_health_timeout, put, "/api/v1/applications/{id}/services/{service}/healthcheck/timeout", (id: String = "id", service: String = "service"), SecondsValue, |(_, service), body: SecondsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthTimeout(body.value) });
+edit_endpoint!(set_service_health_start_period, put, "/api/v1/applications/{id}/services/{service}/healthcheck/start-period", (id: String = "id", service: String = "service"), SecondsValue, |(_, service), body: SecondsValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthStartPeriod(body.value) });
+edit_endpoint!(set_service_health_retries, put, "/api/v1/applications/{id}/services/{service}/healthcheck/retries", (id: String = "id", service: String = "service"), CountValue, |(_, service), body: CountValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::HealthRetries(body.value) });
 edit_endpoint!(set_service_resources, put, "/api/v1/applications/{id}/services/{service}/resources", (id: String = "id", service: String = "service"), ResourcesValue, |(_, service), body: ResourcesValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Resources(body.value) });
 edit_endpoint!(set_service_cpu, put, "/api/v1/applications/{id}/services/{service}/resources/cpu", (id: String = "id", service: String = "service"), CpuValue, |(_, service), body: CpuValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Cpu(body.value) });
 edit_endpoint!(set_service_memory, put, "/api/v1/applications/{id}/services/{service}/resources/memory", (id: String = "id", service: String = "service"), MemoryValue, |(_, service), body: MemoryValue| ApplicationEdit::Service { name: service, edit: ServiceEdit::Memory(body.value) });
@@ -262,6 +264,8 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_service_health_command))
         .routes(granted!(App(Write) => set_service_health_interval))
         .routes(granted!(App(Write) => set_service_health_timeout))
+        .routes(granted!(App(Write) => set_service_health_start_period))
+        .routes(granted!(App(Write) => set_service_health_retries))
         .routes(granted!(App(Write) => set_service_resources))
         .routes(granted!(App(Write) => set_service_cpu))
         .routes(granted!(App(Write) => set_service_memory))

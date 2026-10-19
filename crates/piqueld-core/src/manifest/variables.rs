@@ -623,38 +623,14 @@ impl super::HealthCheck {
     /// Visits the check's values; `base` is its field path.
     fn visit_values(&mut self, base: &str, visit: &mut impl FnMut(&str, Slot<'_>)) {
         match self {
-            Self::Http {
-                port,
-                path,
-                interval_seconds,
-                timeout_seconds,
-            } => {
+            Self::Http { port, path, .. } => {
                 visit(&format!("{base}.port"), Slot::Typed(port));
                 visit(&format!("{base}.path"), Slot::Text(path));
-                visit(
-                    &format!("{base}.interval_seconds"),
-                    Slot::Typed(interval_seconds),
-                );
-                visit(
-                    &format!("{base}.timeout_seconds"),
-                    Slot::Typed(timeout_seconds),
-                );
             }
-            Self::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => {
-                texts(&format!("{base}.command"), command, visit);
-                visit(
-                    &format!("{base}.interval_seconds"),
-                    Slot::Typed(interval_seconds),
-                );
-                visit(
-                    &format!("{base}.timeout_seconds"),
-                    Slot::Typed(timeout_seconds),
-                );
-            }
+            Self::Command { command, .. } => texts(&format!("{base}.command"), command, visit),
+        }
+        for (field, value) in self.timing_mut().fields() {
+            visit(&format!("{base}.{field}"), Slot::Typed(value));
         }
     }
 }

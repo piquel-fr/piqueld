@@ -457,23 +457,15 @@ pub(crate) enum HealthCommand {
         /// HTTP request path.
         #[arg(long, default_value = "/health")]
         path: Template,
-        /// Seconds between checks.
-        #[arg(long, default_value = "10")]
-        interval: Typed<u32>,
-        /// Seconds before a check counts as failed.
-        #[arg(long, default_value = "3")]
-        check_timeout: Typed<u32>,
+        #[command(flatten)]
+        timing: HealthTimingArgs,
     },
     /// Configure a command health check; command elements follow --.
     Command {
         #[command(flatten)]
         target: ServiceTarget,
-        /// Seconds between checks.
-        #[arg(long, default_value = "10")]
-        interval: Typed<u32>,
-        /// Seconds before a check counts as failed.
-        #[arg(long, default_value = "3")]
-        check_timeout: Typed<u32>,
+        #[command(flatten)]
+        timing: HealthTimingArgs,
         /// Command elements after --, preserving spaces.
         #[arg(last = true, required = true)]
         elements: Vec<Template>,
@@ -490,6 +482,26 @@ pub(crate) enum HealthCommand {
     Interval(SecondsArgs),
     /// Set the check timeout in seconds.
     Timeout(SecondsArgs),
+    /// Set the startup grace in seconds, during which failed checks do not count.
+    StartPeriod(SecondsArgs),
+    /// Set how many consecutive failed checks make the container unhealthy.
+    Retries(SecondsArgs),
+}
+/// When a new health check probes and how many failures it tolerates.
+#[derive(Debug, Args)]
+pub(crate) struct HealthTimingArgs {
+    /// Seconds between checks.
+    #[arg(long, default_value = "10")]
+    interval: Typed<u32>,
+    /// Seconds before a check counts as failed.
+    #[arg(long, default_value = "3")]
+    check_timeout: Typed<u32>,
+    /// Seconds after the container starts during which failed checks do not count.
+    #[arg(long, default_value = "0")]
+    start_period: Typed<u32>,
+    /// Consecutive failed checks that make the container unhealthy.
+    #[arg(long, default_value = "3")]
+    retries: Typed<u32>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct VolumeArgs {
@@ -995,23 +1007,25 @@ impl HealthCommand {
                 target,
                 port,
                 path,
-                interval,
-                check_timeout,
+                timing,
             } => target.field(ServiceEdit::Healthcheck(Some(HealthCheck::Http {
                 port: port.clone(),
                 path: path.clone(),
-                interval_seconds: interval.clone(),
-                timeout_seconds: check_timeout.clone(),
+                interval_seconds: timing.interval.clone(),
+                timeout_seconds: timing.check_timeout.clone(),
+                start_period_seconds: timing.start_period.clone(),
+                retries: timing.retries.clone(),
             }))),
             Self::Command {
                 target,
-                interval,
-                check_timeout,
+                timing,
                 elements,
             } => target.field(ServiceEdit::Healthcheck(Some(HealthCheck::Command {
                 command: elements.clone(),
-                interval_seconds: interval.clone(),
-                timeout_seconds: check_timeout.clone(),
+                interval_seconds: timing.interval.clone(),
+                timeout_seconds: timing.check_timeout.clone(),
+                start_period_seconds: timing.start_period.clone(),
+                retries: timing.retries.clone(),
             }))),
             Self::Clear(target) => target.field(ServiceEdit::Healthcheck(None)),
             Self::Port(args) => args
@@ -1029,6 +1043,12 @@ impl HealthCommand {
             Self::Timeout(args) => args
                 .target
                 .field(ServiceEdit::HealthTimeout(args.value.clone())),
+            Self::StartPeriod(args) => args
+                .target
+                .field(ServiceEdit::HealthStartPeriod(args.value.clone())),
+            Self::Retries(args) => args
+                .target
+                .field(ServiceEdit::HealthRetries(args.value.clone())),
         }
     }
 }

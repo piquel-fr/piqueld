@@ -42,8 +42,8 @@ pub mod variables;
 
 pub use declaration::{Declaration, DeclaredSource, EnvironmentChange};
 pub use domain::{
-    HealthExecution, SecretSource, ValidatedBuild, ValidatedHealthCheck, ValidatedResourceLimits,
-    ValidatedSecretMount, ValidatedSource,
+    HealthExecution, HealthTiming, SecretSource, ValidatedBuild, ValidatedHealthCheck,
+    ValidatedResourceLimits, ValidatedSecretMount, ValidatedSource,
 };
 pub use files::{
     FileCaptureError, FileMode, FileModeError, FileSource, RepositoryFiles, ServiceFile,

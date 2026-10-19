@@ -613,6 +613,7 @@ piquelctl app variable unset notes web_replicas --env production --yes
 piquelctl app service replicas notes web '${{ vars.web_replicas }}' --yes
 piquelctl app service health http notes web 8080 --path /live --check-timeout 3 --yes
 piquelctl app service health interval notes web 20 --yes
+piquelctl app service health start-period notes web 60 --yes
 piquelctl app service health clear notes web --yes
 piquelctl app service replicas notes web 2 --deploy --yes
 piquelctl app manifest notes

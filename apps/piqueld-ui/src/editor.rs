@@ -170,6 +170,10 @@ pub struct ServiceForm {
     pub interval: String,
     /// Health check timeout in seconds.
     pub timeout: String,
+    /// Health check startup grace in seconds.
+    pub start_period: String,
+    /// Consecutive failed health checks before the container is unhealthy.
+    pub retries: String,
     /// Health command elements.
     pub health_command: Vec<String>,
     /// Sorted names of services that must be healthy first.
@@ -235,7 +239,6 @@ impl FileForm {
 impl From<&Service> for ServiceForm {
     /// Seeds a draft from saved configuration. Fields for the unused source or
     /// health check kind get editable defaults (branch `main`, port `8080`, …).
-    #[expect(clippy::too_many_lines, reason = "one field per form input")]
     fn from(service: &Service) -> Self {
         let mut form = Self {
             source_kind: SourceKind::Image,
@@ -262,6 +265,8 @@ impl From<&Service> for ServiceForm {
             path: "/health".into(),
             interval: "10".into(),
             timeout: "3".into(),
+            start_period: "0".into(),
+            retries: "3".into(),
             health_command: Vec::new(),
             depends_on: service.depends_on.clone(),
             rollout_order: service
@@ -312,29 +317,23 @@ impl From<&Service> for ServiceForm {
                 form.target = target.as_ref().map(ToString::to_string).unwrap_or_default();
             }
         }
+        if let Some(check) = &service.healthcheck {
+            let timing = check.timing();
+            form.interval = timing.interval_seconds.to_string();
+            form.timeout = timing.timeout_seconds.to_string();
+            form.start_period = timing.start_period_seconds.to_string();
+            form.retries = timing.retries.to_string();
+        }
         match &service.healthcheck {
             None => {}
-            Some(HealthCheck::Http {
-                port,
-                path,
-                interval_seconds,
-                timeout_seconds,
-            }) => {
+            Some(HealthCheck::Http { port, path, .. }) => {
                 form.health_kind = HealthKind::Http;
                 form.port = port.to_string();
                 form.path = path.to_string();
-                form.interval = interval_seconds.to_string();
-                form.timeout = timeout_seconds.to_string();
             }
-            Some(HealthCheck::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            }) => {
+            Some(HealthCheck::Command { command, .. }) => {
                 form.health_kind = HealthKind::Command;
                 form.health_command = texts(command);
-                form.interval = interval_seconds.to_string();
-                form.timeout = timeout_seconds.to_string();
             }
         }
         form
@@ -412,16 +411,23 @@ impl ServiceForm {
 
     /// Parses the selected health check kind and its numeric fields.
     fn healthcheck(&self) -> Result<Option<HealthCheck>, String> {
-        let interval_seconds = || {
-            self.interval
-                .parse()
-                .map_err(|_| "Health interval must be a positive integer or a ${{ }} reference.")
-        };
-        let timeout_seconds = || {
-            self.timeout
-                .parse()
-                .map_err(|_| "Health timeout must be a positive integer or a ${{ }} reference.")
-        };
+        let number = |value: &str, error: &'static str| value.parse().map_err(|_| error);
+        let interval_seconds = number(
+            &self.interval,
+            "Health interval must be a positive integer or a ${{ }} reference.",
+        );
+        let timeout_seconds = number(
+            &self.timeout,
+            "Health timeout must be a positive integer or a ${{ }} reference.",
+        );
+        let start_period_seconds = number(
+            &self.start_period,
+            "Health start period must be a whole number of seconds or a ${{ }} reference.",
+        );
+        let retries = number(
+            &self.retries,
+            "Health retries must be a positive integer or a ${{ }} reference.",
+        );
         Ok(match self.health_kind {
             HealthKind::Disabled => None,
             HealthKind::Http => Some(HealthCheck::Http {
@@ -429,13 +435,17 @@ impl ServiceForm {
                     |_| "Health port must be an integer between 1 and 65535 or a ${{ }} reference.",
                 )?,
                 path: self.path.as_str().into(),
-                interval_seconds: interval_seconds()?,
-                timeout_seconds: timeout_seconds()?,
+                interval_seconds: interval_seconds?,
+                timeout_seconds: timeout_seconds?,
+                start_period_seconds: start_period_seconds?,
+                retries: retries?,
             }),
             HealthKind::Command => Some(HealthCheck::Command {
                 command: templates(&self.health_command),
-                interval_seconds: interval_seconds()?,
-                timeout_seconds: timeout_seconds()?,
+                interval_seconds: interval_seconds?,
+                timeout_seconds: timeout_seconds?,
+                start_period_seconds: start_period_seconds?,
+                retries: retries?,
             }),
         })
     }
@@ -483,7 +493,16 @@ impl ServiceForm {
             Section::Process => take!(command, arguments),
             Section::Storage => take!(mounts),
             Section::Files => take!(files),
-            Section::Health => take!(health_kind, port, path, interval, timeout, health_command),
+            Section::Health => take!(
+                health_kind,
+                port,
+                path,
+                interval,
+                timeout,
+                start_period,
+                retries,
+                health_command
+            ),
             Section::Dependencies => take!(depends_on),
             Section::Rollout => take!(rollout_order, monitor),
             Section::Telemetry => take!(receives_telemetry),
@@ -616,11 +635,15 @@ mod tests {
                 path: "/live".into(),
                 interval_seconds: 5.into(),
                 timeout_seconds: 2.into(),
+                start_period_seconds: 30.into(),
+                retries: 5.into(),
             },
             HealthCheck::Command {
                 command: vec!["curl".into(), "-f".into(), "localhost".into()],
                 interval_seconds: 7.into(),
                 timeout_seconds: 4.into(),
+                start_period_seconds: 0.into(),
+                retries: 3.into(),
             },
         ] {
             let mut saved = service();

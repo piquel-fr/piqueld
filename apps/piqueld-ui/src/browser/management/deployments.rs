@@ -1307,18 +1307,19 @@ fn SnapshotRuntime(service: Service) -> impl IntoView {
                 .healthcheck
                 .map_or_else(
                     || "None".into(),
-                    |check| match check {
-                        HealthCheck::Http { port, path, interval_seconds, timeout_seconds } => {
-                            format!(
-                                "HTTP :{port}{path} · every {interval_seconds}s · timeout {timeout_seconds}s",
-                            )
-                        }
-                        HealthCheck::Command { command, interval_seconds, timeout_seconds } => {
-                            format!(
-                                "{} · every {interval_seconds}s · timeout {timeout_seconds}s",
-                                join(&command, " "),
-                            )
-                        }
+                    |check| {
+                        let probe = match &check {
+                            HealthCheck::Http { port, path, .. } => format!("HTTP :{port}{path}"),
+                            HealthCheck::Command { command, .. } => join(command, " "),
+                        };
+                        let timing = check.timing();
+                        format!(
+                            "{probe} · every {}s · timeout {}s · start period {}s · {} retries",
+                            timing.interval_seconds,
+                            timing.timeout_seconds,
+                            timing.start_period_seconds,
+                            timing.retries,
+                        )
                     },
                 )}
         </dd>

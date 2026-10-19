@@ -256,6 +256,11 @@
       "rustType": "piqueld_core::api::ErrorBody"
     },
     {
+      "schema": "CountValue",
+      "name": "CountValue",
+      "rustType": "piqueld_core::edit::CountValue"
+    },
+    {
       "schema": "CpuValue",
       "name": "CpuValue",
       "rustType": "piqueld_core::edit::CpuValue"

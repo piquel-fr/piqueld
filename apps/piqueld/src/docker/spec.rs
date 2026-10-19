@@ -1,13 +1,12 @@
 use super::{
-    BollardDocker, DesiredService, DockerError, HEALTH_RETRIES, HealthCheck, HealthConfig,
-    INGRESS_PROXIES_ENV, Limit, Mount, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
-    NANOSECONDS_PER_SECOND, NetworkAttachmentConfig, RESTART_DELAY, ResourceLimits, ServiceSpec,
-    ServiceSpecMode, ServiceSpecModeReplicated, ServiceSpecUpdateConfig,
-    ServiceSpecUpdateConfigFailureActionEnum, ServiceSpecUpdateConfigOrderEnum, TaskSpec,
-    TaskSpecContainerSpec, TaskSpecResources, TaskSpecRestartPolicy,
-    TaskSpecRestartPolicyConditionEnum,
+    BollardDocker, DesiredService, DockerError, HealthCheck, HealthConfig, INGRESS_PROXIES_ENV,
+    Limit, Mount, MountTypeEnum, NANO_CPUS_PER_MILLICORE, NANOSECONDS_PER_SECOND,
+    NetworkAttachmentConfig, RESTART_DELAY, ResourceLimits, ServiceSpec, ServiceSpecMode,
+    ServiceSpecModeReplicated, ServiceSpecUpdateConfig, ServiceSpecUpdateConfigFailureActionEnum,
+    ServiceSpecUpdateConfigOrderEnum, TaskSpec, TaskSpecContainerSpec, TaskSpecResources,
+    TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum,
 };
-use piqueld_core::manifest::{RolloutOrder, RolloutPolicy};
+use piqueld_core::manifest::{HealthExecution, RolloutOrder, RolloutPolicy};
 use piqueld_core::resource::TELEMETRY_TARGET;
 
 impl BollardDocker {
@@ -193,16 +192,15 @@ impl BollardDocker {
     ///   → ["CMD","/run/piqueld/probe","http","--port","8080","--path","/health","--timeout","3"]
     /// ```
     pub(super) fn health_config(health_check: &HealthCheck) -> HealthConfig {
-        let execution = health_check.execution();
+        let HealthExecution { command, timing } = health_check.execution();
         HealthConfig {
-            test: Some(
-                std::iter::once("CMD".into())
-                    .chain(execution.command)
-                    .collect(),
-            ),
-            interval: Some(Self::seconds_to_nanoseconds(execution.interval_seconds)),
-            timeout: Some(Self::seconds_to_nanoseconds(execution.timeout_seconds)),
-            retries: Some(HEALTH_RETRIES),
+            test: Some(std::iter::once("CMD".into()).chain(command).collect()),
+            interval: Some(Self::seconds_to_nanoseconds(timing.interval_seconds)),
+            timeout: Some(Self::seconds_to_nanoseconds(timing.timeout_seconds)),
+            retries: Some(timing.retries.into()),
+            // Docker omits a zero start period, so none is written either.
+            start_period: (timing.start_period_seconds > 0)
+                .then(|| Self::seconds_to_nanoseconds(timing.start_period_seconds)),
             ..Default::default()
         }
     }

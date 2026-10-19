@@ -733,6 +733,25 @@ fn healthcheck_rules_include_the_interval_cap_and_single_zero_error() {
     );
     let errors = parse_toml(&timeout_above_interval).unwrap_err();
     assert!(has_code(&errors, codes::HEALTHCHECK_TIMEOUT_INVALID));
+
+    let healthcheck = |settings: &str| {
+        valid_manifest("notes").replace(
+            "image = \"ghcr.io/example/notes:1\"",
+            &format!(
+                "image = \"ghcr.io/example/notes:1\"\n\n[spec.services.healthcheck]\ntype = \"http\"\nport = 8080\n{settings}"
+            ),
+        )
+    };
+    let errors = parse_toml(&healthcheck("start_period_seconds = 3601")).unwrap_err();
+    assert!(has_code(&errors, codes::HEALTHCHECK_START_PERIOD_EXCESSIVE));
+    for retries in [0, 101] {
+        let errors = parse_toml(&healthcheck(&format!("retries = {retries}"))).unwrap_err();
+        assert!(
+            has_code(&errors, codes::HEALTHCHECK_RETRIES_INVALID),
+            "{retries}"
+        );
+    }
+    parse_toml(&healthcheck("start_period_seconds = 3600\nretries = 100")).unwrap();
 }
 
 #[test]
