@@ -8,8 +8,8 @@ use piqueld_core::{
     access::{AppPermission, Grants, Scope, Target},
     api::{
         ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
-        EnvironmentStatusView, EnvironmentView, MAX_APPLICATION_PAGE_SIZE, ManifestChange, Page,
-        PlanView, RouteUrl, ServiceRolloutView,
+        EnvironmentStatusView, EnvironmentView, MAX_PAGE_SIZE, ManifestChange, Page, PlanView,
+        RouteUrl, ServiceRolloutView,
     },
     compile_application,
     manifest::{
@@ -29,8 +29,8 @@ impl ApplicationService {
         cursor: Option<&str>,
         limit: Option<u16>,
     ) -> Result<Page<ApplicationSummary>, ApplicationError> {
-        let limit = limit.unwrap_or(MAX_APPLICATION_PAGE_SIZE);
-        if !(1..=MAX_APPLICATION_PAGE_SIZE).contains(&limit) {
+        let limit = limit.unwrap_or(MAX_PAGE_SIZE);
+        if !(1..=MAX_PAGE_SIZE).contains(&limit) {
             return Err(ApplicationError::InvalidPagination);
         }
         self.store

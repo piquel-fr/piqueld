@@ -11,7 +11,10 @@ use axum::{
 };
 use piqueld_core::{
     ApplicationId, EnvironmentId,
-    api::{Envelope, EnvironmentAccess, SecretAccess, SecretMetadata, StoredSecret},
+    api::{
+        Envelope, EnvironmentAccess, MAX_SECRET_VALUE_BYTES, SecretAccess, SecretMetadata,
+        StoredSecret,
+    },
 };
 use serde::Deserialize;
 
@@ -187,11 +190,11 @@ pub(super) async fn put_stored(
             "Secret body could not be read within the request limit",
         )
     })?;
-    if body.is_empty() || body.len() > 500 * 1024 {
+    if body.is_empty() || body.len() > MAX_SECRET_VALUE_BYTES {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "secret_value_invalid",
-            "Secret values must contain 1–512000 bytes",
+            format!("Secret values must contain 1–{MAX_SECRET_VALUE_BYTES} bytes"),
         ));
     }
     if headers

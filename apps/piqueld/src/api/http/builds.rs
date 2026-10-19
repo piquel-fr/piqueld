@@ -49,7 +49,7 @@ pub(super) async fn list(
             environment.as_ref(),
             &identity.grants.app_scope(AppPermission::Read),
             query.cursor.as_deref(),
-            query.limit.unwrap_or(50),
+            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
         )
         .await?))
 }

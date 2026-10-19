@@ -97,7 +97,7 @@ impl ApplicationService {
         self.store.deployment_snapshot(deployment).await?;
         Ok(self
             .store
-            .deployment_attempts(deployment, cursor, 100)
+            .deployment_attempts(deployment, cursor, crate::store::MAX_PAGE_SIZE)
             .await?)
     }
 

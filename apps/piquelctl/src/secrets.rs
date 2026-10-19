@@ -9,14 +9,13 @@ use crate::{
     support::read_input,
 };
 use clap::{Args, Subcommand};
-use piqueld_client::{ApplicationView, Client, EnvironmentAccess, SecretAccess};
+use piqueld_client::{
+    ApplicationView, Client, EnvironmentAccess, MAX_SECRET_VALUE_BYTES, SecretAccess,
+};
 use std::{
     io::{self, Read},
     path::{Path, PathBuf},
 };
-
-/// Largest accepted secret value (500 KiB).
-const MAX_SECRET_BYTES: usize = 500 * 1024;
 
 // `app secret` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
@@ -191,10 +190,10 @@ impl SecretAction {
                 let file = file.clone();
                 // Stdin can block indefinitely; read off the runtime so Ctrl-C stays responsive.
                 let value = read_input("secret", move || Self::read_value(file.as_deref())).await?;
-                if value.is_empty() || value.len() > MAX_SECRET_BYTES {
+                if value.is_empty() || value.len() > MAX_SECRET_VALUE_BYTES {
                     return Err(CliError::new(
                         ErrorKind::Input,
-                        "secret must contain 1–512000 bytes",
+                        format!("secret must contain 1–{MAX_SECRET_VALUE_BYTES} bytes"),
                     ));
                 }
                 let secret = client
@@ -248,7 +247,7 @@ impl SecretAction {
         };
         let mut bytes = Vec::new();
         input
-            .take(MAX_SECRET_BYTES as u64 + 1)
+            .take(MAX_SECRET_VALUE_BYTES as u64 + 1)
             .read_to_end(&mut bytes)?;
         Ok(bytes)
     }

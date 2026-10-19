@@ -288,7 +288,7 @@ impl<D: DockerApi> Controller<D> {
         if !metadata.is_file() {
             return Err(OperationError::ManifestNotFound);
         }
-        if metadata.len() > 2 * 1024 * 1024 {
+        if metadata.len() > piqueld_core::api::MAX_REQUEST_BODY_BYTES as u64 {
             return Err(OperationError::ManifestInvalid);
         }
         let contents = tokio::fs::read_to_string(&path).await.map_err(|error| {

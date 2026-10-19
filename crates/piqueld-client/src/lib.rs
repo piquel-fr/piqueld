@@ -52,8 +52,8 @@ pub use piqueld_core::tailnet;
 pub use applications::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest, ApplyOptions,
     DeletedApplication, DeploymentView, DiagnosticView, ListApplicationsOptions,
-    MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView,
-    RenameApplicationRequest, RenamedApplication, SavedApplication,
+    ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView, RenameApplicationRequest,
+    RenamedApplication, SavedApplication,
 };
 pub use client::Client;
 pub use environments::{
@@ -61,6 +61,10 @@ pub use environments::{
     EnvironmentDetailView, EnvironmentName, EnvironmentRequest, EnvironmentSource,
     EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView, PromoteRequest, PromotedFrom,
     ReleasePlan, ReleasePromotion, RouteUrl, SecretProblem, TrackedBranch, UrlCondition, UrlState,
+};
+/// Request size and page size limits the daemon enforces.
+pub use piqueld_core::api::{
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_REQUEST_BODY_BYTES, MAX_SECRET_VALUE_BYTES,
 };
 pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, DeclaredSource,

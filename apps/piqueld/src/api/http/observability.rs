@@ -95,7 +95,10 @@ pub(super) async fn deliveries(
     ApiQuery(query): ApiQuery<DeliveryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state
-        .notification_deliveries(query.cursor.as_deref(), query.limit.unwrap_or(50))
+        .notification_deliveries(
+            query.cursor.as_deref(),
+            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
+        )
         .await?))
 }
 /// Retries a webhook notification delivery.
@@ -173,7 +176,11 @@ pub(super) async fn audit(
         }
     }
     Ok(ok(state
-        .audit_events(&filter, query.cursor.as_deref(), query.limit.unwrap_or(50))
+        .audit_events(
+            &filter,
+            query.cursor.as_deref(),
+            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
+        )
         .await?))
 }
 /// Verifies the audit trail's hash chain.

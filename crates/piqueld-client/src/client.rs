@@ -436,14 +436,15 @@ where
     Ok(buffer)
 }
 
-/// Rejects a page `limit` outside `1..=max` before sending; `list` names the
-/// listing in the error, such as `event`.
-pub(crate) fn check_page_limit(list: &str, limit: u16, max: u16) -> Result<(), ClientError> {
-    if (1..=max).contains(&limit) {
+/// Rejects a page `limit` outside `1..=MAX_PAGE_SIZE` before sending; `list`
+/// names the listing in the error, such as `event`.
+pub(crate) fn check_page_limit(list: &str, limit: u16) -> Result<(), ClientError> {
+    if (1..=crate::MAX_PAGE_SIZE).contains(&limit) {
         Ok(())
     } else {
         Err(ClientError::invalid_request(format!(
-            "{list} limit must be between 1 and {max}"
+            "{list} limit must be between 1 and {}",
+            crate::MAX_PAGE_SIZE
         )))
     }
 }

@@ -494,10 +494,10 @@ impl Tracking<'_> {
     }
 }
 
-/// Default query page size.
-pub const DEFAULT_PAGE_SIZE: usize = 50;
-/// Maximum query page size.
-pub const MAX_PAGE_SIZE: usize = 100;
+/// [`piqueld_core::api::DEFAULT_PAGE_SIZE`] as a store page length.
+pub const DEFAULT_PAGE_SIZE: usize = piqueld_core::api::DEFAULT_PAGE_SIZE as usize;
+/// [`piqueld_core::api::MAX_PAGE_SIZE`] as a store page length.
+pub const MAX_PAGE_SIZE: usize = piqueld_core::api::MAX_PAGE_SIZE as usize;
 
 /// Last observed environment status.
 #[derive(Clone, Debug, Eq, PartialEq)]
