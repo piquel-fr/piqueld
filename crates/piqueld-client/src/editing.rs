@@ -15,6 +15,7 @@ use piqueld_core::{
 // The generated client owns paths, encoding, request bodies, and response types.
 // Each invocation wraps one generated field-edit endpoint as a `Client` method taking
 // its path segments, an optional typed body, and `EditOptions` (deploy, revision, force).
+// Like every other wrapper, it sends `force` only when set; the server reads absence as false.
 macro_rules! edit_method {
     ($name:ident, ($($path:ident),+) $(, $request:ident: $body:ty)?) => {
         impl Client {
@@ -22,7 +23,7 @@ macro_rules! edit_method {
             /// # Errors
             /// Returns transport, validation, revision, or resource errors.
             pub async fn $name(&self, $($path: &str,)+ $($request: &$body,)? options: &EditOptions) -> Result<SavedApplication, ClientError> {
-                self.generated.$name($($path,)+ Some(options.deploy), options.expected_generation, Some(options.force), None $(, $request)?).data().await
+                self.generated.$name($($path,)+ Some(options.deploy), options.expected_generation, options.force.then_some(true), None $(, $request)?).data().await
             }
         }
     };

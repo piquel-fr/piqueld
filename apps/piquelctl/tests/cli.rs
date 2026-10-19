@@ -1943,9 +1943,8 @@ fn assert_saves(
     path: &str,
     expected: &Value,
 ) -> Output {
-    let path = format!(
-        "/api/v1/applications/app-notes-01/{path}?deploy=false&expected_generation=1&force=false"
-    );
+    let path =
+        format!("/api/v1/applications/app-notes-01/{path}?deploy=false&expected_generation=1");
     let expected = expected.clone();
     let server = start_server(false, 2, move |request| {
         if request.method == "GET" {
@@ -2197,7 +2196,7 @@ fn field_edit_deploy_is_explicit_and_no_wait_returns_the_saved_receipt() {
         }
         assert_eq!(
             request.path,
-            "/api/v1/applications/app-notes-01/services/web/replicas?deploy=true&expected_generation=1&force=false"
+            "/api/v1/applications/app-notes-01/services/web/replicas?deploy=true&expected_generation=1"
         );
         Reply::accepted(
             json!({"application_id":"app-notes-01","generation":2,"operation_id":"operation-01"}),
@@ -2230,7 +2229,7 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
         assert_eq!(request.method, "POST");
         assert_eq!(
             request.path,
-            "/api/v1/applications/app-notes-01/services?deploy=false&expected_generation=1&force=false"
+            "/api/v1/applications/app-notes-01/services?deploy=false&expected_generation=1"
         );
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(body["name"], "worker");
