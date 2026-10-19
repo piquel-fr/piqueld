@@ -2,10 +2,13 @@
 //! writing and removal of the files the daemon manages in them.
 
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::File,
     io,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::{AsFd, BorrowedFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
 };
 
@@ -176,7 +179,9 @@ impl DirectoryKind {
     }
 
     /// Walks `path` one component at a time from the root, so no ancestor can be
-    /// swapped for a symlink or attacker-controlled directory.
+    /// swapped for a symlink or attacker-controlled directory. Each component
+    /// is opened below its parent's handle and checked through its own, so
+    /// every check describes the directory the walk continues from.
     ///
     /// 1. Rejects empty and `/` paths, a leading `.`, and any `..` component.
     /// 2. Requires each component to be a real directory (never a symlink),
@@ -185,6 +190,12 @@ impl DirectoryKind {
     ///    writable by others unless sticky.
     /// 4. Checks the final directory with `validate_final`.
     async fn prepare(self, path: &Path) -> io::Result<()> {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || self.walk(&path)).await?
+    }
+
+    /// Blocking implementation of [`Self::prepare`].
+    fn walk(self, path: &Path) -> io::Result<()> {
         let name = self.name();
         if path.as_os_str().is_empty() || path == Path::new("/") {
             return Err(io::Error::new(
@@ -194,12 +205,15 @@ impl DirectoryKind {
         }
 
         let mut current = PathBuf::new();
+        // Relative paths start from the working directory.
+        let mut parent: Option<File> = None;
         let mut components = path.components().peekable();
         let expected_uid = rustix::process::geteuid().as_raw();
         while let Some(component) = components.next() {
             match component {
-                std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-                std::path::Component::RootDir => current.push(Path::new("/")),
+                std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::Normal(_) => current.push(component),
                 std::path::Component::CurDir => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -214,42 +228,11 @@ impl DirectoryKind {
                         format!("the {name} directory cannot contain a parent component"),
                     ));
                 }
-                std::path::Component::Normal(name) => current.push(name),
             }
 
-            let metadata = match tokio::fs::symlink_metadata(&current).await {
-                Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => metadata,
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "{name} directory component {} is not a real directory",
-                            current.display()
-                        ),
-                    ));
-                }
-                Err(error)
-                    if error.kind() == io::ErrorKind::NotFound && matches!(self, Self::Data) =>
-                {
-                    tokio::fs::DirBuilder::new()
-                        .mode(0o700)
-                        .create(&current)
-                        .await?;
-                    let metadata = tokio::fs::symlink_metadata(&current).await?;
-                    if !metadata.is_dir() || metadata.is_symlink() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "{name} directory component {} was replaced by a non-directory",
-                                current.display()
-                            ),
-                        ));
-                    }
-                    metadata
-                }
-                Err(error) => return Err(error),
-            };
-
+            let at = parent.as_ref().map_or(rustix::fs::CWD, AsFd::as_fd);
+            let directory = self.open(at, component.as_os_str(), &current)?;
+            let metadata = directory.metadata()?;
             if components.peek().is_none() {
                 self.validate_final(&current, &metadata, expected_uid)?;
             } else {
@@ -264,8 +247,47 @@ impl DirectoryKind {
                     ));
                 }
             }
+            parent = Some(directory);
         }
         Ok(())
+    }
+
+    /// Opens the directory `component` below `parent` as a path-only handle,
+    /// never through a symlink, so even directories the daemon may only
+    /// traverse can be checked. A missing [`Self::Data`] component is created
+    /// with mode `0700`. `current` names it in errors.
+    fn open(self, parent: BorrowedFd<'_>, component: &OsStr, current: &Path) -> io::Result<File> {
+        use rustix::{
+            fs::{Mode, OFlags},
+            io::Errno,
+        };
+        let open = || {
+            rustix::fs::openat(
+                parent,
+                component,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+        };
+        let opened = match open() {
+            Err(Errno::NOENT) if matches!(self, Self::Data) => {
+                rustix::fs::mkdirat(parent, component, Mode::RWXU)?;
+                open()
+            }
+            opened => opened,
+        };
+        match opened {
+            Ok(directory) => Ok(directory.into()),
+            Err(Errno::LOOP | Errno::NOTDIR) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} directory component {} is not a real directory",
+                    self.name(),
+                    current.display()
+                ),
+            )),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Checks the target directory itself: owned by the effective UID with full
@@ -359,13 +381,19 @@ pub struct DirectoryLock {
 }
 
 impl DirectoryLock {
-    /// Locks a previously validated state or runtime directory.
+    /// Locks a previously validated state or runtime directory, refusing a
+    /// symlink swapped in since.
     ///
     /// # Errors
     /// Returns `WouldBlock` if another daemon owns the directory, or the source
     /// I/O error if opening or locking it fails.
     pub fn acquire(path: &Path) -> io::Result<Self> {
-        let directory = File::open(path)?;
+        use rustix::fs::{Mode, OFlags};
+        let directory = File::from(rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
         directory.try_lock().map_err(|error| match error {
             std::fs::TryLockError::WouldBlock => {
                 io::Error::new(io::ErrorKind::WouldBlock, "directory already in use")
