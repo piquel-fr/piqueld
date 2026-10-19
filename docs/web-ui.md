@@ -376,7 +376,12 @@ releases promoted from it. The card says what the environment does now and what 
 selected choice would do; **Save source** applies it, redeploying nothing. A promoted
 environment's card links to its source.
 **New environment** can create a promoted environment directly. Its Variables
-card reads the manifest of the release last promoted into it.
+card reads the manifest of the release last promoted into it. Its Visibility card
+edits the saved manifest, like every environment's; since a promoted environment
+uses the visibility and variables recorded in the release it receives, a saved
+change applies once its source records a new release and it is promoted. Unsaved
+changes in the Source, Visibility, and rename forms block deployment and warn
+before navigation, like other forms.
 
 When the manifest [declares environments](application-manifest.md#declared-environments),
 it owns their existence, so **Rename environment** and **Delete environment** are disabled for them, and,

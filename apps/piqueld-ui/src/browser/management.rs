@@ -327,7 +327,40 @@ impl EditorContext {
     /// Whether deploy/delete actions are disallowed: also blocked by unsaved edits
     /// or a pending deletion.
     fn action_blocked(self) -> bool {
-        self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
+        self.change_blocked(None)
+    }
+
+    /// Whether a change saving the `own` form's edits is disallowed: like
+    /// `action_blocked`, but the form's own unsaved edits are what it saves.
+    fn change_blocked(self, own: Option<&str>) -> bool {
+        self.blocked() || self.other_edits(own) || self.saved.with(|saved| saved.delete_intent)
+    }
+
+    /// Whether forms other than `own` have unsaved edits.
+    fn other_edits(self, own: Option<&str>) -> bool {
+        self.dirty
+            .with(|groups| groups.iter().any(|group| Some(group.as_str()) != own))
+    }
+
+    /// Keeps the form `key` in the dirty set while `changed` holds, until
+    /// the owning view unmounts.
+    fn guard(self, key: String, changed: impl Fn() -> bool + 'static) {
+        let cleanup = key.clone();
+        Effect::new(move |_| {
+            let dirty = changed();
+            self.dirty.update(|groups| {
+                if dirty {
+                    groups.insert(key.clone());
+                } else {
+                    groups.remove(&key);
+                }
+            });
+        });
+        on_cleanup(move || {
+            self.dirty.update(|groups| {
+                groups.remove(&cleanup);
+            });
+        });
     }
 
     /// Whether forms have edits or a request is pending or has an unknown
@@ -609,23 +642,7 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
             value: RwSignal::new(initial.clone()),
             baseline: RwSignal::new(initial),
         };
-        let context = editor();
-        let cleanup = key.clone();
-        Effect::new(move |_| {
-            let dirty = draft.changed();
-            context.dirty.update(|groups| {
-                if dirty {
-                    groups.insert(key.clone());
-                } else {
-                    groups.remove(&key);
-                }
-            });
-        });
-        on_cleanup(move || {
-            context.dirty.update(|groups| {
-                groups.remove(&cleanup);
-            });
-        });
+        editor().guard(key, move || draft.changed());
         draft
     }
 
@@ -636,15 +653,17 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
     fn synced(key: impl Into<String>, read: impl Fn(&ApplicationManifest) -> T + 'static) -> Self {
         let context = editor();
         let draft = Self::new(key.into(), read(&context.manifest()));
-        Effect::new(move |_| {
-            let saved = read(&context.manifest());
-            if draft.value.get_untracked() == draft.baseline.get_untracked() {
-                draft.reset(saved);
-            } else {
-                draft.baseline.set(saved);
-            }
-        });
+        Effect::new(move |_| draft.follow(read(&context.manifest())));
         draft
+    }
+
+    /// Moves the baseline to `saved`, and the form too unless it is edited.
+    fn follow(self, saved: T) {
+        if self.value.get_untracked() == self.baseline.get_untracked() {
+            self.reset(saved);
+        } else {
+            self.baseline.set(saved);
+        }
     }
 
     /// Whether the form differs from its baseline.

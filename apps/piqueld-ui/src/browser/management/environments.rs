@@ -10,16 +10,16 @@ use super::super::ui::{
     text_input, when,
 };
 use super::deployments::EnvironmentAction;
-use super::{EditorContext, editor};
+use super::{Draft, EditorContext, editor};
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::sync::short_commit;
 use piqueld_client::{
-    Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest, EnvironmentChange,
-    EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentView, TrackedBranch,
-    Visibility,
+    ApplicationManifest, ApplicationSpec, Client, ClientError, CreateEnvironmentRequest,
+    EnvironmentBranchRequest, EnvironmentChange, EnvironmentName, EnvironmentRequest,
+    EnvironmentSourceRequest, EnvironmentView, TrackedBranch, Visibility,
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
 };
@@ -58,7 +58,21 @@ enum EnvironmentEdit {
     RetryDeletion(String),
 }
 
+/// Dirty group of the environment page's source form.
+const SOURCE_FORM: &str = "environment-source";
+/// Dirty group of the environment page's rename form.
+const NAME_FORM: &str = "environment-name";
+
 impl EnvironmentEdit {
+    /// The form whose unsaved edits the change saves, if any.
+    const fn form(&self) -> Option<&'static str> {
+        match self {
+            Self::Rename { .. } => Some(NAME_FORM),
+            Self::Branch { .. } | Self::Source { .. } => Some(SOURCE_FORM),
+            _ => None,
+        }
+    }
+
     /// Sends the change, returning the changed environment unless it is
     /// being deleted.
     async fn send(
@@ -140,7 +154,7 @@ impl EditorContext {
         change: EnvironmentEdit,
         done: impl FnOnce(Option<EnvironmentView>) + 'static,
     ) {
-        if self.action_blocked() {
+        if self.change_blocked(change.form()) {
             return;
         }
         let (application, generation) = self
@@ -634,16 +648,15 @@ fn SourceSettings() -> impl IntoView {
     let branch = RwSignal::new(initial_branch);
     // The environment to promote from; empty to build its own source.
     let promote_from = RwSignal::new(initial_source);
-    Effect::new(move |_| {
-        let (current_branch, current_source) = drafts.get();
-        branch.set(current_branch);
-        promote_from.set(current_source);
-    });
     let builds = move || promote_from.with(String::is_empty);
     let sources = Signal::derive(move || context.promotion_sources(&id.get_value()));
     let name = move || context.selected_name();
     let declared = move || context.source_declared(&name());
-    let blocked = move || context.action_blocked() || context.selected_deleting() || declared();
+    let blocked = move || {
+        context.change_blocked(Some(SOURCE_FORM)) || context.selected_deleting() || declared()
+    };
+    let sync_blocked =
+        move || context.action_blocked() || context.selected_deleting() || declared();
     // The change saving would make, if any.
     let change = move || -> Option<Result<EnvironmentEdit, String>> {
         let id = id.get_value();
@@ -671,6 +684,18 @@ fn SourceSettings() -> impl IntoView {
             })
         })
     };
+    // A change not yet saved blocks deploys and guards navigation. The form
+    // follows the saved source while it still shows the previous one.
+    context.guard(SOURCE_FORM.into(), move || change().is_some());
+    Effect::new(move |previous: Option<((String, String), String)>| {
+        let saved = drafts.get();
+        let shown = untrack(|| (branch.get(), promote_from.get()));
+        if previous.is_none_or(|previous| previous == shown) {
+            branch.set(saved.0.clone());
+            promote_from.set(saved.1.clone());
+        }
+        saved
+    });
     let save = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         match change() {
@@ -780,7 +805,7 @@ fn SourceSettings() -> impl IntoView {
                                 <button
                                     type="button"
                                     class="btn"
-                                    disabled={blocked}
+                                    disabled={sync_blocked}
                                     on:click={toggle_sync}
                                 >
                                     {if environment.sync {
@@ -797,37 +822,46 @@ fn SourceSettings() -> impl IntoView {
     }
 }
 
-/// The visibility ceiling of the environment page's environment, from the
-/// manifest it deploys and saved in `[spec.environments.<name>]`. Read-only
-/// while the application is managed in Git.
+impl EditorContext {
+    /// The visibility ceiling `[spec.environments.<name>]` gives the shown
+    /// environment: in the `saved` manifest its form saves to, or while
+    /// managed in Git, read-only, in the manifest it last fetched.
+    fn visibility(self, saved: &ApplicationManifest) -> Visibility {
+        let name = self.selected_name();
+        let read =
+            |spec: &ApplicationSpec| spec.environments.get(&name).map(|config| config.visibility);
+        if self.managed() {
+            self.environment_manifest()
+                .and_then(|manifest| read(manifest.spec()))
+        } else {
+            read(&saved.spec)
+        }
+        .unwrap_or(Visibility::Public)
+    }
+}
+
+/// The visibility ceiling of the environment page's environment, saved in
+/// `[spec.environments.<name>]`. Read-only while the application is managed
+/// in Git.
 #[component]
 fn EnvironmentVisibility() -> impl IntoView {
     let context = editor();
-    let name = move || context.selected_name();
-    let current = move || {
+    let draft = Draft::synced("environment-visibility", move |saved| {
+        context.visibility(saved)
+    });
+    let promoted = move || {
         context
-            .environment_manifest()
-            .and_then(|manifest| {
-                let name = name();
-                manifest
-                    .spec()
-                    .environments
-                    .get(&name)
-                    .map(|config| config.visibility)
-            })
-            .unwrap_or(Visibility::Public)
+            .selected_environment()
+            .is_some_and(|environment| environment.source.promoted_from().is_some())
     };
-    let draft = RwSignal::new(current());
-    // Follow saves and fetches.
-    Effect::new(move |_| draft.set(current()));
     let save = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         context.save(
             ApplicationEdit::EnvironmentVisibility {
-                environment: name(),
-                visibility: draft.get_untracked(),
+                environment: context.selected_name(),
+                visibility: draft.value.get_untracked(),
             },
-            |_| {},
+            move |_| draft.discard(),
         );
     };
     view! {
@@ -837,6 +871,12 @@ fn EnvironmentVisibility() -> impl IntoView {
                     <h3>"Visibility"</h3>
                     <p>
                         "The strictest visibility this environment's routes get. Private keeps every route on the tailnet, whatever the route itself says; public leaves each route's own visibility. Save, then deploy to apply it."
+                        {move || {
+                            promoted()
+                                .then_some(
+                                    " A promoted environment uses the visibility recorded in the release it receives, so a saved change applies once its source records a new release and it is promoted.",
+                                )
+                        }}
                     </p>
                 </div>
             </header>
@@ -848,10 +888,10 @@ fn EnvironmentVisibility() -> impl IntoView {
                     <label class="field">
                         <span>"Route visibility"</span>
                         <select
-                            prop:value={move || draft.get().to_string()}
+                            prop:value={move || draft.value.get().to_string()}
                             on:change={move |event| {
                                 if let Ok(visibility) = event_target_value(&event).parse() {
-                                    draft.set(visibility);
+                                    draft.value.set(visibility);
                                 }
                             }}
                         >
@@ -867,7 +907,7 @@ fn EnvironmentVisibility() -> impl IntoView {
                         type="submit"
                         class="btn"
                         disabled={move || {
-                            context.blocked() || context.managed() || draft.get() == current()
+                            context.blocked() || context.managed() || !draft.changed()
                         }}
                     >
                         "Save visibility"
@@ -888,7 +928,9 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
     let navigate = use_navigate();
     let id = StoredValue::new(context.environment_id());
     let current = move || context.selected_name();
-    let name = RwSignal::new(current());
+    let draft = Draft::new(NAME_FORM.into(), current());
+    Effect::new(move |_| draft.follow(current()));
+    let name = draft.value;
     let deleting = move || context.selected_deleting();
     let rename = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
@@ -937,7 +979,8 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                 <fieldset
                     class="stack-sm"
                     disabled={move || {
-                        context.action_blocked() || deleting() || context.declared(&current())
+                        context.change_blocked(Some(NAME_FORM)) || deleting()
+                            || context.declared(&current())
                     }}
                 >
                     {text_field("Environment name", name)}
@@ -953,7 +996,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                         type="submit"
                         class="btn"
                         disabled={move || {
-                            context.action_blocked() || deleting() || name.get() == current()
+                            context.change_blocked(Some(NAME_FORM)) || deleting() || !draft.changed()
                                 || context.declared(&current())
                         }}
                         title={move || {

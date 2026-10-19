@@ -72,11 +72,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
     let form = draft.value;
     // Once connected, each environment follows its own branch, changed on its page.
     let connected = move || draft.baseline.with(|saved| saved.enabled);
-    let other_edits = move || {
-        context
-            .dirty
-            .with(|groups| groups.iter().any(|group| group != "repository"))
-    };
+    let other_edits = move || context.other_edits(Some("repository"));
     // How the saved connection syncs; `None` while disconnected.
     let saved_sync = move || {
         context.saved.with(|saved| {
