@@ -4,6 +4,7 @@ use super::{
 };
 use crate::application::RuntimeBoundary;
 use crate::docker::JobRuns;
+use piqueld_core::api::DeploymentOrigin;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
@@ -482,8 +483,12 @@ impl<D: DockerApi> Controller<D> {
     /// Resolves the operation's deployable target, reusing a previously saved one.
     ///
     /// Verifies the swarm topology, then returns the saved target, as every
-    /// promotion has from acceptance. Otherwise the environment must still be
-    /// tracking (`environment_promoted` once it was made promoted): fetches
+    /// release, promoted or deployed again, has from acceptance. A build's
+    /// saved target needs the environment still tracking
+    /// (`environment_promoted` once it was made promoted), since a promoted
+    /// environment only runs releases, unless it is already the active
+    /// target: repairing that rolls nothing new in. Otherwise the
+    /// environment must still be tracking: fetches
     /// the deployment manifest, keeps the application's current name, reuses
     /// prior image resolutions unless this is a `Refresh`, pins secret
     /// versions, then resolves images and builds sources. The result is saved
@@ -497,8 +502,19 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
         self.check_current(operation).await?;
         self.docker.ensure_swarm(false).await?;
+        let builds = matches!(
+            self.store.deployment_origin(&operation.id).await?,
+            DeploymentOrigin::Build | DeploymentOrigin::Local(_)
+        );
         if let Some(target) = self.store.prepared_target(&operation.id).await? {
+            if builds && !self.store.is_promoted(&operation.id).await? {
+                application.tracking()?;
+            }
             return Ok(target);
+        }
+        // Releases save their target on acceptance.
+        if !builds {
+            return Err(StoreError::Corrupt.into());
         }
         let tracking = application.tracking()?;
         // Cleanup can't remove the images this preparation reuses, pulls, or

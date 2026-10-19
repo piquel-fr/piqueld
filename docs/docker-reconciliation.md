@@ -46,8 +46,9 @@ prepared target with the deployment; the controller then reuses that target as
 a retry would, running jobs and rolling out without building, fetching, or
 resolving tags. An environment can't become promoted while a deployment is
 requested or running (`application_busy`), and retrying an earlier deployment
-that never prepared fails with `environment_promoted` instead of fetching or
-building.
+built from its own source fails with `environment_promoted` instead of fetching,
+building, or rolling out a target it prepared before, unless that target is
+already the one the environment runs: repairing its drift rolls nothing new in.
 
 Saving an identical normalized manifest does not schedule work. Apply with
 deployment creates a new deployment even when the manifest is unchanged.

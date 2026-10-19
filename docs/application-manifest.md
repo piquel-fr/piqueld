@@ -737,8 +737,10 @@ makes it follow another branch. Changing the source deploys nothing. Deploying a
 promoted environment (`env deploy`, `app deploy`) fails with
 `environment_promoted`. An environment can't become promoted while a deployment
 of it is requested or running (`application_busy`), since that deployment may be
-fetching or building; retrying an earlier one that never prepared fails with
-`environment_promoted`.
+fetching or building; retrying an earlier one fails with
+`environment_promoted`, even when it had already built, since a promoted
+environment only runs releases. The deployment it already runs is still
+repaired when it drifts.
 
 **What gets promoted.** `env promote` deploys the release of the source
 environment's current deployment. `--deployment ID` names the deployment you

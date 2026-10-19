@@ -1,7 +1,7 @@
 //! Saved configuration and immutable deployment inputs. Saving never creates work.
 use super::{EnvironmentId, NormalizedApplication, Operation, Paging, Store, StoreError, now_ms};
 use piqueld_core::{
-    api::{DeploymentView, DiagnosticView, Page, SavedApplication},
+    api::{DeploymentOrigin, DeploymentView, DiagnosticView, Page, SavedApplication},
     manifest::{ApplicationTemplate, Rendering, VariableValue},
 };
 use sqlx::{Sqlite, Transaction};
@@ -208,6 +208,18 @@ impl Store {
             .map_err(StoreError::corrupt)?
             .unwrap_or_else(|| "{}".into());
         Ok((manifest, variables))
+    }
+
+    /// Where deployment `id` comes from: a build, or a release.
+    /// # Errors
+    /// Returns storage, decoding, or absence errors.
+    pub(crate) async fn deployment_origin(&self, id: &str) -> Result<DeploymentOrigin, StoreError> {
+        let origin = sqlx::query_scalar!("SELECT origin_json FROM deployments WHERE id=?1", id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(StoreError::database)?
+            .ok_or(StoreError::NotFound)?;
+        serde_json::from_str(&origin).map_err(StoreError::corrupt)
     }
 
     /// Reads the inputs captured for an execution, never the editable application.

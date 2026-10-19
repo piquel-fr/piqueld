@@ -5703,4 +5703,99 @@ mod promotion {
         assert_eq!(failed.error_code.as_deref(), Some("environment_promoted"));
         assert_eq!(shop.harness.pulls().await, pulls);
     }
+
+    /// An environment made promoted still repairs drift in the build it
+    /// runs: converging its active target again rolls nothing new in.
+    #[tokio::test]
+    async fn a_promoted_environment_repairs_the_build_it_runs() {
+        let promoted = shop_toml("", "", IMAGE);
+        let tracking = promoted.replace(PROMOTED, "");
+        let shop = Shop::new(&tracking).await;
+        let deployed = shop
+            .harness
+            .applications()
+            .deploy(&shop.production, None)
+            .await
+            .unwrap();
+        let deployed = shop.harness.operation(&deployed.id).await;
+        shop.harness.finish(&deployed).await;
+        shop.save(&promoted).await;
+        let production = shop.production.to_string();
+        let web = async || {
+            let mut observed = shop.harness.docker.observed.lock().await;
+            let web = observed
+                .services
+                .iter_mut()
+                .find(|service| service.labels.get(APPLICATION_LABEL) == Some(&production))
+                .unwrap();
+            let replicas = web.replicas;
+            web.replicas = 0;
+            web.convergence = Convergence::Degraded;
+            replicas
+        };
+        web().await;
+        shop.harness.finish(&deployed).await;
+        assert_eq!(web().await, 1);
+    }
+
+    /// A build that prepared its target before the environment was made
+    /// promoted doesn't roll out into it when retried: a promoted
+    /// environment only runs releases.
+    #[tokio::test]
+    async fn a_promoted_environment_never_rolls_out_a_build_prepared_before() {
+        let promoted = shop_toml("", "", IMAGE);
+        let tracking = promoted.replace(PROMOTED, "");
+        let mut shop = Shop::new(&tracking).await;
+        shop.harness.set_convergence_timeout(Duration::from_secs(1));
+        let requested = shop
+            .harness
+            .applications()
+            .deploy(&shop.production, None)
+            .await
+            .unwrap();
+        // It prepares, then fails before rolling out.
+        shop.harness
+            .docker
+            .fail_observations
+            .store(true, Ordering::SeqCst);
+        shop.harness.scan().await;
+        assert_eq!(
+            shop.harness.operation(&requested.id).await.state,
+            OperationState::Failed
+        );
+        assert!(
+            shop.harness
+                .store
+                .prepared_target(&requested.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        shop.harness
+            .docker
+            .fail_observations
+            .store(false, Ordering::SeqCst);
+        shop.save(&promoted).await;
+
+        let retried = shop
+            .harness
+            .applications()
+            .reconcile(&shop.production, None)
+            .await
+            .unwrap();
+        assert_eq!(retried.id, requested.id);
+        shop.harness.scan().await;
+        let failed = shop.harness.operation(&requested.id).await;
+        assert_eq!(failed.state, OperationState::Failed);
+        assert_eq!(failed.error_code.as_deref(), Some("environment_promoted"));
+        assert!(
+            shop.harness
+                .store
+                .get(&shop.production)
+                .await
+                .unwrap()
+                .resolved
+                .is_none()
+        );
+    }
 }
