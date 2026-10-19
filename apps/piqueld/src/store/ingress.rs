@@ -399,12 +399,11 @@ impl Store {
         unpublished: bool,
     ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
-        sqlx::query!(
+        self.write(sqlx::query!(
             "INSERT INTO dns_records(hostname,unpublished) VALUES(?1,?2) ON CONFLICT(hostname) DO UPDATE SET unpublished=excluded.unpublished",
             hostname,
             unpublished
-        )
-        .execute(&self.pool)
+        ))
         .await
         .map_err(StoreError::database)?;
         Ok(())
@@ -432,10 +431,12 @@ impl Store {
         hostname: &RouteHostname,
     ) -> Result<(), StoreError> {
         let hostname = hostname.as_str();
-        sqlx::query!("DELETE FROM dns_records WHERE hostname=?1", hostname)
-            .execute(&self.pool)
-            .await
-            .map_err(StoreError::database)?;
+        self.write(sqlx::query!(
+            "DELETE FROM dns_records WHERE hostname=?1",
+            hostname
+        ))
+        .await
+        .map_err(StoreError::database)?;
         Ok(())
     }
 }
