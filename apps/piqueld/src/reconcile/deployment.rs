@@ -270,21 +270,11 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<ApplicationManifest, OperationError> {
         let path = checkout.path(relative).await.map_err(|error| {
             tracing::error!(?error, "manifest file lookup failed");
-            let not_found = error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound);
-            OperationError::ManifestInput {
-                not_found,
-                source: error,
-            }
+            OperationError::manifest_input(error)
         })?;
-        let metadata =
-            tokio::fs::metadata(&path)
-                .await
-                .map_err(|error| OperationError::ManifestInput {
-                    not_found: true,
-                    source: error.into(),
-                })?;
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|error| OperationError::manifest_input(error.into()))?;
         if !metadata.is_file() {
             return Err(OperationError::ManifestNotFound);
         }
@@ -293,10 +283,7 @@ impl<D: DockerApi> Controller<D> {
         }
         let contents = tokio::fs::read_to_string(&path).await.map_err(|error| {
             tracing::error!(?error, "manifest read failed");
-            OperationError::ManifestInput {
-                not_found: false,
-                source: error.into(),
-            }
+            OperationError::manifest_input(error.into())
         })?;
         if path
             .extension()
