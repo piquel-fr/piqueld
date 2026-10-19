@@ -695,24 +695,20 @@ impl Store {
         current.ok_or(StoreError::NotFound)
     }
 
-    /// Loads an environment after checking the revision precondition against
+    /// Loads an environment, then checks the revision precondition against
     /// its application's revision. Previews are `NotFound`: environment
-    /// changes never act on them.
+    /// changes never act on them. Absence wins over a stale revision.
     pub(super) async fn checked_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &EnvironmentId,
         expected: Option<u64>,
     ) -> Result<super::StoredEnvironment, StoreError> {
-        let current = Self::environment_on(tx, id.as_str()).await?;
-        Self::check_generation(
-            expected,
-            current
-                .as_ref()
-                .map_or(0, |environment| environment.application.generation),
-        )?;
-        current
+        let current = Self::environment_on(tx, id.as_str())
+            .await?
             .filter(|current| current.environment.preview().is_none())
-            .ok_or(StoreError::NotFound)
+            .ok_or(StoreError::NotFound)?;
+        Self::check_generation(expected, current.application.generation)?;
+        Ok(current)
     }
 
     /// Advances the application revision past `current` after an environment

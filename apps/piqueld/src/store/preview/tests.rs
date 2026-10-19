@@ -247,6 +247,12 @@ async fn previews_need_a_repository_and_environment_changes_never_reach_them() {
             "acted on the wrong kind: {result:?}"
         );
     }
+    // Even with a stale revision, which is no conflict for what isn't found.
+    let stale = Mutation::deploy(preview.id.clone());
+    assert!(matches!(
+        store.accept(Daemon, stale, Some(99), false, None).await,
+        Err(StoreError::NotFound)
+    ));
     // A preview's slug is its name, so no environment can take it.
     assert!(matches!(
         store
