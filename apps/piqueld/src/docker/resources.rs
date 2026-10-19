@@ -436,6 +436,28 @@ impl DockerApi for BollardDocker {
             .await
     }
 
+    async fn managed_containers(
+        &self,
+        instance: &super::InstanceId,
+    ) -> Result<Vec<super::ManagedContainer>, DockerError> {
+        self.list_managed_containers(instance).await
+    }
+
+    async fn container_usage(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::ContainerUsage>, DockerError> {
+        self.read_container_usage(id).await
+    }
+
+    fn container_logs(&self, id: &str, since: i32) -> super::ContainerLogs {
+        self.follow_container_logs(id, since)
+    }
+
+    fn container_starts(&self, since: i64) -> super::ContainerStarts {
+        self.watch_container_starts(since)
+    }
+
     async fn create_exec(
         &self,
         instance: &super::InstanceId,

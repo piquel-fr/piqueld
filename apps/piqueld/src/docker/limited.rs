@@ -18,12 +18,13 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 /// A [`DockerApi`] wrapper that bounds process-wide concurrent Docker work.
 pub(crate) struct LimitedDocker<D> {
     /// The wrapped implementation that performs the actual requests.
-    pub(super) inner: Arc<D>,
+    inner: Arc<D>,
     /// Concurrent image resolutions (pulls).
     images: Semaphore,
     /// One image build at a time, environments before previews.
     builds: BuildQueue,
-    /// Concurrent observations and log reads.
+    /// Concurrent observations, log reads, and container telemetry's
+    /// discovery and usage polls.
     observations: Semaphore,
 }
 impl<D> LimitedDocker<D> {
@@ -39,7 +40,7 @@ impl<D> LimitedDocker<D> {
     }
 
     /// Waits for an observation permit, held until the returned guard drops.
-    pub(super) async fn observing(&self) -> SemaphorePermit<'_> {
+    async fn observing(&self) -> SemaphorePermit<'_> {
         self.observations
             .acquire()
             .await
@@ -62,6 +63,42 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         self.inner
             .application_logs(instance, application, service, tail, since, stream)
             .await
+    }
+
+    /// Waiting for an observation permit counts against the request budget.
+    async fn managed_containers(
+        &self,
+        instance: &piqueld_core::InstanceId,
+    ) -> Result<Vec<super::ManagedContainer>, DockerError> {
+        DockerTimeout::Request
+            .run("list managed containers", async {
+                let _permit = self.observing().await;
+                self.inner.managed_containers(instance).await
+            })
+            .await
+    }
+
+    /// Waiting for an observation permit counts against the request budget.
+    async fn container_usage(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::ContainerUsage>, DockerError> {
+        DockerTimeout::Request
+            .run("read container stats", async {
+                let _permit = self.observing().await;
+                self.inner.container_usage(id).await
+            })
+            .await
+    }
+
+    /// Takes no permit: it lasts as long as the container.
+    fn container_logs(&self, id: &str, since: i32) -> super::ContainerLogs {
+        self.inner.container_logs(id, since)
+    }
+
+    /// Takes no permit: it lasts as long as the daemon.
+    fn container_starts(&self, since: i64) -> super::ContainerStarts {
+        self.inner.container_starts(since)
     }
 
     async fn ping(&self) -> Result<(), DockerError> {

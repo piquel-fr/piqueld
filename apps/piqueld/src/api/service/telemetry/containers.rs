@@ -1,5 +1,5 @@
 //! Feeds container telemetry: follows the output of every container piqueld
-//! runs and polls their resource usage.
+//! runs and polls their resource usage, through the runtime boundary.
 //!
 //! Discovery lists the containers every [`DISCOVERY_INTERVAL`], and as soon
 //! as Docker reports one starting. Each container with output to read gets a
@@ -7,18 +7,15 @@
 //! cursors saved for restarts only pass a line once every copy queued for
 //! export was sent or dropped, so a line still queued when the daemon dies is
 //! read again after the restart rather than lost.
-use super::ApplicationService;
-use super::telemetry::{Names, interval, step};
-use crate::docker::{
-    BollardDocker, ContainerState, DockerError, LimitedDocker, ManagedContainer, Workload,
-};
-use crate::store::StoreError;
-use crate::telemetry::{ContainerCursors, ContainerResource, ContainerSample, LineLimit, now_ns};
+use super::{ApplicationService, Names, interval, step};
+use crate::application::{BoundaryError, RuntimeBoundary};
+use crate::docker::{ContainerState, DockerError, ManagedContainer, Workload};
+use crate::store::{StoreError, now_ns};
+use crate::telemetry::{ContainerCursors, ContainerExport, ContainerSample, Telemetry};
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -32,26 +29,14 @@ const USAGE_INTERVAL: Duration = Duration::from_secs(30);
 /// Containers whose usage is read at once.
 const USAGE_CONCURRENCY: usize = 2;
 
-/// The Docker client container telemetry reads through.
-pub(super) type Docker = Arc<LimitedDocker<BollardDocker>>;
-
 /// Every container being exported, by ID, shared with the usage poll.
 type Exports = Arc<Mutex<HashMap<String, Exported>>>;
-
-/// A container's resource, shared with its follower and replaced when its
-/// environment is renamed.
-type SharedResource = Arc<Mutex<ContainerResource>>;
 
 /// One container being exported.
 struct Exported {
     container: ManagedContainer,
-    resource: SharedResource,
-    /// Docker's timestamp of the last line read, or where reading starts, in
-    /// Unix nanoseconds; shared with its follower.
-    read: Arc<AtomicI64>,
-    /// The last line every copy of which was sent or dropped, or where
-    /// reading started: where reading resumes after a restart.
-    handled: Arc<AtomicI64>,
+    /// Its resource and cursors, shared with its follower.
+    export: Arc<ContainerExport>,
     /// Whether it stopped and its output was read to the end. Not saved: a
     /// restart reads stopped containers once more from their cursor, since a
     /// restarted ingress container keeps its ID.
@@ -77,16 +62,14 @@ impl Drop for Exported {
 impl Exported {
     /// Notes how its follower ended, if it did, and starts one when there
     /// may be output to read.
-    fn keep_following(&mut self, service: &ApplicationService, docker: &Docker) {
+    fn keep_following(&mut self, runtime: &Arc<dyn RuntimeBoundary>, telemetry: &Telemetry) {
         self.reap();
         if self.needs_follower() {
-            self.follower = Some(tokio::spawn(follow(
-                Arc::clone(docker),
-                service.telemetry.clone(),
-                self.container.id.clone(),
-                Arc::clone(&self.resource),
-                (Arc::clone(&self.read), Arc::clone(&self.handled)),
-            )));
+            let logs = runtime.container_logs(&self.container.id, self.export.since());
+            let (telemetry, export) = (telemetry.clone(), Arc::clone(&self.export));
+            self.follower = Some(tokio::spawn(async move {
+                telemetry.export_container_logs(&export, logs).await
+            }));
         }
     }
 
@@ -138,39 +121,6 @@ impl Exported {
     }
 }
 
-/// Exports a container's output from its `read` cursor until it stops,
-/// moving the cursor past each line read; the queued lines move `handled`.
-async fn follow(
-    docker: Docker,
-    telemetry: crate::telemetry::Telemetry,
-    id: String,
-    resource: SharedResource,
-    (read, handled): (Arc<AtomicI64>, Arc<AtomicI64>),
-) -> Result<(), DockerError> {
-    let resume = read.load(Ordering::Relaxed);
-    // Docker reads from whole seconds; lines before the cursor are skipped.
-    let since = i32::try_from(resume.div_euclid(1_000_000_000).max(0)).unwrap_or(i32::MAX);
-    let mut limit = LineLimit::default();
-    let mut logs = std::pin::pin!(docker.container_logs(&id, since));
-    while let Some(chunk) = logs.next().await {
-        let chunk = chunk?;
-        let Some(stream) = chunk.stream else {
-            continue;
-        };
-        for (timestamp, line) in chunk.lines {
-            if timestamp < resume {
-                continue;
-            }
-            let line = piqueld_core::api::LogRecord::clean_message(&line);
-            let resource = resource.lock().clone();
-            telemetry
-                .export_container_line(&resource, &mut limit, &handled, stream, timestamp, line);
-            read.fetch_max(timestamp, Ordering::Relaxed);
-        }
-    }
-    Ok(())
-}
-
 /// Discovery's state between runs.
 struct Discovery {
     /// Cursors saved by the previous process, used once per container.
@@ -187,7 +137,7 @@ struct Discovery {
 impl ApplicationService {
     /// Exports the output and resource usage of every container piqueld
     /// runs, until cancelled.
-    pub(super) async fn export_containers(&self, docker: Docker, cancellation: &CancellationToken) {
+    pub(super) async fn export_containers(&self, cancellation: &CancellationToken) {
         let saved = self
             .store
             .container_cursors()
@@ -210,12 +160,12 @@ impl ApplicationService {
         let mut usage_tick = interval(USAGE_INTERVAL);
         let mut previous = HashMap::new();
         tokio::join!(
-            self.discover_containers(&docker, &exports, &mut discovery, cancellation),
+            self.discover_containers(&exports, &mut discovery, cancellation),
             async {
                 while step(
                     &mut usage_tick,
                     cancellation,
-                    self.poll_usage(&docker, &exports, &mut previous),
+                    self.poll_usage(&exports, &mut previous),
                 )
                 .await
                 {}
@@ -227,7 +177,6 @@ impl ApplicationService {
     /// cursors, and when one starts, until cancelled.
     async fn discover_containers(
         &self,
-        docker: &Docker,
         exports: &Exports,
         discovery: &mut Discovery,
         cancellation: &CancellationToken,
@@ -264,7 +213,7 @@ impl ApplicationService {
                 // may have new output; Docker replays those from now on.
                 let since = now_ns().div_euclid(1_000_000_000);
                 exports.lock().values_mut().for_each(Exported::started);
-                starts = Some(Box::pin(docker.container_starts(since)));
+                starts = Some(self.runtime.container_starts(since));
             }
             if !interval
                 && discovery
@@ -273,7 +222,7 @@ impl ApplicationService {
             {
                 continue;
             }
-            if let Err(error) = self.discover(docker, exports, discovery).await {
+            if let Err(error) = self.discover(exports, discovery).await {
                 tracing::warn!(?error, "containers could not be listed for telemetry");
                 continue;
             }
@@ -288,7 +237,7 @@ impl ApplicationService {
                 containers: exports
                     .lock()
                     .iter()
-                    .map(|(id, exported)| (id.clone(), exported.handled.load(Ordering::Relaxed)))
+                    .map(|(id, exported)| (id.clone(), exported.export.cursor()))
                     .collect(),
             };
             if let Err(error) = self.store.save_container_cursors(&cursors).await {
@@ -298,35 +247,32 @@ impl ApplicationService {
     }
 
     /// Lists the containers, starts following new ones, forgets removed ones,
-    /// and refreshes their resources.
+    /// and refreshes their labels.
     async fn discover(
         &self,
-        docker: &Docker,
         exports: &Exports,
         discovery: &mut Discovery,
-    ) -> Result<(), DockerError> {
+    ) -> Result<(), BoundaryError> {
         discovery.ran = Some(Instant::now());
         let scanned = now_ns();
-        let containers = docker.managed_containers(self.store.instance_id()).await?;
-        let mut resources = Vec::with_capacity(containers.len());
+        let containers = self.runtime.containers().await?;
+        let mut labels = Vec::with_capacity(containers.len());
         for container in &containers {
-            resources.push(
-                self.container_resource(container, &mut discovery.names)
+            labels.push(
+                self.container_attributes(container, &mut discovery.names)
                     .await,
             );
         }
         let mut exports = exports.lock();
         exports.retain(|id, _| containers.iter().any(|container| &container.id == id));
-        for (container, resource) in containers.into_iter().zip(resources) {
+        for (container, attributes) in containers.into_iter().zip(labels) {
             let exported = exports.entry(container.id.clone()).or_insert_with(|| {
                 let cursor = discovery
                     .saved
                     .remove(&container.id)
                     .unwrap_or(discovery.start);
                 Exported {
-                    resource: Arc::new(Mutex::new(resource.clone())),
-                    read: Arc::new(AtomicI64::new(cursor)),
-                    handled: Arc::new(AtomicI64::new(cursor)),
+                    export: Arc::new(ContainerExport::new(attributes.clone(), cursor)),
                     done: false,
                     restarted: false,
                     follower: None,
@@ -334,27 +280,23 @@ impl ApplicationService {
                     container: container.clone(),
                 }
             });
-            {
-                let mut current = exported.resource.lock();
-                if *current != resource {
-                    *current = resource;
-                }
-            }
+            exported.export.relabel(attributes);
             exported.container = container;
-            exported.keep_following(self, docker);
+            exported.keep_following(&self.runtime, &self.telemetry);
         }
         discovery.scanned = Some(scanned);
         Ok(())
     }
 
-    /// The resource of a container's records: the manifest service or job,
-    /// or the infrastructure component, as `service.name`, what kind of
-    /// workload it is, the container and task, and its environment's names.
-    async fn container_resource(
+    /// The resource attributes of a container's records: the manifest
+    /// service or job, or the infrastructure component, as `service.name`,
+    /// what kind of workload it is, the container and task, and its
+    /// environment's names.
+    async fn container_attributes(
         &self,
         container: &ManagedContainer,
         names: &mut Names,
-    ) -> ContainerResource {
+    ) -> Vec<(&'static str, String)> {
         let (service, workload, environment) = match &container.workload {
             Workload::Service { environment, name } => (name.clone(), "service", Some(environment)),
             Workload::Job { environment, name } => (name.clone(), "job", Some(environment)),
@@ -375,7 +317,7 @@ impl ApplicationService {
                 attributes.extend(names.preview.map(|slug| ("piqueld.preview", slug)));
             }
         }
-        ContainerResource::new(attributes)
+        attributes
     }
 
     /// Reads the resource usage of every running container and queues it as
@@ -384,7 +326,6 @@ impl ApplicationService {
     /// skipped until the next poll.
     async fn poll_usage(
         &self,
-        docker: &Docker,
         exports: &Exports,
         previous: &mut HashMap<String, (i64, u64)>,
     ) -> Result<(), StoreError> {
@@ -396,21 +337,21 @@ impl ApplicationService {
                 (
                     exported.container.id.clone(),
                     exported.container.created.saturating_mul(1_000_000_000),
-                    exported.resource.lock().clone(),
+                    Arc::clone(&exported.export),
                 )
             })
             .collect();
         let polled: Vec<_> = futures_util::stream::iter(running)
-            .map(|(id, created, resource)| async move {
-                let usage = docker.container_usage(&id).await;
-                (id, created, resource, now_ns(), usage)
+            .map(|(id, created, container)| async move {
+                let usage = self.runtime.container_usage(&id).await;
+                (id, created, container, now_ns(), usage)
             })
             .buffer_unordered(USAGE_CONCURRENCY)
             .collect()
             .await;
         let mut samples = Vec::new();
         let mut seen = HashMap::new();
-        for (id, created, resource, time, usage) in polled {
+        for (id, created, container, time, usage) in polled {
             let usage = match usage {
                 Ok(Some(usage)) => usage,
                 Ok(None) => continue,
@@ -423,7 +364,7 @@ impl ApplicationService {
                 seen.insert(id.clone(), (time, cpu));
             }
             samples.push(ContainerSample {
-                resource,
+                container,
                 created,
                 time,
                 usage,
@@ -459,9 +400,7 @@ mod tests {
                 task: None,
                 workload: Workload::Infrastructure("piqueld-gateway"),
             },
-            resource: Arc::new(Mutex::new(ContainerResource::new([]))),
-            read: Arc::default(),
-            handled: Arc::default(),
+            export: Arc::new(ContainerExport::new(vec![], 0)),
             done: false,
             restarted: false,
             follower: Some(follower),

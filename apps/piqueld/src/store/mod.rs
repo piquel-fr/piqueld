@@ -797,6 +797,16 @@ fn ensure_database_target(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// Returns the current Unix time in nanoseconds, as Docker and OpenTelemetry
+/// timestamps are; unlike [`now_ms`], it may step back with the clock.
+pub(crate) fn now_ns() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+        .unwrap_or_default()
+}
+
 /// Last timestamp returned by `now_ms`, keeping it strictly increasing.
 static LAST_NOW_MS: AtomicI64 = AtomicI64::new(0);
 

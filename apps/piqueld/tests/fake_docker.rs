@@ -15,6 +15,7 @@ mod sqlite;
 
 use application_fixture::TestApplications;
 use async_trait::async_trait;
+use futures_util::StreamExt as _;
 use piqueld::api::Actor::Daemon;
 use piqueld::docker::{
     DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, LocalImage,
@@ -401,6 +402,30 @@ impl DockerApi for FakeDocker {
         _stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError> {
         Ok(piqueld_core::api::ApplicationLogs::default())
+    }
+
+    /// The fake runs no containers.
+    async fn managed_containers(
+        &self,
+        _instance: &InstanceId,
+    ) -> Result<Vec<piqueld::docker::ManagedContainer>, DockerError> {
+        Ok(Vec::new())
+    }
+
+    async fn container_usage(
+        &self,
+        _id: &str,
+    ) -> Result<Option<piqueld::docker::ContainerUsage>, DockerError> {
+        Ok(None)
+    }
+
+    fn container_logs(&self, _id: &str, _since: i32) -> piqueld::docker::ContainerLogs {
+        futures_util::stream::empty().boxed()
+    }
+
+    /// No container ever starts.
+    fn container_starts(&self, _since: i64) -> piqueld::docker::ContainerStarts {
+        futures_util::stream::pending().boxed()
     }
 
     async fn ping(&self) -> Result<(), DockerError> {

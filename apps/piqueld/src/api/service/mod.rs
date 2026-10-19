@@ -1,6 +1,5 @@
 //! Shared daemon operations, independent of transport adapters.
 
-mod containers;
 mod exec;
 mod history;
 mod notification_worker;

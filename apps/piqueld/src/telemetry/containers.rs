@@ -4,7 +4,9 @@
 //! resource, so they are built as OTLP messages directly rather than through
 //! the SDK, and queued on the same bounded queues.
 use super::Telemetry;
-use crate::docker::ContainerUsage;
+use crate::docker::{ContainerLogs, ContainerUsage, DockerError};
+use crate::store::now_ns;
+use futures_util::StreamExt as _;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
@@ -15,6 +17,7 @@ use opentelemetry_proto::tonic::{
     },
     resource::v1::Resource,
 };
+use parking_lot::Mutex;
 use piqueld_core::api::LogStream;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -34,16 +37,70 @@ const LINE_BURST: f64 = 2_000.0;
 /// Where log export stopped reading each container, saved so that it resumes
 /// there after a restart.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ContainerCursors {
+pub(crate) struct ContainerCursors {
     /// When the discovery these cursors cover started, in Unix nanoseconds:
     /// a container without a cursor was created after it. `None` before the
     /// first save, when export starts from the present.
-    pub watermark: Option<i64>,
+    pub(crate) watermark: Option<i64>,
     /// By container ID, Docker's timestamp of the last line sent or dropped,
     /// or where reading started, in Unix nanoseconds. Resuming skips lines
     /// before it but not at it, so a line may be sent twice and none is
     /// missed.
-    pub containers: BTreeMap<String, i64>,
+    pub(crate) containers: BTreeMap<String, i64>,
+}
+
+/// One container's export: the resource its records carry, and how far its
+/// output was read and sent. Shared by the code discovering it, which saves
+/// [`Self::cursor`] and refreshes [`Self::relabel`], and the follower
+/// exporting its output through [`Telemetry::export_container_logs`].
+#[derive(Debug)]
+pub(crate) struct ContainerExport {
+    resource: Mutex<ContainerResource>,
+    /// Docker's timestamp of the last line read, or where reading starts, in
+    /// Unix nanoseconds: where a follower started later resumes.
+    read: AtomicI64,
+    /// The last line every copy of which was sent or dropped, or where
+    /// reading started: where reading resumes after a restart.
+    handled: Arc<AtomicI64>,
+}
+
+impl ContainerExport {
+    /// A container labelled with `attributes`, such as `service.name`, whose
+    /// output is read from `cursor`, in Unix nanoseconds.
+    pub(crate) fn new(attributes: Vec<(&'static str, String)>, cursor: i64) -> Self {
+        Self {
+            resource: Mutex::new(ContainerResource::new(attributes)),
+            read: AtomicI64::new(cursor),
+            handled: Arc::new(AtomicI64::new(cursor)),
+        }
+    }
+
+    /// Labels its records with `attributes` from now on, such as after its
+    /// environment was renamed.
+    pub(crate) fn relabel(&self, attributes: Vec<(&'static str, String)>) {
+        let resource = ContainerResource::new(attributes);
+        let mut current = self.resource.lock();
+        // Keeping the same resource lets a batch group its lines together.
+        if *current != resource {
+            *current = resource;
+        }
+    }
+
+    /// Where reading resumes after a restart, in Unix nanoseconds: to save.
+    pub(crate) fn cursor(&self) -> i64 {
+        self.handled.load(Ordering::Relaxed)
+    }
+
+    /// Where a follower resumes reading, in Docker's whole Unix seconds;
+    /// lines before [`Self::read`]'s exact time are skipped.
+    pub(crate) fn since(&self) -> i32 {
+        let read = self.read.load(Ordering::Relaxed);
+        i32::try_from(read.div_euclid(1_000_000_000).max(0)).unwrap_or(i32::MAX)
+    }
+
+    fn resource(&self) -> ContainerResource {
+        self.resource.lock().clone()
+    }
 }
 
 /// Moves a container's cursor to a queued line's timestamp once every copy
@@ -67,22 +124,13 @@ impl Drop for Handled {
     }
 }
 
-/// The current time in Unix nanoseconds.
-pub(crate) fn now_ns() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
-        .unwrap_or_default()
-}
-
 /// The resource of one container's records: who runs it and what it runs.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ContainerResource(Arc<Resource>);
+pub(super) struct ContainerResource(Arc<Resource>);
 
 impl ContainerResource {
     /// A resource with `attributes`, such as `service.name`.
-    pub(crate) fn new(attributes: impl IntoIterator<Item = (&'static str, String)>) -> Self {
+    fn new(attributes: impl IntoIterator<Item = (&'static str, String)>) -> Self {
         Self(Arc::new(Resource {
             attributes: attributes
                 .into_iter()
@@ -96,7 +144,7 @@ impl ContainerResource {
 /// Limits the lines one container exports: [`LINES_PER_SECOND`], in bursts
 /// of up to [`LINE_BURST`].
 #[derive(Debug)]
-pub(crate) struct LineLimit {
+struct LineLimit {
     tokens: f64,
     refilled: Instant,
 }
@@ -129,7 +177,7 @@ impl LineLimit {
 /// One container's resource usage at a poll.
 #[derive(Debug)]
 pub(crate) struct ContainerSample {
-    pub(crate) resource: ContainerResource,
+    pub(crate) container: Arc<ContainerExport>,
     /// When the container was created, in Unix nanoseconds: the start of its
     /// cumulative counters.
     pub(crate) created: i64,
@@ -358,16 +406,47 @@ impl Telemetry {
         self.0.as_ref().is_some_and(|hub| hub.containers)
     }
 
-    /// Queues one line of a container's output, taken from `limit`, on every
-    /// destination, moving `handled` to its `timestamp` once every copy was
-    /// sent or dropped. A line past the limit is dropped and counted, and
-    /// leaves `handled` alone. The line is cut to [`MAX_LINE_BYTES`] and its
-    /// severity left unset.
-    pub(crate) fn export_container_line(
+    /// Exports `logs`, `container`'s output read from where it resumes,
+    /// until it ends: each line at or after that point, cleaned of terminal
+    /// escapes, moves the container's read cursor. Lines over the container's
+    /// rate are dropped and counted, each follower starting with a full burst.
+    ///
+    /// # Errors
+    /// Returns the error that ended `logs`, leaving the cursors where it
+    /// stopped.
+    pub(crate) async fn export_container_logs(
         &self,
-        resource: &ContainerResource,
+        container: &ContainerExport,
+        mut logs: ContainerLogs,
+    ) -> Result<(), DockerError> {
+        let resume = container.read.load(Ordering::Relaxed);
+        let mut limit = LineLimit::default();
+        while let Some(chunk) = logs.next().await {
+            let chunk = chunk?;
+            let Some(stream) = chunk.stream else {
+                continue;
+            };
+            for (timestamp, line) in chunk.lines {
+                if timestamp < resume {
+                    continue;
+                }
+                let line = piqueld_core::api::LogRecord::clean_message(&line);
+                self.export_container_line(container, &mut limit, stream, timestamp, line);
+                container.read.fetch_max(timestamp, Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Queues one line of a container's output, taken from `limit`, on every
+    /// destination, moving its handled cursor to `timestamp` once every copy
+    /// was sent or dropped. A line past the limit is dropped and counted, and
+    /// leaves the cursor alone. The line is cut to [`MAX_LINE_BYTES`] and its
+    /// severity left unset.
+    fn export_container_line(
+        &self,
+        container: &ContainerExport,
         limit: &mut LineLimit,
-        handled: &Arc<AtomicI64>,
         stream: LogStream,
         timestamp: i64,
         line: String,
@@ -393,10 +472,11 @@ impl Telemetry {
             ..Default::default()
         };
         let handled = Arc::new(Handled {
-            cursor: Arc::clone(handled),
+            cursor: Arc::clone(&container.handled),
             at: timestamp,
             queued: AtomicBool::new(true),
         });
+        let resource = container.resource();
         hub.destinations.each(|destination| {
             let log = (resource.clone(), record.clone(), Arc::clone(&handled));
             if !destination.push_log(super::LogItem::Container(log)) {
@@ -414,7 +494,7 @@ impl Telemetry {
             resource_metrics: samples
                 .iter()
                 .map(|sample| ResourceMetrics {
-                    resource: Some((*sample.resource.0).clone()),
+                    resource: Some((*sample.container.resource().0).clone()),
                     scope_metrics: vec![ScopeMetrics {
                         scope: Some(scope()),
                         metrics: sample.metrics(),
@@ -433,6 +513,34 @@ impl Telemetry {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A follower skips lines before where it resumes, keeps the one at it,
+    /// and the cursor saved for restarts stays put until lines are sent.
+    #[tokio::test]
+    async fn container_logs_resume_at_the_read_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::new(&crate::config::TelemetryConfig {
+            endpoint: Some(crate::config::OtlpEndpoint::Unix(
+                directory.path().join("absent.sock"),
+            )),
+            ..Default::default()
+        })
+        .unwrap();
+        let container = ContainerExport::new(vec![], 2_000_000_000);
+        let lines = crate::docker::LogLines {
+            stream: Some(LogStream::Stdout),
+            lines: [1, 2, 3]
+                .map(|second| (second * 1_000_000_000, format!("line {second}")))
+                .into(),
+        };
+        let logs = futures_util::stream::iter([Ok(lines)]).boxed();
+        telemetry
+            .export_container_logs(&container, logs)
+            .await
+            .unwrap();
+        assert_eq!(container.since(), 3);
+        assert_eq!(container.cursor(), 2_000_000_000, "lines still queued");
+    }
 
     #[test]
     fn line_limit_allows_bursts_then_the_sustained_rate() {
@@ -457,7 +565,10 @@ mod tests {
     #[test]
     fn samples_become_container_metrics() {
         let mut sample = ContainerSample {
-            resource: ContainerResource::new([("service.name", "web".into())]),
+            container: Arc::new(ContainerExport::new(
+                vec![("service.name", "web".into())],
+                0,
+            )),
             created: 1_000,
             time: 31_000_000_000,
             usage: ContainerUsage {

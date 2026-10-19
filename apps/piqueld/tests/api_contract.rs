@@ -9,6 +9,7 @@ mod sqlite;
 
 use async_trait::async_trait;
 use axum::{body::Body, serve};
+use futures_util::StreamExt as _;
 use http::{HeaderMap, Method, Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -287,6 +288,23 @@ impl RuntimeBoundary for FakeRuntime {
     ) -> Result<ObservedApplication, BoundaryError> {
         self.check_available().await?;
         Ok(ObservedApplication::default())
+    }
+    /// The fake runtime runs no containers.
+    async fn containers(&self) -> Result<Vec<piqueld::docker::ManagedContainer>, BoundaryError> {
+        Ok(Vec::new())
+    }
+    async fn container_usage(
+        &self,
+        _: &str,
+    ) -> Result<Option<piqueld::docker::ContainerUsage>, BoundaryError> {
+        Ok(None)
+    }
+    fn container_logs(&self, _: &str, _: i32) -> piqueld::docker::ContainerLogs {
+        futures_util::stream::empty().boxed()
+    }
+    /// No container ever starts.
+    fn container_starts(&self, _: i64) -> piqueld::docker::ContainerStarts {
+        futures_util::stream::pending().boxed()
     }
 }
 

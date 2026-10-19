@@ -184,14 +184,6 @@ impl Default for RetryPolicy {
     }
 }
 
-impl<D> Controller<D> {
-    /// The Docker client, with the limits reconciliation shares, for work
-    /// that must not hold it up.
-    pub(crate) fn docker(&self) -> Arc<crate::docker::LimitedDocker<D>> {
-        Arc::clone(&self.docker)
-    }
-}
-
 impl<D: DockerApi> Controller<D> {
     /// Shares the controller's I/O limits with API observation and preview.
     #[must_use]

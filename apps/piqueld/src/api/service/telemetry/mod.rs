@@ -1,4 +1,6 @@
 //! Feeds telemetry export from the journal, the store and the runtime.
+mod containers;
+
 use super::ApplicationService;
 use crate::store::{JournalPosition, StoreError, Visibility, now_ms};
 use crate::telemetry::{EventContext, Journal, ServiceSample};
@@ -16,18 +18,18 @@ const NAMES_TTL: Duration = Duration::from_secs(300);
 
 /// Names labelling an environment's telemetry, looked up when first needed
 /// and forgotten every [`NAMES_TTL`].
-pub(super) struct Names {
+struct Names {
     names: HashMap<EnvironmentId, EnvironmentNames>,
     since: std::time::Instant,
 }
 
 /// The names labelling one environment's telemetry.
 #[derive(Clone)]
-pub(super) struct EnvironmentNames {
-    pub(super) application: String,
-    pub(super) environment: String,
+struct EnvironmentNames {
+    application: String,
+    environment: String,
     /// The preview's slug, for previews.
-    pub(super) preview: Option<String>,
+    preview: Option<String>,
 }
 
 /// Where the journal exporter is: its exporter, the last event it read, and
@@ -41,16 +43,15 @@ struct Tail {
 impl ApplicationService {
     /// Exports journal events after `start` every second, samples daemon and
     /// service gauges every 30 seconds, and exports the containers' output
-    /// and usage through `docker` when enabled, until cancelled. Each runs on
-    /// its own, so a slow Docker observation never holds up the journal or
-    /// export health, and none holds up reconciliation or requests. Without
-    /// telemetry, only closes a failure left from when it was configured.
-    /// Without container export, forgets where it stopped reading, so
-    /// enabling it again starts from the present.
+    /// and usage when enabled, until cancelled. Each runs on its own, so a
+    /// slow Docker observation never holds up the journal or export health,
+    /// and none holds up reconciliation or requests. Without telemetry, only
+    /// closes a failure left from when it was configured. Without container
+    /// export, forgets where it stopped reading, so enabling it again starts
+    /// from the present.
     pub(super) async fn export_telemetry(
         &self,
         start: JournalPosition,
-        docker: super::containers::Docker,
         cancellation: CancellationToken,
     ) {
         if !self.telemetry.containers()
@@ -90,7 +91,7 @@ impl ApplicationService {
             },
             async {
                 if self.telemetry.containers() {
-                    self.export_containers(docker, &cancellation).await;
+                    self.export_containers(&cancellation).await;
                 }
             },
         );
@@ -214,7 +215,7 @@ impl Default for Names {
 impl Names {
     /// The names of environment `id`, looked up when unknown; `None` once
     /// it is deleted.
-    pub(super) async fn get(
+    async fn get(
         &mut self,
         service: &ApplicationService,
         id: &EnvironmentId,
@@ -241,7 +242,7 @@ impl Names {
 }
 
 /// A ticker that skips ticks missed while work ran.
-pub(super) fn interval(period: Duration) -> tokio::time::Interval {
+fn interval(period: Duration) -> tokio::time::Interval {
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tick
@@ -249,7 +250,7 @@ pub(super) fn interval(period: Duration) -> tokio::time::Interval {
 
 /// Runs `work` at the next `tick`, logging its failure, which is retried the
 /// next tick. Returns `false` once cancelled, abandoning `work`.
-pub(super) async fn step(
+async fn step(
     tick: &mut tokio::time::Interval,
     cancellation: &CancellationToken,
     work: impl Future<Output = Result<(), StoreError>>,

@@ -1,12 +1,9 @@
 //! The containers piqueld runs, as container telemetry sees them: discovery,
-//! followed output, one-shot resource usage, and start events.
-//!
-//! Discovery and usage polls take observation permits, so they never hold up
-//! reconciliation; following output and watching events hold none, since they
-//! last as long as their container or the daemon.
+//! followed output, one-shot resource usage, and start events. These back
+//! the container methods of [`DockerApi`](super::DockerApi); `LimitedDocker`
+//! puts discovery and usage polls under its observation limit.
 use super::{
-    BollardDocker, BollardResult, DockerError, DockerTimeout, HashMap, LimitedDocker,
-    ListServicesOptionsBuilder, StreamExt,
+    BollardDocker, BollardResult, DockerError, HashMap, ListServicesOptionsBuilder, StreamExt,
 };
 use bollard::{
     container::LogOutput,
@@ -15,11 +12,13 @@ use bollard::{
         EventsOptionsBuilder, ListContainersOptionsBuilder, LogsOptionsBuilder, StatsOptionsBuilder,
     },
 };
-use futures_util::Stream;
+use futures_util::stream::BoxStream;
 use piqueld_core::{
     EnvironmentId, InstanceId,
     api::LogStream,
-    resource::{APPLICATION_LABEL, INSTANCE_LABEL, JOB_LABEL, MANAGED_LABEL, SERVICE_LABEL},
+    resource::{
+        APPLICATION_LABEL, INGRESS_LABEL, INSTANCE_LABEL, JOB_LABEL, MANAGED_LABEL, SERVICE_LABEL,
+    },
 };
 
 /// Label Swarm puts on every task container, naming its service's ID.
@@ -29,21 +28,24 @@ const SWARM_TASK_LABEL: &str = "com.docker.swarm.task.id";
 
 /// A container piqueld runs.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ManagedContainer {
-    pub(crate) id: String,
+pub struct ManagedContainer {
+    /// Docker's container ID.
+    pub id: String,
     /// Docker's name, without its leading `/`.
-    pub(crate) name: String,
-    pub(crate) state: ContainerState,
+    pub name: String,
+    /// Whether it has output to read.
+    pub state: ContainerState,
     /// When Docker created it, in Unix seconds.
-    pub(crate) created: i64,
+    pub created: i64,
     /// The Swarm task it runs; `None` for infrastructure containers.
-    pub(crate) task: Option<String>,
-    pub(crate) workload: Workload,
+    pub task: Option<String>,
+    /// What it runs.
+    pub workload: Workload,
 }
 
 /// Whether a container has output to read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ContainerState {
+pub enum ContainerState {
     /// Not started yet: no output.
     Created,
     /// Running, paused or restarting: output may still come.
@@ -54,15 +56,19 @@ pub(crate) enum ContainerState {
 
 /// What a container runs.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Workload {
+pub enum Workload {
     /// A task of a manifest service.
     Service {
+        /// The environment deploying it.
         environment: EnvironmentId,
+        /// The manifest service name.
         name: String,
     },
     /// A run of a manifest job.
     Job {
+        /// The environment running it.
         environment: EnvironmentId,
+        /// The manifest job name.
         name: String,
     },
     /// A container piqueld runs itself for ingress: `piqueld-gateway`,
@@ -72,112 +78,37 @@ pub(crate) enum Workload {
 
 /// Lines of output Docker returned together.
 #[derive(Debug, Default)]
-pub(crate) struct LogLines {
-    pub(crate) stream: Option<LogStream>,
+pub struct LogLines {
+    /// The stream they were written to; `None` for stdin, never exported.
+    pub stream: Option<LogStream>,
     /// Each line's Docker timestamp, in Unix nanoseconds, and its text.
-    pub(crate) lines: Vec<(i64, String)>,
+    pub lines: Vec<(i64, String)>,
 }
 
 /// One container's resource usage, as a one-shot stats read reports it.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ContainerUsage {
+pub struct ContainerUsage {
     /// CPU time used since it started, in nanoseconds.
-    pub(crate) cpu_ns: Option<u64>,
+    pub cpu_ns: Option<u64>,
     /// Memory in use, in bytes, page cache included.
-    pub(crate) memory: Option<u64>,
+    pub memory: Option<u64>,
     /// Its memory limit, or the host's memory without one, in bytes.
-    pub(crate) memory_limit: Option<u64>,
+    pub memory_limit: Option<u64>,
     /// Bytes received and sent per network interface.
-    pub(crate) networks: Vec<(String, u64, u64)>,
+    pub networks: Vec<(String, u64, u64)>,
     /// Bytes read from and written to block devices.
-    pub(crate) disk: Option<(u64, u64)>,
+    pub disk: Option<(u64, u64)>,
 }
 
-impl LimitedDocker<BollardDocker> {
-    /// Lists every container `instance` runs, stopped ones included.
-    pub(crate) async fn managed_containers(
-        &self,
-        instance: &InstanceId,
-    ) -> Result<Vec<ManagedContainer>, DockerError> {
-        DockerTimeout::Request
-            .run("list managed containers", async {
-                let _permit = self.observing().await;
-                self.inner.managed_containers(instance).await
-            })
-            .await
-    }
-
-    /// Reads a running container's resource usage once, without waiting for
-    /// a second sample; `None` once it is gone.
-    pub(crate) async fn container_usage(
-        &self,
-        id: &str,
-    ) -> Result<Option<ContainerUsage>, DockerError> {
-        DockerTimeout::Request
-            .run("read container stats", async {
-                let _permit = self.observing().await;
-                self.inner.container_usage(id).await
-            })
-            .await
-    }
-
-    /// Follows a container's stdout and stderr from `since`, in Unix seconds,
-    /// until it stops; a stopped container's ends at once.
-    pub(crate) fn container_logs(
-        &self,
-        id: &str,
-        since: i32,
-    ) -> impl Stream<Item = Result<LogLines, DockerError>> + use<> {
-        self.inner
-            .docker
-            .logs(
-                id,
-                Some(
-                    LogsOptionsBuilder::default()
-                        .follow(true)
-                        .stdout(true)
-                        .stderr(true)
-                        .timestamps(true)
-                        .since(since)
-                        .build(),
-                ),
-            )
-            .map(|item| {
-                item.map(|output| BollardDocker::log_lines(&output))
-                    .or_request("follow container logs")
-            })
-    }
-
-    /// Yields the ID of each container that starts from `since`, in Unix
-    /// seconds, when Docker names it, until the stream fails. Docker replays
-    /// starts since then, so none is missed while the stream connects.
-    pub(crate) fn container_starts(
-        &self,
-        since: i64,
-    ) -> impl Stream<Item = Result<Option<String>, DockerError>> + use<> {
-        self.inner
-            .docker
-            .events(Some(
-                EventsOptionsBuilder::default()
-                    .since(&since.to_string())
-                    .filters(&HashMap::from([
-                        ("type", vec!["container"]),
-                        ("event", vec!["start"]),
-                    ]))
-                    .build(),
-            ))
-            .map(|event| {
-                event
-                    .map(|event| event.actor.and_then(|actor| actor.id))
-                    .or_request("watch container starts")
-            })
-    }
-}
+/// A container's followed output.
+pub type ContainerLogs = BoxStream<'static, Result<LogLines, DockerError>>;
+/// The IDs of containers starting, when Docker names them.
+pub type ContainerStarts = BoxStream<'static, Result<Option<String>, DockerError>>;
 
 impl BollardDocker {
     /// Lists every container `instance` runs. Task containers carry Swarm's
     /// labels rather than piqueld's, so they take their service's labels.
-    async fn managed_containers(
+    pub(super) async fn list_managed_containers(
         &self,
         instance: &InstanceId,
     ) -> Result<Vec<ManagedContainer>, DockerError> {
@@ -244,7 +175,7 @@ impl BollardDocker {
                 environment: environment()?,
                 name: service.to_owned(),
             }
-        } else if label(crate::ingress::GATEWAY_LABEL) == Some("true") {
+        } else if label(INGRESS_LABEL) == Some("true") {
             Workload::Infrastructure(if name.ends_with("-tailscale") {
                 "piqueld-tailscale"
             } else if name.ends_with("-cloudflared") {
@@ -275,6 +206,51 @@ impl BollardDocker {
         })
     }
 
+    /// Follows a container's stdout and stderr from `since`, in Unix seconds,
+    /// until it stops; a stopped container's ends at once.
+    pub(super) fn follow_container_logs(&self, id: &str, since: i32) -> ContainerLogs {
+        self.docker
+            .logs(
+                id,
+                Some(
+                    LogsOptionsBuilder::default()
+                        .follow(true)
+                        .stdout(true)
+                        .stderr(true)
+                        .timestamps(true)
+                        .since(since)
+                        .build(),
+                ),
+            )
+            .map(|item| {
+                item.map(|output| Self::log_lines(&output))
+                    .or_request("follow container logs")
+            })
+            .boxed()
+    }
+
+    /// Yields the ID of each container that starts from `since`, in Unix
+    /// seconds, until the stream fails. Docker replays starts since then, so
+    /// none is missed while the stream connects.
+    pub(super) fn watch_container_starts(&self, since: i64) -> ContainerStarts {
+        self.docker
+            .events(Some(
+                EventsOptionsBuilder::default()
+                    .since(&since.to_string())
+                    .filters(&HashMap::from([
+                        ("type", vec!["container"]),
+                        ("event", vec!["start"]),
+                    ]))
+                    .build(),
+            ))
+            .map(|event| {
+                event
+                    .map(|event| event.actor.and_then(|actor| actor.id))
+                    .or_request("watch container starts")
+            })
+            .boxed()
+    }
+
     /// Splits one chunk of timestamped output into lines. A line whose
     /// timestamp cannot be read is stamped now.
     ///
@@ -293,15 +269,19 @@ impl BollardDocker {
             .lines()
             .map(|line| {
                 let (timestamp, message) = line.split_once(' ').unwrap_or(("", line));
-                let timestamp = unix_nanos(timestamp).unwrap_or_else(crate::telemetry::now_ns);
+                let timestamp = unix_nanos(timestamp).unwrap_or_else(crate::store::now_ns);
                 (timestamp, message.to_owned())
             })
             .collect();
         LogLines { stream, lines }
     }
 
-    /// Reads a container's resource usage once; `None` once it is gone.
-    async fn container_usage(&self, id: &str) -> Result<Option<ContainerUsage>, DockerError> {
+    /// Reads a container's resource usage once, without waiting for a
+    /// second sample; `None` once it is gone.
+    pub(super) async fn read_container_usage(
+        &self,
+        id: &str,
+    ) -> Result<Option<ContainerUsage>, DockerError> {
         let mut stats = self.docker.stats(
             id,
             Some(
@@ -467,14 +447,14 @@ mod tests {
         assert_eq!(
             classify(container(
                 "piqueld-ingress-0123-tailscale",
-                labels(&[owned[0], owned[1], (crate::ingress::GATEWAY_LABEL, "true")]),
+                labels(&[owned[0], owned[1], (INGRESS_LABEL, "true")]),
             )),
             Some((Workload::Infrastructure("piqueld-tailscale"), None))
         );
         let other = [(MANAGED_LABEL, "true"), (INSTANCE_LABEL, "instance-2")];
         for labels in [
             labels(&[]),
-            labels(&[other[0], other[1], (crate::ingress::GATEWAY_LABEL, "true")]),
+            labels(&[other[0], other[1], (INGRESS_LABEL, "true")]),
         ] {
             assert_eq!(classify(container("other", labels)), None);
         }
