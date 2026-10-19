@@ -226,7 +226,9 @@ hides actions that need an account: adding passkeys, creating tokens,
 invitation and enrollment links, and CLI login approval. Accounts with
 `accounts:manage` see live host operator sessions on the Accounts page; since
 those sessions act with `admin` on everything, only accounts holding that can
-revoke them.
+revoke them. When the session expires or is revoked, the dashboard asks to sign
+in again over the current page, keeping unsaved edits; signing in as another
+account or the host operator reloads the dashboard without them.
 The Audit page shows the [audit trail](observability.md#audit-trail), naming the
 application or environment each request addressed, and each
 session or token links to its own activity. New tokens can be bound to a

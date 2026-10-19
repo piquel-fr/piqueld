@@ -1,4 +1,4 @@
-import { test, expect, auth, call, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, auth, call, proof, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** Save buttons exist for every settings group; only the edited group's is shown. */
@@ -251,4 +251,23 @@ test('reauthenticates after revocation without losing an unsaved editor draft', 
   await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('preserved-draft');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(title(page)).toHaveText('preserved-draft');
+});
+
+test('signing in as another account after the session expired drops the previous drafts', async ({ page, account }) => {
+  await createApplication(page);
+  await page.getByRole('button', { name: 'Rename application', exact: true }).click();
+  await page.getByLabel('Application name', { exact: true }).fill('alice-draft');
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'admin' }] })).invitation_url;
+  await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible({ timeout: 20_000 });
+  // Bob registers and signs in elsewhere in this browser, then continues here.
+  const ceremony = await auth<Ceremony>(page, 'register/start', {
+    invitation: link.split('#invite=')[1], user_id: null, username: 'bob', display_name: '', passkey_name: 'Test',
+  });
+  await auth(page, 'register/finish', await proof(page, ceremony, true));
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(title(page)).toHaveText('browser-test');
+  await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('browser-test');
 });

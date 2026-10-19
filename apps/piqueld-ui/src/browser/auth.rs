@@ -239,6 +239,24 @@ impl Feedback {
     }
 }
 
+/// Who a session acts as, ignoring editable profile fields.
+#[derive(Clone, PartialEq, Eq)]
+enum Identity {
+    /// An account, by its immutable ID.
+    Account(String),
+    /// The host operator, by its Unix user.
+    Operator(u32),
+}
+
+impl From<&Principal> for Identity {
+    fn from(principal: &Principal) -> Self {
+        match principal {
+            Principal::User(user) => Self::Account(user.id.clone()),
+            Principal::Operator(operator) => Self::Operator(operator.uid),
+        }
+    }
+}
+
 /// Session state owned by `Gate` and shared through context.
 #[derive(Clone, Copy)]
 struct AuthState {
@@ -380,10 +398,24 @@ pub(super) fn Gate() -> impl IntoView {
         }
         state.loaded.set(true);
     });
-    // Keep the editor mounted while reauthenticating so its unsaved drafts survive.
+    // Keep the editor mounted while reauthenticating so its unsaved drafts
+    // survive. Another identity signing in remounts the whole app, router
+    // included (which holds the routed pages), dropping the previous one's
+    // data, drafts, and one-time secrets.
+    let identity = Memo::new(move |_| {
+        state.current.with(|session| {
+            session
+                .as_ref()
+                .map(|session| Identity::from(&session.principal))
+        })
+    });
     view! {
         <div inert={move || state.expired.get().then_some("")}>
-            <super::App />
+            {move || {
+                // Read, not only tracked: an unread memo never subscribes to `current`.
+                identity.with(|_| ());
+                view! { <super::App /> }
+            }}
         </div>
         <Show when={move || state.expired.get()}>
             <SessionExpired state={state} />
@@ -392,9 +424,9 @@ pub(super) fn Gate() -> impl IntoView {
 }
 
 /// Modal overlay shown when the session expires; signing in again clears
-/// `expired` without remounting the dashboard. The host operator, which has
-/// no passkey, signs in with a new link in another tab and then continues
-/// here, keeping unsaved edits.
+/// `expired` without remounting the dashboard, unless someone else signed
+/// in. The host operator, which has no passkey, signs in with a new link in
+/// another tab and then continues here, keeping unsaved edits.
 #[component]
 fn SessionExpired(state: AuthState) -> impl IntoView {
     let feedback = Feedback::new();
@@ -423,7 +455,7 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
             <section class="card auth-card">
                 {brand()} <h2 id="session-expired-title">"Your session has expired"</h2>
                 <p class="hint">
-                    "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in."
+                    "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in. Signing in as someone else discards them."
                 </p>
                 {operator
                     .then(|| {
