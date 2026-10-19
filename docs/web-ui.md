@@ -406,7 +406,9 @@ last check of the repository's branches and why it failed. With webhooks, a
 **GitHub webhook** card shows the payload URL to configure (or that the daemon
 must set `ingress.webhook_hostname`), the content type and event, and whether a
 secret exists. **Generate secret** creates one and shows it once, with a
-**Copy** button, as the payload URL has, until **Done** or leaving the Source tab;
+**Copy** button, as the payload URL has (browsers offer no clipboard on plain
+HTTP origins, so there the text is only selectable), until **Done** or leaving
+the Source tab;
 **Rotate secret** confirms first, since the previous secret stops verifying at
 once. Neither is retried automatically when its outcome is unknown, as a retry
 would rotate the secret again. On an environment's Overview, the **Source** card says

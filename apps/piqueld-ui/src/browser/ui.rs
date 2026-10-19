@@ -120,8 +120,13 @@ pub(super) fn icon(icon: Icon) -> AnyView {
 }
 
 /// A small button copying `text` to the clipboard, labelled `label` for
-/// assistive technology, that says "Copied" once it did.
+/// assistive technology, that says "Copied" once it did. Browsers expose no
+/// clipboard on plain HTTP origins, so there it renders nothing and the text
+/// is only selectable.
 pub(super) fn copy_button(label: &'static str, text: String) -> AnyView {
+    if window().navigator().clipboard().is_undefined() {
+        return ().into_any();
+    }
     let copied = RwSignal::new(false);
     let copy = move |_| {
         let text = text.clone();
