@@ -144,7 +144,8 @@ jobs:
       - run: just deny
 
   # Clippy runs first so lint failures report early; the embedded dashboard it
-  # builds is then reused by the tests.
+  # builds is then reused by the tests. `just lint` also lints the dashboard
+  # and client as wasm32, using the target from rust-toolchain.toml.
   rust:
     name: rust
     needs: changes

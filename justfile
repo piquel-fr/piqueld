@@ -28,8 +28,12 @@ fmt:
 fmt-check:
     @cargo fmt --all -- --check
 
+# The native build compiles the browser code out, so the dashboard and client
+# are linted as wasm32 too. Without --no-deps this also lints their workspace
+# dependencies (piqueld-core) as wasm32.
 lint:
     @cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    @cargo clippy --locked --target wasm32-unknown-unknown --package piqueld-ui --package piqueld-client -- -D warnings
 
 check:
     @cargo check --locked --workspace --all-targets

@@ -20,6 +20,15 @@ pub struct ListApplicationsOptions {
     pub limit: Option<u16>,
 }
 
+/// Deployment policy and precondition override for applying an application.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ApplyOptions {
+    /// Explicitly bypass the identity and revision preconditions.
+    pub force: bool,
+    /// Create a deployment in the same transaction; otherwise save only.
+    pub deploy: bool,
+}
+
 impl Client {
     /// Lists the first page of applications.
     ///
@@ -63,24 +72,24 @@ impl Client {
         &self,
         request: &ApplyApplicationRequest,
     ) -> Result<SavedApplication, ClientError> {
-        self.apply_application_with_options(request, false, false)
+        self.apply_application_with_options(request, &ApplyOptions::default())
             .await
     }
 
-    /// Saves configuration and optionally creates a deployment in one
-    /// transaction; `force` overrides identity and revision preconditions.
+    /// Saves configuration, checked against the request body's identity and
+    /// revision preconditions unless `options` force it, and optionally creates
+    /// a deployment in the same transaction.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn apply_application_with_options(
         &self,
         request: &ApplyApplicationRequest,
-        force: bool,
-        deploy: bool,
+        options: &ApplyOptions,
     ) -> Result<SavedApplication, ClientError> {
         self.generated
             .apply_application(
-                Some(deploy),
-                force.then_some(true),
+                Some(options.deploy),
+                options.force.then_some(true),
                 None,
                 None,
                 None,
@@ -152,11 +161,17 @@ impl Client {
         &self,
         manifest: &str,
     ) -> Result<SavedApplication, ClientError> {
-        self.apply_application_toml_with_preconditions(manifest, Some(0), None, false, false)
-            .await
+        self.apply_application_toml_with_preconditions(
+            manifest,
+            Some(0),
+            None,
+            &ApplyOptions::default(),
+        )
+        .await
     }
 
-    /// Applies TOML to the inspected identity and revision, unless explicitly forced.
+    /// Applies TOML to the inspected identity and revision, unless `options`
+    /// force it.
     ///
     /// Progenitor generates only one request media type per operation. The generated
     /// apply endpoint uses JSON, so this TOML variant uses the shared raw-body adapter.
@@ -167,14 +182,13 @@ impl Client {
         manifest: &str,
         expected: Option<u64>,
         expected_id: Option<&str>,
-        force: bool,
-        deploy: bool,
+        options: &ApplyOptions,
     ) -> Result<SavedApplication, ClientError> {
         let mut query = Vec::with_capacity(2);
-        if force {
+        if options.force {
             query.push(("force", true.to_string()));
         }
-        query.push(("deploy", deploy.to_string()));
+        query.push(("deploy", options.deploy.to_string()));
         let mut headers = Vec::new();
         if let Some(expected) = expected {
             headers.push(("X-Expected-Generation", expected.to_string()));

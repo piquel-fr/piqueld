@@ -50,7 +50,7 @@ pub use piqueld_core::links;
 pub use piqueld_core::tailnet;
 
 pub use applications::{
-    AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
+    AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest, ApplyOptions,
     DeletedApplication, DeploymentView, DiagnosticView, ListApplicationsOptions,
     MAX_APPLICATION_PAGE_SIZE, ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView,
     RenameApplicationRequest, RenamedApplication, SavedApplication,
