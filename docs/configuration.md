@@ -93,6 +93,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `retention.audit_days` | `365` (`0` disables audit trail pruning) |
 | `telemetry.endpoint` | none ([telemetry export](observability.md#telemetry-export) off) |
 | `telemetry.headers_file` | none |
+| `telemetry.containers` | `true` ([container logs and resource usage](observability.md#container-telemetry) exported with the daemon's) |
 | `notifications.enabled` | `false` |
 | `notifications.security` | `true` ([security notifications](observability.md#security-notifications); like every category, sent only when `notifications.enabled`) |
 | `notifications.daemon_started` | `true` ([daemon start notifications](observability.md#daemon-start-notifications)) |

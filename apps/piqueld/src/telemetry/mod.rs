@@ -1,7 +1,7 @@
 //! Export of the daemon's own traces, metrics and logs over OTLP/gRPC.
 //!
 //! piqueld pushes telemetry to every destination; today that is the
-//! `[telemetry]` endpoint. Every record carries the resource attributes
+//! `[telemetry]` endpoint. Every daemon record carries the resource attributes
 //! `service.name = piqueld`, `service.version` and `service.instance.id`, the
 //! installation's ID.
 //!
@@ -11,15 +11,22 @@
 //!   of the daemon process, its queues and every deployed service.
 //! - Logs: the daemon's own `tracing` events and every journal event.
 //!
+//! With `[telemetry] containers`, the output and resource usage of every
+//! container piqueld runs are exported too, see [`containers`], each under
+//! its own resource naming the manifest service.
+//!
 //! Records flow through the OpenTelemetry SDK into [`Fanout`], which copies
 //! them onto each destination's bounded queues. Nothing waits on a collector:
 //! a full queue or a failed export drops records and counts them, and one
 //! that keeps failing raises a single `telemetry_export_failed` diagnostic.
 
+mod containers;
 mod destination;
 mod journal;
 mod metrics;
 
+pub use containers::{ContainerCursor, ContainerCursors};
+pub(crate) use containers::{ContainerResource, ContainerSample, LineLimit, now_ns};
 use destination::{Destination, LogItem};
 pub use destination::{Headers, HeadersError};
 pub(crate) use journal::{EventContext, Journal};
@@ -67,6 +74,8 @@ struct Hub {
     destinations: Arc<Destinations>,
     tracer: SdkTracerProvider,
     logger: SdkLoggerProvider,
+    /// Whether container output and resource usage are exported too.
+    containers: bool,
     /// Set once the installation is known, see [`Telemetry::start`].
     started: OnceLock<Started>,
     workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -122,8 +131,7 @@ impl SpanProcessor for Fanout {
 impl LogProcessor for Fanout {
     fn emit(&self, record: &mut SdkLogRecord, scope: &opentelemetry::InstrumentationScope) {
         self.0.each(|destination| {
-            let log: LogItem = (record.clone(), scope.clone());
-            destination.push_log(log);
+            destination.push_log(LogItem::Daemon(Box::new((record.clone(), scope.clone()))));
         });
     }
 
@@ -174,6 +182,7 @@ impl Telemetry {
         let fanout = Fanout(Arc::clone(&destinations));
         Ok(Self(Some(Arc::new(Hub {
             destinations,
+            containers: config.containers,
             tracer: SdkTracerProvider::builder()
                 .with_span_processor(fanout.clone())
                 .build(),
@@ -283,7 +292,10 @@ impl Telemetry {
             hub.destinations
                 .each(|destination| destinations.push(destination.status()));
         }
-        piqueld_core::api::TelemetryStatus { destinations }
+        piqueld_core::api::TelemetryStatus {
+            destinations,
+            containers: self.containers(),
+        }
     }
 
     /// Whether some destination has failed for a minute without a success.

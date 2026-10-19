@@ -1,5 +1,6 @@
 //! Cached local measurements and bounded historical aggregates, alongside the
 //! diagnostic event history (`event`) and notification delivery (`notifications`).
+mod containers;
 mod event;
 mod notifications;
 

@@ -343,6 +343,7 @@ OpenTelemetry Collector or Grafana Alloy:
 [telemetry]
 endpoint = "https://otel.example.com:4317" # or "http://host:4317", "unix:///run/otel/otlp.sock"
 headers_file = "otlp-headers"              # optional
+containers = true                          # default
 ```
 
 Without an endpoint, nothing is exported. `http://` sends in plain text, so use
@@ -353,7 +354,7 @@ resolve against `$CREDENTIALS_DIRECTORY`, and only its path is ever shown.
 Endpoints cannot carry credentials or a path. Configuration is read at startup;
 restart after changing it.
 
-Every record carries the resource attributes `service.name = piqueld`,
+Every daemon record carries the resource attributes `service.name = piqueld`,
 `service.version`, and `service.instance.id`, the installation's ID (`instance_id`
 in `piquelctl status`).
 
@@ -394,6 +395,61 @@ every history event, with its kind (`piqueld.event.kind`), message, IDs and
 failure code. Events of an operation or action link to its span. Failures are
 `WARN`, everything else `INFO`.
 
+### Container telemetry
+
+With `containers = true`, the default, piqueld also exports the output and
+resource usage of every container it runs: the tasks of manifest services, job
+runs, and its own ingress containers (the gateway, the apps node joining the
+tailnet, and `cloudflared`). piqueld is their only observer, so a collector
+needs neither the Docker socket nor host mounts, and manifests still cannot
+mount either. Set `containers = false` to export only the daemon's own
+telemetry.
+
+Each container's records carry its own resource:
+
+| Attribute | Value |
+| --- | --- |
+| `service.name` | The manifest service or job name; `piqueld-gateway`, `piqueld-tailscale` or `piqueld-cloudflared` for ingress |
+| `piqueld.workload` | `service`, `job`, or `infrastructure` for ingress containers |
+| `piqueld.application`, `piqueld.environment`, `piqueld.environment.id` | Its environment, for services and jobs |
+| `piqueld.preview` | The preview's slug, for previews |
+| `container.id`, `container.name` | The Docker container |
+| `piqueld.task.id` | The Swarm task, for services and jobs |
+
+**Logs.** Every line of stdout and stderr is a log record whose body is the line,
+with `log.iostream` (`stdout` or `stderr`), Docker's timestamp, and terminal
+escape sequences removed. Severity is left unset: piqueld does not guess it from
+the text. Lines longer than 16 KiB are cut, and a container may send 200 lines
+a second, in bursts of up to 2,000; lines over that are dropped and counted.
+piqueld starts following a container as soon as Docker reports it starting, and
+lists containers every 10 seconds besides, reading each container's output from
+its start, so a short job's output is read even after it exits.
+
+Delivery is at least once across daemon restarts: piqueld saves where it stopped
+reading each container, ten seconds late, and resumes from there, so lines read
+just before a restart may be sent again, but none the container wrote while
+piqueld was down are missed, as long as Docker still has them. When export is
+first enabled, it starts from the present. Within one run, lines are dropped
+like any other record when the queue is full or the collector fails.
+
+**Metrics**, polled every 30 seconds with one-shot Docker stats for every running
+container, with cumulative temporality and counters starting at the container's
+creation:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `container.cpu.time` | | CPU time used, in seconds |
+| `container.cpu.usage` | | CPUs used on average since the previous poll; 1 is one full core |
+| `container.memory.usage` | | Memory used, page cache included, in bytes |
+| `container.memory.usage.limit` | | Its memory limit, or the host's memory without one |
+| `container.network.io` | `network.interface.name`, `network.io.direction` (`receive`, `transmit`) | Network bytes |
+| `container.disk.io` | `disk.io.direction` (`read`, `write`) | Block device bytes |
+
+Polls share the daemon's limit on concurrent Docker observations, so they never
+hold up reconciliation.
+
+### Delivery and status
+
 Export never holds up reconciliation or API requests. Records wait in bounded
 queues, one per signal; a full queue drops new records, and a batch the
 collector does not accept is dropped rather than retried, so an unreachable
@@ -405,8 +461,9 @@ again. Telemetry still queued at shutdown gets five seconds to be sent.
 
 `piquelctl status` and the Daemon status page show each destination: its
 endpoint, the file its headers came from, the last successful export, how many
-records were dropped since the daemon started, and whether it is failing. The
-setting itself appears read-only in the configuration view.
+records were dropped since the daemon started, and whether it is failing, and
+whether container telemetry is exported. The settings themselves appear
+read-only in the configuration view.
 
 piqueld no longer serves Prometheus metrics itself: the `[metrics]` table was
 removed, and configurations that still set it fail to load. Set

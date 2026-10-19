@@ -310,6 +310,10 @@ impl DaemonConfig {
                 or_none(self.telemetry.headers.as_ref()),
             ),
             (
+                "Telemetry containers",
+                self.telemetry.containers.to_string(),
+            ),
+            (
                 "Daemon history (days)",
                 self.retention.daemon_event_days.to_string(),
             ),

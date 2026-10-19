@@ -9,22 +9,45 @@ use std::path::PathBuf;
 /// [telemetry]
 /// endpoint = "https://otel.example.com:4317" # or "http://…", "unix:///run/otel/otlp.sock"
 /// headers_file = "otlp-headers"              # optional, one `name: value` per line
+/// containers = true                          # container logs and resource usage
 /// ```
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(try_from = "RawTelemetryConfig")]
 pub struct TelemetryConfig {
     /// OTLP/gRPC collector receiving every signal.
     pub endpoint: Option<OtlpEndpoint>,
     /// gRPC metadata sent with every export, such as a collector token.
     pub headers: Option<Credential>,
+    /// Whether the output and resource usage of every container piqueld
+    /// runs are exported too.
+    pub containers: bool,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            headers: None,
+            containers: true,
+        }
+    }
 }
 
 /// TOML form of [`TelemetryConfig`], before its headers file is read.
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawTelemetryConfig {
+    #[serde(default)]
     endpoint: Option<OtlpEndpoint>,
+    #[serde(default)]
     headers_file: Option<CredentialFile>,
+    #[serde(default = "enabled")]
+    containers: bool,
+}
+
+/// Container export is on by default.
+const fn enabled() -> bool {
+    true
 }
 
 impl TryFrom<RawTelemetryConfig> for TelemetryConfig {
@@ -36,6 +59,7 @@ impl TryFrom<RawTelemetryConfig> for TelemetryConfig {
                 .headers_file
                 .map(|file| Credential::read("headers", file))
                 .transpose()?,
+            containers: raw.containers,
         })
     }
 }

@@ -18,7 +18,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 /// A [`DockerApi`] wrapper that bounds process-wide concurrent Docker work.
 pub(crate) struct LimitedDocker<D> {
     /// The wrapped implementation that performs the actual requests.
-    inner: Arc<D>,
+    pub(super) inner: Arc<D>,
     /// Concurrent image resolutions (pulls).
     images: Semaphore,
     /// One image build at a time, environments before previews.
@@ -39,7 +39,7 @@ impl<D> LimitedDocker<D> {
     }
 
     /// Waits for an observation permit, held until the returned guard drops.
-    async fn observing(&self) -> SemaphorePermit<'_> {
+    pub(super) async fn observing(&self) -> SemaphorePermit<'_> {
         self.observations
             .acquire()
             .await

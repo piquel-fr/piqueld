@@ -75,6 +75,8 @@ pub(crate) use timeout::DockerTimeout;
 mod build_queue;
 pub use build_queue::BuildPriority;
 mod configs;
+mod containers;
+pub(crate) use containers::{ContainerState, ContainerUsage, ManagedContainer, Workload};
 mod engine;
 mod exec;
 mod files;

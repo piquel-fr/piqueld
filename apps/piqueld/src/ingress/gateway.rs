@@ -32,7 +32,7 @@ use std::{
 
 /// Marks the gateway container, the apps node, `cloudflared`, and their
 /// egress network.
-const GATEWAY_LABEL: &str = "io.piqueld.ingress";
+pub(crate) const GATEWAY_LABEL: &str = "io.piqueld.ingress";
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
 pub(super) const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
 /// The writable scratch space of managed containers with a temporary directory.

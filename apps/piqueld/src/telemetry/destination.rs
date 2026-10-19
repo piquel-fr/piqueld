@@ -32,8 +32,14 @@ const FAILING_AFTER_MS: i64 = 60_000;
 /// The longest one export may take, response included.
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A log record and the scope that emitted it, as queued for export.
-pub(super) type LogItem = (SdkLogRecord, InstrumentationScope);
+/// A log record as queued for export.
+pub(super) enum LogItem {
+    /// One of the daemon's own, with the scope that emitted it; boxed, since
+    /// it is far larger than a container's.
+    Daemon(Box<(SdkLogRecord, InstrumentationScope)>),
+    /// A line of a container's output, with the container's resource.
+    Container(super::containers::ContainerLog),
+}
 
 /// gRPC metadata sent with every export, parsed from `headers_file`: one
 /// `name: value` per line, ignoring blank lines.
@@ -228,6 +234,11 @@ impl Destination {
         }
     }
 
+    /// Counts `count` records dropped before reaching a queue.
+    pub(super) fn drop_records(&self, count: u64) {
+        self.health.drop_records(count);
+    }
+
     pub(super) fn push_span(&self, span: SpanData) {
         self.push(&self.spans, span);
     }
@@ -397,16 +408,27 @@ impl Signal for LogItem {
         batch: Vec<Self>,
         resource: &ResourceAttributesWithSchema,
     ) -> Result<i64, tonic::Status> {
-        let records: Vec<_> = batch
+        let mut daemon = Vec::new();
+        let mut containers = Vec::new();
+        for item in batch {
+            match item {
+                Self::Daemon(log) => daemon.push(*log),
+                Self::Container(log) => containers.push(log),
+            }
+        }
+        let records: Vec<_> = daemon
             .iter()
             .map(|(record, scope)| (record, scope))
             .collect();
-        let request = ExportLogsServiceRequest {
-            resource_logs: group_logs_by_resource_and_scope(
+        let mut resource_logs = Vec::new();
+        if !records.is_empty() {
+            resource_logs = group_logs_by_resource_and_scope(
                 &opentelemetry_sdk::logs::LogBatch::new(&records),
                 resource,
-            ),
-        };
+            );
+        }
+        resource_logs.extend(super::containers::group_logs(containers));
+        let request = ExportLogsServiceRequest { resource_logs };
         let response = LogsServiceClient::new(destination.channel.clone())
             .export(destination.request(request))
             .await?;
@@ -417,7 +439,8 @@ impl Signal for LogItem {
     }
 }
 
-/// Collections already carry the meter provider's resource.
+/// Collections already carry their resources: the meter provider's, or each
+/// container's.
 impl Signal for ExportMetricsServiceRequest {
     const INDEX: usize = 2;
     const NAME: &str = "metrics";

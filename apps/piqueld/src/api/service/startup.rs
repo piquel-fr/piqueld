@@ -37,7 +37,7 @@ impl ApplicationService {
     /// 6. Spawn one task joining reconciliation, image cleanup, ingress,
     ///    notification observation, notification webhook delivery, sync, the
     ///    listener receiving GitHub webhooks, and telemetry export from the
-    ///    journal.
+    ///    journal and the containers.
     /// # Errors
     /// Returns contextual storage, Docker connection, or Swarm initialization errors.
     pub async fn start(
@@ -76,12 +76,7 @@ impl ApplicationService {
             .await?;
         result.context("failed to establish single-node Docker Swarm readiness")?;
         store.configure_deliveries().await?;
-        // Webhooks never follow redirects, so a target cannot bounce requests elsewhere.
-        let webhook_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .context("failed to initialize webhook client")?;
+        let webhook_client = Self::webhook_client()?;
         info!(
             socket = %config.docker.socket.display(),
             auto_initialize_swarm = config.docker.auto_initialize_swarm,
@@ -142,11 +137,25 @@ impl ApplicationService {
                 background.deliver_notifications(webhook_client, cancellation.child_token()),
                 background.sync(cancellation.child_token()),
                 background.serve_webhooks(webhook_listener, cancellation.child_token()),
-                background.export_telemetry(journaled, cancellation.child_token())
+                background.export_telemetry(
+                    journaled,
+                    reconciler.docker(),
+                    cancellation.child_token()
+                )
             );
             result
         });
         Ok((service, auth, controller))
+    }
+
+    /// The client delivering notification webhooks. It never follows
+    /// redirects, so a target cannot bounce requests elsewhere.
+    fn webhook_client() -> anyhow::Result<reqwest::Client> {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to initialize webhook client")
     }
 
     /// Opens the control-plane state with the daemon's settings, starts

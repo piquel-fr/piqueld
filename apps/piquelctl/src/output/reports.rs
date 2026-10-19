@@ -173,7 +173,7 @@ report!(TelemetryStatus, self, out, {
             ),
         )?;
     }
-    Ok(())
+    out.label("Telemetry exports", self.exported())
 });
 
 // The built images cleanup kept, and what it removed since the daemon started.

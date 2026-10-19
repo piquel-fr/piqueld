@@ -5,6 +5,7 @@
 mod certificates;
 mod configuration;
 mod gateway;
+pub(crate) use gateway::GATEWAY_LABEL;
 mod node;
 mod records;
 mod tunnel;

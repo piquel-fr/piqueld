@@ -10964,8 +10964,12 @@
         "type": "object"
       },
       "TelemetryStatus": {
-        "description": "Export of the daemon's traces, metrics and logs over OTLP.",
+        "description": "Export of the daemon's traces, metrics and logs over OTLP, and of its\ncontainers' logs and resource usage.",
         "properties": {
+          "containers": {
+            "description": "Whether the logs and resource usage of the containers piqueld runs are\nexported along with the daemon's own telemetry.",
+            "type": "boolean"
+          },
           "destinations": {
             "description": "Collectors receiving telemetry; empty when `[telemetry]` sets no\nendpoint.",
             "items": {

@@ -14,11 +14,20 @@ const EVENT_PAGE: usize = 100;
 /// How long names stay cached, so renames reach labels.
 const NAMES_TTL: Duration = Duration::from_secs(300);
 
-/// Application and environment names by environment, for metric labels,
-/// looked up when first needed and forgotten every [`NAMES_TTL`].
-struct Names {
-    names: HashMap<EnvironmentId, (String, String)>,
+/// Names labelling an environment's telemetry, looked up when first needed
+/// and forgotten every [`NAMES_TTL`].
+pub(super) struct Names {
+    names: HashMap<EnvironmentId, EnvironmentNames>,
     since: std::time::Instant,
+}
+
+/// The names labelling one environment's telemetry.
+#[derive(Clone)]
+pub(super) struct EnvironmentNames {
+    pub(super) application: String,
+    pub(super) environment: String,
+    /// The preview's slug, for previews.
+    pub(super) preview: Option<String>,
 }
 
 /// Where the journal exporter is: its exporter, the last event it read, and
@@ -30,16 +39,25 @@ struct Tail {
 }
 
 impl ApplicationService {
-    /// Exports journal events after `start` every second, and samples
-    /// daemon and service gauges every 30 seconds, until cancelled. Each runs
-    /// on its own, so a slow Docker observation never holds up the journal or
+    /// Exports journal events after `start` every second, samples daemon and
+    /// service gauges every 30 seconds, and exports the containers' output
+    /// and usage through `docker` when enabled, until cancelled. Each runs on
+    /// its own, so a slow Docker observation never holds up the journal or
     /// export health, and none holds up reconciliation or requests. Without
     /// telemetry, only closes a failure left from when it was configured.
+    /// Without container export, forgets where it stopped reading, so
+    /// enabling it again starts from the present.
     pub(super) async fn export_telemetry(
         &self,
         start: JournalPosition,
+        docker: super::containers::Docker,
         cancellation: CancellationToken,
     ) {
+        if !self.telemetry.containers()
+            && let Err(error) = self.store.clear_container_cursors().await
+        {
+            tracing::error!(?error, "container log cursors could not be cleared");
+        }
         let Some(journal) = self.telemetry.journal(start.running) else {
             // Close a failure left open while export was configured.
             let healthy = self.observe_export(false).await;
@@ -51,10 +69,7 @@ impl ApplicationService {
         let mut tail = Tail {
             journal,
             cursor: start.event,
-            names: Names {
-                names: HashMap::new(),
-                since: std::time::Instant::now(),
-            },
+            names: Names::default(),
         };
         let mut journal_tick = interval(Duration::from_secs(1));
         let mut daemon_tick = interval(Duration::from_secs(30));
@@ -72,6 +87,11 @@ impl ApplicationService {
             async { while step(&mut daemon_tick, &cancellation, self.sample_daemon()).await {} },
             async {
                 while step(&mut services_tick, &cancellation, self.sample_services()).await {}
+            },
+            async {
+                if self.telemetry.containers() {
+                    self.export_containers(docker, &cancellation).await;
+                }
             },
         );
     }
@@ -114,7 +134,9 @@ impl ApplicationService {
                 tail.journal.record(
                     event,
                     EventContext {
-                        names: labels.as_ref().map(|(a, e)| (a.as_str(), e.as_str())),
+                        names: labels
+                            .as_ref()
+                            .map(|names| (names.application.as_str(), names.environment.as_str())),
                         operation: operation.as_ref(),
                     },
                 );
@@ -180,14 +202,23 @@ impl ApplicationService {
     }
 }
 
+impl Default for Names {
+    fn default() -> Self {
+        Self {
+            names: HashMap::new(),
+            since: std::time::Instant::now(),
+        }
+    }
+}
+
 impl Names {
     /// The names of environment `id`, looked up when unknown; `None` once
     /// it is deleted.
-    async fn get(
+    pub(super) async fn get(
         &mut self,
         service: &ApplicationService,
         id: &EnvironmentId,
-    ) -> Option<(String, String)> {
+    ) -> Option<EnvironmentNames> {
         if self.since.elapsed() > NAMES_TTL {
             self.names.clear();
             self.since = std::time::Instant::now();
@@ -196,17 +227,21 @@ impl Names {
             return Some(names.clone());
         }
         let stored = service.store.get(id).await.ok()?;
-        let names = (
-            stored.application.application.metadata().name.to_string(),
-            stored.environment.name.to_string(),
-        );
+        let names = EnvironmentNames {
+            application: stored.application.application.metadata().name.to_string(),
+            environment: stored.environment.name.to_string(),
+            preview: match &stored.environment.kind {
+                piqueld_core::EnvironmentKind::Preview(preview) => Some(preview.slug.to_string()),
+                piqueld_core::EnvironmentKind::Environment => None,
+            },
+        };
         self.names.insert(id.clone(), names.clone());
         Some(names)
     }
 }
 
 /// A ticker that skips ticks missed while work ran.
-fn interval(period: Duration) -> tokio::time::Interval {
+pub(super) fn interval(period: Duration) -> tokio::time::Interval {
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tick
@@ -214,7 +249,7 @@ fn interval(period: Duration) -> tokio::time::Interval {
 
 /// Runs `work` at the next `tick`, logging its failure, which is retried the
 /// next tick. Returns `false` once cancelled, abandoning `work`.
-async fn step(
+pub(super) async fn step(
     tick: &mut tokio::time::Interval,
     cancellation: &CancellationToken,
     work: impl Future<Output = Result<(), StoreError>>,
