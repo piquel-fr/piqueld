@@ -509,7 +509,9 @@ impl Ingress {
     /// Callers must hold the writer lock. Network failures degrade health;
     /// they fail the call only for `application` (or for any application when
     /// `None`). A disconnected tunnel degrades health without failing the
-    /// call. Node failures degrade only the private listener's health.
+    /// call. Node failures degrade only the private listener's health, which
+    /// public routes do not depend on, but still count towards the
+    /// `ingress_unavailable` condition so they notify.
     async fn synchronize_for(
         &self,
         application: Option<&piqueld_core::EnvironmentId>,
@@ -572,15 +574,7 @@ impl Ingress {
                 }
             );
         let healthy = result.is_ok() && failures.is_empty() && !disconnected;
-        // Health transitions become history, and sustained failures notify
-        // administrators, like other daemon dependencies.
-        if let Err(error) = self
-            .store
-            .observe_condition("ingress_unavailable", None, !healthy, now_ms(), 45_000)
-            .await
-        {
-            tracing::error!(error=?error, "ingress health observation could not be recorded");
-        }
+        self.observe_availability(healthy, &private).await;
         let mut health = self.health.write().await;
         health.healthy = healthy;
         health.gateway = gateway;
@@ -608,6 +602,20 @@ impl Ingress {
             }
         }
         Ok(())
+    }
+
+    /// Records whether ingress is available: the public side is `healthy` and
+    /// the `private` listener too. Transitions become history, and sustained
+    /// failures notify administrators, like other daemon dependencies.
+    async fn observe_availability(&self, healthy: bool, private: &PrivateIngressStatus) {
+        let failed = !(healthy && private.healthy);
+        if let Err(error) = self
+            .store
+            .observe_condition("ingress_unavailable", None, failed, now_ms(), 45_000)
+            .await
+        {
+            tracing::error!(error=?error, "ingress health observation could not be recorded");
+        }
     }
 
     /// The private listener's health once the gateway is up: the apps node's

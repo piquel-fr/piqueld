@@ -659,9 +659,10 @@ only the routes of applications the caller can
 Every gateway change (network, image pull, start, replacement, recovery, route
 reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it
 appears in Events with its outcome. Reconciliation passes that change nothing
-record no history. Health changes are recorded as `ingress_unavailable`
-diagnostics. With `daemon_failures` notifications enabled, a gateway that stays
-unhealthy past the failure threshold notifies, and its recovery follows; see
+record no history. Health changes of the gateway or the apps node are recorded
+as `ingress_unavailable` diagnostics. With `daemon_failures` notifications
+enabled, a gateway or apps node that stays unhealthy past the failure threshold
+notifies, and its recovery follows; see
 [observability](observability.md).
 
 Deployed route status is separate from application health. A `ready` public route

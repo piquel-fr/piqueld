@@ -580,7 +580,7 @@ impl Store {
             (Some(id), _) => format!("Service health for application {id}"),
             (None, "docker_unavailable") => "Docker Engine".into(),
             (None, "swarm_manager_unavailable") => "Swarm manager".into(),
-            (None, "ingress_unavailable") => "Managed ingress gateway".into(),
+            (None, "ingress_unavailable") => "Managed ingress".into(),
             (None, "certificate_renewal_failed") => "DNS-01 certificate renewal".into(),
             (None, "telemetry_export_failed") => "Telemetry export".into(),
             _ => key.to_owned(),

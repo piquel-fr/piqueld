@@ -1441,6 +1441,25 @@ async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
 }
 
 #[tokio::test]
+async fn an_unhealthy_apps_node_alone_makes_ingress_unavailable() {
+    let (engine, ingress) = private_ingress().await;
+    let private = PrivateIngressStatus {
+        enabled: true,
+        healthy: false,
+        ..PrivateIngressStatus::default()
+    };
+
+    ingress.observe_availability(true, &private).await;
+
+    let events = engine.history().await;
+    let [health] = events.as_slice() else {
+        panic!("expected one health transition: {events:#?}")
+    };
+    assert_eq!(health.kind, "dependency_health_changed");
+    assert_eq!(health.error_code.as_deref(), Some("ingress_unavailable"));
+}
+
+#[tokio::test]
 async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
     let engine = Engine::failing().await;
     let disabled = engine.ingress(false).with_private(&private_config());
