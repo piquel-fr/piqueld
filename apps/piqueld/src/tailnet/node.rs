@@ -13,7 +13,6 @@ use axum::serve::{ListenerExt, TapIo};
 use piqueld_core::api::TailnetStatus;
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    os::unix::fs::DirBuilderExt,
     path::Path,
     process::Stdio,
     time::{Duration, Instant},
@@ -159,11 +158,9 @@ impl Node {
     /// logs it in.
     async fn start(config: &DaemonConfig) -> Result<(Daemon, Cli)> {
         let dir = config.server.tailscale_dir();
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .recursive(true)
-            .create(&dir)
-            .with_context(|| format!("failed to create tailnet state {}", dir.display()))?;
+        crate::prepare_data_dir(&dir)
+            .await
+            .with_context(|| format!("failed to prepare tailnet state {}", dir.display()))?;
         let cli = Cli {
             socket: dir.join("tailscaled.sock"),
         };

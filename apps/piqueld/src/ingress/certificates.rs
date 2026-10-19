@@ -27,6 +27,7 @@
 use super::{Ingress, wire::Journaled};
 use crate::{
     config::AcmeConfig,
+    directories::PrivateFile,
     dns::{
         Dns, ZoneError,
         provider::{Record, RecordId, Zone},
@@ -571,7 +572,8 @@ impl Ingress {
                     .await?;
                 let result = async {
                     journal.request().await?;
-                    crate::directories::remove_file(&self.certificates.path(&name))
+                    PrivateFile::at(self.certificates.path(&name))
+                        .remove()
                         .await
                         .context("delete expired certificate")
                 }
@@ -608,7 +610,9 @@ impl Ingress {
         let result = async {
             let stored = self.order_certificate(&journal, due, cancellation).await?;
             crate::prepare_data_dir(&self.certificates.directory.join("certificates")).await?;
-            Self::write_private(&self.certificates.path(name), stored.bundle().as_bytes()).await?;
+            PrivateFile::at(self.certificates.path(name))
+                .write(stored.bundle())
+                .await?;
             Ok(stored)
         }
         .await;
@@ -827,7 +831,9 @@ impl Ingress {
             )
             .await?;
             crate::prepare_data_dir(&certificates.directory.join("acme")).await?;
-            Self::write_private(&path, &serde_json::to_vec(&credentials)?).await?;
+            PrivateFile::at(path)
+                .write(serde_json::to_vec(&credentials)?)
+                .await?;
             account
         };
         *cached = Some(account.clone());

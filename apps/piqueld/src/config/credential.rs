@@ -2,12 +2,13 @@
 //!
 //! Every such setting `key` also accepts `key_file`. Relative file paths resolve
 //! against `$CREDENTIALS_DIRECTORY`, so systemd `LoadCredential=` works
-//! unchanged. Files are read once while the configuration loads, except during
-//! a [`Resolution::Structural`] check.
+//! unchanged, and cannot leave it. Files are read once while the configuration
+//! loads, except during a [`Resolution::Structural`] check, and must be regular
+//! files.
 
 use serde::Deserialize;
 use std::cell::Cell;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 /// How credential files are treated while configuration deserializes on the
@@ -60,12 +61,19 @@ pub struct Credential {
 pub struct CredentialFile(PathBuf);
 
 impl CredentialFile {
-    /// Resolves `file`, joining a relative path onto `directory`. A
-    /// structural check accepts a relative path without a directory, which
-    /// only systemd provides at startup.
+    /// Resolves `file`, joining a relative path onto `directory`; one with
+    /// `.` or `..` components is refused, so it stays inside. A structural
+    /// check accepts a relative path without a directory, which only systemd
+    /// provides at startup.
     fn resolve(file: PathBuf, directory: Option<PathBuf>) -> Result<Self, CredentialError> {
         if file.is_absolute() {
             return Ok(Self(file));
+        }
+        if !file
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        {
+            return Err(CredentialError::OutsideDirectory { path: file });
         }
         match directory {
             Some(directory) => Ok(Self(directory.join(file))),
@@ -80,6 +88,27 @@ impl CredentialFile {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.0
+    }
+
+    /// Reads the file, refusing anything but a regular file. Opening never
+    /// blocks, so a FIFO is refused instead of stalling startup. Symlinks are
+    /// followed: secret managers such as sops-nix and agenix link their files
+    /// into place, and systemd's credentials directory is not writable by
+    /// the service.
+    fn read(&self) -> std::io::Result<String> {
+        use rustix::fs::{Mode, OFlags};
+        let file = std::fs::File::from(rustix::fs::open(
+            &self.0,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        if !file.metadata()?.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        std::io::read_to_string(file)
     }
 }
 
@@ -105,7 +134,7 @@ impl Credential {
     ///
     /// # Errors
     ///
-    /// Exactly one variant must be set, and a file must be readable and non-empty.
+    /// Exactly one variant must be set, and a file must be a readable, non-empty regular file.
     pub(super) fn resolve(
         key: &'static str,
         inline: Option<String>,
@@ -125,7 +154,7 @@ impl Credential {
     ///
     /// # Errors
     ///
-    /// The file must be readable and non-empty.
+    /// The file must be a readable, non-empty regular file.
     pub(crate) fn read(key: &'static str, file: CredentialFile) -> Result<Self, CredentialError> {
         if Resolution::current() == Resolution::Structural {
             return Ok(Self {
@@ -133,7 +162,8 @@ impl Credential {
                 file: Some(file),
             });
         }
-        let value = std::fs::read_to_string(file.path())
+        let value = file
+            .read()
             .map_err(|error| CredentialError::Read {
                 key,
                 path: file.0.clone(),
@@ -218,6 +248,16 @@ pub enum CredentialError {
         /// Configured relative path.
         path: PathBuf,
     },
+    /// A relative path had `.` or `..` components, which could leave
+    /// `$CREDENTIALS_DIRECTORY`.
+    #[error(
+        "relative credential file {} must name a file inside $CREDENTIALS_DIRECTORY",
+        path.display()
+    )]
+    OutsideDirectory {
+        /// Configured relative path.
+        path: PathBuf,
+    },
     /// The file could not be read.
     #[error("could not read `{key}_file` {}: {error}", path.display())]
     Read {
@@ -258,6 +298,31 @@ mod tests {
             CredentialFile::resolve("webhook".into(), None),
             Err(CredentialError::NoDirectory { .. })
         ));
+    }
+
+    #[test]
+    fn files_must_be_regular_and_inside_the_credentials_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            CredentialFile::resolve("../webhook".into(), Some(directory.path().to_path_buf())),
+            Err(CredentialError::OutsideDirectory { .. })
+        ));
+        let fifo = directory.path().join("fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .unwrap();
+        let error = Credential::read("url", CredentialFile::resolve(fifo, None).unwrap());
+        assert!(
+            error
+                .unwrap_err()
+                .to_string()
+                .contains("not a regular file")
+        );
     }
 
     #[test]

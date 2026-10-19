@@ -28,7 +28,7 @@
 //! and the metrics server listens only on the container's loopback.
 
 use super::{CLOUDFLARED_IMAGE, Ingress};
-use crate::config::TunnelCredentials;
+use crate::{config::TunnelCredentials, directories::PrivateFile};
 use anyhow::{Context, Result};
 use piqueld_core::api::PublicIngressStatus;
 use serde_json::{Value, json};
@@ -119,7 +119,8 @@ impl Ingress {
     /// Removes the credentials written for `cloudflared`, whenever it is not
     /// meant to run.
     pub(super) async fn remove_tunnel_credentials(&self) -> Result<()> {
-        crate::directories::remove_file(&self.tunnel_directory().join("credentials.json"))
+        PrivateFile::at(self.tunnel_directory().join("credentials.json"))
+            .remove()
             .await
             .context("remove the tunnel credentials written for cloudflared")
     }
@@ -128,16 +129,12 @@ impl Ingress {
     async fn prepare_tunnel(&self, credentials: &TunnelCredentials) -> Result<()> {
         let directory = self.tunnel_directory();
         crate::prepare_data_dir(&directory).await?;
-        Self::write_private(
-            &directory.join("config.json"),
-            &serde_json::to_vec(&self.tunnel_configuration(credentials))?,
-        )
-        .await?;
-        Self::write_private(
-            &directory.join("credentials.json"),
-            credentials.file.expose().as_bytes(),
-        )
-        .await?;
+        PrivateFile::at(directory.join("config.json"))
+            .write(serde_json::to_vec(&self.tunnel_configuration(credentials))?)
+            .await?;
+        PrivateFile::at(directory.join("credentials.json"))
+            .write(credentials.file.expose())
+            .await?;
         self.ensure_image(CLOUDFLARED_IMAGE).await
     }
 

@@ -1,10 +1,14 @@
 //! Shared validation and process exclusivity for daemon directories, and
-//! removal of the files the daemon manages in them.
+//! writing and removal of the files the daemon manages in them.
 
 use std::{
+    ffi::OsStr,
     fs::File,
     io,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::{AsFd, BorrowedFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
 };
 
@@ -37,6 +41,124 @@ pub(crate) async fn remove_file(path: &Path) -> io::Result<()> {
     }
 }
 
+/// A file only the daemon may read, replaced atomically and durably. Its
+/// directory may be writable by a container running as the daemon's user (the
+/// gateway's Caddy), so no operation follows a symlink planted there.
+pub(crate) struct PrivateFile(PathBuf);
+
+impl PrivateFile {
+    /// The private file at `path`.
+    pub(crate) fn at(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+
+    /// Replaces the file with `bytes`, through a temporary file that `O_EXCL`
+    /// creates with mode `0600` and an unpredictable name, so never through a
+    /// symlink. The temporary is synced and renamed over the file, then the
+    /// directory is synced. Temporaries a crash left behind are removed
+    /// first, so no secret outlives its file.
+    ///
+    /// # Errors
+    /// Returns the I/O error, with the file's path as context.
+    pub(crate) async fn write(self, bytes: impl Into<Vec<u8>>) -> anyhow::Result<()> {
+        let bytes = bytes.into();
+        self.run("write", move |file| {
+            use std::io::Write;
+            file.remove_temporaries()?;
+            let mut temporary = tempfile::Builder::new()
+                .prefix(&file.temporary_prefix())
+                .tempfile_in(file.directory())?;
+            temporary.write_all(&bytes)?;
+            temporary.as_file().sync_all()?;
+            temporary.persist(&file.0)?;
+            file.sync_directory()
+        })
+        .await
+    }
+
+    /// Removes the file and any temporaries left beside it, durably. A missing
+    /// file counts as removed.
+    ///
+    /// # Errors
+    /// Returns the I/O error, with the file's path as context.
+    pub(crate) async fn remove(self) -> anyhow::Result<()> {
+        self.run("remove", |file| {
+            let removed =
+                file.remove_temporaries()? | Self::removed(std::fs::remove_file(&file.0))?;
+            if removed {
+                file.sync_directory()?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Runs the blocking `operation` off the async runtime, naming the file
+    /// and `action` in its error.
+    async fn run(
+        self,
+        action: &'static str,
+        operation: impl FnOnce(&Self) -> io::Result<()> + Send + 'static,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context;
+        tokio::task::spawn_blocking(move || {
+            operation(&self).with_context(|| format!("{action} {}", self.0.display()))
+        })
+        .await?
+    }
+
+    /// Removes temporaries of this file left by an interrupted write,
+    /// including the fixed `.tmp` name earlier versions used. Returns whether
+    /// any existed.
+    fn remove_temporaries(&self) -> io::Result<bool> {
+        let entries = match std::fs::read_dir(self.directory()) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            entries => entries?,
+        };
+        let prefix = self.temporary_prefix();
+        let mut removed = Self::removed(std::fs::remove_file(self.0.with_extension("tmp")))?;
+        for entry in entries {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(prefix.as_bytes())
+            {
+                removed |= Self::removed(std::fs::remove_file(entry.path()))?;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Whether a removal deleted something; a missing file was not.
+    fn removed(result: io::Result<()>) -> io::Result<bool> {
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Start of every temporary file name: `.<hash>.tmp-`, where the hash of
+    /// the file name keeps it short enough for any name that fits itself,
+    /// such as a certificate for a 253-byte hostname.
+    fn temporary_prefix(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(self.0.file_name().unwrap_or_default().as_encoded_bytes());
+        format!(".{}.tmp-", &format!("{hash:x}")[..16])
+    }
+
+    /// The directory holding the file.
+    fn directory(&self) -> &Path {
+        self.0.parent().unwrap_or_else(|| Path::new("."))
+    }
+
+    /// Makes renames and removals in the file's directory durable.
+    fn sync_directory(&self) -> io::Result<()> {
+        File::open(self.directory())?.sync_all()
+    }
+}
+
 /// Which daemon directory is being checked; each has its own creation and
 /// permission policy.
 #[derive(Clone, Copy)]
@@ -58,7 +180,9 @@ impl DirectoryKind {
     }
 
     /// Walks `path` one component at a time from the root, so no ancestor can be
-    /// swapped for a symlink or attacker-controlled directory.
+    /// swapped for a symlink or attacker-controlled directory. Each component
+    /// is opened below its parent's handle and checked through its own, so
+    /// every check describes the directory the walk continues from.
     ///
     /// 1. Rejects empty and `/` paths, a leading `.`, and any `..` component.
     /// 2. Requires each component to be a real directory (never a symlink),
@@ -67,6 +191,12 @@ impl DirectoryKind {
     ///    writable by others unless sticky.
     /// 4. Checks the final directory with `validate_final`.
     async fn prepare(self, path: &Path) -> io::Result<()> {
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || self.walk(&path)).await?
+    }
+
+    /// Blocking implementation of [`Self::prepare`].
+    fn walk(self, path: &Path) -> io::Result<()> {
         let name = self.name();
         if path.as_os_str().is_empty() || path == Path::new("/") {
             return Err(io::Error::new(
@@ -76,12 +206,15 @@ impl DirectoryKind {
         }
 
         let mut current = PathBuf::new();
+        // Relative paths start from the working directory.
+        let mut parent: Option<File> = None;
         let mut components = path.components().peekable();
         let expected_uid = rustix::process::geteuid().as_raw();
         while let Some(component) = components.next() {
             match component {
-                std::path::Component::Prefix(prefix) => current.push(prefix.as_os_str()),
-                std::path::Component::RootDir => current.push(Path::new("/")),
+                std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::Normal(_) => current.push(component),
                 std::path::Component::CurDir => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -96,42 +229,11 @@ impl DirectoryKind {
                         format!("the {name} directory cannot contain a parent component"),
                     ));
                 }
-                std::path::Component::Normal(name) => current.push(name),
             }
 
-            let metadata = match tokio::fs::symlink_metadata(&current).await {
-                Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => metadata,
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "{name} directory component {} is not a real directory",
-                            current.display()
-                        ),
-                    ));
-                }
-                Err(error)
-                    if error.kind() == io::ErrorKind::NotFound && matches!(self, Self::Data) =>
-                {
-                    tokio::fs::DirBuilder::new()
-                        .mode(0o700)
-                        .create(&current)
-                        .await?;
-                    let metadata = tokio::fs::symlink_metadata(&current).await?;
-                    if !metadata.is_dir() || metadata.is_symlink() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "{name} directory component {} was replaced by a non-directory",
-                                current.display()
-                            ),
-                        ));
-                    }
-                    metadata
-                }
-                Err(error) => return Err(error),
-            };
-
+            let at = parent.as_ref().map_or(rustix::fs::CWD, AsFd::as_fd);
+            let directory = self.open(at, component.as_os_str(), &current)?;
+            let metadata = directory.metadata()?;
             if components.peek().is_none() {
                 self.validate_final(&current, &metadata, expected_uid)?;
             } else {
@@ -146,8 +248,50 @@ impl DirectoryKind {
                     ));
                 }
             }
+            parent = Some(directory);
         }
         Ok(())
+    }
+
+    /// Opens the directory `component` below `parent` as a path-only handle,
+    /// never through a symlink, so even directories the daemon may only
+    /// traverse can be checked. A missing [`Self::Data`] component is created
+    /// with mode `0700`; one a concurrent caller created first is opened and
+    /// checked like any other. `current` names it in errors.
+    fn open(self, parent: BorrowedFd<'_>, component: &OsStr, current: &Path) -> io::Result<File> {
+        use rustix::{
+            fs::{Mode, OFlags},
+            io::Errno,
+        };
+        let open = || {
+            rustix::fs::openat(
+                parent,
+                component,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+        };
+        let opened = match open() {
+            Err(Errno::NOENT) if matches!(self, Self::Data) => {
+                match rustix::fs::mkdirat(parent, component, Mode::RWXU) {
+                    Ok(()) | Err(Errno::EXIST) => open(),
+                    Err(error) => Err(error),
+                }
+            }
+            opened => opened,
+        };
+        match opened {
+            Ok(directory) => Ok(directory.into()),
+            Err(Errno::LOOP | Errno::NOTDIR) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} directory component {} is not a real directory",
+                    self.name(),
+                    current.display()
+                ),
+            )),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Checks the target directory itself: owned by the effective UID with full
@@ -241,13 +385,19 @@ pub struct DirectoryLock {
 }
 
 impl DirectoryLock {
-    /// Locks a previously validated state or runtime directory.
+    /// Locks a previously validated state or runtime directory, refusing a
+    /// symlink swapped in since.
     ///
     /// # Errors
     /// Returns `WouldBlock` if another daemon owns the directory, or the source
     /// I/O error if opening or locking it fails.
     pub fn acquire(path: &Path) -> io::Result<Self> {
-        let directory = File::open(path)?;
+        use rustix::fs::{Mode, OFlags};
+        let directory = File::from(rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
         directory.try_lock().map_err(|error| match error {
             std::fs::TryLockError::WouldBlock => {
                 io::Error::new(io::ErrorKind::WouldBlock, "directory already in use")
@@ -262,8 +412,61 @@ impl DirectoryLock {
 
 #[cfg(test)]
 mod tests {
-    use super::{DirectoryKind, protected_ancestor};
+    use super::{DirectoryKind, PrivateFile, protected_ancestor};
     use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn private_writes_never_follow_a_planted_temporary() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("autosave.json");
+        let victim = directory.path().join("piqueld.db");
+        std::fs::write(&victim, "database").unwrap();
+        // The fixed temporary name earlier versions wrote through.
+        std::os::unix::fs::symlink(&victim, path.with_extension("tmp")).unwrap();
+
+        PrivateFile::at(&path).write("secret").await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "database");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn private_files_may_use_the_longest_file_name() {
+        let directory = tempfile::tempdir().unwrap();
+        // 255 bytes, Linux's limit, like a certificate for a long hostname.
+        let path = directory.path().join(format!("{}.pem", "a".repeat(251)));
+
+        PrivateFile::at(&path).write("secret").await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+    }
+
+    #[tokio::test]
+    async fn removing_a_private_file_removes_temporaries_a_crash_left() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("credentials.json");
+        let prefix = PrivateFile::at(&path).temporary_prefix();
+        let leftovers = [
+            directory.path().join(format!("{prefix}a1B2c3")),
+            path.with_extension("tmp"),
+        ];
+        for file in leftovers
+            .iter()
+            .chain([&path, &directory.path().join("config.json")])
+        {
+            std::fs::write(file, "secret").unwrap();
+        }
+
+        PrivateFile::at(&path).remove().await.unwrap();
+
+        let remaining: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(remaining, ["config.json"]);
+    }
 
     #[tokio::test]
     async fn unusable_owner_permissions_are_rejected_without_modification() {
