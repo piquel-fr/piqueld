@@ -202,7 +202,7 @@ fn finish_router(
     // as is every route's access requirement.
     let allow_routes = AllowRoutes::build(openapi);
     let route_access = access::RouteAccess::build(openapi);
-    let openapi = openapi::openapi_30_document(openapi);
+    let openapi = openapi::PublishedDocument::new(openapi);
     let router = router.method_not_allowed_fallback(move |matched: Option<MatchedPath>| {
         let allow_routes = Arc::clone(&allow_routes);
         async move { method_not_allowed(&allow_routes, matched.as_ref()) }
@@ -232,7 +232,7 @@ fn finish_router(
         ))
         .layer(middleware::from_fn(no_store))
         .with_state(state.clone())
-        .layer(Extension(Arc::new(openapi)))
+        .layer(Extension(openapi))
         // The propagator stamps errors with their request ID, and the binder
         // echoes that same identifier in every structured error body.
         .layer(PropagateRequestIdLayer::new(request_id.clone()))

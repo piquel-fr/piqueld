@@ -1345,6 +1345,36 @@ async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessi
     );
 }
 
+/// Requests that find a credential's last-used time stale together leave
+/// its refresh to the first, rather than each queueing for the writer.
+#[tokio::test]
+async fn concurrent_requests_refresh_a_credential_once() {
+    use std::time::Duration;
+    let f = Fixture::new().await;
+    let (_, token) = f
+        .account("alice", CredentialKind::Token, None, &Grants::admin())
+        .await;
+    f.auth.0.store.age_auth_credentials(120).await;
+    let writer = f.auth.0.store.hold_writer().await;
+    let first = tokio::spawn({
+        let (auth, token) = (f.auth.clone(), token.clone());
+        async move { auth.authenticate(&token).await.map(|_| ()) }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while f.auth.0.touched.lock().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first request claims the refresh");
+    tokio::time::timeout(Duration::from_secs(1), f.auth.authenticate(&token))
+        .await
+        .expect("the second request does not wait for the writer")
+        .unwrap();
+    drop(writer);
+    first.await.unwrap().unwrap();
+}
+
 /// Cross-site starts are refused before the throttle counts them, so they
 /// cannot spend a peer's sign-in allowance. Only a bearer token that
 /// authenticates lets a ceremony go without the configured origin.

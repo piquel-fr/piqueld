@@ -1098,6 +1098,11 @@ impl Store {
         tx.commit().await.map_err(StoreError::database)
     }
 
+    /// Holds the writer queue, as a long write would, until the guard drops.
+    pub(crate) async fn hold_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.writers.lock().await
+    }
+
     /// Makes every credential look unused since `secs` ago.
     pub(crate) async fn age_auth_credentials(&self, secs: i64) {
         let last_used = now_secs() - secs;

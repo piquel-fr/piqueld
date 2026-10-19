@@ -103,6 +103,9 @@ struct Inner {
     /// Pending CLI device logins keyed by the hash of their device code.
     devices: Mutex<HashMap<String, sessions::Device>>,
     throttle: Mutex<throttle::Throttle>,
+    /// When each credential's last-used time was last claimed for refresh,
+    /// by credential ID (see `Auth::authenticate`).
+    touched: parking_lot::Mutex<HashMap<String, i64>>,
     /// Link written by [`Auth::prepare_setup`] while the installation is unclaimed.
     setup_link: Mutex<Option<String>>,
     /// What new API tokens may be.
@@ -196,6 +199,7 @@ impl Auth {
             ceremonies: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
             throttle: Mutex::new(throttle::Throttle::default()),
+            touched: parking_lot::Mutex::default(),
             setup_link: Mutex::new(None),
             tokens,
         })))
