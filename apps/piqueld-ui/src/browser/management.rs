@@ -330,6 +330,25 @@ impl EditorContext {
         self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
     }
 
+    /// Whether forms have edits or a request is pending or has an unknown
+    /// outcome, so the saved view must not be replaced under them.
+    fn editing(self) -> bool {
+        !self.dirty.get_untracked().is_empty()
+            || self.busy.get_untracked()
+            || self.uncertain.get_untracked()
+    }
+
+    /// Whether a repository-backed application at revision `generation`,
+    /// last updated at `updated_at_ms`, holds a manifest fetched after the
+    /// saved view's: same revision, updated later.
+    fn fetched_since(self, generation: u64, updated_at_ms: i64) -> bool {
+        self.saved.with_untracked(|saved| {
+            saved.application.spec().manifest.is_some()
+                && generation == saved.generation
+                && updated_at_ms > saved.updated_at_ms
+        })
+    }
+
     /// Whether the editor is still mounted. Reading its disposed handles
     /// panics, so async work checks this after every await.
     fn mounted(self) -> bool {
@@ -887,21 +906,18 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
             }
             // Fetches replace a repository-backed application's saved manifest
             // without advancing its revision; reload it unless it is being
-            // edited. Newer revisions show the conflict notice instead.
-            let fetched = context.saved.with_untracked(|saved| {
-                saved.application.spec().manifest.is_some()
-                    && application.generation == saved.generation
-                    && application.updated_at_ms > saved.updated_at_ms
-            });
-            let editing = !context.dirty.get_untracked().is_empty()
-                || context.busy.get_untracked()
-                || context.uncertain.get_untracked();
-            if fetched && !editing {
+            // edited. Newer revisions show the conflict notice instead. A
+            // save may finish while the reload is in flight, so its response
+            // is checked again on arrival.
+            if context.fetched_since(application.generation, application.updated_at_ms)
+                && !context.editing()
+            {
                 let id = application.id.to_string();
                 spawn_local(async move {
                     if let Ok(view) = Client::browser().application(&id).await
                         && context.mounted()
-                        && context.dirty.get_untracked().is_empty()
+                        && context.fetched_since(view.generation, view.updated_at_ms)
+                        && !context.editing()
                     {
                         context.saved.set(view);
                     }
