@@ -419,13 +419,7 @@ impl Store {
             } => {
                 let current =
                     Self::find_by_name_on(tx, application.metadata().name.as_str()).await?;
-                if let Some(current) = &current
-                    && current.application.spec().manifest.is_some()
-                    && current.application.spec_hash() != application.spec_hash()
-                {
-                    return Err(StoreError::RepositoryManaged);
-                }
-                Self::check_generation(expected, current.as_ref().map_or(0, |app| app.generation))?;
+                Self::check_save(current.as_ref(), &application, expected)?;
                 let application = application.with_id(Self::application_identity(
                     current.as_ref(),
                     expected_application_id.as_deref(),
@@ -929,6 +923,29 @@ impl Store {
         }
         saved.operation_id = saved.operation_ids.first().cloned();
         Ok(())
+    }
+
+    /// Checks saving `application` over `current`, the application that has
+    /// its name, if any, against the `expected` generation. Generation zero
+    /// creates, so a taken name is `AlreadyExists`, as for renames, whoever
+    /// manages the application that has it. Otherwise a repository-managed
+    /// application's runtime fields are `RepositoryManaged`, and a stale
+    /// revision a generation conflict.
+    fn check_save(
+        current: Option<&StoredApplication>,
+        application: &piqueld_core::manifest::ApplicationTemplate,
+        expected: Option<u64>,
+    ) -> Result<(), StoreError> {
+        if expected == Some(0) && current.is_some() {
+            return Err(StoreError::AlreadyExists);
+        }
+        if let Some(current) = current
+            && current.application.spec().manifest.is_some()
+            && current.application.spec_hash() != application.spec_hash()
+        {
+            return Err(StoreError::RepositoryManaged);
+        }
+        Self::check_generation(expected, current.map_or(0, |app| app.generation))
     }
 
     /// Resolves the ID for a save by name: the existing application's ID,

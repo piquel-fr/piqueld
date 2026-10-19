@@ -2191,6 +2191,11 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     );
     request.expected_generation = Some(0);
     let accepted = api.client.apply_and_deploy(&request).await.unwrap();
+    // Creating it again finds its name taken, like a rename would.
+    assert_eq!(
+        api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
+        "application_name_collision"
+    );
     request.expected_generation = Some(1);
     assert_eq!(
         api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
@@ -3511,6 +3516,38 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
             .replicas,
         5.into()
     );
+}
+
+/// Creating an application under the name of a repository-managed one is a
+/// name collision, not an edit refused for being repository-managed.
+#[tokio::test]
+async fn creating_over_a_repository_managed_name_collides() {
+    use piqueld_client::{GitRepository, RepositoryManifest, edit::ApplicationEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api.save().await;
+    let repository = ApplicationEdit::Repository(Some(RepositoryManifest {
+        repository: GitRepository {
+            url: "https://example.com/infra.git".into(),
+            branch: "main".into(),
+            commit: None,
+        },
+        path: "app.toml".into(),
+        sync: piqueld_core::sync::RepositorySync::Off,
+    }));
+    let options = piqueld_client::edit::EditOptions {
+        expected_generation: Some(1),
+        ..Default::default()
+    };
+    api.client
+        .edit_application(&saved.application_id, &repository, &options)
+        .await
+        .unwrap();
+    // A runtime change, which the repository-managed check would refuse.
+    let mut request = new_application();
+    request.manifest.spec.services[0].replicas = 2.into();
+    let error = api.client.apply_application(&request).await.unwrap_err();
+    assert_eq!(api_error(error).code, "application_name_collision");
 }
 
 #[tokio::test]

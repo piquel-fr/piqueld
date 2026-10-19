@@ -281,6 +281,8 @@ creation require preconditions unless the endpoint is explicitly
 called with the query parameter `force=true`. Missing preconditions return 400
 `precondition_required`. Apply requires generation zero to create an absent name,
 or both the inspected application ID and generation to update an existing name.
+Generation zero for a taken name returns 409 `application_name_collision`, as
+renames do.
 Deploy and delete require `expected_generation` in its query; renames,
 environment creation, source changes and promotions take it in JSON.
 Revision mismatches return 409 `generation_conflict`; identity mismatches return
