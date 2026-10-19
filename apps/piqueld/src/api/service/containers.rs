@@ -261,6 +261,9 @@ impl ApplicationService {
             };
             if interval && starts.is_none() {
                 starts = Some(Box::pin(docker.container_starts()));
+                // Starts while unsubscribed went unseen, so every container
+                // may have new output.
+                exports.lock().values_mut().for_each(Exported::started);
             }
             if !interval
                 && discovery
