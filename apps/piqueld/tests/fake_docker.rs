@@ -4874,11 +4874,34 @@ mod promotion {
     /// The release staging built is deployed to production as recorded:
     /// rendered with production's block, its image never pulled or built
     /// again, except a missing registry image, pulled again by digest at
-    /// acceptance. Each deployment records where it came from, and the
+    /// acceptance once the request's revision holds. Each deployment records where it came from, and the
     /// release where it was promoted.
     #[tokio::test]
     async fn promotes_the_source_release_rendered_for_the_target_without_building() {
         let shop = Shop::new(&shop_toml("", "", IMAGE)).await;
+        let promote = async |generation, request_id| {
+            shop.harness
+                .applications()
+                .promote(
+                    Daemon,
+                    &shop.production,
+                    PromotionSelection::Source { deployment: None },
+                    Some(generation),
+                    false,
+                    request_id,
+                )
+                .await
+        };
+        let stale = async || {
+            assert!(matches!(
+                promote(0, None).await,
+                Err(ApplicationError::Store(
+                    StoreError::GenerationConflict { .. }
+                ))
+            ));
+        };
+        // A stale revision is refused first, even before the source deployed.
+        stale().await;
         let built = shop.deploy_staging().await;
         let release = shop.release(&built.id).await;
         let image = shop.web(&shop.staging).await.1;
@@ -4903,6 +4926,16 @@ mod promotion {
         let pulls = shop.harness.pulls().await;
         // Cleanup or an operator removed the pulled image meanwhile.
         shop.harness.docker.local_images.lock().await.clear();
+        // And before the image is pulled again, like a malformed idempotency
+        // key.
+        stale().await;
+        let generation = shop.harness.store.get(&shop.production).await;
+        let generation = generation.unwrap().application.generation;
+        assert!(matches!(
+            promote(generation, Some("not a key")).await,
+            Err(ApplicationError::Store(StoreError::InvalidInput))
+        ));
+        assert_eq!(shop.harness.pulls().await, pulls);
 
         let accepted = shop.promoted().await;
         assert_eq!(accepted.release_id, release);

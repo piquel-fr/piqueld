@@ -387,7 +387,8 @@ deploys an earlier release of the application instead, with the environment's
 current secrets and no source check. Both together return 400
 `promotion_invalid`. Like Deploy, it requires `expected_generation` unless
 forced, needs `apps:deploy`, and supersedes pending work; it never advances the
-application revision. Before anything is captured, it checks that the source's
+application revision. Before anything is captured, and after checking those
+and the revision, it checks that the source's
 current deployment succeeded, recorded a release, and its services run as
 deployed and healthy now (409 `promotion_source_not_ready`, `details.environment`),
 that the release instantiates for the environment (422, `release_incompatible`),

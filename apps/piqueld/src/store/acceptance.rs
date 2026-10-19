@@ -156,10 +156,11 @@ impl Store {
         Ok((accepted.response, accepted.wake))
     }
 
-    /// Returns the stored response when `request_id` replays a request with
-    /// one of `fingerprints` that `actor` may still submit (see
-    /// `check_request_on`), so callers can return it before checking
-    /// preconditions that may have changed since it was accepted.
+    /// Checks that `actor` may submit `mutation` (see `check_request_on`), and
+    /// returns the stored response when `request_id` replays a request with
+    /// one of `fingerprints`, so callers can return it before checking
+    /// preconditions that may have changed since it was accepted, and refuse
+    /// a caller before doing any work for it.
     pub(crate) async fn replay(
         &self,
         actor: Actor<'_>,
@@ -168,9 +169,6 @@ impl Store {
         force: bool,
         request_id: Option<&str>,
     ) -> Result<Option<MutationResponse>, StoreError> {
-        if request_id.is_none() {
-            return Ok(None);
-        }
         let mut tx = self.snapshot().await?;
         let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
         let checked = Self::check_request_on(

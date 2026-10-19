@@ -16,7 +16,9 @@ use piqueld_core::{
 impl ApplicationService {
     /// Promotes `selection` into the promoted environment `id`, pinning its
     /// release at acceptance. Every precondition is checked before anything
-    /// is captured:
+    /// is captured, after the caller's: its revision precondition, idempotency
+    /// key and permission, then the environment's revision, as acceptance
+    /// checks them:
     ///
     /// 1. When promoting from the source, its current deployment is the one
     ///    requested, succeeded, and is observed healthy now.
@@ -50,6 +52,7 @@ impl ApplicationService {
                 promotion,
             })
         };
+        request(None).check_submission(expected_generation, force, request_id)?;
         let replayed = self
             .store
             .replay(
@@ -63,7 +66,11 @@ impl ApplicationService {
         if let Some(response) = replayed {
             return Self::promotion_response(response);
         }
-        let candidate = self.store.promotion_candidate(id, &selection).await?;
+        let expected = expected_generation.filter(|_| !force);
+        let candidate = self
+            .store
+            .promotion_candidate(id, &selection, expected)
+            .await?;
         self.check_source_health(&candidate).await?;
         let (rendering, _, secrets) = self.instantiate(&candidate).await?;
         if !secrets.is_empty() {
@@ -123,7 +130,7 @@ impl ApplicationService {
         id: &EnvironmentId,
         selection: &PromotionSelection,
     ) -> Result<PlanView, ApplicationError> {
-        let candidate = self.store.promotion_candidate(id, selection).await?;
+        let candidate = self.store.promotion_candidate(id, selection, None).await?;
         self.check_source_health(&candidate).await?;
         let target = &candidate.target;
         let (rendering, desired, secrets) = self.instantiate(&candidate).await?;
