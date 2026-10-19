@@ -559,7 +559,7 @@ async fn deployments_replace_generated_values_discarded_by_key_recovery() {
     let accepted = ApplicationTemplate::from(&application());
     let first = store.save_application(&accepted, None, None).await.unwrap();
     let (app, env) = (with_generated_secret(&application()), &first.environment_id);
-    store.generate_secrets(env, &app).await.unwrap();
+    store.pin_secrets(&first, &app).await.unwrap();
     std::fs::write(temp.path().join("secrets.key"), [42; 32]).unwrap();
     store.recover_secret_key(Daemon).await.unwrap();
     assert!(store.secrets(env).await.unwrap()[0].unavailable);

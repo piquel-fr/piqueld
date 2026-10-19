@@ -78,7 +78,8 @@ impl Store {
 
     /// Stores the fetched manifest and commit for the latest running operation,
     /// copying it, its rendering, and `warnings` into deployment history,
-    /// pinning its secret versions, recording the `branch_head` sync follows
+    /// storing values generated for its secrets and pinning their versions
+    /// (see `pin_secrets_on`), recording the `branch_head` sync follows
     /// from (see `record_branch_head_on`), and re-checking hostname
     /// reservations. Fetching happens once: a second save, or one for
     /// superseded work, fails with `StoreError::IllegalTransition`.
@@ -94,7 +95,8 @@ impl Store {
         let (manifest, variables) = Self::snapshot_json(Some(rendering))?;
         let warnings = serde_json::to_string(warnings).map_err(StoreError::corrupt)?;
         let application = &rendering.application;
-        self.generate_secrets(&operation.environment_id, application)
+        let generated = self
+            .generated_secrets(&operation.environment_id, application)
             .await?;
         let (_writer, mut tx) = self.begin_immediate().await?;
         let app_id = operation.environment_id.as_str();
@@ -118,7 +120,8 @@ impl Store {
         if let Some(head) = branch_head {
             Self::record_branch_head_on(&mut tx, &operation.environment_id, head, now).await?;
         }
-        Self::pin_secrets_on(&mut tx, operation, application).await?;
+        self.pin_secrets_on(&mut tx, operation, application, &generated)
+            .await?;
         Self::commit_environment_changes(tx, [app_id]).await
     }
 
@@ -393,20 +396,7 @@ mod tests {
         id: &str,
         spec: &str,
     ) -> (Operation, piqueld_core::ResolvedApplication) {
-        let op = store.operation(id).await.unwrap();
-        store.mark_running(&op.id).await;
-        let current = store.get(environment).await.unwrap();
-        // As fetching does, the connection replaces the file's own before validation.
-        let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
-        ))
-        .unwrap();
-        fetched.spec.manifest = current.tracking().unwrap().repository();
-        let fetched = fetched
-            .validate_template()
-            .unwrap()
-            .normalize(current.application.application.id().clone());
-        let rendering = current.render(&fetched, &op.id).unwrap();
+        let (op, fetched, rendering) = rendered(store, environment, id, spec).await;
         store
             .save_deployment_input(
                 &op,
@@ -437,6 +427,71 @@ mod tests {
         )
         .unwrap();
         (op, target)
+    }
+
+    /// Marks operation `id` of `environment` running and renders a manifest
+    /// with `spec` fetched for it, returning the operation, the manifest and
+    /// its rendering.
+    async fn rendered(
+        store: &Store,
+        environment: &EnvironmentId,
+        id: &str,
+        spec: &str,
+    ) -> (Operation, ApplicationTemplate, Rendering) {
+        let op = store.operation(id).await.unwrap();
+        store.mark_running(&op.id).await;
+        let current = store.get(environment).await.unwrap();
+        // As fetching does, the connection replaces the file's own before validation.
+        let mut fetched = piqueld_core::manifest::ApplicationManifest::decode_toml(&format!(
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='notes'\n{spec}"
+        ))
+        .unwrap();
+        fetched.spec.manifest = current.tracking().unwrap().repository();
+        let fetched = fetched
+            .validate_template()
+            .unwrap()
+            .normalize(current.application.application.id().clone());
+        let rendering = current.render(&fetched, &op.id).unwrap();
+        (op, fetched, rendering)
+    }
+
+    /// A fetch saved for superseded work stores none of the secret values
+    /// generated for it, so rejected candidates never use up the quota.
+    #[tokio::test]
+    async fn rejected_fetches_store_no_generated_secrets() {
+        let (_directory, store) = Store::temporary().await;
+        let application = saved_connection(&store).await;
+        let production = EnvironmentId::default_for(&application);
+        let deploy = async || {
+            let (MutationResponse::Operation(accepted), _) = store
+                .accept(
+                    Daemon,
+                    Mutation::deploy(production.clone()),
+                    None,
+                    true,
+                    None,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("operation")
+            };
+            accepted.operation_id
+        };
+        let first = deploy().await;
+        let spec = format!(
+            "{}\n[[spec.services.secrets]]\nname='token'\ntarget='/run/secrets/token'",
+            token_spec(true)
+        );
+        let (op, fetched, rendering) = rendered(&store, &production, &first, &spec).await;
+        deploy().await;
+        assert!(matches!(
+            store
+                .save_deployment_input(&op, &fetched, &rendering, (None, None), &[])
+                .await,
+            Err(StoreError::IllegalTransition)
+        ));
+        assert!(store.secrets(&production).await.unwrap().is_empty());
     }
 
     /// A manifest fetched before a rename is accepted under the new name, as

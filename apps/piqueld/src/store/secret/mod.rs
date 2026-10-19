@@ -95,7 +95,7 @@ impl Store {
             .collect())
     }
     /// Stores a value for an environment's generated secret; deployments
-    /// generate them (see `generate_secrets`).
+    /// generate them (see `pin_secrets_on`).
     /// `expected` is the current generation (zero to create). The value is
     /// encrypted into a new immutable version with its own Swarm secret name
     /// (`piqueld-secret-<uuid>`), subject to per-environment count and byte quotas.
@@ -250,36 +250,6 @@ impl Store {
         current.checked_add(1).ok_or(StoreError::InvalidInput)
     }
 
-    /// Stores values for declared secrets that a service mounts and that have
-    /// none (see `generated_secrets`), each with `put_secret` against the
-    /// generation read; losing a race to a concurrent write keeps the other
-    /// value. Call before pinning, outside the writer lock.
-    ///
-    /// # Errors
-    /// Returns `SecretSource` when generation fails, and other `put_secret`
-    /// errors (count or byte quotas, application deletion, key or database
-    /// errors) unchanged.
-    pub(crate) async fn generate_secrets(
-        &self,
-        id: &EnvironmentId,
-        app: &NormalizedApplication,
-    ) -> Result<(), StoreError> {
-        for secret in self.generated_secrets(id, app).await? {
-            let value = secret.value.to_vec();
-            let stored = self
-                .put_secret(
-                    super::Actor::Daemon,
-                    id,
-                    &secret.name,
-                    secret.expected,
-                    value,
-                )
-                .await;
-            GeneratedSecret::stored(stored)?;
-        }
-        Ok(())
-    }
-
     /// Generates, without storing them, values for declared secrets that a
     /// service mounts and that have none in the environment, or only one key
     /// recovery discarded (which has no value left to keep); unmounted
@@ -324,24 +294,6 @@ impl Store {
             });
         }
         Ok(generated)
-    }
-
-    /// Stores `generated` values in `tx`, with the deployment that needs
-    /// them; a value set concurrently wins over the generated one.
-    pub(super) async fn store_generated_on(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-        id: &EnvironmentId,
-        generated: &[GeneratedSecret],
-    ) -> Result<(), StoreError> {
-        for secret in generated {
-            let daemon = super::Actor::Daemon;
-            let stored = self
-                .put_secret_on(tx, daemon, id, &secret.name, secret.expected, &secret.value)
-                .await;
-            GeneratedSecret::stored(stored)?;
-        }
-        Ok(())
     }
 
     /// Generates a value for `secret` off the async runtime: RSA generation
@@ -389,22 +341,28 @@ impl Store {
     }
 
     /// Generates values for mounted declared secrets that have none (see
-    /// `generate_secrets`), then pins the secret versions a deployment uses in
-    /// its own transaction; see `pin_secrets_on`.
+    /// `generated_secrets`), then stores them and pins the secret versions a
+    /// deployment uses in one transaction; see `pin_secrets_on`.
     pub(crate) async fn pin_secrets(
         &self,
         operation: &Operation,
         app: &NormalizedApplication,
     ) -> Result<BTreeMap<String, String>, StoreError> {
-        self.generate_secrets(&operation.environment_id, app)
+        let generated = self
+            .generated_secrets(&operation.environment_id, app)
             .await?;
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let pins = Self::pin_secrets_on(&mut tx, operation, app).await?;
+        let pins = self
+            .pin_secrets_on(&mut tx, operation, app, &generated)
+            .await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(pins)
     }
-    /// Returns the logical-to-Swarm secret names a deployment operation uses.
-    /// The first call checks the environment may mount every stored secret
+    /// Returns the logical-to-Swarm secret names a deployment operation uses,
+    /// first storing the `generated` values it needs (see `generated_secrets`);
+    /// a value set concurrently wins over a generated one. Storing them in
+    /// the caller's transaction keeps a rejected deployment from leaving
+    /// them behind. The first call checks the environment may mount every stored secret
     /// (see `check_secret_access_on`), then pins the current generation of
     /// every referenced secret, so retries deploy the same versions even after
     /// rotation; later calls reuse the pins. A stored secret's version gets the
@@ -412,10 +370,26 @@ impl Store {
     /// Fails if referenced secrets have no value (`SecretMissing`, naming
     /// them), are being deleted, or had their value discarded by key recovery.
     pub(super) async fn pin_secrets_on(
+        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         operation: &Operation,
         app: &NormalizedApplication,
+        generated: &[GeneratedSecret],
     ) -> Result<BTreeMap<String, String>, StoreError> {
+        for secret in generated {
+            let daemon = super::Actor::Daemon;
+            let stored = self
+                .put_secret_on(
+                    tx,
+                    daemon,
+                    &operation.environment_id,
+                    &secret.name,
+                    secret.expected,
+                    &secret.value,
+                )
+                .await;
+            GeneratedSecret::stored(stored)?;
+        }
         Self::check_secret_references(
             tx,
             &app.spec().mounted_secret_names(),

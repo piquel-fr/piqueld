@@ -489,9 +489,9 @@ impl Store {
             }
             .into());
         }
-        self.store_generated_on(tx, target.id(), &promotion.generated)
+        let pins = self
+            .pin_secrets_on(tx, &operation, &rendering.application, &promotion.generated)
             .await?;
-        let pins = Self::pin_secrets_on(tx, &operation, &rendering.application).await?;
         let mut resolved = compile_release(
             &rendering.application,
             target.id(),
