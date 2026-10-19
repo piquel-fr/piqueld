@@ -61,6 +61,13 @@ let
           "credentials_file"
         ];
       }
+      {
+        name = "otlp-headers";
+        setting = [
+          "telemetry"
+          "headers_file"
+        ];
+      }
     ]
   );
   webhookCredential = index: "webhook-${toString index}";
@@ -381,10 +388,17 @@ in
             default = 4294967296;
             description = "Most bytes the working trees of all Git checkouts may take at once; a checkout waits for room, and a larger one, or a local snapshot that would be, is refused.";
           };
-          metrics.listen = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Metrics-only socket addresses; empty disables exposure.";
+          telemetry.endpoint = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "(https?://|unix:///).+");
+            default = null;
+            example = "unix:///run/otel/otlp.sock";
+            description = "OTLP/gRPC collector receiving the daemon's traces, metrics and logs: https://host:port, http://host:port, or unix:///path. Null disables export.";
+          };
+          telemetry.headers_file = lib.mkOption {
+            # A string, not a path, so the secret is never copied into the Nix store.
+            type = lib.types.nullOr (lib.types.strMatching "/.+");
+            default = null;
+            description = "Host file with gRPC headers for the collector, one `name: value` per line (such as `authorization: Bearer …`), such as an agenix secret, passed to piqueld as a systemd credential.";
           };
           notifications.enabled = lib.mkOption {
             type = lib.types.bool;

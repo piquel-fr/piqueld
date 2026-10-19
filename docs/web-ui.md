@@ -209,7 +209,7 @@ The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 configured localhost or Tailscale TCP listeners and, with a
 [dashboard hostname](ingress.md#dashboard-hostname), through private ingress.
-The API Unix socket is API-only, and the daemon does not add CORS, telemetry,
+The API Unix socket is API-only, and the daemon does not add CORS, browser telemetry,
 or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
 their grants, invitations, passkey enrollment links, and tokens. Pages the
@@ -442,8 +442,8 @@ prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
 
-See [observability](observability.md) for diagnostic history, daemon statistics, analytics, metrics
-and webhook delivery configuration.
+See [observability](observability.md) for diagnostic history, daemon statistics, analytics, telemetry
+export and webhook delivery configuration.
 
 ## Browser tests
 

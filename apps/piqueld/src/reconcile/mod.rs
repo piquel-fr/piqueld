@@ -4,8 +4,8 @@ use crate::{
     docker::{DockerApi, DockerError},
     operations::OperationError,
     store::{
-        ApplicationState, MAX_PAGE_SIZE, Operation, OperationKind, OperationState, Store,
-        StoreError, StoredEnvironment,
+        ApplicationState, Operation, OperationKind, OperationState, Store, StoreError,
+        StoredEnvironment,
     },
 };
 use piqueld_core::{

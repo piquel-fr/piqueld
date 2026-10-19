@@ -124,7 +124,8 @@ intervals/timeouts, the `retention` periods, both `build_history` limits,
 the five [`previews`](configuration.md#previews) limits,
 [`snapshots.max_upload_bytes`](configuration.md#local-snapshots),
 [`checkouts.max_bytes`](configuration.md#git-checkouts), both `images` settings,
-`metrics.listen`, `notifications.destinations`, and every `notifications` switch
+`telemetry.endpoint`, `telemetry.headers_file` (a systemd credential),
+`notifications.destinations`, and every `notifications` switch
 and timing, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero
 disabling pruning. Unknown settings are rejected.
@@ -143,6 +144,20 @@ services.piqueld.settings.notifications = {
 ```
 
 See [observability](observability.md) for delivery semantics.
+
+[Telemetry export](observability.md#telemetry-export) pushes traces, metrics
+and logs to an OTLP/gRPC collector. A collector token goes in `headers_file`,
+which systemd passes to the daemon as the `otlp-headers` credential:
+
+```nix
+services.piqueld.settings.telemetry = {
+  endpoint = "https://otel.example.com:4317"; # or "unix:///run/otel/otlp.sock"
+  headers_file = config.age.secrets.otlp-headers.path; # `authorization: Bearer …`
+};
+```
+
+The former `metrics.listen` option is gone; the daemon no longer serves
+Prometheus metrics itself.
 
 [DNS providers](configuration.md#dns-providers) take their credentials only as
 files:

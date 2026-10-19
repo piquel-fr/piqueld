@@ -83,6 +83,8 @@ string_enum! {
     CertificateRenewalFailed => "certificate_renewal_failed",
     /// A route's DNS records could not be written or deleted.
     DnsRecordsFailed => "dns_records_failed",
+    /// A telemetry collector has not accepted exports for a while.
+    TelemetryExportFailed => "telemetry_export_failed",
     }
 }
 
@@ -95,6 +97,8 @@ const DNS_RECORDS_RETRY: &str = "Check DNS provider credentials, permissions and
 const IMAGE_UNAVAILABLE: &str = "The image was removed and could not be pulled again. Deploy a release whose images are present, or deploy again to rebuild.";
 /// Guidance for builds requested before their environment was made promoted.
 const ENVIRONMENT_PROMOTED: &str = "The environment was made promoted after this deployment was requested, and promoted environments never build. Promote a release into it instead.";
+/// Guidance for a telemetry collector that keeps failing.
+const TELEMETRY_EXPORT: &str = "Check that the collector at telemetry.endpoint is reachable and accepts the configured headers. Records are dropped until it does.";
 /// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
@@ -124,6 +128,7 @@ impl DiagnosticCode {
                 "Check DNS provider credentials, zones and certificate status. Renewal retries with backoff.",
             ),
             Self::DnsRecordsFailed => (Daemon, true, DNS_RECORDS_RETRY),
+            Self::TelemetryExportFailed => (Daemon, true, TELEMETRY_EXPORT),
             Self::JournalUnavailable | Self::StorageUnavailable => (
                 Daemon,
                 true,
@@ -255,6 +260,7 @@ mod tests {
             DiagnosticCode::IngressUnavailable,
             DiagnosticCode::CertificateRenewalFailed,
             DiagnosticCode::DnsRecordsFailed,
+            DiagnosticCode::TelemetryExportFailed,
         ] {
             let diagnostic = Diagnostic::new("occurrence".into(), code, "failure".into());
             assert_eq!(diagnostic.scope, EventScope::Daemon, "{code:?}");

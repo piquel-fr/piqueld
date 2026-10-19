@@ -28,6 +28,7 @@ async fn status() -> Json<Envelope<SystemStatus>> {
             previews: None,
             images: piqueld_core::api::ImageStatus::default(),
             snapshots: None,
+            telemetry: piqueld_core::api::TelemetryStatus::default(),
         },
     })
 }

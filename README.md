@@ -131,8 +131,8 @@ for the development shell.
 The daemon reads `/etc/piqueld/config.toml` by default; `--config PATH` selects
 another host configuration. Configuration covers local paths, listeners,
 authentication, the tailnet node, Docker, ingress and DNS providers,
-reconciliation timing, retention, images, previews, and observability (metrics
-and notifications); see [configuration](docs/configuration.md) and the
+reconciliation timing, retention, images, previews, and observability (telemetry
+export and notifications); see [configuration](docs/configuration.md) and the
 [NixOS module](docs/nixos.md). The complete non-root development
 example is [`examples/piqueld.toml`](examples/piqueld.toml).
 [Development instances](docs/development.md) (`just dev`) run an isolated
@@ -145,5 +145,5 @@ repository on Deploy or [on push](docs/application-manifest.md#deploying-on-push
 These are independent features; see
 [the manifest reference](docs/application-manifest.md) for both configurations.
 
-See [observability](docs/observability.md) for diagnostic history, daemon statistics, analytics, metrics
-and webhook delivery configuration.
+See [observability](docs/observability.md) for diagnostic history, daemon statistics, analytics, telemetry
+export and webhook delivery configuration.

@@ -167,7 +167,7 @@ impl Store {
     }
 
     /// Atomically completes deletion after the controller verifies resource absence.
-    /// Marks the operation succeeded, then removes the environment's
+    /// Marks the operation succeeded with an `operation_succeeded` event, then removes the environment's
     /// notification state, open actions, replay receipts, and finally the
     /// environment row itself. Its events stay in the application's history.
     /// Deleting an application's last environment also removes the application
@@ -183,6 +183,8 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
+        // Recorded while the operation still exists; it goes with its environment.
+        Self::operation_event(&mut tx, &operation.id, "operation_succeeded", None, now).await?;
         let app_id = operation.environment_id.as_str();
         sqlx::query!(
             "DELETE FROM notification_conditions WHERE environment_id=?1",
@@ -373,6 +375,35 @@ impl Store {
         Ok(count)
     }
 
+    /// Where the journal is now, read consistently: the newest event's ID,
+    /// and the operation ID, attempt and start time of every attempt running.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub(crate) async fn journal_position(&self) -> Result<JournalPosition, StoreError> {
+        let mut tx = self.snapshot().await?;
+        let event = sqlx::query_scalar!(r#"SELECT COALESCE(MAX(id),0) AS "id!: i64" FROM events"#)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        let running = sqlx::query!(
+            r#"SELECT id AS "id!",attempt,started_at_ms AS "started_at_ms!" FROM operations WHERE state='running' AND started_at_ms IS NOT NULL"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                row.id,
+                u64::try_from(row.attempt).map_err(StoreError::corrupt)?,
+                row.started_at_ms,
+            ))
+        })
+        .collect::<Result<_, StoreError>>()?;
+        Ok(JournalPosition { event, running })
+    }
+
     /// Prunes old terminal history, always retaining the latest operation per environment.
     /// Operations backing a deployment record or pending job cleanup are kept as well.
     ///
@@ -431,4 +462,13 @@ impl Store {
         Self::operation_event(tx, &id, event, None, now).await?;
         Self::operation_on(tx, &id).await
     }
+}
+
+/// Where the journal stood at one moment, see [`Store::journal_position`].
+#[derive(Debug, Default)]
+pub(crate) struct JournalPosition {
+    /// The newest event's ID, or 0 without any.
+    pub(crate) event: i64,
+    /// Operation ID, attempt and start time of every attempt running.
+    pub(crate) running: Vec<(String, u64, i64)>,
 }

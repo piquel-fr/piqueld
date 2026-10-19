@@ -25,6 +25,7 @@ pub(crate) use secret::SecretDeletion;
 mod operation;
 mod preview;
 mod promotion;
+pub(crate) use operation::JournalPosition;
 pub use preview::PreviewOrigins;
 pub use promotion::{Promotion, PromotionCandidate, PromotionError};
 mod release;

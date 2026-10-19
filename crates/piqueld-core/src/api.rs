@@ -714,6 +714,38 @@ pub struct SystemStatus {
     /// How large a local snapshot may be; absent from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshots: Option<SnapshotLimits>,
+    /// Export of the daemon's own telemetry over OTLP.
+    #[serde(default)]
+    pub telemetry: TelemetryStatus,
+}
+
+/// Export of the daemon's traces, metrics and logs over OTLP.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct TelemetryStatus {
+    /// Collectors receiving telemetry; empty when `[telemetry]` sets no
+    /// endpoint.
+    pub destinations: Vec<TelemetryDestinationStatus>,
+}
+
+/// One collector receiving the daemon's telemetry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct TelemetryDestinationStatus {
+    /// OTLP/gRPC endpoint: `https://`, `http://` or `unix://`.
+    pub endpoint: String,
+    /// The file request headers were read from, such as
+    /// `from /run/credentials/piqueld.service/otlp-headers`; never their
+    /// values. Absent without headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<String>,
+    /// When the collector last accepted an export, in Unix milliseconds;
+    /// absent before the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_ms: Option<i64>,
+    /// Records dropped since the daemon started, because the queue was full
+    /// or the collector failed or rejected them.
+    pub dropped: u64,
+    /// Whether exports have failed for at least a minute without a success.
+    pub failing: bool,
 }
 
 /// How large a snapshot `piquelctl preview deploy --local` uploads may be,

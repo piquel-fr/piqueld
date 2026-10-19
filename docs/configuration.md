@@ -91,7 +91,8 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `retention.event_days` | `90` (`0` disables application event pruning) |
 | `retention.daemon_event_days` | `90` (`0` disables daemon event pruning) |
 | `retention.audit_days` | `365` (`0` disables audit trail pruning) |
-| `metrics.listen` | `[]` (metrics-only listener disabled) |
+| `telemetry.endpoint` | none ([telemetry export](observability.md#telemetry-export) off) |
+| `telemetry.headers_file` | none |
 | `notifications.enabled` | `false` |
 | `notifications.security` | `true` ([security notifications](observability.md#security-notifications); like every category, sent only when `notifications.enabled`) |
 | `notifications.daemon_started` | `true` ([daemon start notifications](observability.md#daemon-start-notifications)) |
@@ -329,7 +330,7 @@ the TCP hostname and Fetch Metadata checks; authentication and its origin checks
 still apply on every API transport.
 
 See [observability](observability.md) for notification category switches, webhook
-destinations, metrics exposure, diagnostic ownership and retention semantics.
+destinations, telemetry export, diagnostic ownership and retention semantics.
 
 ## Tailnet node
 
@@ -451,6 +452,9 @@ for the apps node's container, which only uses it for its first login.
 `ingress.tunnel.credentials_file` has no inline variant: piqueld reads it at
 startup, checks that it is a tunnel credentials file, and writes it, mode 0600, to
 `<data_dir>/ingress/tunnel/credentials.json` for the `cloudflared` container.
+`telemetry.headers_file` has no inline variant either: piqueld reads it at
+startup and sends its `name: value` lines as gRPC headers with every
+[telemetry export](observability.md#telemetry-export).
 
 Errors and the read-only settings view name the file a value came from, never
 the value. Restart the daemon after changing a credential file.

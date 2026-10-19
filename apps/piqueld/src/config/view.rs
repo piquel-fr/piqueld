@@ -288,7 +288,8 @@ impl DaemonConfig {
     }
 
     /// Builds the `Observability` group, listing notification destinations by
-    /// name only so webhook URLs never reach the dashboard.
+    /// name only so webhook URLs never reach the dashboard, and telemetry
+    /// headers by their file.
     fn observability_view(&self) -> Group {
         let notifications = &self.notifications;
         let destinations = notifications.destinations.iter().map(|destination| {
@@ -300,7 +301,14 @@ impl DaemonConfig {
             format!("{} ({state}, URL {})", destination.name, destination.url)
         });
         group([
-            ("Metrics listeners", joined(&self.metrics.listen)),
+            (
+                "Telemetry endpoint",
+                or_none(self.telemetry.endpoint.as_ref()),
+            ),
+            (
+                "Telemetry headers",
+                or_none(self.telemetry.headers.as_ref()),
+            ),
             (
                 "Daemon history (days)",
                 self.retention.daemon_event_days.to_string(),
