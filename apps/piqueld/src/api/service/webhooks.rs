@@ -280,7 +280,7 @@ mod tests {
             .await;
         assert_eq!(lister.listings(), 1);
 
-        *lister.heads.lock().unwrap() = Some(vec![("main", NEW)]);
+        *lister.heads.lock() = Some(vec![("main", NEW)]);
         assert_eq!(
             deliver(&router, &path, Some(&valid), body).await,
             axum::http::StatusCode::NO_CONTENT

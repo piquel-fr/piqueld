@@ -1,11 +1,9 @@
 //! Test-only provider keeping records in memory, shared by its clones so a
 //! test can inspect and change what reconciliation sees.
 use super::{ApiError, Found, Provider, Record, RecordId, Zone};
+use parking_lot::{Mutex, MutexGuard};
 use piqueld_core::manifest::Hostname;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Records by ID, as fully qualified name and data.
 #[derive(Default)]
@@ -69,8 +67,8 @@ impl TestProvider {
         }
     }
 
-    fn state(&self) -> Result<std::sync::MutexGuard<'_, State>, ApiError> {
-        let state = self.state.lock().unwrap();
+    fn state(&self) -> Result<MutexGuard<'_, State>, ApiError> {
+        let state = self.state.lock();
         if state.outage == Some(Outage::All) {
             return Err(ApiError::Unsupported("provider unavailable"));
         }
@@ -79,7 +77,7 @@ impl TestProvider {
 
     /// Adds a record as an operator would, outside piqueld.
     pub(crate) fn insert(&self, name: &str, record: Record) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.next += 1;
         let id = state.next;
         state.records.insert(id, (name.into(), record));
@@ -87,7 +85,7 @@ impl TestProvider {
 
     /// Every record, as `name kind content` lines in ID order.
     pub(crate) fn dump(&self) -> Vec<String> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         state
             .records
             .values()
@@ -97,17 +95,17 @@ impl TestProvider {
 
     /// Changes made since the last call, in order.
     pub(crate) fn changes(&self) -> Vec<String> {
-        std::mem::take(&mut self.state.lock().unwrap().changes)
+        std::mem::take(&mut self.state.lock().changes)
     }
 
     /// Makes `outage` calls fail, or none.
     pub(crate) fn fail(&self, outage: Option<Outage>) {
-        self.state.lock().unwrap().outage = outage;
+        self.state.lock().outage = outage;
     }
 
     /// Behaves like `mimics`.
     pub(crate) fn mimic(&self, mimics: Mimics) {
-        self.state.lock().unwrap().mimics = mimics;
+        self.state.lock().mimics = mimics;
     }
 
     /// The records named `name`, as the provider lists them.
@@ -211,11 +209,11 @@ impl Provider for TestProvider {
     }
 
     fn proxies(&self) -> bool {
-        self.state.lock().unwrap().mimics == Mimics::Cloudflare
+        self.state.lock().mimics == Mimics::Cloudflare
     }
 
     fn stages_changes(&self) -> bool {
-        self.state.lock().unwrap().mimics == Mimics::Ovh
+        self.state.lock().mimics == Mimics::Ovh
     }
 
     fn publish(

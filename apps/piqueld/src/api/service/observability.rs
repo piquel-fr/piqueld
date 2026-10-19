@@ -10,7 +10,6 @@ use piqueld_core::{
 };
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::sync::PoisonError;
 
 impl ApplicationService {
     /// Lists structured events with indexed filters, limited to `visible`.
@@ -339,12 +338,12 @@ impl ApplicationService {
 /// so each is written at most once per run. Pairs whose write fails are
 /// forgotten so the next use retries.
 #[derive(Default)]
-pub(crate) struct KnownAddresses(std::sync::Mutex<HashSet<(String, IpAddr)>>);
+pub(crate) struct KnownAddresses(parking_lot::Mutex<HashSet<(String, IpAddr)>>);
 
 impl KnownAddresses {
     /// Remembers `pair`, returning whether it was new.
     fn insert(&self, pair: &(String, IpAddr)) -> bool {
-        let mut known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut known = self.0.lock();
         // Bounded: forgetting pairs only repeats an idempotent write.
         if known.len() >= 10_000 {
             known.clear();
@@ -354,7 +353,7 @@ impl KnownAddresses {
 
     /// Forgets `pair`, so its next use is noted again.
     fn forget(&self, pair: &(String, IpAddr)) {
-        let mut known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut known = self.0.lock();
         known.remove(pair);
     }
 }

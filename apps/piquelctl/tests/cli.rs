@@ -2,6 +2,7 @@
 
 mod support;
 
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -12,7 +13,7 @@ use std::{
     path::PathBuf,
     process::{Command, Output, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -126,7 +127,7 @@ impl TestServer {
             .expect("server join handle")
             .join()
             .expect("server thread");
-        self.records.lock().expect("request records").clone()
+        self.records.lock().clone()
     }
 
     /// A `piquelctl` command connected to this server.
@@ -232,11 +233,8 @@ fn serve_stream(
         return;
     };
     let websocket_key = request.headers.get("sec-websocket-key").cloned();
-    records
-        .lock()
-        .expect("request records")
-        .push(request.clone());
-    let reply = handler.lock().expect("request handler")(request);
+    records.lock().push(request.clone());
+    let reply = handler.lock()(request);
     if reply.drop_connection {
         return;
     }

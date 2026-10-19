@@ -266,11 +266,11 @@ async fn disabled_ingress_removes_the_tunnel_credentials_even_if_docker_fails() 
 
 #[tokio::test]
 async fn disabled_ingress_stops_containers_even_if_the_credentials_remain() {
-    let inspected = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let inspected = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let engine = Engine::serving(|_| {
         let inspected = Arc::clone(&inspected);
         axum::Router::new().fallback(move |uri: axum::http::Uri| async move {
-            inspected.lock().unwrap().push(uri.path().to_owned());
+            inspected.lock().push(uri.path().to_owned());
             axum::http::StatusCode::NOT_FOUND
         })
     })
@@ -290,13 +290,7 @@ async fn disabled_ingress_stops_containers_even_if_the_credentials_remain() {
         "{error:#}"
     );
     let gateway = format!("/containers/{}/json", disabled.name);
-    assert!(
-        inspected
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|path| path.ends_with(&gateway))
-    );
+    assert!(inspected.lock().iter().any(|path| path.ends_with(&gateway)));
 }
 
 #[tokio::test]

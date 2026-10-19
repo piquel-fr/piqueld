@@ -114,7 +114,7 @@ impl Heads {
 pub(crate) struct Listings {
     /// Each repository being listed, with its last listing and when it
     /// finished.
-    repositories: std::sync::Mutex<BTreeMap<String, Arc<Repository>>>,
+    repositories: parking_lot::Mutex<BTreeMap<String, Arc<Repository>>>,
     /// Permits to list.
     listing: Semaphore,
 }
@@ -125,7 +125,7 @@ type Listed = (std::time::Instant, Arc<anyhow::Result<Heads>>);
 impl Default for Listings {
     fn default() -> Self {
         Self {
-            repositories: std::sync::Mutex::default(),
+            repositories: parking_lot::Mutex::default(),
             listing: Semaphore::new(Self::LISTING),
         }
     }
@@ -142,7 +142,9 @@ impl Listings {
         let reader = Reader {
             listings: self,
             url,
-            repository: Some(Arc::clone(self.lock().entry(url.to_owned()).or_default())),
+            repository: Some(Arc::clone(
+                self.repositories.lock().entry(url.to_owned()).or_default(),
+            )),
         };
         let mut last = reader.repository().lock().await;
         if let Some((finished, heads)) = &*last
@@ -157,13 +159,6 @@ impl Listings {
         let heads = Arc::new(heads);
         *last = Some((std::time::Instant::now(), Arc::clone(&heads)));
         heads
-    }
-
-    /// The repositories being listed.
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<Repository>>> {
-        self.repositories
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -190,7 +185,7 @@ impl Reader<'_> {
 
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
-        let mut repositories = self.listings.lock();
+        let mut repositories = self.listings.repositories.lock();
         // Readers take and drop their handle under this lock, so the last
         // to finish sees only the map's and its own, and removes it.
         if let Some(repository) = self.repository.take()
@@ -872,14 +867,14 @@ mod tests {
                 .ok()
                 .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
-        assert!(listings.repositories.lock().unwrap().is_empty());
+        assert!(listings.repositories.lock().is_empty());
         assert!(first.as_ref().as_ref().unwrap().head("main").is_some());
         let later = listings.list(&url).await;
         assert!(!Arc::ptr_eq(&first, &later));
         // Nothing is kept once no read waits, even a cancelled one.
         let cancelled = listings.list(&url);
         drop(tokio::time::timeout(Duration::ZERO, cancelled).await);
-        assert!(listings.repositories.lock().unwrap().is_empty());
+        assert!(listings.repositories.lock().is_empty());
     }
 
     /// The repository's attributes cannot convert, and so grow, the files

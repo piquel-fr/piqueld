@@ -331,7 +331,7 @@ impl Ingress {
             });
             states.insert(hostname.clone(), state);
         }
-        *self.records.write().expect("DNS record state lock") = states;
+        *self.records.write() = states;
         complete
     }
 
@@ -466,7 +466,6 @@ impl Ingress {
     pub(super) fn route_dns(&self, hostname: &RouteHostname) -> RouteDns {
         self.records
             .read()
-            .expect("DNS record state lock")
             .get(hostname)
             .cloned()
             .unwrap_or_default()

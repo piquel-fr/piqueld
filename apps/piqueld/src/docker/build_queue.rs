@@ -6,9 +6,9 @@
 //! preview builds: then the oldest preview build goes. So environments go
 //! first, but a steady stream of their builds never starves previews. A
 //! running build is never interrupted, and a cancelled one leaves its queue.
+use parking_lot::Mutex;
 use piqueld_core::EnvironmentKind;
 use std::collections::VecDeque;
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::oneshot;
 
 /// Environment builds that may go ahead of waiting preview builds before the
@@ -60,7 +60,7 @@ impl BuildQueue {
     /// Panics if the queue drops a waiting build, which it never does.
     pub(crate) async fn turn(&self, priority: BuildPriority) -> Turn<'_> {
         let receiver = {
-            let mut waiting = self.lock();
+            let mut waiting = self.state.lock();
             if !waiting.running {
                 waiting.running = true;
                 return Turn(self);
@@ -84,14 +84,9 @@ impl BuildQueue {
         Turn(self)
     }
 
-    fn lock(&self) -> MutexGuard<'_, Waiting> {
-        // The state stays consistent across a panic: every change is one step.
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Hands the turn to the next waiting build, or frees it.
     fn pass(&self) {
-        let mut waiting = self.lock();
+        let mut waiting = self.state.lock();
         while let Some(next) = waiting.next() {
             if next.send(()).is_ok() {
                 return;

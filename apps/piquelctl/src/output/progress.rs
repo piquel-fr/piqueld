@@ -1,9 +1,10 @@
 //! Task presentation only: callers supply domain-independent labels and outcomes.
-use super::{Escaped, Event, HumanWriter, SharedWriter, lock};
+use super::{Escaped, Event, HumanWriter, SharedWriter};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use parking_lot::Mutex;
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -125,7 +126,7 @@ impl Output {
         // Completion is a permanent ordinary line, not an indicatif zombie row.
         // This survives later task drops and progress redraws.
         let _ = self.suspend(|| -> io::Result<()> {
-            let mut writer = lock(&self.writer);
+            let mut writer = self.writer.lock();
             if matches!(self.backend, Backend::Json) {
                 Event::Progress {
                     task: label,
@@ -155,7 +156,7 @@ impl ProgressTask {
     /// Sets the task's current message; unchanged messages are skipped so plain
     /// mode prints only transitions. No-op after finish or when hidden.
     pub(crate) fn update(&self, message: &str) {
-        let mut task = lock(&self.state);
+        let mut task = self.state.lock();
         if task.finished || matches!(task.output.backend, Backend::Hidden) {
             return;
         }
@@ -176,7 +177,7 @@ impl ProgressTask {
     /// op-123: succeeded · deleted [4s]
     /// ```
     pub(crate) fn finish(&self, outcome: TaskOutcome, message: &str) {
-        let mut task = lock(&self.state);
+        let mut task = self.state.lock();
         if task.finished {
             return;
         }
@@ -195,7 +196,7 @@ impl ProgressTask {
     /// terminal between its own events without racing a tick.
     #[cfg(test)]
     pub(super) fn stop_ticking(&self) {
-        let task = lock(&self.state);
+        let task = self.state.lock();
         if let Some(bar) = &task.bar {
             bar.disable_steady_tick();
         }

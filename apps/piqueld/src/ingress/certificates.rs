@@ -221,13 +221,13 @@ pub(super) struct Certificates {
     directory: PathBuf,
     /// ACME account, loaded or registered on first use.
     account: tokio::sync::Mutex<Option<Account>>,
-    entries: std::sync::RwLock<BTreeMap<CertificateName, Entry>>,
+    entries: parking_lot::RwLock<BTreeMap<CertificateName, Entry>>,
     /// Challenge records whose deletion failed, by certificate. The next
     /// attempt for a name deletes its leftover before creating another, so
     /// failed cleanups never pile up records: too many TXT values at one name
     /// make the CA reject the validation. Kept apart from `entries` so that
     /// retiring a certificate does not forget them.
-    leftovers: std::sync::Mutex<BTreeMap<CertificateName, Challenge>>,
+    leftovers: parking_lot::Mutex<BTreeMap<CertificateName, Challenge>>,
     /// How long a TXT record may take to reach every authoritative nameserver;
     /// 10 minutes, because OVH propagation is slow.
     pub(super) propagation_timeout: Duration,
@@ -276,8 +276,8 @@ impl Certificates {
             acme,
             directory,
             account: tokio::sync::Mutex::new(None),
-            entries: std::sync::RwLock::new(entries),
-            leftovers: std::sync::Mutex::default(),
+            entries: parking_lot::RwLock::new(entries),
+            leftovers: parking_lot::Mutex::default(),
             propagation_timeout: Duration::from_mins(10),
             #[cfg(test)]
             acme_root: None,
@@ -287,7 +287,7 @@ impl Certificates {
     /// Certificate chains and keys for Caddy to load. Only certificates that
     /// a route needs are loaded.
     pub(super) fn loaded(&self) -> Vec<(String, String)> {
-        let entries = self.entries.read().expect("certificate state lock");
+        let entries = self.entries.read();
         entries
             .values()
             .filter(|entry| !entry.hostnames.is_empty())
@@ -299,7 +299,7 @@ impl Certificates {
     /// Why `hostname` has no certificate to serve: no provider zone owns it,
     /// or its issuance failed. `None` while one is stored or being issued.
     pub(super) fn problem(&self, hostname: &RouteHostname) -> Option<String> {
-        let entries = self.entries.read().expect("certificate state lock");
+        let entries = self.entries.read();
         entries
             .values()
             .find(|entry| entry.hostnames.contains(hostname))
@@ -329,7 +329,7 @@ impl Certificates {
                 .0
                 .insert(hostname.clone());
         }
-        let mut entries = self.entries.write().expect("certificate state lock");
+        let mut entries = self.entries.write();
         for entry in entries.values_mut() {
             entry.hostnames.clear();
             entry.unowned = None;
@@ -368,7 +368,7 @@ impl Certificates {
             Some(parent) => return CertificateName::Wildcard(parent),
             None => hostname.domain(),
         };
-        let entries = self.entries.read().expect("certificate state lock");
+        let entries = self.entries.read();
         hostname
             .parent()
             .map(CertificateName::Wildcard)
@@ -382,7 +382,7 @@ impl Certificates {
         name: &CertificateName,
         leftover: Option<Challenge>,
     ) -> Option<Challenge> {
-        let mut leftovers = self.leftovers.lock().expect("leftover lock");
+        let mut leftovers = self.leftovers.lock();
         match leftover {
             Some(leftover) => leftovers.insert(name.clone(), leftover),
             None => leftovers.remove(name),
@@ -398,7 +398,6 @@ impl Certificates {
     fn status(&self) -> Vec<CertificateStatus> {
         self.entries
             .read()
-            .expect("certificate state lock")
             .iter()
             .map(|(name, entry)| CertificateStatus {
                 name: name.to_string(),
@@ -490,10 +489,7 @@ impl Ingress {
                 "ingress_certificate_issue"
             };
             let result = self.issue_certificate(phase, &due, cancellation).await;
-            let mut entries = certificates
-                .entries
-                .write()
-                .expect("certificate state lock");
+            let mut entries = certificates.entries.write();
             let entry = entries.entry(due.name.clone()).or_default();
             match result {
                 Ok(stored) => {
@@ -523,19 +519,14 @@ impl Ingress {
             }
         }
         self.retire_certificates(now_ms).await;
-        let expiring = certificates
-            .entries
-            .read()
-            .expect("certificate state lock")
-            .values()
-            .any(|entry| {
-                !entry.hostnames.is_empty()
-                    && entry.problem().is_some()
-                    && entry
-                        .stored
-                        .as_ref()
-                        .is_some_and(|stored| stored.not_after_ms - now_ms < EXPIRY_WARNING_MS)
-            });
+        let expiring = certificates.entries.read().values().any(|entry| {
+            !entry.hostnames.is_empty()
+                && entry.problem().is_some()
+                && entry
+                    .stored
+                    .as_ref()
+                    .is_some_and(|stored| stored.not_after_ms - now_ms < EXPIRY_WARNING_MS)
+        });
         if let Err(error) = self
             .store
             .observe_condition(
@@ -556,11 +547,7 @@ impl Ingress {
     /// deletion is retried on the next pass.
     async fn retire_certificates(&self, now_ms: i64) {
         let expired: Vec<_> = {
-            let mut entries = self
-                .certificates
-                .entries
-                .write()
-                .expect("certificate state lock");
+            let mut entries = self.certificates.entries.write();
             entries.retain(|_, entry| !entry.hostnames.is_empty() || entry.stored.is_some());
             entries
                 .iter()
@@ -595,11 +582,7 @@ impl Ingress {
             .await;
             match result {
                 Ok(()) => {
-                    self.certificates
-                        .entries
-                        .write()
-                        .expect("certificate state lock")
-                        .remove(&name);
+                    self.certificates.entries.write().remove(&name);
                 }
                 Err(error) => {
                     tracing::warn!(certificate=%name, error=format!("{error:#}"), "expired certificate could not be deleted; will retry");
@@ -921,7 +904,7 @@ mod tests {
             not_before_ms: 0,
             not_after_ms: i64::MAX,
         };
-        certificates.entries.write().unwrap().insert(
+        certificates.entries.write().insert(
             CertificateName::Wildcard(host("piquel.fr")),
             Entry {
                 stored: Some(stored),

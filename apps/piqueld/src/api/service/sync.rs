@@ -50,28 +50,20 @@ impl Lister for Git {
 /// the worker, which they wake.
 #[derive(Default)]
 pub(crate) struct Hints {
-    applications: std::sync::Mutex<BTreeSet<ApplicationId>>,
+    applications: parking_lot::Mutex<BTreeSet<ApplicationId>>,
     wake: tokio::sync::Notify,
 }
 
 impl Hints {
     /// Asks the worker to list `application`'s repository soon.
     pub(crate) fn hint(&self, application: ApplicationId) {
-        self.applications
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(application);
+        self.applications.lock().insert(application);
         self.wake.notify_one();
     }
 
     /// Takes every waiting hint.
     fn take(&self) -> BTreeSet<ApplicationId> {
-        std::mem::take(
-            &mut *self
-                .applications
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.applications.lock())
     }
 }
 
@@ -289,10 +281,11 @@ pub(crate) mod tests {
     pub(crate) use super::Schedule;
     use super::*;
     use crate::api::PreviewMutation;
+    use parking_lot::Mutex;
     use piqueld_core::{
         EnvironmentId, EnvironmentName, TrackedBranch, manifest::parse_template_toml,
     };
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     pub(crate) const OLD: &str = "1111111111111111111111111111111111111111";
     pub(crate) const NEW: &str = "2222222222222222222222222222222222222222";
@@ -445,14 +438,14 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn listings(&self) -> usize {
-            self.listed.lock().unwrap().len()
+            self.listed.lock().len()
         }
     }
 
     impl Lister for Fake {
         fn list(&self, url: &str) -> impl Future<Output = anyhow::Result<Heads>> + Send {
-            self.listed.lock().unwrap().push(url.to_owned());
-            let heads = self.heads.lock().unwrap().clone();
+            self.listed.lock().push(url.to_owned());
+            let heads = self.heads.lock().clone();
             let url = url.to_owned();
             async move {
                 let heads = heads
@@ -574,7 +567,7 @@ pub(crate) mod tests {
             .await;
         assert_eq!(lister.listings(), 2);
 
-        *lister.heads.lock().unwrap() = Some(vec![("main", NEW)]);
+        *lister.heads.lock() = Some(vec![("main", NEW)]);
         fixture
             .service
             .sync_due(&lister, &mut schedule, now + Duration::from_secs(240))
