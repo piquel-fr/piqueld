@@ -1,15 +1,15 @@
 //! Saved configuration forms and service editors.
 use super::super::ui::{
-    Icon, Modal, Tone, add_button, copy_button, icon, notice, remove_button, text_field,
-    text_input, when,
+    Icon, Modal, Tone, add_button, copy_button, icon, notice, one_time_secret, remove_button,
+    text_field, text_input, when,
 };
 use super::super::{UserError, confirm};
 use super::{Draft, editor};
 use crate::editor::{Choice, FileForm, HealthKind, Section, ServiceForm, SourceKind};
 use leptos::prelude::*;
 use piqueld_client::{
-    ApplicationManifest, ApplicationView, Client, FileSource, GitRepository, Mount,
-    RepositoryManifest, Rollout, Service, Source, Typed, Volume,
+    ApplicationManifest, Client, FileSource, GitRepository, Mount, RepositoryManifest, Rollout,
+    Service, Source, Typed, Volume,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
     sync::RepositorySync,
 };
@@ -66,18 +66,13 @@ impl RepositoryDraft {
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn RepositorySettings() -> impl IntoView {
     let context = editor();
-    let draft = Draft::new(
-        "repository".into(),
-        RepositoryDraft::new(context.manifest().spec.manifest),
-    );
+    let draft = Draft::synced("repository", |manifest| {
+        RepositoryDraft::new(manifest.spec.manifest.clone())
+    });
     let form = draft.value;
     // Once connected, each environment follows its own branch, changed on its page.
     let connected = move || draft.baseline.with(|saved| saved.enabled);
-    let other_edits = move || {
-        context
-            .dirty
-            .with(|groups| groups.iter().any(|group| group != "repository"))
-    };
+    let other_edits = move || context.other_edits(Some("repository"));
     // How the saved connection syncs; `None` while disconnected.
     let saved_sync = move || {
         context.saved.with(|saved| {
@@ -103,9 +98,10 @@ pub(super) fn RepositorySettings() -> impl IntoView {
             )));
             return;
         }
+        let sent = value.clone();
         context.save(
             ApplicationEdit::Repository(value.enabled.then_some(value.manifest)),
-            Callback::new(move |_| draft.baseline.set(form.get_untracked())),
+            move |_| draft.baseline.set(sent),
         );
     };
     view! {
@@ -302,8 +298,9 @@ fn SyncCheck() -> impl IntoView {
 }
 
 /// What to configure in GitHub for an application syncing on push webhooks:
-/// the payload URL, and a secret generated on demand and shown only once.
-/// Rotating confirms first, since the previous secret stops verifying at once.
+/// the payload URL, and a secret generated on demand and shown only once,
+/// on the Source tab, until dismissed or the tab is left. Rotating confirms first, since
+/// the previous secret stops verifying at once, and is never retried.
 #[component]
 fn WebhookSettings() -> impl IntoView {
     let context = editor();
@@ -313,6 +310,11 @@ fn WebhookSettings() -> impl IntoView {
     });
     // The secret just generated: never retrievable again.
     let generated = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        if context.tab.get() != "Source" {
+            generated.set(None);
+        }
+    });
     let created = move || {
         data.get()
             .and_then(Result::ok)
@@ -327,11 +329,8 @@ fn WebhookSettings() -> impl IntoView {
             return;
         }
         let application = context.id();
-        context.mutate(
-            move |client| {
-                let application = application.clone();
-                async move { client.generate_webhook_secret(&application).await }
-            },
+        context.mutate_once(
+            async move |client| client.generate_webhook_secret(&application).await,
             move |secret| {
                 generated.set(Some(secret.secret));
                 data.refetch();
@@ -420,20 +419,16 @@ fn WebhookSettings() -> impl IntoView {
                             .into_any()
                     }
                 }}
-                {move || {
-                    generated
-                        .get()
-                        .map(|secret| {
-                            notice(
-                                Tone::Ok,
-                                view! {
-                                    "Copy this secret into GitHub now; it will not be shown again."
-                                    <pre class="secret-box">{secret.clone()}</pre>
-                                    {copy_button("Copy secret", secret)}
-                                },
-                            )
-                        })
-                }}
+                // A secret arriving after the tab was left waits for it.
+                <Show when={move || context.tab.get() == "Source"}>
+                    <Show when={move || generated.with(Option::is_some)}>
+                        {notice(
+                            Tone::Ok,
+                            "Secret generated. Copy it into GitHub now; it will not be shown again.",
+                        )}
+                    </Show>
+                    {one_time_secret("Copy secret", generated)}
+                </Show>
             </div>
         </section>
     }
@@ -444,16 +439,13 @@ fn WebhookSettings() -> impl IntoView {
 pub(super) fn MetadataSettings() -> impl IntoView {
     let context = editor();
     let editing = RwSignal::new(false);
-    let draft = Draft::new("name".into(), context.name());
+    let draft = Draft::synced("name", |manifest| manifest.metadata.name.clone());
     let name = draft.value;
     let save = move || {
-        context.save(
-            ApplicationEdit::Name(name.get_untracked()),
-            Callback::new(move |app: ApplicationView| {
-                draft.reset(app.application.metadata().name.to_string());
-                editing.set(false);
-            }),
-        );
+        context.save(ApplicationEdit::Name(name.get_untracked()), move |app| {
+            draft.reset(app.application.metadata().name.to_string());
+            editing.set(false);
+        });
     };
     view! {
         <h1 hidden={move || editing.get()}>{move || context.name()}</h1>
@@ -510,7 +502,7 @@ fn volume_names(manifest: &ApplicationManifest) -> Vec<String> {
 #[component]
 pub(super) fn VolumeSettings() -> impl IntoView {
     let context = editor();
-    let draft = Draft::new("volumes".into(), volume_names(&context.manifest()));
+    let draft = Draft::synced("volumes", volume_names);
     let volumes = draft.value;
     let save = move || {
         let changed = volumes
@@ -572,17 +564,29 @@ pub(super) fn VolumeSettings() -> impl IntoView {
 #[component]
 pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
     let context = editor();
-    let service = context
+    // Every section's draft keeps the other sections as shown, so it
+    // compares and follows only its own fields. A service removed meanwhile
+    // keeps the form it was shown with.
+    let shown = context
         .manifest()
         .spec
         .services
-        .into_iter()
+        .iter()
         .find(|s| s.name == name)
+        .map(ServiceForm::from)
         .expect("listed service");
-    let draft = Draft::new(
-        format!("{name}:{}", section.title()),
-        ServiceForm::from(&service),
-    );
+    let read = name.clone();
+    let draft = Draft::synced(format!("{name}:{}", section.title()), move |manifest| {
+        manifest
+            .spec
+            .services
+            .iter()
+            .find(|s| s.name == read)
+            .map_or_else(
+                || shown.clone(),
+                |service| shown.with_section(section, &ServiceForm::from(service)),
+            )
+    });
     let form = draft.value;
     let name = StoredValue::new(name);
     let save = move || {
@@ -614,10 +618,9 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             Section::Rollout => ServiceEdit::Rollout(service.rollout.clone()),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
-        context.save(
-            ApplicationEdit::Service { name, edit },
-            Callback::new(move |_| draft.baseline.set(sent.clone())),
-        );
+        context.save(ApplicationEdit::Service { name, edit }, move |_| {
+            draft.baseline.set(sent);
+        });
     };
     view! {
         <section class="card">
@@ -1219,13 +1222,10 @@ pub(super) fn NewService() -> impl IntoView {
             depends_on: Vec::new(),
             rollout: Rollout::default(),
         };
-        context.save(
-            ApplicationEdit::AddService(Box::new(service)),
-            Callback::new(move |_| {
-                draft.discard();
-                opened.set(false);
-            }),
-        );
+        context.save(ApplicationEdit::AddService(Box::new(service)), move |_| {
+            draft.discard();
+            opened.set(false);
+        });
     };
     view! {
         <button

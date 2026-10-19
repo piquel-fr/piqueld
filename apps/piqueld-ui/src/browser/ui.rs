@@ -120,8 +120,13 @@ pub(super) fn icon(icon: Icon) -> AnyView {
 }
 
 /// A small button copying `text` to the clipboard, labelled `label` for
-/// assistive technology, that says "Copied" once it did.
+/// assistive technology, that says "Copied" once it did. Browsers expose no
+/// clipboard on plain HTTP origins, so there it renders nothing and the text
+/// is only selectable.
 pub(super) fn copy_button(label: &'static str, text: String) -> AnyView {
+    if window().navigator().clipboard().is_undefined() {
+        return ().into_any();
+    }
     let copied = RwSignal::new(false);
     let copy = move |_| {
         let text = text.clone();
@@ -139,6 +144,34 @@ pub(super) fn copy_button(label: &'static str, text: String) -> AnyView {
         </button>
     }
     .into_any()
+}
+
+/// A one-time secret to copy, kept outside live regions so assistive
+/// technology announces only the notice about it, never the secret itself.
+/// **Done** clears `secret`, removing it from the page.
+pub(super) fn one_time_secret(
+    label: &'static str,
+    secret: RwSignal<Option<String>>,
+) -> impl IntoView {
+    move || {
+        secret.get().map(|value| {
+            view! {
+                <div class="stack-sm">
+                    <pre class="secret-box">{value.clone()}</pre>
+                    <div class="btn-group">
+                        {copy_button(label, value)}
+                        <button
+                            type="button"
+                            class="btn btn-sm btn-ghost"
+                            on:click={move |_| secret.set(None)}
+                        >
+                            "Done"
+                        </button>
+                    </div>
+                </div>
+            }
+        })
+    }
 }
 
 /// Semantic colour used by badges, notices, and status cards.

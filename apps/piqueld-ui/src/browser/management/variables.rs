@@ -271,7 +271,20 @@ pub(super) fn EnvironmentVariables() -> impl IntoView {
             <header>
                 <div>
                     <h3>"Variables"</h3>
-                    <p>"Values this environment's next deployment renders its references with."</p>
+                    <p>
+                        {move || {
+                            if context
+                                .selected_environment()
+                                .is_some_and(|environment| {
+                                    environment.source.promoted_from().is_some()
+                                })
+                            {
+                                "Values recorded in the release promoted into this environment. Saved variables apply once its source records a new release and it is promoted."
+                            } else {
+                                "Values this environment's next deployment renders its references with."
+                            }
+                        }}
+                    </p>
                 </div>
             </header>
             {move || {

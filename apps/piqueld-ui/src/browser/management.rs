@@ -17,8 +17,8 @@ use super::format::timestamp;
 use super::runtime::RuntimeOverview;
 use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
 use super::{
-    ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
-    environment_href, reload,
+    Alive, ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
+    environment_href,
 };
 use crate::state::ApplicationHealth;
 use piqueld_client::sync::short_commit;
@@ -327,7 +327,65 @@ impl EditorContext {
     /// Whether deploy/delete actions are disallowed: also blocked by unsaved edits
     /// or a pending deletion.
     fn action_blocked(self) -> bool {
-        self.blocked() || !self.dirty.get().is_empty() || self.saved.get().delete_intent
+        self.change_blocked(None)
+    }
+
+    /// Whether a change saving the `own` form's edits is disallowed: like
+    /// `action_blocked`, but the form's own unsaved edits are what it saves.
+    fn change_blocked(self, own: Option<&str>) -> bool {
+        self.blocked() || self.other_edits(own) || self.saved.with(|saved| saved.delete_intent)
+    }
+
+    /// Whether forms other than `own` have unsaved edits.
+    fn other_edits(self, own: Option<&str>) -> bool {
+        self.dirty
+            .with(|groups| groups.iter().any(|group| Some(group.as_str()) != own))
+    }
+
+    /// Keeps the form `key` in the dirty set while `changed` holds, until
+    /// the owning view unmounts.
+    fn guard(self, key: String, changed: impl Fn() -> bool + 'static) {
+        let cleanup = key.clone();
+        Effect::new(move |_| {
+            let dirty = changed();
+            self.dirty.update(|groups| {
+                if dirty {
+                    groups.insert(key.clone());
+                } else {
+                    groups.remove(&key);
+                }
+            });
+        });
+        on_cleanup(move || {
+            self.dirty.update(|groups| {
+                groups.remove(&cleanup);
+            });
+        });
+    }
+
+    /// Whether forms have edits or a request is pending or has an unknown
+    /// outcome, so the saved view must not be replaced under them.
+    fn editing(self) -> bool {
+        !self.dirty.get_untracked().is_empty()
+            || self.busy.get_untracked()
+            || self.uncertain.get_untracked()
+    }
+
+    /// Whether a repository-backed application at revision `generation`,
+    /// last updated at `updated_at_ms`, holds a manifest fetched after the
+    /// saved view's: same revision, updated later.
+    fn fetched_since(self, generation: u64, updated_at_ms: i64) -> bool {
+        self.saved.with_untracked(|saved| {
+            saved.application.spec().manifest.is_some()
+                && generation == saved.generation
+                && updated_at_ms > saved.updated_at_ms
+        })
+    }
+
+    /// Whether the editor is still mounted. Reading its disposed handles
+    /// panics, so async work checks this after every await.
+    fn mounted(self) -> bool {
+        !self.saved.is_disposed()
     }
 
     /// Whether this is an environment page rather than the application page.
@@ -357,7 +415,7 @@ impl EditorContext {
     /// Applies `edit` to the saved manifest, validates it locally, then sends it
     /// guarded by the saved generation (see `mutate`). On success the saved view is
     /// updated locally, `on_saved` runs, and the dashboard refreshes.
-    fn save(self, edit: ApplicationEdit, on_saved: Callback<ApplicationView>) {
+    fn save(self, edit: ApplicationEdit, on_saved: impl FnOnce(ApplicationView) + 'static) {
         if self.blocked() {
             return;
         }
@@ -394,7 +452,7 @@ impl EditorContext {
                     ..saved
                 };
                 self.saved.set(updated.clone());
-                on_saved.run(updated);
+                on_saved(updated);
                 self.notice.set("Saved.".into());
                 self.refresh_dashboard();
             },
@@ -414,15 +472,33 @@ impl EditorContext {
         }
     }
 
-    /// Runs one mutation while the editor is busy: `send` gets a client with a
-    /// fresh request identity, then `done` runs with the response, or the
-    /// failure is shown.
+    /// Sends `request` while the editor is busy, then runs `done` with its
+    /// result, unless the editor unmounted meanwhile.
+    fn run<T: 'static>(
+        self,
+        request: impl Future<Output = Result<T, ClientError>> + 'static,
+        done: impl FnOnce(Result<T, ClientError>) + 'static,
+    ) {
+        self.set_error(None);
+        self.busy.set(true);
+        spawn_local(async move {
+            let result = request.await;
+            if !self.mounted() {
+                return;
+            }
+            done(result);
+            self.busy.set(false);
+        });
+    }
+
+    /// Runs one mutation (see `run`): `send` gets a client with a fresh
+    /// request identity, then `done` runs with the response, or the failure
+    /// is shown.
     fn run_mutation<T: 'static>(
         self,
         send: impl AsyncFnOnce(&Mutation) -> Result<T, ClientError> + 'static,
         done: impl FnOnce(T) + 'static,
     ) {
-        self.set_error(None);
         let mutation = match Mutation::new() {
             Ok(mutation) => mutation,
             Err(error) => {
@@ -430,14 +506,36 @@ impl EditorContext {
                 return;
             }
         };
-        self.busy.set(true);
-        spawn_local(async move {
-            match send(&mutation).await {
+        self.run(
+            async move { send(&mutation).await },
+            move |result| match result {
                 Ok(response) => done(response),
                 Err(error) => self.failure(&error),
-            }
-            self.busy.set(false);
-        });
+            },
+        );
+    }
+
+    /// Reloads the saved configuration in place. Forms without edits show
+    /// it; edited ones keep their edits, now compared against it (see
+    /// `Draft::synced`). Clears an unknown request outcome and refreshes
+    /// deployment history.
+    fn reload(self) {
+        if self.busy.get_untracked() {
+            return;
+        }
+        let id = self.id();
+        self.run(
+            async move { Client::browser().application(&id).await },
+            move |result| match result {
+                Ok(view) => {
+                    self.saved.set(view);
+                    self.uncertain.set(false);
+                    self.notice.set("Reloaded the saved configuration.".into());
+                    self.refresh_dashboard();
+                }
+                Err(error) => self.set_error(Some(error.user_message())),
+            },
+        );
     }
 
     /// Sends one mutation (see `run_mutation`), retrying once on transport
@@ -448,6 +546,20 @@ impl EditorContext {
         done: impl FnOnce(T) + 'static,
     ) {
         self.run_mutation(async move |mutation| mutation.send(request).await, done);
+    }
+
+    /// Sends one mutation (see `run_mutation`) without retrying it:
+    /// replaying a deletion or a secret rotation whose outcome is unknown
+    /// could repeat it, or fail once the first attempt completed.
+    fn mutate_once<T: 'static>(
+        self,
+        request: impl AsyncFnOnce(Client) -> Result<T, ClientError> + 'static,
+        done: impl FnOnce(T) + 'static,
+    ) {
+        self.run_mutation(
+            async move |mutation| request(mutation.client().clone()).await,
+            done,
+        );
     }
 
     /// Deploys the saved revision to `environment`, then runs `accepted`.
@@ -521,8 +633,8 @@ impl Mutation {
 }
 
 /// One settings group's form: its `value` and the saved `baseline` it
-/// started from. While they differ the group is in the editor's dirty set,
-/// which blocks deploys and guards navigation.
+/// compares against. While they differ the group is in the editor's dirty
+/// set, which blocks deploys and guards navigation.
 struct Draft<T: Send + Sync + 'static> {
     value: RwSignal<T>,
     baseline: RwSignal<T>,
@@ -544,38 +656,28 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
             value: RwSignal::new(initial.clone()),
             baseline: RwSignal::new(initial),
         };
-        let context = editor();
-        let cleanup = key.clone();
-        Effect::new(move |_| {
-            let dirty = draft.changed();
-            context.dirty.update(|groups| {
-                if dirty {
-                    groups.insert(key.clone());
-                } else {
-                    groups.remove(&key);
-                }
-            });
-        });
-        on_cleanup(move || {
-            context.dirty.update(|groups| {
-                groups.remove(&cleanup);
-            });
-        });
+        editor().guard(key, move || draft.changed());
         draft
     }
 
-    /// Starts editing what `read` reads from the saved manifest. Until it is
-    /// edited, the draft follows later saves and fetches.
-    fn synced(key: &str, read: fn(&ApplicationManifest) -> T) -> Self {
+    /// Starts editing what `read` reads from the saved manifest. The
+    /// baseline follows later saves, fetches, and reloads, and so does the
+    /// form until it is edited: edits are kept, and discarding them returns
+    /// to the latest saved value.
+    fn synced(key: impl Into<String>, read: impl Fn(&ApplicationManifest) -> T + 'static) -> Self {
         let context = editor();
         let draft = Self::new(key.into(), read(&context.manifest()));
-        Effect::new(move |_| {
-            let saved = read(&context.manifest());
-            if draft.value.get_untracked() == draft.baseline.get_untracked() {
-                draft.reset(saved);
-            }
-        });
+        Effect::new(move |_| draft.follow(read(&context.manifest())));
         draft
+    }
+
+    /// Moves the baseline to `saved`, and the form too unless it is edited.
+    fn follow(self, saved: T) {
+        if self.value.get_untracked() == self.baseline.get_untracked() {
+            self.reset(saved);
+        } else {
+            self.baseline.set(saved);
+        }
     }
 
     /// Whether the form differs from its baseline.
@@ -598,12 +700,9 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
     /// Saves `edit` as the group's change, then restarts the form at what
     /// `read` reads from the saved manifest.
     fn save(self, edit: ApplicationEdit, read: fn(&ApplicationManifest) -> T) {
-        editor().save(
-            edit,
-            Callback::new(move |saved: ApplicationView| {
-                self.reset(read(&saved.application.to_manifest()));
-            }),
-        );
+        editor().save(edit, move |saved| {
+            self.reset(read(&saved.application.to_manifest()));
+        });
     }
 
     /// Save and discard buttons, shown only while the form has edits.
@@ -681,6 +780,7 @@ pub(super) fn CreateApplication() -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let navigate = use_navigate();
     let refresh = dashboard_context().refresh;
+    let alive = Alive::new();
     let create = move || {
         if busy.get_untracked() {
             return;
@@ -704,7 +804,7 @@ pub(super) fn CreateApplication() -> impl IntoView {
                 return;
             }
         };
-        let navigate = navigate.clone();
+        let (navigate, alive) = (navigate.clone(), alive.clone());
         busy.set(true);
         error.set(None);
         spawn_local(async move {
@@ -715,6 +815,9 @@ pub(super) fn CreateApplication() -> impl IntoView {
                     async move { client.create_application(&name, false).await }
                 })
                 .await;
+            if !alive.get() {
+                return;
+            }
             match result {
                 Ok(saved) => {
                     refresh.run(());
@@ -870,20 +973,18 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
             }
             // Fetches replace a repository-backed application's saved manifest
             // without advancing its revision; reload it unless it is being
-            // edited. Newer revisions show the conflict notice instead.
-            let fetched = context.saved.with_untracked(|saved| {
-                saved.application.spec().manifest.is_some()
-                    && application.generation == saved.generation
-                    && application.updated_at_ms > saved.updated_at_ms
-            });
-            let editing = !context.dirty.get_untracked().is_empty()
-                || context.busy.get_untracked()
-                || context.uncertain.get_untracked();
-            if fetched && !editing {
+            // edited. Newer revisions show the conflict notice instead. A
+            // save may finish while the reload is in flight, so its response
+            // is checked again on arrival.
+            if context.fetched_since(application.generation, application.updated_at_ms)
+                && !context.editing()
+            {
                 let id = application.id.to_string();
                 spawn_local(async move {
                     if let Ok(view) = Client::browser().application(&id).await
-                        && context.dirty.get_untracked().is_empty()
+                        && context.mounted()
+                        && context.fetched_since(view.generation, view.updated_at_ms)
+                        && !context.editing()
                     {
                         context.saved.set(view);
                     }
@@ -1152,12 +1253,10 @@ fn DeleteApplication() -> impl IntoView {
         }
         let saved = context.saved.get_untracked();
         let navigate = navigate.clone();
-        // Unlike other mutations, a deletion is not retried.
-        context.run_mutation(
-            async move |mutation| {
+        context.mutate_once(
+            async move |client| {
                 let confirmed = environments.iter().map(String::as_str).collect::<Vec<_>>();
-                mutation
-                    .client()
+                client
                     .delete_application_with_preconditions(
                         saved.application.id().as_str(),
                         Some(saved.generation),
@@ -1194,14 +1293,27 @@ fn DeleteApplication() -> impl IntoView {
     }
 }
 
-/// Save status, error with reload button and diagnostic link, and a conflict
-/// notice when the polled listing shows a newer generation than the editor's.
+/// Save status, error with diagnostic link, and a conflict notice when the
+/// polled listing shows a newer generation than the editor's. Both offer to
+/// reload the saved configuration in place, keeping form edits.
 #[component]
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
     let signals = context.signals();
     let show_status = move || {
         context.busy.get() || (context.dirty.get().is_empty() && !context.notice.get().is_empty())
+    };
+    let reload_button = move || {
+        view! {
+            <button
+                type="button"
+                class="btn btn-sm"
+                disabled={move || context.busy.get()}
+                on:click={move |_| context.reload()}
+            >
+                "Reload saved configuration"
+            </button>
+        }
     };
     let conflict = move || {
         signals.applications.with(|rows| {
@@ -1228,16 +1340,10 @@ fn EditorFeedback() -> impl IntoView {
                             view! {
                                 <span>{e}</span>
                                 <span>
-                                    "Your form edits have been kept. Reload to review the latest saved configuration."
+                                    "Your form edits have been kept. Reload to review the latest saved configuration; edits stay until you save or discard them."
                                 </span>
                                 <div class="btn-group">
-                                    <button
-                                        type="button"
-                                        class="btn btn-sm"
-                                        on:click={move |_| reload()}
-                                    >
-                                        "Reload saved configuration"
-                                    </button>
+                                    {reload_button()}
                                     {context
                                         .diagnostic_id
                                         .get()
@@ -1261,7 +1367,12 @@ fn EditorFeedback() -> impl IntoView {
                     .then(|| {
                         notice(
                             Tone::Warn,
-                            "Configuration changed elsewhere. Your edits are preserved; reload to review the latest version.",
+                            view! {
+                                <span>
+                                    "Configuration changed elsewhere. Your edits are preserved; reload to review the latest version."
+                                </span>
+                                <div class="btn-group">{reload_button()}</div>
+                            },
                         )
                     })
             }}
@@ -1274,54 +1385,37 @@ fn EditorFeedback() -> impl IntoView {
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
-    // Forms keep drafts of the saved manifest they were built from. While
-    // managed they are read-only, so rebuild them when a fetch changes it.
-    let fetched = Memo::new(move |_| {
-        context.saved.with(|saved| {
-            saved
-                .application
-                .spec()
-                .manifest
-                .is_some()
-                .then(|| saved.spec_hash.clone())
-        })
-    });
-    // Read, not only tracked: memos are lazy, and one never read never
-    // subscribes to `saved`.
-    let forms = move || {
-        fetched.with(|_| ());
-        view! {
-            <div hidden={move || context.tab.get() != "Services"}>
-                <div class="section-header">
-                    <div>
-                        <h2>"Services"</h2>
-                        <p>
-                            "Each service runs one image as a replicated Swarm service on the application network."
-                        </p>
-                    </div>
-                    <NewService />
+    let forms = view! {
+        <div hidden={move || context.tab.get() != "Services"}>
+            <div class="section-header">
+                <div>
+                    <h2>"Services"</h2>
+                    <p>
+                        "Each service runs one image as a replicated Swarm service on the application network."
+                    </p>
                 </div>
-                <services::ServiceList />
+                <NewService />
             </div>
-            <div hidden={move || context.tab.get() != "Variables"}>
-                <variables::VariableSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Routes"}>
-                <routes::RouteSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Volumes"}>
-                <VolumeSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Jobs"}>
-                <jobs::JobSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Links"}>
-                <links::LinkSettings />
-            </div>
-            <div hidden={move || context.tab.get() != "Secrets"}>
-                <SecretFileSettings />
-            </div>
-        }
+            <services::ServiceList />
+        </div>
+        <div hidden={move || context.tab.get() != "Variables"}>
+            <variables::VariableSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Routes"}>
+            <routes::RouteSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Volumes"}>
+            <VolumeSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Jobs"}>
+            <jobs::JobSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Links"}>
+            <links::LinkSettings />
+        </div>
+        <div hidden={move || context.tab.get() != "Secrets"}>
+            <SecretFileSettings />
+        </div>
     };
     view! {
         <div hidden={move || {

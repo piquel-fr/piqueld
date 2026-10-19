@@ -49,6 +49,10 @@ test('invitations carry grants and limit what the new account may see and change
   const secret = page.locator('.secret-box');
   await expect(secret).toContainText('#invite=');
   const link = (await secret.innerText()).trim();
+  // Only the notice about the link is announced, and Done removes the link.
+  await expect(page.locator('[role=status]', { hasText: link })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(secret).toHaveCount(0);
   const bob = await register(page, link, 'bob');
   expect((await api(page, 'register/start', {
     invitation: link.split('#invite=')[1], user_id: null,
@@ -67,6 +71,16 @@ test('invitations carry grants and limit what the new account may see and change
   expect(denied.status).toBe(403);
   expect(denied.body.code).toBe('permission_denied');
   expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).toEqual([bob.id]);
+});
+
+test('copy buttons are hidden without a clipboard API, as on plain HTTP origins', async ({ page, account }) => {
+  void account;
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'clipboard', { get: () => undefined }));
+  await page.goto('/dashboard/accounts');
+  await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Create invitation' }).getByRole('button', { name: 'Create link', exact: true }).click();
+  await expect(page.locator('.secret-box')).toContainText('#invite=');
+  await expect(page.getByRole('button', { name: 'Copy to clipboard', exact: true })).toHaveCount(0);
 });
 
 test('enrollment links add a passkey only to their account', async ({ page, account, browser }) => {

@@ -40,11 +40,8 @@ impl EditorContext {
             return;
         }
         let id = preview.id.to_string();
-        self.mutate(
-            move |client| {
-                let id = id.clone();
-                async move { client.delete_preview(&id).await }
-            },
+        self.mutate_once(
+            async move |client| client.delete_preview(&id).await,
             move |_| {
                 self.notice.set(
                     "Preview deletion accepted. Its volumes and their data will be removed.".into(),
@@ -197,11 +194,8 @@ pub(super) fn PreviewList() -> impl IntoView {
             previews: previews.into_iter().map(|preview| preview.id).collect(),
         };
         let application = context.id();
-        context.mutate(
-            move |client| {
-                let (application, request) = (application.clone(), request.clone());
-                async move { client.prune_previews(&application, &request).await }
-            },
+        context.mutate_once(
+            async move |client| client.prune_previews(&application, &request).await,
             move |deleted| {
                 context.notice.set(format!(
                     "Deletion of {} previews accepted. Their volumes and their data will be removed.",
@@ -260,7 +254,7 @@ pub(super) fn PreviewList() -> impl IntoView {
                                     view! {
                                         <PreviewRow
                                             view={view}
-                                            deleted={Callback::new(move |()| data.refetch())}
+                                            list={data}
                                         />
                                     }
                                 })
@@ -348,10 +342,13 @@ fn NewPreview() -> impl IntoView {
 }
 
 /// One preview's row, opening its page, with its slug, slot, branch state,
-/// sync state with the head it last synced, and status. Delete runs `deleted`
+/// sync state with the head it last synced, and status. Delete reloads `list`
 /// once accepted.
 #[component]
-fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
+fn PreviewRow(
+    view: PreviewView,
+    list: LocalResource<Result<Vec<PreviewView>, String>>,
+) -> impl IntoView {
     let context = editor();
     let preview = StoredValue::new(view.preview.clone());
     let name = view.preview.name.to_string();
@@ -395,7 +392,7 @@ fn PreviewRow(view: PreviewView, deleted: Callback<()>) -> impl IntoView {
                 on:click={move |_| {
                     preview
                         .with_value(|preview| {
-                            context.delete_preview(preview, move || deleted.run(()));
+                            context.delete_preview(preview, move || list.refetch());
                         });
                 }}
             >

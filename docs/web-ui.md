@@ -18,7 +18,8 @@ Retries use the captured deployment, not subsequent configuration edits.
 The piqueld logo links to the home page. The sidebar groups Overview,
 Applications, and Builds; the Observe section (Events, Errors, Analytics,
 Notifications); and the System section (Daemon status, Host settings, Accounts,
-Audit). Notifications, Daemon status and Host settings need `system:read`.
+Audit). Notifications, Daemon status and Host settings need `system:read`;
+retrying a failed notification delivery needs `system:operate`.
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its environment's history.
@@ -202,7 +203,10 @@ Forms save typed fields or settings sections through individual endpoints, witho
 resubmitting the application manifest. Related fields within a form save atomically.
 All form saves update configuration only; Deploy remains explicit.
 Concurrent edits are rejected using configuration revisions; failed saves retain
-local form values. Navigation warns about unsaved edits. Host settings are
+local form values. **Reload saved configuration**, offered after a failure or a
+change made elsewhere, reloads it in place: forms without edits show the latest
+version, and edited ones keep their edits until saved or discarded, discarding
+back to the latest version. Navigation warns about unsaved edits. Host settings are
 read-only. There is no raw manifest editor or deployment restoration workflow.
 
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
@@ -223,7 +227,9 @@ hides actions that need an account: adding passkeys, creating tokens,
 invitation and enrollment links, and CLI login approval. Accounts with
 `accounts:manage` see live host operator sessions on the Accounts page; since
 those sessions act with `admin` on everything, only accounts holding that can
-revoke them.
+revoke them. When the session expires or is revoked, the dashboard asks to sign
+in again over the current page, keeping unsaved edits; signing in as another
+account or the host operator reloads the dashboard without them.
 The Audit page shows the [audit trail](observability.md#audit-trail), naming the
 application or environment each request addressed, and each
 session or token links to its own activity. New tokens can be bound to a
@@ -373,7 +379,12 @@ releases promoted from it. The card says what the environment does now and what 
 selected choice would do; **Save source** applies it, redeploying nothing. A promoted
 environment's card links to its source.
 **New environment** can create a promoted environment directly. Its Variables
-card reads the manifest of the release last promoted into it.
+card reads the manifest of the release last promoted into it. Its Visibility card
+edits the saved manifest, like every environment's; since a promoted environment
+uses the visibility and variables recorded in the release it receives, a saved
+change applies once its source records a new release and it is promoted. Unsaved
+changes in the Source, Visibility, and rename forms block deployment and warn
+before navigation, like other forms.
 
 When the manifest [declares environments](application-manifest.md#declared-environments),
 it owns their existence, so **Rename environment** and **Delete environment** are disabled for them, and,
@@ -396,8 +407,12 @@ last check of the repository's branches and why it failed. With webhooks, a
 **GitHub webhook** card shows the payload URL to configure (or that the daemon
 must set `ingress.webhook_hostname`), the content type and event, and whether a
 secret exists. **Generate secret** creates one and shows it once, with a
-**Copy** button, as the payload URL has; **Rotate secret** confirms first, since the previous secret stops
-verifying at once. On an environment's Overview, the **Source** card says
+**Copy** button, as the payload URL has (browsers offer no clipboard on plain
+HTTP origins, so there the text is only selectable), until **Done** or leaving
+the Source tab;
+**Rotate secret** confirms first, since the previous secret stops verifying at
+once. Neither is retried automatically when its outcome is unknown, as a retry
+would rotate the secret again. On an environment's Overview, the **Source** card says
 whether pushes deploy it (following, off, pinned, not opted in, or waiting
 for a deployment, with the reason) and the branch head of its last
 deployment ("Not pushed" when a local snapshot was deployed before its branch

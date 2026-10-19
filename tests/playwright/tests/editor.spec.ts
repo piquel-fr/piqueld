@@ -1,4 +1,4 @@
-import { test, expect, auth, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, auth, call, proof, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** Save buttons exist for every settings group; only the edited group's is shown. */
@@ -65,6 +65,17 @@ test('adds a service and edits it on the service page', async ({ page, account }
   await page.getByLabel('Key', { exact: true }).fill('PORT');
   await page.getByLabel('Value', { exact: true }).fill('8080');
   await save(page);
+  // A section's draft compares only its own fields, also after another section saved.
+  const sections = page.getByRole('navigation', { name: 'Service sections' });
+  await sections.getByRole('button', { name: 'Source & scaling', exact: true }).click();
+  await page.getByLabel('Replicas', { exact: true }).fill('4');
+  await sections.getByRole('button', { name: 'Environment', exact: true }).click();
+  await page.getByLabel('Value', { exact: true }).fill('9090');
+  await visible(page, 'Save changes').click();
+  await expect(visible(page, 'Save changes')).toHaveCount(0);
+  await sections.getByRole('button', { name: 'Source & scaling', exact: true }).click();
+  await page.getByLabel('Replicas', { exact: true }).fill('3');
+  await expect(visible(page, 'Save changes')).toHaveCount(0);
   await page.locator('.breadcrumb').getByRole('link', { name: 'browser-test', exact: true }).click();
   await expect(page.locator('a.list-row', { hasText: 'web' })).toContainText('3 replicas');
 });
@@ -211,6 +222,22 @@ test('unsaved edits block deployment and navigation until discarded', async ({ p
   await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
 });
 
+test('reloading after a change made elsewhere keeps unsaved edits and shows the change', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  const id = page.url().split('/').pop()!;
+  await applicationTab(page, 'Volumes').click();
+  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
+  await page.getByLabel('Volume name', { exact: true }).fill('kept');
+  await call(page, 'PUT', `applications/${id}/name?force=true`, { value: 'renamed-elsewhere' });
+  const reload = page.getByRole('button', { name: 'Reload saved configuration', exact: true });
+  await expect(reload).toBeVisible({ timeout: 20_000 });
+  await reload.click();
+  await expect(title(page)).toHaveText('renamed-elsewhere');
+  await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('kept');
+  await save(page);
+});
+
 test('reauthenticates after revocation without losing an unsaved editor draft', async ({ page, account }) => {
   await createApplication(page);
   await page.getByRole('button', { name: 'Rename application', exact: true }).click();
@@ -224,4 +251,23 @@ test('reauthenticates after revocation without losing an unsaved editor draft', 
   await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('preserved-draft');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(title(page)).toHaveText('preserved-draft');
+});
+
+test('signing in as another account after the session expired drops the previous drafts', async ({ page, account }) => {
+  await createApplication(page);
+  await page.getByRole('button', { name: 'Rename application', exact: true }).click();
+  await page.getByLabel('Application name', { exact: true }).fill('alice-draft');
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'admin' }] })).invitation_url;
+  await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible({ timeout: 20_000 });
+  // Bob registers and signs in elsewhere in this browser, then continues here.
+  const ceremony = await auth<Ceremony>(page, 'register/start', {
+    invitation: link.split('#invite=')[1], user_id: null, username: 'bob', display_name: '', passkey_name: 'Test',
+  });
+  await auth(page, 'register/finish', await proof(page, ceremony, true));
+  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(title(page)).toHaveText('browser-test');
+  await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('browser-test');
 });

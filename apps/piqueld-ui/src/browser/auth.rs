@@ -1,7 +1,9 @@
 //! Browser login gate and account management. The small JavaScript bridge only
 //! translates `WebAuthn` binary fields; all network/state handling stays in Rust.
 use super::access::{GrantEditor, can, summary};
-use super::ui::{Icon, Modal, PageHeader, Tone, badge, empty, icon, notice, text_field, when};
+use super::ui::{
+    Icon, Modal, PageHeader, Tone, badge, empty, icon, notice, one_time_secret, text_field, when,
+};
 use super::{ClientErrorExt, confirm, reload};
 use leptos::ev;
 use leptos::prelude::*;
@@ -138,9 +140,9 @@ impl Invite {
     }
 }
 
-/// What a successful action shows: a message, and a one-time secret to copy
-/// (both empty to show nothing).
-type Shown = (String, String);
+/// What a successful action shows: a message (empty to show none), and a
+/// one-time secret to copy.
+type Shown = (String, Option<String>);
 
 /// Outcome of the last asynchronous action: one busy flag, one error, one
 /// success message, and an optional one-time secret to copy.
@@ -149,7 +151,7 @@ struct Feedback {
     busy: RwSignal<bool>,
     error: RwSignal<String>,
     message: RwSignal<String>,
-    secret: RwSignal<String>,
+    secret: RwSignal<Option<String>>,
     revision: RwSignal<u32>,
 }
 
@@ -160,7 +162,7 @@ impl Feedback {
             busy: RwSignal::new(false),
             error: RwSignal::new(String::new()),
             message: RwSignal::new(String::new()),
-            secret: RwSignal::new(String::new()),
+            secret: RwSignal::new(None),
             revision: RwSignal::new(0),
         }
     }
@@ -174,7 +176,7 @@ impl Feedback {
         self.busy.set(true);
         self.error.set(String::new());
         self.message.set(String::new());
-        self.secret.set(String::new());
+        self.secret.set(None);
         spawn_local(async move {
             match task.await {
                 Ok((message, secret)) => {
@@ -200,13 +202,13 @@ impl Feedback {
                 .map_err(|e| e.to_string())?;
             Ok(if let Some(token) = result.token {
                 (
-                    "Copy this token now; it will not be shown again.".into(),
-                    token,
+                    "Token created. Copy it now; it will not be shown again.".into(),
+                    Some(token),
                 )
             } else if let Some(url) = result.invitation_url {
-                ("Single-use link, valid for 24 hours.".into(), url)
+                ("Single-use link, valid for 24 hours.".into(), Some(url))
             } else {
-                ("Saved.".into(), String::new())
+                ("Saved.".into(), None)
             })
         });
     }
@@ -216,25 +218,32 @@ impl Feedback {
         move || (!self.error.get().is_empty()).then(|| notice(Tone::Bad, self.error.get()))
     }
 
-    /// Renders the current error and success message.
+    /// Renders the current error, success message, and one-time secret.
     fn view(self) -> impl IntoView {
         view! {
             {self.error_view()}
             {move || {
-                (!self.message.get().is_empty())
-                    .then(|| {
-                        notice(
-                            Tone::Ok,
-                            view! {
-                                {self.message.get()}
-                                {(!self.secret.get().is_empty())
-                                    .then(|| {
-                                        view! { <pre class="secret-box">{self.secret.get()}</pre> }
-                                    })}
-                            },
-                        )
-                    })
+                (!self.message.get().is_empty()).then(|| notice(Tone::Ok, self.message.get()))
             }}
+            {one_time_secret("Copy to clipboard", self.secret)}
+        }
+    }
+}
+
+/// Who a session acts as, ignoring editable profile fields.
+#[derive(Clone, PartialEq, Eq)]
+enum Identity {
+    /// An account, by its immutable ID.
+    Account(String),
+    /// The host operator, by its Unix user.
+    Operator(u32),
+}
+
+impl From<&Principal> for Identity {
+    fn from(principal: &Principal) -> Self {
+        match principal {
+            Principal::User(user) => Self::Account(user.id.clone()),
+            Principal::Operator(operator) => Self::Operator(operator.uid),
         }
     }
 }
@@ -380,10 +389,24 @@ pub(super) fn Gate() -> impl IntoView {
         }
         state.loaded.set(true);
     });
-    // Keep the editor mounted while reauthenticating so its unsaved drafts survive.
+    // Keep the editor mounted while reauthenticating so its unsaved drafts
+    // survive. Another identity signing in remounts the whole app, router
+    // included (which holds the routed pages), dropping the previous one's
+    // data, drafts, and one-time secrets.
+    let identity = Memo::new(move |_| {
+        state.current.with(|session| {
+            session
+                .as_ref()
+                .map(|session| Identity::from(&session.principal))
+        })
+    });
     view! {
         <div inert={move || state.expired.get().then_some("")}>
-            <super::App />
+            {move || {
+                // Read, not only tracked: an unread memo never subscribes to `current`.
+                identity.with(|_| ());
+                view! { <super::App /> }
+            }}
         </div>
         <Show when={move || state.expired.get()}>
             <SessionExpired state={state} />
@@ -392,9 +415,9 @@ pub(super) fn Gate() -> impl IntoView {
 }
 
 /// Modal overlay shown when the session expires; signing in again clears
-/// `expired` without remounting the dashboard. The host operator, which has
-/// no passkey, signs in with a new link in another tab and then continues
-/// here, keeping unsaved edits.
+/// `expired` without remounting the dashboard, unless someone else signed
+/// in. The host operator, which has no passkey, signs in with a new link in
+/// another tab and then continues here, keeping unsaved edits.
 #[component]
 fn SessionExpired(state: AuthState) -> impl IntoView {
     let feedback = Feedback::new();
@@ -423,7 +446,7 @@ fn SessionExpired(state: AuthState) -> impl IntoView {
             <section class="card auth-card">
                 {brand()} <h2 id="session-expired-title">"Your session has expired"</h2>
                 <p class="hint">
-                    "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in."
+                    "Sign in to continue. Unsaved edits are still here; retry any action that failed after signing in. Signing in as someone else discards them."
                 </p>
                 {operator
                     .then(|| {
@@ -743,7 +766,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
             code.set(String::new());
             Ok((
                 "CLI approved. You can return to your terminal.".into(),
-                String::new(),
+                None,
             ))
         });
     };
@@ -1315,7 +1338,7 @@ fn Passkeys(
                                         passkey_name: passkey_name.get_untracked(),
                                     })
                                     .await?;
-                                Ok(("Passkey added.".into(), String::new()))
+                                Ok(("Passkey added.".into(), None))
                             });
                     }}
                 >

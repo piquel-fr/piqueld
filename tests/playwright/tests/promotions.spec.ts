@@ -204,6 +204,41 @@ test('an environment builds its own source or receives promoted releases, as one
   expect(changes).toEqual([null, expect.stringMatching(/^env-/)]);
 });
 
+test('an untouched Source card follows a source changed elsewhere', async ({ page, account }) => {
+  void account;
+  const { app, production } = await createUndeclaredPromotion(page);
+  await page.goto(`/dashboard/applications/${app}/environments/${production}`);
+  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source', exact: true }) });
+  const deploys = card.getByRole('combobox', { name: 'Deploys', exact: true });
+  await expect(deploys).not.toHaveValue('');
+  const { generation } = await call(page, 'GET', `applications/${app}`);
+  await call(page, 'PUT', `environments/${production}/source`, { promote_from: null, expected_generation: generation });
+  await expect(card).toContainText('Builds the application\'s saved manifest.', { timeout: 20_000 });
+  await expect(deploys).toHaveValue('');
+  await expect(card.getByRole('button', { name: 'Save source', exact: true })).toBeDisabled();
+});
+
+test('a promoted environment\'s visibility keeps unsaved edits and shows what was saved', async ({ page, account }) => {
+  void account;
+  const { app, production } = await createUndeclaredPromotion(page);
+  await page.goto(`/dashboard/applications/${app}/environments/${production}`);
+  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Visibility', exact: true }) });
+  const select = card.getByRole('combobox', { name: 'Route visibility', exact: true });
+  const save = card.getByRole('button', { name: 'Save visibility', exact: true });
+  await expect(select).toHaveValue('public');
+  await select.selectOption('private');
+  // The unsaved choice blocks promotion and survives the next refresh.
+  await expect(head(page).getByRole('button', { name: 'Promote from staging', exact: true })).toBeDisabled();
+  await page.waitForResponse(response => response.url().includes(`/environments/${production}/detail`));
+  await expect(select).toHaveValue('private');
+  await save.click();
+  await expect(save).toBeDisabled();
+  await expect(head(page).getByRole('button', { name: 'Promote from staging', exact: true })).toBeEnabled();
+  await page.reload();
+  await expect(select).toHaveValue('private');
+  await expect(card).toContainText('applies once its source records a new release');
+});
+
 test('the manifest owns the environments it declares, and reports the ones it drops', async ({ page, account }) => {
   void account;
   const { app, production } = await createPromotion(page);

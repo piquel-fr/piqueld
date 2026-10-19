@@ -213,10 +213,20 @@ test('an application deploys on push by polling or webhook, and an environment o
   // The fixture daemon sets no `ingress.webhook_hostname`.
   await expect(webhook).toContainText('set ingress.webhook_hostname');
   await expect(webhook).toContainText('None yet');
+  // Generating rotates the secret, so a request whose outcome is unknown is not retried.
+  let attempts = 0;
+  await page.route(`**/applications/${app}/webhook/secret`, route => { attempts += 1; return route.abort(); });
+  await webhook.getByRole('button', { name: 'Generate secret', exact: true }).click();
+  await expect(page.getByText('The request outcome is unknown', { exact: false }).locator('visible=true')).toBeVisible();
+  expect(attempts).toBe(1);
+  await page.unroute(`**/applications/${app}/webhook/secret`);
+  await page.getByRole('button', { name: 'Reload saved configuration', exact: true }).click();
   const generated = page.waitForResponse(response => response.url().endsWith(`/applications/${app}/webhook/secret`));
   await webhook.getByRole('button', { name: 'Generate secret', exact: true }).click();
   const { secret } = (await (await generated).json()).data;
   await expect(webhook.locator('.secret-box')).toHaveText(secret);
+  // Only that it was generated is announced, never the secret itself.
+  await expect(webhook.locator('[role=status]', { hasText: secret })).toHaveCount(0);
   // It copies to the clipboard in one click.
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   const copy = webhook.getByRole('button', { name: 'Copy secret', exact: true });
@@ -224,6 +234,24 @@ test('an application deploys on push by polling or webhook, and an environment o
   await expect(copy).toHaveText('Copied');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(secret);
   await expect(webhook.getByRole('button', { name: 'Rotate secret', exact: true })).toBeVisible();
+  // Done removes it from the page.
+  await webhook.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(webhook.locator('.secret-box')).toHaveCount(0);
+  // A secret arriving after the Source tab was left is not kept in the hidden tab.
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/applications/${app}/webhook/secret`, async route => { await held; await route.continue(); });
+  page.once('dialog', dialog => dialog.accept());
+  await webhook.getByRole('button', { name: 'Rotate secret', exact: true }).click();
+  await applicationTab(page, 'Overview').click();
+  const reloaded = page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith(`/applications/${app}/webhook`));
+  release();
+  await reloaded;
+  await expect(page.locator('.secret-box')).toHaveCount(0);
+  await page.unroute(`**/applications/${app}/webhook/secret`);
+  await applicationTab(page, 'Source').click();
+  await webhook.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(webhook.locator('.secret-box')).toHaveCount(0);
   // It is shown only once.
   await page.reload();
   await expect(webhook).toContainText('Generated');

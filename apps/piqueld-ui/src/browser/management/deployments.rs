@@ -75,9 +75,9 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         }
     };
     let deploy = move |_| {
-        let environment = context.environment_id();
+        let (environment, navigate) = (context.environment_id(), navigate.get_value());
         context.deploy(environment.clone(), move || {
-            context.show_deployments(&environment, navigate.get_value());
+            context.show_deployments(&environment, navigate);
         });
     };
     let inspect = move |_| {
@@ -195,12 +195,12 @@ pub(super) fn DeploymentActions() -> impl IntoView {
 
 /// `environment`'s own action: Deploy for one that builds its source, or
 /// Promote for a promoted one (see `PromoteAction`). Either shows its
-/// deployments once accepted, then runs `done`.
+/// deployments once accepted, then closes `dialog`.
 #[component]
 pub(super) fn EnvironmentAction(
     environment: EnvironmentView,
     #[prop(optional)] compact: bool,
-    #[prop(default = None)] done: Option<Callback<()>>,
+    #[prop(default = None)] dialog: Option<RwSignal<bool>>,
 ) -> impl IntoView {
     let context = editor();
     let EnvironmentView {
@@ -212,7 +212,7 @@ pub(super) fn EnvironmentAction(
     } = environment;
     let id = id.to_string();
     if source.promoted_from().is_some() {
-        return view! { <PromoteAction environment={id} compact={compact} done={done} /> }
+        return view! { <PromoteAction environment={id} compact={compact} dialog={dialog} /> }
             .into_any();
     }
     let navigate = StoredValue::new(use_navigate());
@@ -225,13 +225,14 @@ pub(super) fn EnvironmentAction(
             aria-label={label.clone()}
             disabled={move || context.action_blocked() || deleting}
             on:click={move |_| {
+                let (id, navigate) = (id.get_value(), navigate.get_value());
                 context
                     .deploy(
-                        id.get_value(),
+                        id.clone(),
                         move || {
-                            context.show_deployments(&id.get_value(), navigate.get_value());
-                            if let Some(done) = done {
-                                done.run(());
+                            context.show_deployments(&id, navigate);
+                            if let Some(dialog) = dialog {
+                                dialog.set(false);
                             }
                         },
                     );
@@ -257,7 +258,6 @@ fn ChooseEnvironment(
 ) -> impl IntoView {
     let context = editor();
     let opened = RwSignal::new(false);
-    let close = Callback::new(move |()| opened.set(false));
     view! {
         <button
             type="button"
@@ -281,7 +281,7 @@ fn ChooseEnvironment(
                                     <EnvironmentAction
                                         environment={environment}
                                         compact=true
-                                        done={Some(close)}
+                                        dialog={Some(opened)}
                                     />
                                 </li>
                             }
@@ -299,15 +299,15 @@ fn ChooseEnvironment(
 /// it planned, which the daemon refuses if the source has moved on since, or
 /// the release), then shows the environment's deployments. Confirmation
 /// stays disabled while the release mounts secrets the environment lacks or
-/// may not use. `compact` is the smaller list-row button; `done` runs once the
-/// promotion was accepted.
+/// may not use. `compact` is the smaller list-row button; `dialog` closes once
+/// the promotion was accepted.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PromoteAction(
     environment: String,
     #[prop(optional)] release: Option<String>,
     #[prop(optional)] compact: bool,
-    #[prop(default = None)] done: Option<Callback<()>>,
+    #[prop(default = None)] dialog: Option<RwSignal<bool>>,
 ) -> impl IntoView {
     let context = editor();
     let environment = StoredValue::new(environment);
@@ -346,11 +346,9 @@ pub(super) fn PromoteAction(
     let inspect = move |_| {
         context.busy.set(true);
         context.set_error(None);
+        let (target, selection) = (environment.get_value(), selection.get_value());
         spawn_local(async move {
-            match Client::browser()
-                .plan_promotion(&environment.get_value(), &selection.get_value())
-                .await
-            {
+            match Client::browser().plan_promotion(&target, &selection).await {
                 Ok(view) => {
                     plan.set(Some(view));
                     opened.set(true);
@@ -381,15 +379,12 @@ pub(super) fn PromoteAction(
         let Some(request) = promotable() else {
             return;
         };
-        let navigate = navigate.clone();
+        let (navigate, target) = (navigate.clone(), environment.get_value());
+        let sent = target.clone();
         context.mutate(
             move |client| {
-                let request = request.clone();
-                async move {
-                    client
-                        .promote_environment(&environment.get_value(), &request, false)
-                        .await
-                }
+                let (request, target) = (request.clone(), sent.clone());
+                async move { client.promote_environment(&target, &request, false).await }
             },
             move |_| {
                 opened.set(false);
@@ -397,10 +392,10 @@ pub(super) fn PromoteAction(
                 context
                     .notice
                     .set("Promotion accepted. Follow its progress below.".into());
-                context.show_deployments(&environment.get_value(), navigate);
+                context.show_deployments(&target, navigate);
                 context.refresh_dashboard();
-                if let Some(done) = done {
-                    done.run(());
+                if let Some(dialog) = dialog {
+                    dialog.set(false);
                 }
             },
         );
