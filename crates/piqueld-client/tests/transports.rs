@@ -4,7 +4,8 @@
 
 use axum::{Json, Router, http::HeaderMap, routing::get};
 use piqueld_client::{
-    Client, ClientError, Envelope, ListApplicationsOptions, SystemStatus, TransportFailure,
+    ApplyOptions, Client, ClientError, Envelope, ListApplicationsOptions, SystemStatus,
+    TransportFailure,
 };
 use std::time::Duration;
 use tempfile::TempDir;
@@ -462,7 +463,12 @@ async fn remote_http_rejects_credentials_before_sending() {
     let errors = [
         authenticated.system_status().await.unwrap_err(),
         authenticated
-            .apply_application_toml_with_preconditions("name = 'test'", None, None, false, false)
+            .apply_application_toml_with_preconditions(
+                "name = 'test'",
+                None,
+                None,
+                &ApplyOptions::default(),
+            )
             .await
             .unwrap_err(),
         anonymous.auth_device_start(None).await.unwrap_err(),

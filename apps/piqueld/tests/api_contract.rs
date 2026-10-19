@@ -19,7 +19,9 @@ use piqueld::api::http::{
 };
 use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::store::{Store, StoredEnvironment};
-use piqueld_client::{AcceptedOperation, ApplyApplicationRequest, Client, ClientError};
+use piqueld_client::{
+    AcceptedOperation, ApplyApplicationRequest, ApplyOptions, Client, ClientError,
+};
 use piqueld_core::api::SavedApplication;
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -2436,7 +2438,13 @@ impl DeployFixture for Client {
         force: bool,
     ) -> Result<AcceptedOperation, ClientError> {
         let saved = self
-            .apply_application_with_options(request, force, true)
+            .apply_application_with_options(
+                request,
+                &ApplyOptions {
+                    force,
+                    deploy: true,
+                },
+            )
             .await?;
         Ok(AcceptedOperation {
             environment_id: saved.application_id,

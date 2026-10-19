@@ -7,7 +7,7 @@ use axum::{
     http::{HeaderMap, Uri},
 };
 use piqueld_client::system::{DependencyStatus, ReadinessStatus};
-use piqueld_client::{Client, ClientError, RenameApplicationRequest};
+use piqueld_client::{ApplyOptions, Client, ClientError, RenameApplicationRequest};
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 
 struct Request {
@@ -117,8 +117,10 @@ async fn toml_adapter_preserves_headers_and_unsigned_revisions() {
             manifest,
             Some(u64::MAX),
             Some("inspected-app"),
-            false,
-            true,
+            &ApplyOptions {
+                force: false,
+                deploy: true,
+            },
         )
         .await
         .unwrap();

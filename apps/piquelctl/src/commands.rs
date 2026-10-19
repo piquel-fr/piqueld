@@ -20,8 +20,8 @@ use crate::{
 };
 use futures_util::StreamExt;
 use piqueld_client::{
-    ApplicationSummary, ApplicationView, Client, ClientError, ListApplicationsOptions, Operation,
-    OperationState, Page,
+    ApplicationSummary, ApplicationView, ApplyOptions, Client, ClientError,
+    ListApplicationsOptions, Operation, OperationState, Page,
 };
 use serde_json::json;
 use std::{collections::BTreeSet, path::Path};
@@ -335,13 +335,16 @@ impl ApplyArgs {
         console
             .confirm(self.yes, &format!("{action} application {name:?}?"))
             .await?;
+        let options = ApplyOptions {
+            force: self.force,
+            deploy: self.deployment.deploy,
+        };
         let saved = retry_transport(|| {
             client.apply_application_toml_with_preconditions(
                 &manifest,
                 expected_generation(self.force, self.expected_generation, generation),
                 if self.force { None } else { id },
-                self.force,
-                self.deployment.deploy,
+                &options,
             )
         })
         .await?;
