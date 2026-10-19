@@ -2,7 +2,7 @@
 //! writing and removal of the files the daemon manages in them.
 
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs::File,
     io,
     os::{
@@ -122,7 +122,7 @@ impl PrivateFile {
             if entry
                 .file_name()
                 .as_encoded_bytes()
-                .starts_with(prefix.as_encoded_bytes())
+                .starts_with(prefix.as_bytes())
             {
                 removed |= Self::removed(std::fs::remove_file(entry.path()))?;
             }
@@ -139,12 +139,13 @@ impl PrivateFile {
         }
     }
 
-    /// Start of every temporary file name: `.<name>.tmp-`.
-    fn temporary_prefix(&self) -> OsString {
-        let mut prefix = OsString::from(".");
-        prefix.push(self.0.file_name().unwrap_or_default());
-        prefix.push(".tmp-");
-        prefix
+    /// Start of every temporary file name: `.<hash>.tmp-`, where the hash of
+    /// the file name keeps it short enough for any name that fits itself,
+    /// such as a certificate for a 253-byte hostname.
+    fn temporary_prefix(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(self.0.file_name().unwrap_or_default().as_encoded_bytes());
+        format!(".{}.tmp-", &format!("{hash:x}")[..16])
     }
 
     /// The directory holding the file.
@@ -429,11 +430,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_files_may_use_the_longest_file_name() {
+        let directory = tempfile::tempdir().unwrap();
+        // 255 bytes, Linux's limit, like a certificate for a long hostname.
+        let path = directory.path().join(format!("{}.pem", "a".repeat(251)));
+
+        PrivateFile::at(&path).write("secret").await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
+    }
+
+    #[tokio::test]
     async fn removing_a_private_file_removes_temporaries_a_crash_left() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("credentials.json");
+        let prefix = PrivateFile::at(&path).temporary_prefix();
         let leftovers = [
-            directory.path().join(".credentials.json.tmp-a1B2c3"),
+            directory.path().join(format!("{prefix}a1B2c3")),
             path.with_extension("tmp"),
         ];
         for file in leftovers
