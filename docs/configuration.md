@@ -25,6 +25,10 @@ startup.
 created with mode `0600`. Standard output keeps its format: plain text on a
 terminal or the systemd journal, JSON elsewhere.
 
+SIGINT or SIGTERM stops the daemon gracefully: open connections get 10
+seconds, and every task one minute, before it exits anyway. A second signal
+exits at once.
+
 An explicitly supplied file must exist and pass validation; a missing or
 invalid file is an error with its path included in the diagnostic. If the
 production default file is absent, the daemon uses its validated built-in
