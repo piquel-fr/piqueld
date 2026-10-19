@@ -590,12 +590,12 @@ mod tests {
             (
                 DockerError::NotManager,
                 DiagnosticCode::SwarmManagerUnavailable,
-                "Inspect the diagnostic",
+                "single-node Swarm",
             ),
             (
                 DockerError::IncompatibleSwarm,
                 DiagnosticCode::SwarmTopologyUnsupported,
-                "Inspect the diagnostic",
+                "single-node Swarm",
             ),
         ] {
             let diagnostic = piqueld_core::observability::Diagnostic::new(

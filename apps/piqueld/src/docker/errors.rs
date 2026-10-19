@@ -55,18 +55,14 @@ pub enum DockerError {
 }
 
 impl DockerError {
-    /// Whether retrying cannot help: ownership, configuration, Swarm
-    /// topology, and local validation failures.
+    /// Whether retrying within the current attempt cannot help: failures
+    /// diagnostic policy never retries, and Swarm topology failures, which
+    /// don't recover within a request's short backoff; the operation's own
+    /// backoff retries those.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::OwnershipConflict
-                | Self::ConfigurationConflict
-                | Self::NotManager
-                | Self::IncompatibleSwarm
-                | Self::Validation(_)
-        )
+        matches!(self, Self::NotManager | Self::IncompatibleSwarm)
+            || !self.diagnostic_code().retryable()
     }
 
     /// Builds a [`DockerError::UnavailableSource`] that keeps `source` for diagnostics.

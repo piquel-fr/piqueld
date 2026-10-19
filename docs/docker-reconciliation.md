@@ -139,7 +139,8 @@ paused rollouts remain observed without forced mutation. A fresh unblocked plan
 can resume corrective work. Registry request rejections, Git fetch and build
 failures, and secret storage failures require explicit retry or changed intent;
 Docker, Swarm, ingress, journal, image resolution, convergence and preparation
-timeout failures retry automatically.
+timeout failures retry automatically, and their diagnostics are the ones marked
+`retryable`.
 
 Deletion remains running until a fresh observation confirms services and
 networks are absent. Failed deletion attempts record diagnostics and follow the

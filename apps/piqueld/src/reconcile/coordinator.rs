@@ -297,28 +297,15 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Whether a transiently failed operation has waited out its backoff.
-    /// Only transient error codes qualify; the delay doubles per consecutive
-    /// failure from 5s and is capped at 60s.
+    /// Only codes diagnostic policy marks retryable qualify; the delay doubles
+    /// per consecutive failure from 5s and is capped at 60s.
     ///
     /// ```text
     /// failures: 1   2    3    4    5+
     /// delay:    5s  10s  20s  40s  60s
     /// ```
     fn retry_due(operation: &Operation) -> bool {
-        if !matches!(
-            Self::failure(operation),
-            Some(
-                DiagnosticCode::IngressUnavailable
-                    | DiagnosticCode::DockerUnavailable
-                    | DiagnosticCode::ImageResolutionFailed
-                    | DiagnosticCode::DockerRequestFailed
-                    | DiagnosticCode::ConvergenceTimeout
-                    | DiagnosticCode::PreparationTimeout
-                    | DiagnosticCode::JournalUnavailable
-                    | DiagnosticCode::SwarmManagerUnavailable
-                    | DiagnosticCode::SwarmTopologyUnsupported
-            )
-        ) {
+        if !Self::failure(operation).is_some_and(DiagnosticCode::retryable) {
             return false;
         }
         let now = std::time::SystemTime::now()
