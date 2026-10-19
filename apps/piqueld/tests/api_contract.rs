@@ -94,7 +94,7 @@ impl FakeRuntime {
     fn new(store: &Store) -> Self {
         Self {
             cleanup_gate: None,
-            instance: InstanceId::parse(store.instance_id()).expect("valid instance ID"),
+            instance: store.instance_id().clone(),
             unavailable: AtomicBool::new(false),
         }
     }

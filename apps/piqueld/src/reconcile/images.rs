@@ -132,26 +132,23 @@ impl<D: DockerApi> Controller<D> {
     /// # Errors
     /// Returns storage errors, or Docker errors listing images or pruning
     /// probe configs. A failed removal is journaled and the image kept.
-    ///
-    /// # Panics
-    /// Panics if the store violates its validated instance identity invariant.
     pub async fn clean_images(&self) -> Result<bool, OperationError> {
         let Ok(_exclusive) = self.images.in_use.try_write() else {
             return Ok(false);
         };
-        let instance = self.instance_id();
+        let instance = self.store.instance_id();
         let retained = self
             .store
             .retained_images(self.images.keep_deployments)
             .await?;
         let (mut kept, mut reclaimed) = (0_u32, 0_u64);
         for image in self.docker.images().await? {
-            if !image.built_by(&instance) {
+            if !image.built_by(instance) {
                 continue;
             }
             if image.used
                 || image.retained_by(&retained)
-                || !self.remove_image(&instance, &image).await?
+                || !self.remove_image(instance, &image).await?
             {
                 kept += 1;
             } else {

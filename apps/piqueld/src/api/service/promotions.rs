@@ -269,10 +269,14 @@ impl ApplicationService {
                 (name.to_owned(), pinned.to_owned())
             })
             .collect();
-        let instance = piqueld_core::InstanceId::parse(self.store.instance_id())
-            .map_err(StoreError::corrupt)?;
-        let resolved = compile_release(app, target.id(), instance, &candidate.release, pins)
-            .map_err(ValidationErrors::from)?;
+        let resolved = compile_release(
+            app,
+            target.id(),
+            self.store.instance_id().clone(),
+            &candidate.release,
+            pins,
+        )
+        .map_err(ValidationErrors::from)?;
         let secrets = self.store.secret_problems(&target.environment, app).await?;
         Ok((rendering, resolved, secrets))
     }

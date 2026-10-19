@@ -44,9 +44,6 @@ impl<D> ApplicationRuntime<D> {
     /// Creates application runtime orchestration for `store`'s instance with
     /// the supplied preparation budget, sharing `images`, the lock image cleanup takes,
     /// and `store`'s checkout admission.
-    ///
-    /// # Panics
-    /// Never: `Store::open` validated the store's instance ID.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
@@ -57,8 +54,7 @@ impl<D> ApplicationRuntime<D> {
     ) -> Self {
         Self {
             docker,
-            instance_id: InstanceId::parse(store.instance_id())
-                .expect("store instance identity is valid"),
+            instance_id: store.instance_id().clone(),
             wake,
             prepare_timeout,
             progress: None,

@@ -261,7 +261,7 @@ mod tests {
     use crate::api::Actor::Daemon;
     use crate::api::{Mutation, MutationResponse};
     use crate::store::testing::template;
-    use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, OperationState, ResolutionSet};
+    use piqueld_core::{ApplicationId, EnvironmentId, OperationState, ResolutionSet};
 
     #[tokio::test]
     async fn fetched_snapshot_preserves_intervening_saved_configuration() {
@@ -315,7 +315,7 @@ mod tests {
         let target = piqueld_core::compile_application(
             &rendering.application,
             &op.environment_id,
-            InstanceId::parse(store.instance_id()).unwrap(),
+            store.instance_id().clone(),
             &ResolutionSet::default(),
         )
         .unwrap();
@@ -429,7 +429,7 @@ mod tests {
         let target = piqueld_core::compile_application(
             &rendering.application,
             environment,
-            InstanceId::parse(store.instance_id()).unwrap(),
+            store.instance_id().clone(),
             &resolutions,
         )
         .unwrap();

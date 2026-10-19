@@ -38,9 +38,9 @@ impl<D: DockerApi> Controller<D> {
                 granted.push(self.store.with_links(target, observed).await?);
             }
         }
-        let instance = self.instance_id();
+        let instance = self.store.instance_id();
         let ownership = self.ownership_labels(id);
-        for (service, network) in observed.revoked_links(&instance, id, &granted) {
+        for (service, network) in observed.revoked_links(instance, id, &granted) {
             self.journaled_link_change(operation_id, "detach_network", service, || {
                 self.docker.detach_network(service, network, &ownership)
             })
@@ -55,7 +55,7 @@ impl<D: DockerApi> Controller<D> {
                 .labels
                 .get(APPLICATION_LABEL)
                 .and_then(|importer| EnvironmentId::parse(importer.clone()).ok())
-                .filter(|importer| network.is_owned_by(&instance, importer))
+                .filter(|importer| network.is_owned_by(instance, importer))
             else {
                 continue;
             };

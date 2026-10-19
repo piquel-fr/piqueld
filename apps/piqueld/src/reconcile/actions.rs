@@ -210,7 +210,7 @@ impl<D: DockerApi> Controller<D> {
         &self,
         id: &piqueld_core::EnvironmentId,
     ) -> std::collections::BTreeMap<String, String> {
-        piqueld_core::resource::Ownership::scope(&self.instance_id(), id)
+        piqueld_core::resource::Ownership::scope(self.store.instance_id(), id)
     }
 
     /// Runs a journaled Docker request with exponential backoff.

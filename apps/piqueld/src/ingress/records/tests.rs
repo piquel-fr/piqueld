@@ -142,7 +142,10 @@ impl Harness {
 
     /// The ownership record of `host` for this installation.
     fn owner(&self, host: &str) -> String {
-        format!("_piqueld.{host} TXT {:?}", self.store.instance_id())
+        format!(
+            "_piqueld.{host} TXT {:?}",
+            self.store.instance_id().as_str()
+        )
     }
 }
 
@@ -287,7 +290,7 @@ async fn wildcards_get_records_with_ownership_beside_their_parent() {
         [
             format!(
                 "_piqueld._wildcard.tenants.example.com TXT {:?}",
-                harness.store.instance_id()
+                harness.store.instance_id().as_str()
             ),
             format!("*.tenants.example.com A {PUBLIC}"),
         ]

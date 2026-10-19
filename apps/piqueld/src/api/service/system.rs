@@ -24,7 +24,7 @@ impl ApplicationService {
             status: "running".into(),
             api_version: "v1".into(),
             daemon_version: env!("CARGO_PKG_VERSION").into(),
-            instance_id: self.store.instance_id().to_owned(),
+            instance_id: self.store.instance_id().to_string(),
             tailscale: self
                 .tailnet
                 .as_ref()

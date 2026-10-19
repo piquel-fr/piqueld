@@ -529,7 +529,7 @@ pub struct Store {
     /// Connection pool; readers use it directly, writers go through `writers` first.
     pool: SqlitePool,
     /// Stable installation identity, generated when the database is first created.
-    instance_id: String,
+    instance_id: piqueld_core::InstanceId,
     /// Build output retention and per-build byte cap.
     build_history: crate::config::BuildHistoryConfig,
 
@@ -642,8 +642,8 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::Corrupt)?;
-        let instance_id = row.instance_id;
-        piqueld_core::InstanceId::parse(instance_id.clone()).map_err(StoreError::corrupt)?;
+        let instance_id =
+            piqueld_core::InstanceId::parse(row.instance_id).map_err(StoreError::corrupt)?;
         let metadata_version = u64::try_from(row.schema_version).map_err(StoreError::corrupt)?;
         if metadata_version != SCHEMA_VERSION {
             return Err(StoreError::SchemaMismatch);
@@ -732,7 +732,7 @@ impl Store {
 
     /// Stable identity of this control-plane database.
     #[must_use]
-    pub fn instance_id(&self) -> &str {
+    pub fn instance_id(&self) -> &piqueld_core::InstanceId {
         &self.instance_id
     }
 
@@ -1146,7 +1146,7 @@ mod tests {
 
             let reopened = Store::open(&path).await.unwrap();
             if let Some(identity) = identity {
-                assert_eq!(reopened.instance_id(), identity);
+                assert_eq!(reopened.instance_id().as_str(), identity);
             }
             reopened.pool.close().await;
         }

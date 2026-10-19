@@ -164,7 +164,10 @@ impl Ingress {
     /// Returns invalid local client configuration errors.
     pub fn new(enabled: bool, socket: &Path, data_dir: &Path, store: Arc<Store>) -> Result<Self> {
         use sha2::{Digest, Sha256};
-        let suffix = format!("{:x}", Sha256::digest(store.instance_id().as_bytes()));
+        let suffix = format!(
+            "{:x}",
+            Sha256::digest(store.instance_id().as_str().as_bytes())
+        );
         let directory = data_dir.join("ingress");
         // Local Docker and Caddy control requests share the daemon's request budget.
         // Deployment convergence still imposes its configured outer deadline.
@@ -176,7 +179,7 @@ impl Ingress {
         );
         Ok(Self {
             enabled,
-            instance_id: store.instance_id().into(),
+            instance_id: store.instance_id().to_string(),
             name: format!("piqueld-ingress-{}", &suffix[..16]),
             caddy: UnixApi::new(directory.join("control/admin.sock"), request_timeout),
             directory,

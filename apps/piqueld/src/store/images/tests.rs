@@ -4,8 +4,8 @@ use crate::api::{Mutation, MutationResponse, PreviewMutation};
 use crate::store::testing::template;
 use crate::store::{Operation, OperationState};
 use piqueld_core::{
-    ApplicationId, EnvironmentId, GitBranch, InstanceId, ResolutionSet, ResolvedSource,
-    ServiceName, compile_application,
+    ApplicationId, EnvironmentId, GitBranch, ResolutionSet, ResolvedSource, ServiceName,
+    compile_application,
 };
 use std::collections::BTreeMap;
 
@@ -54,7 +54,7 @@ async fn prepare(store: &Store, environment: &EnvironmentId, byte: char) -> Oper
     let target = compile_application(
         &application,
         environment,
-        InstanceId::parse(store.instance_id()).unwrap(),
+        store.instance_id().clone(),
         &ResolutionSet {
             sources: BTreeMap::from([(ServiceName::parse("web").unwrap(), web)]),
             secret_names: BTreeMap::new(),

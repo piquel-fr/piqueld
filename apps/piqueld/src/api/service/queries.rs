@@ -454,8 +454,7 @@ impl ApplicationService {
             let desired = compile_application(
                 app,
                 environment,
-                piqueld_core::InstanceId::parse(self.store.instance_id())
-                    .map_err(StoreError::corrupt)?,
+                self.store.instance_id().clone(),
                 &resolutions,
             )
             .map_err(BoundaryError::Compilation)?
