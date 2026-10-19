@@ -594,7 +594,7 @@ mod tests {
                 .unwrap()
                 .application,
             &id,
-            piqueld_core::InstanceId::parse(store.instance_id()).unwrap(),
+            store.instance_id().clone(),
             &piqueld_core::ResolutionSet::default(),
         )
         .unwrap();

@@ -99,7 +99,7 @@ pub(super) async fn list(
             &query.filter(),
             &visible,
             query.cursor.as_deref(),
-            query.limit.unwrap_or(50),
+            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
         )
         .await?))
 }
@@ -150,7 +150,7 @@ pub(super) async fn stream(
         .unwrap_or_else(|| "v1:0".into());
     let after = crate::store::Store::event_cursor(&cursor)?;
     let filter = query.filter();
-    let batch_size = query.limit.unwrap_or(100);
+    let batch_size = query.limit.unwrap_or(crate::store::MAX_PAGE_SIZE);
     // Validate before sending headers; all later errors explicitly terminate the stream.
     let (initial, checkpoint) = state
         .stream_events(&filter, &visible, after, batch_size)

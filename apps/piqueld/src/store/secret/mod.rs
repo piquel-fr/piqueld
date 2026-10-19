@@ -219,7 +219,7 @@ impl Store {
     fn check_secret_write(name: &str, value: &[u8], expected: i64) -> Result<(), StoreError> {
         if !piqueld_core::resource::valid_logical_name(name)
             || value.is_empty()
-            || value.len() > 500 * 1024
+            || value.len() > piqueld_core::api::MAX_SECRET_VALUE_BYTES
             || expected < 0
         {
             return Err(StoreError::InvalidInput);

@@ -157,17 +157,16 @@ impl Stored {
 
     /// Reads the leaf's validity period.
     fn parse(chain: String, key: String) -> Result<Self> {
-        let (_, pem) = x509_parser::pem::parse_x509_pem(chain.as_bytes())
-            .map_err(|error| anyhow::anyhow!("decode certificate PEM: {error}"))?;
-        let leaf = pem
-            .parse_x509()
-            .map_err(|error| anyhow::anyhow!("decode certificate: {error}"))?;
-        let validity = leaf.validity();
+        let crate::certificate::Validity {
+            not_before_ms,
+            not_after_ms,
+        } = crate::certificate::Validity::of_leaf(chain.as_bytes())
+            .map_err(|error| anyhow::anyhow!("decode {error}"))?;
         Ok(Self {
-            not_before_ms: validity.not_before.timestamp() * 1000,
-            not_after_ms: validity.not_after.timestamp() * 1000,
             chain,
             key,
+            not_before_ms,
+            not_after_ms,
         })
     }
 
@@ -572,7 +571,7 @@ impl Ingress {
                     .await?;
                 let result = async {
                     journal.request().await?;
-                    Self::remove_file(&self.certificates.path(&name))
+                    crate::directories::remove_file(&self.certificates.path(&name))
                         .await
                         .context("delete expired certificate")
                 }

@@ -57,11 +57,6 @@ const JSON: &str = "application/json";
 /// Media type accepted for raw TOML manifest uploads.
 const TOML: &str = "application/toml";
 
-/// Upper bound for one API request body. The CLI's manifest preflight limit
-/// (`piquelctl::support::MAX_MANIFEST_BYTES`) must not exceed this value, or a
-/// locally accepted manifest would fail server-side with 413.
-const REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
-
 /// Builds the TCP router, registering the dashboard when the binary embeds it.
 pub fn router(state: ApiState, auth: impl Authenticator) -> Router {
     web_router(state, UiAssets::resolve(), auth)
@@ -238,7 +233,9 @@ fn finish_router(
         .layer(PropagateRequestIdLayer::new(request_id.clone()))
         .layer(middleware::from_fn_with_state(state, bind_error_request_id))
         .layer(SetRequestIdLayer::new(request_id, MakeRequestUuid))
-        .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
+        .layer(DefaultBodyLimit::max(
+            piqueld_core::api::MAX_REQUEST_BODY_BYTES,
+        ))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request| {

@@ -198,7 +198,7 @@ impl Ingress {
         let key = config.join("auth-key");
         match &node.auth_key {
             Some(key_value) => Self::write_private(&key, key_value.expose().as_bytes()).await?,
-            None => Self::remove_file(&key)
+            None => crate::directories::remove_file(&key)
                 .await
                 .context("remove the unconfigured auth key")?,
         }

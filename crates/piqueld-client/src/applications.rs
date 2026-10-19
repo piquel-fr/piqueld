@@ -1,9 +1,9 @@
 //! Application desired state, planning, releases, and manifests.
 pub use piqueld_core::api::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
-    DeletedApplication, DeploymentView, DiagnosticView, MAX_APPLICATION_PAGE_SIZE,
-    ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView, RenameApplicationRequest,
-    RenamedApplication, SavedApplication,
+    DeletedApplication, DeploymentView, DiagnosticView, ObservedApplicationView,
+    ObservedServiceView, PlanView, ReleaseView, RenameApplicationRequest, RenamedApplication,
+    SavedApplication,
 };
 
 use crate::{
@@ -48,7 +48,7 @@ impl Client {
         options: &ListApplicationsOptions,
     ) -> Result<Page<ApplicationSummary>, ClientError> {
         if let Some(limit) = options.limit {
-            check_page_limit("application list", limit, MAX_APPLICATION_PAGE_SIZE)?;
+            check_page_limit("application list", limit)?;
         }
         self.generated
             .list_applications(options.cursor.as_deref(), options.limit.map(u32::from))

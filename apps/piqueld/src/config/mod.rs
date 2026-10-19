@@ -12,6 +12,7 @@ pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
 use piqueld_core::TomlDiagnostic;
 use piqueld_core::manifest::PreviewLimits;
+use piqueld_core::names::{DNS_LABEL, is_label};
 use serde::Deserialize;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -177,7 +178,7 @@ impl DaemonConfig {
         }
         absolute_file("docker.socket", &self.docker.socket)?;
         for host in &self.server.allowed_hosts {
-            if host.len() > 253 || !host.split('.').all(is_dns_label) {
+            if host.len() > 253 || !host.split('.').all(|label| is_label(label, DNS_LABEL)) {
                 return Err(ConfigError::Invalid(
                     "server.allowed_hosts must contain DNS hostnames without schemes, ports, or wildcards".into(),
                 ));
@@ -295,23 +296,12 @@ impl TailscaleConfig {
 
 /// Requires a tailnet node name: a single DNS label.
 fn dns_label(name: &str, value: &str) -> Result<(), ConfigError> {
-    if !is_dns_label(value) {
+    if !is_label(value, DNS_LABEL) {
         return Err(ConfigError::Invalid(format!(
             "{name} must be a single DNS label"
         )));
     }
     Ok(())
-}
-
-/// Whether `label` is one DNS label: 1-63 letters, digits, or hyphens, not
-/// starting or ending with a hyphen.
-fn is_dns_label(label: &str) -> bool {
-    (1..=63).contains(&label.len())
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// Explicit installation-wide ingress enablement.

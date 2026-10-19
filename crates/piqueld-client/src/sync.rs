@@ -3,7 +3,7 @@
 //! [`ApplicationEdit::RepositorySync`](crate::edit::ApplicationEdit::RepositorySync).
 pub use piqueld_core::sync::{
     EnvironmentSyncRequest, RepositorySync, SyncCheck, SyncState, SyncedHead, SystemActor,
-    WebhookSecret, WebhookView,
+    WebhookSecret, WebhookView, short_commit,
 };
 
 use crate::{Client, ClientError, EnvironmentView, client::EnvelopedCall};

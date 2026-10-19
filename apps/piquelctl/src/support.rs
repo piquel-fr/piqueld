@@ -15,11 +15,8 @@ use tokio::{sync::Notify, time};
 
 /// Daemon socket used when no socket or URL is configured.
 pub(crate) const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
-/// Must not exceed the daemon's `REQUEST_BODY_LIMIT_BYTES`, or a locally
-/// accepted manifest would fail server-side with 413.
-pub(crate) const MAX_MANIFEST_BYTES: u64 = 2 * 1024 * 1024;
 /// Page size for exhaustive application listing (the API maximum).
-pub(crate) const PAGE_SIZE: u16 = piqueld_client::MAX_APPLICATION_PAGE_SIZE;
+pub(crate) const PAGE_SIZE: u16 = piqueld_client::MAX_PAGE_SIZE;
 /// Delay between operation status polls.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Delay between readiness polls once an operation ended; each one observes
@@ -69,9 +66,15 @@ pub(crate) async fn read_input<T: Send + 'static>(
     })
 }
 
-/// Reads a UTF-8 manifest of at most `MAX_MANIFEST_BYTES`; see [`read_text`].
+/// Reads a UTF-8 manifest no larger than the daemon accepts in a request
+/// body; see [`read_text`].
 pub(crate) async fn read_manifest(path: &Path) -> Result<String> {
-    read_text(path, "manifest", MAX_MANIFEST_BYTES).await
+    read_text(
+        path,
+        "manifest",
+        piqueld_client::MAX_REQUEST_BODY_BYTES as u64,
+    )
+    .await
 }
 
 /// Reads the UTF-8 `what` at `path`, of at most `limit` bytes, on a blocking
@@ -188,11 +191,6 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     } else {
         format!("{}ms", duration.as_millis())
     }
-}
-
-/// A commit abbreviated to its first 12 characters.
-pub(crate) fn short_commit(commit: &str) -> &str {
-    &commit[..commit.len().min(12)]
 }
 
 /// `items` joined with `, `, or `empty` when there are none.

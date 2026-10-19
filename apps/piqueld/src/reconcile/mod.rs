@@ -11,7 +11,7 @@ use crate::{
 use piqueld_core::{
     Plan, PlanRequest, codes,
     planner::ActionKind,
-    resource::{APPLICATION_LABEL, Convergence, INSTANCE_LABEL, MANAGED_LABEL},
+    resource::{APPLICATION_LABEL, Convergence},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
@@ -122,20 +122,11 @@ impl<D> Controller<D> {
         self
     }
 
-    /// The installation's identity.
-    ///
-    /// # Panics
-    /// Panics if the store violates its validated instance identity invariant.
-    fn instance_id(&self) -> piqueld_core::InstanceId {
-        piqueld_core::InstanceId::parse(self.store.instance_id())
-            .expect("store instance identity is valid")
-    }
-
     /// The request removing every resource of environment `id`.
     fn delete_request(&self, id: &piqueld_core::EnvironmentId) -> PlanRequest {
         PlanRequest::Delete {
             environment_id: id.clone(),
-            instance_id: self.instance_id(),
+            instance_id: self.store.instance_id().clone(),
         }
     }
 }
@@ -194,9 +185,6 @@ impl Default for RetryPolicy {
 
 impl<D: DockerApi> Controller<D> {
     /// Shares the controller's I/O limits with API observation and preview.
-    ///
-    /// # Panics
-    /// Panics if the store violates its validated instance identity invariant.
     #[must_use]
     pub fn runtime(&self, wake: Arc<Notify>) -> Arc<dyn crate::application::RuntimeBoundary> {
         Arc::new(crate::application::ApplicationRuntime::new(

@@ -49,7 +49,7 @@ async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     drop(store);
 
     let reopened = Store::open(&database_path).await.unwrap();
-    assert_eq!(reopened.instance_id(), instance_id);
+    assert_eq!(reopened.instance_id(), &instance_id);
 
     let mut connection = sqlite::connect(&database_path).await;
     let table_count = scalar(
@@ -101,7 +101,7 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
     connection.close().await.unwrap();
 
     let store = Store::open(&database_path).await.unwrap();
-    assert_eq!(store.instance_id(), "instance-legacy");
+    assert_eq!(store.instance_id().as_str(), "instance-legacy");
     let deployments = store
         .deployments(
             &piqueld_core::EnvironmentId::parse("app-legacy").unwrap(),
@@ -182,7 +182,7 @@ async fn observability_upgrade_preserves_populated_history_and_restorable_backup
         .unwrap();
     connection.close().await.unwrap();
     let store = Store::open(&path).await.unwrap();
-    assert_eq!(store.instance_id(), "instance-upgrade");
+    assert_eq!(store.instance_id().as_str(), "instance-upgrade");
     let events = store.events(None, None, 100).await.unwrap().items;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].message.as_deref(), Some("Retained failure"));

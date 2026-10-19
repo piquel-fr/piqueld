@@ -15,7 +15,7 @@ impl Client {
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<Event>, ClientError> {
-        check_page_limit("event", limit, 100)?;
+        check_page_limit("event", limit)?;
         self.generated
             .list_events(
                 filter.action_id.as_deref(),
@@ -46,7 +46,7 @@ impl Client {
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<piqueld_core::audit::AuditEvent>, ClientError> {
-        check_page_limit("audit", limit, 100)?;
+        check_page_limit("audit", limit)?;
         self.generated
             .list_audit(
                 filter.credential_id.as_deref(),
@@ -101,7 +101,7 @@ impl Client {
         cursor: Option<&str>,
     ) -> Result<Page<NotificationDelivery>, ClientError> {
         self.generated
-            .notification_deliveries(cursor, Some(50))
+            .notification_deliveries(cursor, Some(i64::from(crate::DEFAULT_PAGE_SIZE)))
             .data()
             .await
     }

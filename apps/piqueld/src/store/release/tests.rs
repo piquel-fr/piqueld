@@ -78,7 +78,7 @@ async fn prepare(store: &Store, environment: &EnvironmentId, web: ResolvedSource
     let target = target(
         &rendering.application,
         environment,
-        store.instance_id(),
+        store.instance_id().as_str(),
         web,
     );
     store.save_prepared(&operation, &target).await.unwrap();

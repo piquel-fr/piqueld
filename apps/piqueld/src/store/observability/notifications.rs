@@ -266,7 +266,7 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
-    /// Advances the notification cursor over the next batch (up to 100) of
+    /// Advances the notification cursor over the next batch (up to a page) of
     /// committed events, opening/closing conditions and enqueueing deliveries.
     /// Returns early without changes if another caller moved the cursor between
     /// the unlocked read and the write transaction.
@@ -278,7 +278,11 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
         let events = self
-            .events(None, Some(&format!("v1:{cursor}")), 100)
+            .events(
+                None,
+                Some(&format!("v1:{cursor}")),
+                crate::store::MAX_PAGE_SIZE,
+            )
             .await?;
         if events.items.is_empty() {
             return Ok(());

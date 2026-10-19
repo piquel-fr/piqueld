@@ -164,7 +164,10 @@ impl Ingress {
     /// Returns invalid local client configuration errors.
     pub fn new(enabled: bool, socket: &Path, data_dir: &Path, store: Arc<Store>) -> Result<Self> {
         use sha2::{Digest, Sha256};
-        let suffix = format!("{:x}", Sha256::digest(store.instance_id().as_bytes()));
+        let suffix = format!(
+            "{:x}",
+            Sha256::digest(store.instance_id().as_str().as_bytes())
+        );
         let directory = data_dir.join("ingress");
         // Local Docker and Caddy control requests share the daemon's request budget.
         // Deployment convergence still imposes its configured outer deadline.
@@ -176,7 +179,7 @@ impl Ingress {
         );
         Ok(Self {
             enabled,
-            instance_id: store.instance_id().into(),
+            instance_id: store.instance_id().to_string(),
             name: format!("piqueld-ingress-{}", &suffix[..16]),
             caddy: UnixApi::new(directory.join("control/admin.sock"), request_timeout),
             directory,
@@ -303,7 +306,7 @@ impl Ingress {
             crate::prepare_data_dir(directory).await?;
         }
         let path = control.join(name);
-        Self::remove_file(&path)
+        crate::directories::remove_file(&path)
             .await
             .with_context(|| format!("remove the previous {name}"))?;
         let previous = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
@@ -331,14 +334,6 @@ impl Ingress {
         tokio::fs::rename(&temporary, path)
             .await
             .with_context(|| format!("replace {}", path.display()))
-    }
-
-    /// Removes the file at `path`; one that does not exist counts as removed.
-    async fn remove_file(path: &Path) -> std::io::Result<()> {
-        match tokio::fs::remove_file(path).await {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
     }
 
     /// The private hostname the gateway forwards to the daemon's dashboard

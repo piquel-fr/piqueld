@@ -525,8 +525,7 @@ impl Store {
             PromotionMutation::Promote { id, promotion, .. } => {
                 let promotion = promotion.ok_or(StoreError::InvalidInput)?;
                 let current = Self::checked_environment_on(tx, &id, expected).await?;
-                let instance = piqueld_core::InstanceId::parse(self.instance_id())
-                    .map_err(StoreError::corrupt)?;
+                let instance = self.instance_id().clone();
                 // Boxed: it would otherwise grow every acceptance future.
                 let operation =
                     Box::pin(self.accept_promotion_on(tx, &current, &promotion, instance)).await?;

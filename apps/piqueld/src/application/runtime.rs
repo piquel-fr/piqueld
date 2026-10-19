@@ -44,9 +44,6 @@ impl<D> ApplicationRuntime<D> {
     /// Creates application runtime orchestration for `store`'s instance with
     /// the supplied preparation budget, sharing `images`, the lock image cleanup takes,
     /// and `store`'s checkout admission.
-    ///
-    /// # Panics
-    /// Never: `Store::open` validated the store's instance ID.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
@@ -57,8 +54,7 @@ impl<D> ApplicationRuntime<D> {
     ) -> Self {
         Self {
             docker,
-            instance_id: InstanceId::parse(store.instance_id())
-                .expect("store instance identity is valid"),
+            instance_id: store.instance_id().clone(),
             wake,
             prepare_timeout,
             progress: None,
@@ -137,17 +133,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         application: &piqueld_core::EnvironmentId,
         names: &[String],
     ) -> Result<(), BoundaryError> {
-        let ownership = std::collections::BTreeMap::from([
-            (piqueld_core::resource::MANAGED_LABEL.into(), "true".into()),
-            (
-                piqueld_core::resource::APPLICATION_LABEL.into(),
-                application.to_string(),
-            ),
-            (
-                piqueld_core::resource::INSTANCE_LABEL.into(),
-                self.instance_id.to_string(),
-            ),
-        ]);
+        let ownership = piqueld_core::resource::Ownership::scope(&self.instance_id, application);
         DockerTimeout::Request
             .run(
                 "remove secrets",

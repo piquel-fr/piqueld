@@ -243,12 +243,9 @@ impl Auth {
         use anyhow::Context;
         use std::io::Write;
         if self.status().await?.initialized {
-            match std::fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("remove consumed setup link"),
-            }
-            return Ok(());
+            return crate::directories::remove_file(path)
+                .await
+                .context("remove consumed setup link");
         }
         let existing = std::fs::read_to_string(path).unwrap_or_default();
         let preserved = match existing.trim().split_once("#invite=") {

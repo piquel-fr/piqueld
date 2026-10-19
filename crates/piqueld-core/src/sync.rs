@@ -204,9 +204,30 @@ pub struct EnvironmentSyncRequest {
     pub enabled: bool,
 }
 
+/// A commit hash shortened to its first 12 characters for display; shorter
+/// values are returned whole.
+///
+/// ```text
+/// "0123456789abcdef0123..." -> "0123456789ab"
+/// ```
+#[must_use]
+pub fn short_commit(commit: &str) -> &str {
+    commit
+        .char_indices()
+        .nth(12)
+        .map_or(commit, |(end, _)| &commit[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_commit_keeps_twelve_characters() {
+        assert_eq!(short_commit("0123456789abcdef"), "0123456789ab");
+        assert_eq!(short_commit("abc"), "abc");
+        assert_eq!(short_commit(&"é".repeat(13)), "é".repeat(12));
+    }
     use crate::manifest::GitRepository;
     use crate::{ApplicationId, TrackedBranch};
     use crate::{EnvironmentId, EnvironmentKind, EnvironmentName, EnvironmentSource};

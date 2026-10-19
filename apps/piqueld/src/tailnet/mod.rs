@@ -125,12 +125,9 @@ impl Cli {
             .run(&["cert", "--cert-file=-", dns_name])
             .await
             .context("failed to obtain the tailnet HTTPS certificate; enable HTTPS certificates for the tailnet")?;
-        let (_, pem) = x509_parser::pem::parse_x509_pem(&pem)
-            .map_err(|error| anyhow::anyhow!("invalid certificate PEM: {error}"))?;
-        let leaf = pem
-            .parse_x509()
-            .map_err(|error| anyhow::anyhow!("invalid certificate: {error}"))?;
-        Ok(leaf.validity().not_after.timestamp().saturating_mul(1000))
+        let validity = crate::certificate::Validity::of_leaf(&pem)
+            .map_err(|error| anyhow::anyhow!("invalid {error}"))?;
+        Ok(validity.not_after_ms)
     }
 }
 

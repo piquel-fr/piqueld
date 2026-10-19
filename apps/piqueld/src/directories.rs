@@ -1,4 +1,5 @@
-//! Shared validation and process exclusivity for daemon directories.
+//! Shared validation and process exclusivity for daemon directories, and
+//! removal of the files the daemon manages in them.
 
 use std::{
     fs::File,
@@ -23,6 +24,17 @@ pub async fn prepare_data_dir(path: &Path) -> io::Result<()> {
 /// symlinks, or I/O failures.
 pub(crate) async fn validate_runtime_dir(path: &Path) -> io::Result<()> {
     DirectoryKind::Runtime.prepare(path).await
+}
+
+/// Removes the file at `path`; one that does not exist counts as removed.
+///
+/// # Errors
+/// Returns any other I/O error.
+pub(crate) async fn remove_file(path: &Path) -> io::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 /// Which daemon directory is being checked; each has its own creation and

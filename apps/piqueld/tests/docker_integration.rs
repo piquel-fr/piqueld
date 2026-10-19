@@ -1070,7 +1070,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     let store = piqueld::store::Store::open(state.path().join("state.db"))
         .await
         .unwrap();
-    let owner = InstanceId::parse(store.instance_id()).unwrap();
+    let owner = store.instance_id().clone();
     let runtime = piqueld::application::ApplicationRuntime::new(
         std::sync::Arc::new(docker.clone()),
         &store,

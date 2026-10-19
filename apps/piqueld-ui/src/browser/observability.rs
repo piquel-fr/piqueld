@@ -10,7 +10,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use piqueld_client::{
-    Client, Event, EventActor,
+    Client, DEFAULT_PAGE_SIZE, Event, EventActor,
     access::{GlobalPermission, Permission},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome},
     observability::{
@@ -145,10 +145,10 @@ pub(super) fn ErrorsPage() -> impl IntoView {
     }
 }
 
-/// Filterable, paginated event list (50 per page), optionally scoped to one
-/// application (with all its environments) or one environment. Also honours an
-/// `?operation=` query filter; changing any filter or the operation resets to
-/// the newest page. Auto-refreshes via `Refresh`.
+/// Filterable, paginated event list (`DEFAULT_PAGE_SIZE` per page), optionally
+/// scoped to one application (with all its environments) or one environment.
+/// Also honours an `?operation=` query filter; changing any filter or the
+/// operation resets to the newest page. Auto-refreshes via `Refresh`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EventHistory(
@@ -196,7 +196,7 @@ pub(super) fn EventHistory(
         let cursor = cursor.get();
         async move {
             Client::browser()
-                .filtered_events(&filter, cursor.as_deref(), 50)
+                .filtered_events(&filter, cursor.as_deref(), DEFAULT_PAGE_SIZE)
                 .await
                 .user_error()
         }
@@ -895,7 +895,7 @@ pub(super) fn AuditPage() -> impl IntoView {
         let cursor = cursor.get();
         async move {
             Client::browser()
-                .audit_events(&filter, cursor.as_deref(), 50)
+                .audit_events(&filter, cursor.as_deref(), DEFAULT_PAGE_SIZE)
                 .await
                 .user_error()
         }

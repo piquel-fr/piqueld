@@ -2,7 +2,6 @@
 //! manifest repository, listed with their status, where their branch is, and
 //! whether pushes redeploy them. Each opens on the environment page, with the
 //! actions and cards below.
-use super::super::format::commit;
 use super::super::ui::{
     Icon, Modal, Tone, badge, empty, health_badge, icon, loaded, notice, text_input,
 };
@@ -14,6 +13,7 @@ use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
+use piqueld_client::sync::short_commit;
 use piqueld_client::{
     BranchState, Client, CreatePreviewRequest, DeploymentOrigin, DiagnosticView, EnvironmentView,
     PreviewView, PrunePreviewsRequest,
@@ -60,13 +60,13 @@ impl EditorContext {
 /// repository could not be read.
 fn branch_state(state: &BranchState) -> (AnyView, Option<String>) {
     let (tone, detail) = match state {
-        BranchState::Exists { head } => (Tone::Ok, Some(format!("at {}", commit(head)))),
+        BranchState::Exists { head } => (Tone::Ok, Some(format!("at {}", short_commit(head)))),
         BranchState::Moved { head, deployed } => (
             Tone::Warn,
             Some(format!(
                 "to {}, deployed {}",
-                commit(head),
-                commit(deployed)
+                short_commit(head),
+                short_commit(deployed)
             )),
         ),
         BranchState::Gone => (Tone::Bad, None),
@@ -75,7 +75,7 @@ fn branch_state(state: &BranchState) -> (AnyView, Option<String>) {
             Tone::Neutral,
             Some(head.as_ref().map_or_else(
                 || "never pushed".into(),
-                |head| format!("branch at {}", commit(head)),
+                |head| format!("branch at {}", short_commit(head)),
             )),
         ),
         BranchState::Unknown { message } => (Tone::Neutral, Some(message.clone())),
@@ -94,7 +94,7 @@ fn deploys(view: &PreviewView) -> AnyView {
         |base| {
             view! {
                 " on "
-                <code title={base.clone()}>{commit(base).to_owned()}</code>
+                <code title={base.clone()}>{short_commit(base).to_owned()}</code>
             }
             .into_any()
         },
@@ -108,7 +108,7 @@ fn deploys(view: &PreviewView) -> AnyView {
     };
     view! {
         "Local snapshot "
-        <code title={snapshot.commit.clone()}>{commit(&snapshot.commit).to_owned()}</code>
+        <code title={snapshot.commit.clone()}>{short_commit(&snapshot.commit).to_owned()}</code>
         {base}
         <div class="muted">{redeploy}</div>
     }

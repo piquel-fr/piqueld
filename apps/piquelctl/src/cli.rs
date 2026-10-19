@@ -176,7 +176,7 @@ pub(crate) enum Command {
         #[arg(long)]
         cursor: Option<String>,
         /// Maximum number of events in the page.
-        #[arg(long,default_value_t=50,value_parser=clap::value_parser!(u16).range(1..=100))]
+        #[arg(long,default_value_t=piqueld_client::DEFAULT_PAGE_SIZE,value_parser=clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE)))]
         limit: u16,
     },
 }

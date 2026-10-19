@@ -43,11 +43,11 @@ pub fn resolutions(application: &NormalizedApplication) -> ResolutionSet {
 
 /// The runtime target of `application`'s default environment, owned by
 /// installation `instance`, with [`resolutions`].
-pub fn resolve(application: &NormalizedApplication, instance: &str) -> ResolvedApplication {
+pub fn resolve(application: &NormalizedApplication, instance: &InstanceId) -> ResolvedApplication {
     compile_application(
         application,
         &EnvironmentId::default_for(application.id()),
-        InstanceId::parse(instance).expect("store instance ID is valid"),
+        instance.clone(),
         &resolutions(application),
     )
     .expect("fixture resolves")
