@@ -64,6 +64,12 @@ const SOURCE_FORM: &str = "environment-source";
 const NAME_FORM: &str = "environment-name";
 
 impl EnvironmentEdit {
+    /// Whether a replay after a transport failure is safe. Deletions are not
+    /// retried, as they could fail once the first attempt completed.
+    const fn replayable(&self) -> bool {
+        !matches!(self, Self::Delete(_) | Self::RetryDeletion(_))
+    }
+
     /// The form whose unsaved edits the change saves, if any.
     const fn form(&self) -> Option<&'static str> {
         match self {
@@ -147,8 +153,9 @@ impl EnvironmentEdit {
 }
 
 impl EditorContext {
-    /// Sends `change` (see `mutate`) and updates only environment metadata,
-    /// preserving application form drafts.
+    /// Sends `change` (see `mutate`, or `mutate_once` unless it is
+    /// replayable) and updates only environment metadata, preserving
+    /// application form drafts.
     fn change_environment(
         self,
         change: EnvironmentEdit,
@@ -170,37 +177,41 @@ impl EditorContext {
             EnvironmentEdit::Delete(id) => Some(id.clone()),
             _ => None,
         };
-        self.mutate(
-            move |client| {
-                let (change, application) = (change.clone(), application.clone());
-                async move { change.send(&client, &application, generation).await }
-            },
-            move |environment| {
-                self.saved.update(|saved| {
-                    if advances {
-                        saved.generation += 1;
-                    }
-                    if let Some(environment) = &environment {
-                        saved.environments.retain(|env| env.id != environment.id);
-                        saved.environments.push(environment.clone());
-                        saved.environments.sort_by(|a, b| a.name.cmp(&b.name));
-                    } else if let Some(env) = saved
-                        .environments
-                        .iter_mut()
-                        .find(|env| deleted.as_deref() == Some(env.id.as_str()))
-                    {
-                        env.delete_intent = true;
-                    }
-                });
-                self.notice.set(if environment.is_some() {
-                    "Environment saved.".into()
-                } else {
-                    "Environment deletion accepted. Its volumes will be retained.".into()
-                });
-                done(environment);
-                self.refresh_dashboard();
-            },
-        );
+        let replayable = change.replayable();
+        let send = move |client: Client| {
+            let (change, application) = (change.clone(), application.clone());
+            async move { change.send(&client, &application, generation).await }
+        };
+        let applied = move |environment: Option<EnvironmentView>| {
+            self.saved.update(|saved| {
+                if advances {
+                    saved.generation += 1;
+                }
+                if let Some(environment) = &environment {
+                    saved.environments.retain(|env| env.id != environment.id);
+                    saved.environments.push(environment.clone());
+                    saved.environments.sort_by(|a, b| a.name.cmp(&b.name));
+                } else if let Some(env) = saved
+                    .environments
+                    .iter_mut()
+                    .find(|env| deleted.as_deref() == Some(env.id.as_str()))
+                {
+                    env.delete_intent = true;
+                }
+            });
+            self.notice.set(if environment.is_some() {
+                "Environment saved.".into()
+            } else {
+                "Environment deletion accepted. Its volumes will be retained.".into()
+            });
+            done(environment);
+            self.refresh_dashboard();
+        };
+        if replayable {
+            self.mutate(send, applied);
+        } else {
+            self.mutate_once(async move |client| send(client).await, applied);
+        }
     }
 }
 

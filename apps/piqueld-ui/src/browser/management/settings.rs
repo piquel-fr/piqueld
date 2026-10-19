@@ -1,7 +1,7 @@
 //! Saved configuration forms and service editors.
 use super::super::ui::{
-    Icon, Modal, Tone, add_button, copy_button, icon, notice, remove_button, text_field,
-    text_input, when,
+    Icon, Modal, Tone, add_button, copy_button, icon, notice, one_time_secret, remove_button,
+    text_field, text_input, when,
 };
 use super::super::{UserError, confirm};
 use super::{Draft, editor};
@@ -298,8 +298,9 @@ fn SyncCheck() -> impl IntoView {
 }
 
 /// What to configure in GitHub for an application syncing on push webhooks:
-/// the payload URL, and a secret generated on demand and shown only once.
-/// Rotating confirms first, since the previous secret stops verifying at once.
+/// the payload URL, and a secret generated on demand and shown only once,
+/// on the Source tab, until dismissed or the tab is left. Rotating confirms first, since
+/// the previous secret stops verifying at once, and is never retried.
 #[component]
 fn WebhookSettings() -> impl IntoView {
     let context = editor();
@@ -309,6 +310,11 @@ fn WebhookSettings() -> impl IntoView {
     });
     // The secret just generated: never retrievable again.
     let generated = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        if context.tab.get() != "Source" {
+            generated.set(None);
+        }
+    });
     let created = move || {
         data.get()
             .and_then(Result::ok)
@@ -323,11 +329,8 @@ fn WebhookSettings() -> impl IntoView {
             return;
         }
         let application = context.id();
-        context.mutate(
-            move |client| {
-                let application = application.clone();
-                async move { client.generate_webhook_secret(&application).await }
-            },
+        context.mutate_once(
+            async move |client| client.generate_webhook_secret(&application).await,
             move |secret| {
                 generated.set(Some(secret.secret));
                 data.refetch();
@@ -416,20 +419,16 @@ fn WebhookSettings() -> impl IntoView {
                             .into_any()
                     }
                 }}
-                {move || {
-                    generated
-                        .get()
-                        .map(|secret| {
-                            notice(
-                                Tone::Ok,
-                                view! {
-                                    "Copy this secret into GitHub now; it will not be shown again."
-                                    <pre class="secret-box">{secret.clone()}</pre>
-                                    {copy_button("Copy secret", secret)}
-                                },
-                            )
-                        })
-                }}
+                // A secret arriving after the tab was left waits for it.
+                <Show when={move || context.tab.get() == "Source"}>
+                    <Show when={move || generated.with(Option::is_some)}>
+                        {notice(
+                            Tone::Ok,
+                            "Secret generated. Copy it into GitHub now; it will not be shown again.",
+                        )}
+                    </Show>
+                    {one_time_secret("Copy secret", generated)}
+                </Show>
             </div>
         </section>
     }

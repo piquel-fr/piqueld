@@ -40,11 +40,8 @@ impl EditorContext {
             return;
         }
         let id = preview.id.to_string();
-        self.mutate(
-            move |client| {
-                let id = id.clone();
-                async move { client.delete_preview(&id).await }
-            },
+        self.mutate_once(
+            async move |client| client.delete_preview(&id).await,
             move |_| {
                 self.notice.set(
                     "Preview deletion accepted. Its volumes and their data will be removed.".into(),
@@ -197,11 +194,8 @@ pub(super) fn PreviewList() -> impl IntoView {
             previews: previews.into_iter().map(|preview| preview.id).collect(),
         };
         let application = context.id();
-        context.mutate(
-            move |client| {
-                let (application, request) = (application.clone(), request.clone());
-                async move { client.prune_previews(&application, &request).await }
-            },
+        context.mutate_once(
+            async move |client| client.prune_previews(&application, &request).await,
             move |deleted| {
                 context.notice.set(format!(
                     "Deletion of {} previews accepted. Their volumes and their data will be removed.",

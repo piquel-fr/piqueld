@@ -49,6 +49,10 @@ test('invitations carry grants and limit what the new account may see and change
   const secret = page.locator('.secret-box');
   await expect(secret).toContainText('#invite=');
   const link = (await secret.innerText()).trim();
+  // Only the notice about the link is announced, and Done removes the link.
+  await expect(page.locator('[role=status]', { hasText: link })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(secret).toHaveCount(0);
   const bob = await register(page, link, 'bob');
   expect((await api(page, 'register/start', {
     invitation: link.split('#invite=')[1], user_id: null,

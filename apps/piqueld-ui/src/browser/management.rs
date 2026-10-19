@@ -548,6 +548,20 @@ impl EditorContext {
         self.run_mutation(async move |mutation| mutation.send(request).await, done);
     }
 
+    /// Sends one mutation (see `run_mutation`) without retrying it:
+    /// replaying a deletion or a secret rotation whose outcome is unknown
+    /// could repeat it, or fail once the first attempt completed.
+    fn mutate_once<T: 'static>(
+        self,
+        request: impl AsyncFnOnce(Client) -> Result<T, ClientError> + 'static,
+        done: impl FnOnce(T) + 'static,
+    ) {
+        self.run_mutation(
+            async move |mutation| request(mutation.client().clone()).await,
+            done,
+        );
+    }
+
     /// Deploys the saved revision to `environment`, then runs `accepted`.
     fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
         let generation = self.saved.with_untracked(|saved| saved.generation);
@@ -1239,12 +1253,10 @@ fn DeleteApplication() -> impl IntoView {
         }
         let saved = context.saved.get_untracked();
         let navigate = navigate.clone();
-        // Unlike other mutations, a deletion is not retried.
-        context.run_mutation(
-            async move |mutation| {
+        context.mutate_once(
+            async move |client| {
                 let confirmed = environments.iter().map(String::as_str).collect::<Vec<_>>();
-                mutation
-                    .client()
+                client
                     .delete_application_with_preconditions(
                         saved.application.id().as_str(),
                         Some(saved.generation),
