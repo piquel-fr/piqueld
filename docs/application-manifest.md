@@ -1128,10 +1128,14 @@ A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fa
 the deployment with `job_failed` or `job_timeout`. Services outside the job's
 startup dependencies keep their previous configuration. While the deployment
 can still continue, active-target repair keeps the dependencies it started or
-updated and the services stopped for an exclusive job. Once a job has failed or
-the deployment was cancelled, and the job's container has stopped, repair
-returns them to the running deployment: dependencies roll back and stopped
-services start again. Data the job changed is not reverted. The application
+updated and the services stopped for an exclusive job. Once a job has failed,
+the deployment was cancelled, or an ownership or immutable configuration
+conflict blocks the deployment's plan, and the job's container has stopped,
+repair returns them to the running deployment: dependencies roll back and
+stopped services start again. Data the job changed is not reverted. A
+deployment blocked by a conflict rolls out again once the conflict is
+resolved; if one of its exclusive jobs already succeeded, the services it
+stopped stay stopped until then, since they would run against migrated data. The application
 stays degraded, and failed jobs are not retried automatically; deploy again
 after fixing the cause. Each job succeeds at most once per deployment: a
 retried deployment skips jobs that already succeeded, and after a daemon

@@ -98,8 +98,15 @@ On shutdown, or when Docker could not report the
 status before the timeout, the run is left for the retried operation to resume;
 a superseded or cancelled operation stops its own run. A failed job fails the
 operation. Once its run has stopped, the deployment has ended, as it has after
-a cancellation, so repair restores the active target: prerequisites roll back
-and stopped services start again. Observation never
+a cancellation or a failure whose own plan an ownership or immutable
+configuration conflict blocks, so repair restores the active target:
+prerequisites roll back and stopped services start again. Once the conflict is
+resolved, the blocked deployment rolls out again. A conflict does not end a
+deployment one of whose exclusive jobs succeeded: the services it stopped would
+run against data in the new format, so they stay stopped, and the prerequisites
+stay, until the conflict is resolved and the deployment continues. Failures that are retried,
+including conflicts planning can't see and failed service updates, keep the
+prerequisites. Observation never
 reports job services, so planning, repair, and health ignore them; deletion
 removes leftovers before the network.
 

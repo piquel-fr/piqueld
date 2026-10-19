@@ -539,19 +539,69 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    /// Whether the unpromoted operation may still roll out its prepared target.
-    /// A failed job or a cancellation ends it once no job container can still
-    /// be running; other failures are retried or reconsidered. Independently,
-    /// the Docker adapter refuses to start a service while a job holds one of
-    /// its volumes, including runs of superseded operations.
-    pub(super) async fn may_roll_out(&self, operation: &Operation) -> Result<bool, StoreError> {
-        let ended = operation.state == OperationState::Cancelled || Self::job_failed(operation);
-        Ok(!ended
-            || !self
+    /// The prepared target the unpromoted operation may still roll out, if
+    /// any, as `observed` shows the runtime. A failed job or a cancellation
+    /// ends the deployment once no job container can still be running, and
+    /// so does a failure whose own plan a conflict blocks: only an operator
+    /// resolves that, and reconsidering the deployment then rolls its
+    /// prerequisites out again. Unless an exclusive job of it succeeded: the
+    /// services it stopped would run against data in the new format, so they
+    /// stay stopped until the deployment continues. Other failures are
+    /// retried, or reconsidered as soon as their plan is unblocked, so
+    /// restoring the active target meanwhile would only churn their
+    /// prerequisites. Independently, the Docker adapter refuses to start a
+    /// service while a job holds one of its volumes, including runs of
+    /// superseded operations.
+    pub(super) async fn rolling_out(
+        &self,
+        operation: &Operation,
+        observed: &piqueld_core::ObservedApplication,
+    ) -> Result<Option<piqueld_core::ResolvedApplication>, StoreError> {
+        let Some(prepared) = self.store.prepared_target(&operation.id).await? else {
+            return Ok(None);
+        };
+        let ended = operation.state == OperationState::Cancelled
+            || Self::job_failed(operation)
+            || (operation.state == OperationState::Failed
+                && self.conflict_blocks(&prepared, observed).await?
+                && !self.migrated_exclusively(operation, &prepared).await?);
+        let stopping = ended
+            && !self
                 .store
                 .pending_job_cleanup(&operation.environment_id)
                 .await?
-                .is_empty())
+                .is_empty();
+        Ok((!ended || stopping).then_some(prepared))
+    }
+
+    /// Whether an exclusive job of `operation`, which prepared `target`,
+    /// succeeded, so the volumes it held are in their new format.
+    async fn migrated_exclusively(
+        &self,
+        operation: &Operation,
+        target: &piqueld_core::ResolvedApplication,
+    ) -> Result<bool, StoreError> {
+        let succeeded = self.store.succeeded_jobs(&operation.id).await?;
+        Ok(target.jobs.iter().any(|job| {
+            job.exclusive_volumes().next().is_some()
+                && succeeded.contains(job.logical_name.as_str())
+        }))
+    }
+
+    /// Whether a conflict blocks planning `target` against `observed`: one
+    /// only an operator resolves, unlike a failed service update, which
+    /// restoring the active target would clear.
+    async fn conflict_blocks(
+        &self,
+        target: &piqueld_core::ResolvedApplication,
+        observed: &piqueld_core::ObservedApplication,
+    ) -> Result<bool, StoreError> {
+        let desired = self.runtime_target(target, &[], observed).await?;
+        let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, observed);
+        Ok(
+            plan.is_blocked()
+                && !matches!(BlockedPlan::of(&plan), BlockedPlan::ServiceUpdateFailed),
+        )
     }
 
     /// Records a diagnostic at most once per environment and code within a pass.
@@ -622,10 +672,9 @@ impl<D: DockerApi> Controller<D> {
             return Ok(());
         }
         // Reread under the lock: a retry may have reopened a failed operation.
-        if let Some(prepared) = self.store.prepared_target(operation_id).await?
-            && self
-                .may_roll_out(&self.store.operation(operation_id).await?)
-                .await?
+        if let Some(prepared) = self
+            .rolling_out(&self.store.operation(operation_id).await?, &observed)
+            .await?
         {
             plan.preserve_job_prerequisites(&prepared, &observed);
         }

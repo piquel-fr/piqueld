@@ -1320,6 +1320,62 @@ impl ControllerHarness {
         scan.await.unwrap();
     }
 
+    /// Adds a service of another installation named like `operation`'s
+    /// prepared service `name`, a conflict blocking its plan, and returns it.
+    async fn add_foreign_service(&self, operation: &Operation, name: &str) -> ObservedService {
+        let desired = self
+            .store
+            .prepared_target(&operation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .services
+            .into_iter()
+            .find(|service| service.logical_name.as_str() == name)
+            .unwrap();
+        let mut labels = foreign_labels(&operation.environment_id);
+        labels.insert(SERVICE_LABEL.into(), name.into());
+        let foreign = ObservedService {
+            labels,
+            ..observed_service(&desired)
+        };
+        self.docker
+            .observed
+            .lock()
+            .await
+            .services
+            .push(foreign.clone());
+        foreign
+    }
+
+    /// Removes `foreign`, resolving its conflict.
+    async fn remove_foreign_service(&self, foreign: &ObservedService) {
+        self.docker
+            .observed
+            .lock()
+            .await
+            .services
+            .retain(|service| service != foreign);
+    }
+
+    /// The logical names of the services this installation runs, sorted.
+    async fn owned_services(&self) -> Vec<String> {
+        let mut names = self
+            .docker
+            .observed
+            .lock()
+            .await
+            .services
+            .iter()
+            .filter(|service| {
+                service.labels.get(INSTANCE_LABEL).map(String::as_str) != Some("other-instance")
+            })
+            .map(|service| service.labels[SERVICE_LABEL].clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
     /// The application's newest build record and its retained output.
     async fn latest_run(
         &self,
@@ -4137,6 +4193,95 @@ async fn failed_migration_rolls_back_prerequisites_and_repairs_active_services()
             Some(1)
         );
     }
+}
+
+/// A deployment whose own plan a conflict blocks has ended until an
+/// operator resolves it, so repair returns its job prerequisites to the
+/// active target. A conflict planning can't see is retried at once instead,
+/// so its prerequisites stay rather than being rolled back and forth.
+#[tokio::test]
+async fn a_deployment_blocked_by_a_conflict_rolls_back_its_job_prerequisites() {
+    let harness = ControllerHarness::new().await;
+    let mut initial = manifest_with_job_dependencies();
+    initial.spec.jobs.clear();
+    initial.spec.services[0].depends_on.clear();
+    initial
+        .spec
+        .services
+        .retain(|service| matches!(service.name.as_str(), "web" | "other"));
+    let first = harness.apply(initial, None).await;
+    harness.finish(&first).await;
+    let mut replacement = manifest_with_job_dependencies();
+    let mut extra = replacement.spec.services[3].clone();
+    extra.name = "extra".into();
+    replacement.spec.services.push(extra);
+    *harness.docker.conflicting_job.lock().await = Some("migrate".into());
+    let operation = harness.apply(replacement, None).await;
+    for _ in 0..3 {
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("ownership_conflict".into()))
+        );
+        assert_eq!(
+            harness.owned_services().await,
+            ["db", "other", "storage", "web"]
+        );
+    }
+
+    // A foreign service takes the name of the one the deployment adds.
+    let foreign = harness.add_foreign_service(&operation, "extra").await;
+    for _ in 0..8 {
+        harness.scan().await;
+    }
+    assert_eq!(harness.owned_services().await, ["other", "web"]);
+    assert_eq!(harness.started_jobs().await, [] as [String; 0]);
+
+    // Once the conflict is resolved, the deployment rolls out after all.
+    harness.remove_foreign_service(&foreign).await;
+    *harness.docker.conflicting_job.lock().await = None;
+    harness.finish(&operation).await;
+    assert_eq!(
+        harness.owned_services().await,
+        ["db", "extra", "other", "storage", "web"]
+    );
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+}
+
+/// A conflict blocking a deployment after its exclusive job succeeded keeps
+/// the services the job stopped stopped, as they would run against data in
+/// the new format. The deployment continues once the conflict is resolved.
+#[tokio::test]
+async fn a_conflict_after_an_exclusive_job_succeeded_keeps_its_services_stopped() {
+    let harness = ControllerHarness::new().await;
+    let first = harness.apply(manifest(), None).await;
+    harness.finish(&first).await;
+    let mut replacement = manifest_with_exclusive_job();
+    let mut extra = replacement.spec.services[0].clone();
+    extra.name = "extra".into();
+    extra.mounts.clear();
+    replacement.spec.services.push(extra);
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let operation = harness.apply(replacement, None).await;
+    // The conflict appears while the job runs.
+    let conflict = async {
+        harness.wait_for_job_starts(1).await;
+        let foreign = harness.add_foreign_service(&operation, "extra").await;
+        harness.docker.hold_jobs.store(false, Ordering::SeqCst);
+        foreign
+    };
+    let ((), foreign) = tokio::join!(harness.scan(), conflict);
+    for _ in 0..3 {
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("ownership_conflict".into()))
+        );
+        assert_eq!(harness.owned_services().await, [] as [String; 0]);
+    }
+
+    harness.remove_foreign_service(&foreign).await;
+    harness.finish(&operation).await;
+    assert_eq!(harness.owned_services().await, ["extra", "web"]);
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
 #[tokio::test]

@@ -26,14 +26,9 @@ impl<D: DockerApi> Controller<D> {
         // its prepared target's links stay open while it may still roll out.
         let mut granted = Vec::new();
         if !environment.delete_intent() {
-            let prepared = if self
-                .may_roll_out(&self.store.operation(operation_id).await?)
-                .await?
-            {
-                self.store.prepared_target(operation_id).await?
-            } else {
-                None
-            };
+            let prepared = self
+                .rolling_out(&self.store.operation(operation_id).await?, observed)
+                .await?;
             for target in environment.resolved.into_iter().chain(prepared) {
                 granted.push(self.store.with_links(target, observed).await?);
             }
