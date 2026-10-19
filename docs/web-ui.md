@@ -18,7 +18,8 @@ Retries use the captured deployment, not subsequent configuration edits.
 The piqueld logo links to the home page. The sidebar groups Overview,
 Applications, and Builds; the Observe section (Events, Errors, Analytics,
 Notifications); and the System section (Daemon status, Host settings, Accounts,
-Audit). Notifications, Daemon status and Host settings need `system:read`.
+Audit). Notifications, Daemon status and Host settings need `system:read`;
+retrying a failed notification delivery needs `system:operate`.
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its environment's history.

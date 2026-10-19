@@ -768,17 +768,27 @@ pub(super) fn NotificationsPage() -> impl IntoView {
                 .user_error()
         }
     });
-    let retry = Callback::new(move |id: String| {
-        spawn_local(async move {
-            match Client::browser().retry_notification(&id).await {
-                Ok(()) => {
-                    error.set(None);
-                    refresh.request();
-                }
-                Err(e) => error.set(Some(e.user_message())),
+    let retrying = RwSignal::new(false);
+    let retry = Retry {
+        allowed: can(Permission::Global(GlobalPermission::SystemOperate)),
+        busy: retrying,
+        run: Callback::new(move |id: String| {
+            if retrying.get_untracked() {
+                return;
             }
-        });
-    });
+            retrying.set(true);
+            spawn_local(async move {
+                match Client::browser().retry_notification(&id).await {
+                    Ok(()) => {
+                        error.set(None);
+                        refresh.request();
+                    }
+                    Err(e) => error.set(Some(e.user_message())),
+                }
+                retrying.set(false);
+            });
+        }),
+    };
     view! {
         <PageHeader
             title="Notifications"
@@ -841,8 +851,18 @@ pub(super) fn NotificationsPage() -> impl IntoView {
     }
 }
 
-/// Table row for one delivery, with a button that runs `retry` on a failed one.
-fn delivery_row(delivery: NotificationDelivery, retry: Callback<String>) -> AnyView {
+/// Retrying failed notification deliveries: `allowed` with `system:operate`,
+/// and one at a time, `busy` while one is sent.
+#[derive(Clone, Copy)]
+struct Retry {
+    allowed: Signal<bool>,
+    busy: RwSignal<bool>,
+    run: Callback<String>,
+}
+
+/// Table row for one delivery, with a button that runs `retry` on a failed
+/// one when allowed.
+fn delivery_row(delivery: NotificationDelivery, retry: Retry) -> AnyView {
     let id = delivery.id.clone();
     let tone = match delivery.state {
         DeliveryState::Delivered => Tone::Ok,
@@ -859,13 +879,14 @@ fn delivery_row(delivery: NotificationDelivery, retry: Callback<String>) -> AnyV
             <td class="muted">{when(delivery.updated_at_ms)}</td>
             <td class="muted">{delivery.last_error.unwrap_or_default()}</td>
             <td class="actions">
-                {(delivery.state == DeliveryState::Failed)
+                {(delivery.state == DeliveryState::Failed && retry.allowed.get())
                     .then(|| {
                         view! {
                             <button
                                 type="button"
                                 class="btn btn-sm"
-                                on:click={move |_| retry.run(id.clone())}
+                                disabled={move || retry.busy.get()}
+                                on:click={move |_| retry.run.run(id.clone())}
                             >
                                 "Retry"
                             </button>
