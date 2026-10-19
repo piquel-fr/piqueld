@@ -16,7 +16,7 @@ package. Dashboard tools are cached by version.
 | --- | --- | --- |
 | Rust formatting | `fmt-check` | `checks` |
 | Dependency policy and advisories | `deny` | `checks` |
-| All-target, all-feature compilation and Clippy | `lint` | `rust` |
+| All-target, all-feature compilation and Clippy, plus wasm32 Clippy of the dashboard, client, and core | `lint` | `rust` |
 | Native workspace tests, against the real embedded dashboard | `test` | `rust` |
 | Documentation tests | `doc-test` | `rust` |
 | Generated API specification, client, and manifest JSON Schema freshness | `openapi-check` | `rust` |
