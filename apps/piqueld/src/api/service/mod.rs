@@ -578,9 +578,10 @@ impl ApplicationService {
     }
 
     /// Recovers from a lost master key by discarding every stored and generated
-    /// secret value and every webhook secret.
+    /// secret value and every webhook secret; see `Store::recover_secret_key`.
     /// # Errors
-    /// Returns an error if the current key still works, or storage errors.
+    /// Returns an error if the current key still works or is not lost, or
+    /// storage errors.
     pub async fn recover_secret_key(
         &self,
         actor: Actor<'_>,

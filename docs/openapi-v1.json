@@ -27721,7 +27721,7 @@
     },
     "/api/v1/system/secrets/recover-key": {
       "post": {
-        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones); metadata and running services are kept. Fails with 409\nwhile the current key still works. The next value write generates a new key.",
+        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones); metadata and running services are kept. Only a lost key\nis recovered: while something is encrypted (the key verifier, a value or a\nwebhook secret), one that is missing, does not hold 32 bytes, or decrypts\nnone of it. Fails with 409 while the key decrypts the verifier, when there\nis no verifier but it decrypts a value or webhook secret, or when nothing\nis encrypted and the key file is missing or loads. When nothing is\nencrypted but the key file does not hold 32 bytes, moves it aside and\nsucceeds with nothing discarded. Fails with 503 `secret_storage_unavailable`, discarding\nnothing, when it decrypts a value or webhook secret but not a corrupt\nverifier, or can't be read for another reason, such as an I/O error or a\nkey file that is not private.\nThe next value write generates a new key.",
         "operationId": "recoverSecretKey",
         "responses": {
           "200": {

@@ -35,9 +35,29 @@ pub(crate) enum KeyFailure {
     /// The key does not authenticate stored ciphertext.
     #[error("secret authentication failed; verify the original master key and database backup")]
     AuthenticationFailed,
+    /// The key decrypts stored values but not the database's key verifier,
+    /// which is corrupt.
+    #[error(
+        "the database's secret key verifier is corrupt, though the master key decrypts stored values; restore the database from backup"
+    )]
+    VerifierCorrupt,
 }
 
 impl KeyFailure {
+    /// The failure `error` carries, if it is one.
+    pub(crate) fn of(error: &anyhow::Error) -> Option<Self> {
+        error.downcast_ref().copied()
+    }
+
+    /// Whether loading the key failed for good, so that only discarding the
+    /// values it encrypted recovers: it is missing or the wrong length. A key
+    /// that is merely not private is fixed on the host instead. A key that
+    /// loads is lost only when it authenticates nothing stored (see
+    /// `Store::recover_secret_key`).
+    pub(crate) const fn lost(self) -> bool {
+        matches!(self, Self::Missing | Self::InvalidLength)
+    }
+
     /// Sanitized causal fact recorded in diagnostics.
     pub(crate) const fn fact(self) -> &'static str {
         match self {
@@ -45,6 +65,9 @@ impl KeyFailure {
             Self::NotPrivate => "Secret master key: not a private file owned by the daemon user",
             Self::InvalidLength => "Secret master key: invalid length",
             Self::AuthenticationFailed => "Secret master key: does not authenticate stored values",
+            Self::VerifierCorrupt => {
+                "Secret master key: decrypts stored values, but not the corrupt key verifier"
+            }
         }
     }
 }
@@ -225,6 +248,11 @@ impl SecretCipher {
             )
             .map_err(|_| KeyFailure::AuthenticationFailed)?;
         Ok(Zeroizing::new(plaintext))
+    }
+    /// Proves this key matches the database by decrypting its stored verifier.
+    pub(crate) fn verify(&self, verifier: &Envelope) -> anyhow::Result<()> {
+        self.decrypt(SecretOwner::KeyVerifier, "key-verification", 1, verifier)
+            .map(drop)
     }
 }
 

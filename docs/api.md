@@ -763,10 +763,22 @@ Quota enforcement never evicts pinned versions. To retire a secret, save and dep
 configuration without its references, then delete it. An existing database above
 the quota remains readable and deployable; new writes require freeing space.
 
-`POST /api/v1/system/secrets/recover-key` recovers from a lost or unusable master
-key by discarding stored and generated values for **all applications and
-environments**. It returns 409
-`secret_key_usable` while the current key still works. Discarded versions are
+`POST /api/v1/system/secrets/recover-key` recovers from a lost master key by
+discarding stored and generated values for **all applications and
+environments**. A key is lost, and recovered, only when something is
+encrypted (the database's key verifier, a stored or generated value, or a
+webhook secret) and `secrets.key` is missing, does not hold exactly 32 bytes,
+or decrypts none of it. It returns 409 `secret_key_usable` while the key
+decrypts the verifier, when there is no verifier but the key decrypts a
+stored value or webhook secret, or when nothing is encrypted and the key file
+is missing or loads. When nothing is encrypted but the key file does not hold
+32 bytes, it moves that file aside and returns 200 with nothing discarded, so
+the next value write generates a new key. It returns 503
+`secret_storage_unavailable`, discarding nothing, when the key decrypts a
+stored value or webhook secret but not a corrupt verifier (restore the
+database from backup), or can't be read for another reason, such as an I/O
+error or a key file that is not private to the daemon user (fix the host and
+retry the request that failed). Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
 preserved. Every application's [webhook secret](ingress.md#push-webhooks) is deleted
 too; generate a new one. Supplying replacement stored values creates new versions, and an
@@ -776,4 +788,5 @@ discarded stored values fail with `secret_unavailable` and the logical names. Th
 `affected_environments`, `affected_applications`, `affected_secrets` and
 `discarded_versions`; no key or
 secret value is returned. Repeating the request after a lost response returns
-`secret_key_usable`, because no stored value then needs the old key.
+`secret_key_usable`, because no stored value then needs the old key; it never
+creates a key.

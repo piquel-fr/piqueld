@@ -264,8 +264,18 @@ pub(super) async fn delete_stored(
 ///
 /// Discards every application's stored secret values, every environment's
 /// generated secret values, and the repository webhook secrets (applications
-/// generate new ones); metadata and running services are kept. Fails with 409
-/// while the current key still works. The next value write generates a new key.
+/// generate new ones); metadata and running services are kept. Only a lost key
+/// is recovered: while something is encrypted (the key verifier, a value or a
+/// webhook secret), one that is missing, does not hold 32 bytes, or decrypts
+/// none of it. Fails with 409 while the key decrypts the verifier, when there
+/// is no verifier but it decrypts a value or webhook secret, or when nothing
+/// is encrypted and the key file is missing or loads. When nothing is
+/// encrypted but the key file does not hold 32 bytes, moves it aside and
+/// succeeds with nothing discarded. Fails with 503 `secret_storage_unavailable`, discarding
+/// nothing, when it decrypts a value or webhook secret but not a corrupt
+/// verifier, or can't be read for another reason, such as an I/O error or a
+/// key file that is not private.
+/// The next value write generates a new key.
 #[utoipa::path(post,path="/api/v1/system/secrets/recover-key",operation_id="recoverSecretKey",
     responses((status=200,description="Values discarded; the next value write generates a new key",body=Envelope<piqueld_core::api::SecretKeyRecovery>),
     (status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
