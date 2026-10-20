@@ -101,7 +101,9 @@ history retention keeps operations whose cleanup is still pending.
 On shutdown, or when Docker could not report the
 status before the timeout, the run is left for the retried operation to resume;
 a superseded or cancelled operation stops its own run. A failed job fails the
-operation. Once its run has stopped, the deployment has ended, as it has after
+operation as soon as its run finishes, before its output is read and its run
+cleaned up, so a shutdown meanwhile never leaves the operation to be retried and
+the job run again. Once its run has stopped, the deployment has ended, as it has after
 a cancellation or a failure whose own plan an ownership or immutable
 configuration conflict blocks, so repair restores the active target:
 prerequisites roll back and stopped services start again. Once the conflict is

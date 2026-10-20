@@ -140,15 +140,7 @@ impl<D: DockerApi> Controller<D> {
             }
             Err(error) => {
                 tracing::error!(code = error.code(), error = ?error, "operation failed");
-                self.record_failure(operation, &error).await?;
-                self.store
-                    .transition_operation(
-                        &operation.id,
-                        OperationState::Running,
-                        OperationState::Failed,
-                        Some((error.code(), &error.message())),
-                    )
-                    .await
+                self.fail_operation(operation, &error).await
             }
         };
         persisted.map(|()| outcome)
@@ -587,8 +579,10 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    /// Marks the environment degraded with the failure message.
-    async fn record_failure(
+    /// Marks the environment degraded and the running operation failed with
+    /// `error`. A failed job fails its operation as soon as it is known, so
+    /// failing it again finds it failed with that error already.
+    pub(super) async fn fail_operation(
         &self,
         operation: &Operation,
         error: &OperationError,
@@ -600,7 +594,28 @@ impl<D: DockerApi> Controller<D> {
                 Some(&error.message()),
             )
             .await?;
-        Ok(())
+        match self
+            .store
+            .transition_operation(
+                &operation.id,
+                OperationState::Running,
+                OperationState::Failed,
+                Some((error.code(), &error.message())),
+            )
+            .await
+        {
+            Err(StoreError::IllegalTransition) => {
+                let current = self.store.operation(&operation.id).await?;
+                if current.state == OperationState::Failed
+                    && current.error_code.as_deref() == Some(error.code())
+                {
+                    Ok(())
+                } else {
+                    Err(StoreError::IllegalTransition)
+                }
+            }
+            persisted => persisted,
+        }
     }
 }
 

@@ -95,6 +95,10 @@ struct FakeDocker {
     hold_job_cleanup: Arc<Mutex<()>>,
     /// Counts removals of an operation's own run, including held ones.
     job_cleanups: Arc<std::sync::atomic::AtomicUsize>,
+    /// Blocks reading a run's output while held.
+    hold_job_output: Arc<Mutex<()>>,
+    /// Counts reads of a run's output, including held ones.
+    job_output_reads: Arc<std::sync::atomic::AtomicUsize>,
     /// Blocks waiting for removed job runs to stop while held.
     hold_job_stop: Arc<Mutex<()>>,
     /// Counts waits for removed job runs to stop, including held ones.
@@ -782,6 +786,8 @@ impl DockerApi for FakeDocker {
         &self,
         _job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobOutput, DockerError> {
+        self.job_output_reads.fetch_add(1, Ordering::SeqCst);
+        drop(self.hold_job_output.lock().await);
         if self.fail_job_output.load(Ordering::SeqCst) {
             return Err(DockerError::Request("read job output"));
         }
@@ -4669,6 +4675,36 @@ async fn shutdown_lets_a_running_job_record_its_interruption() {
     );
     // The run is kept for the retried deployment to resume.
     assert_eq!(harness.docker.jobs.lock().await.len(), 1);
+}
+
+/// A failed migration fails its deployment as soon as its run finished,
+/// before its output is read and its run cleaned up. Dropping the deployment
+/// there, as a shutdown past its grace or a crash does, keeps the failure,
+/// and a restart doesn't run the migration again.
+#[tokio::test]
+async fn a_failed_job_keeps_its_failure_when_its_deployment_is_dropped() {
+    let mut harness = ControllerHarness::new().await;
+    harness.docker.job_exit.store(3, Ordering::SeqCst);
+    let operation = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    let held = harness.docker.hold_job_output.lock().await;
+    let shutdown = CancellationToken::new();
+    tokio::select! {
+        result = harness.controller.scan(&shutdown) => {
+            panic!("scan finished while the output read was held: {result:?}");
+        }
+        reading = eventually(Duration::from_secs(10), POLL, async || {
+            (harness.docker.job_output_reads.load(Ordering::SeqCst) > 0).then_some(())
+        }) => reading.expect("the failed run's output is read"),
+    }
+    drop(held);
+    harness.reopen().await;
+    harness.scan().await;
+    let failed = harness.operation(&operation.id).await;
+    assert_eq!(failed.state, OperationState::Failed);
+    assert_eq!(failed.error_code.as_deref(), Some("job_failed"));
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
 #[tokio::test]

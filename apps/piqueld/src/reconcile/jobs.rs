@@ -224,8 +224,8 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Starts the run unless it is running or already succeeded, waits for it,
-    /// and records its output, exit code, and any Docker explanation of a
-    /// failure.
+    /// fails the operation at once if the run failed or timed out, then
+    /// records its output, exit code, and any Docker explanation of a failure.
     async fn execute_job(
         &self,
         operation: &Operation,
@@ -272,37 +272,49 @@ impl<D: DockerApi> Controller<D> {
         })
         .await?;
         let status = self.wait_job(operation, job, cancellation).await?;
-        let truncated = status != JobStatus::Missing && self.record_output(job, log).await?;
-        if let JobStatus::Finished {
-            exit_code: Some(code),
-            ..
-        } = status
-        {
-            log.exit_code(code).await?;
-        }
         let name = job.logical_name.to_string();
-        let result = match status {
+        let result = match &status {
             JobStatus::Finished {
                 exit_code: Some(0), ..
             } => Ok(()),
-            JobStatus::Finished { exit_code, error } => {
-                if let Some(error) = error {
-                    Self::note(log, &error).await?;
-                }
-                Err(OperationError::JobFailed {
-                    job: name,
-                    exit_code,
-                })
-            }
-            JobStatus::Missing => {
-                Self::note(log, "the job's service was removed before it finished").await?;
-                Err(OperationError::JobFailed {
-                    job: name,
-                    exit_code: None,
-                })
-            }
+            JobStatus::Finished { exit_code, .. } => Err(OperationError::JobFailed {
+                job: name,
+                exit_code: *exit_code,
+            }),
+            JobStatus::Missing => Err(OperationError::JobFailed {
+                job: name,
+                exit_code: None,
+            }),
             JobStatus::Running { .. } => Err(OperationError::JobTimeout(name)),
         };
+        // Persisted, with its cleanup intent, before anything slower: reading
+        // output may outlast a shutdown's grace, and an operation left
+        // running would be retried and run the job again. The operation's
+        // own failure path retries a failed write.
+        if let Err(error) = &result
+            && let Err(failure) = self.fail_operation(operation, error).await
+        {
+            let failure = OperationError::from(failure);
+            self.store
+                .report_diagnostic(&failure.diagnostic(), Some(&operation.environment_id))
+                .await;
+        }
+        let truncated = status != JobStatus::Missing && self.record_output(job, log).await?;
+        let explanation = match status {
+            JobStatus::Finished {
+                exit_code: Some(code),
+                error,
+            } => {
+                log.exit_code(code).await?;
+                error.filter(|_| code != 0)
+            }
+            JobStatus::Finished { error, .. } => error,
+            JobStatus::Missing => Some("the job's service was removed before it finished".into()),
+            JobStatus::Running { .. } => None,
+        };
+        if let Some(explanation) = explanation {
+            Self::note(log, &explanation).await?;
+        }
         // Marked last: a truncated log accepts no further notes.
         if truncated {
             log.truncated().await?;
