@@ -252,7 +252,7 @@ pub(crate) enum AppCommand {
         window: LogArgs,
     },
     /// Run a one-off command in a running task of a service, streaming its output.
-    Exec(crate::exec::ExecArgs),
+    Exec(crate::exec::ExecArgs<crate::exec::ApplicationTarget>),
     /// Manage the application's store of manually set secrets and their access lists.
     Secret {
         /// Application name or stable ID.

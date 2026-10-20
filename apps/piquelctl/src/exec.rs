@@ -1,13 +1,16 @@
-//! `app exec`: run a one-off command in a running service task.
+//! `app exec` and `preview exec`: run a one-off command in a running service task.
 //!
 //! Each API request is bounded by `--timeout`; the command session is not.
 //! The CLI exits with the command's exit code.
 
-use crate::error::{CliError, ErrorKind, Result};
+use crate::{
+    deployments::Target,
+    error::{CliError, ErrorKind, Result},
+};
 use clap::Args;
 use http::StatusCode;
 use piqueld_client::{
-    Client, ClientError, ServiceName,
+    Client, ClientError, EnvironmentView, ServiceName,
     exec::{ExecCommand, ExecInput, ExecOutput, ExecReader, ExecRequest, ExecWriter, TerminalSize},
 };
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr};
@@ -21,13 +24,11 @@ use tokio::{
     sync::mpsc,
 };
 
+// `exec` arguments shared by `app exec` and `preview exec`.
 #[derive(Debug, Args)]
-pub(crate) struct ExecArgs {
-    /// Application name or stable ID.
-    name_or_id: String,
-    /// Environment name or stable ID; optional when the application has exactly one.
-    #[arg(long = "env", value_name = "ENV")]
-    environment: Option<String>,
+pub(crate) struct ExecArgs<T: Args> {
+    #[command(flatten)]
+    target: T,
     /// Service whose running task executes the command.
     service: ServiceName,
     /// Forward standard input to the command.
@@ -41,8 +42,26 @@ pub(crate) struct ExecArgs {
     command: Vec<String>,
 }
 
-impl ExecArgs {
-    /// Runs the command and returns its exit code.
+/// `app exec`'s target: an application and, when it has several, one of its environments.
+#[derive(Debug, Args)]
+pub(crate) struct ApplicationTarget {
+    /// Application name or stable ID.
+    name_or_id: String,
+    /// Environment name or stable ID; optional when the application has exactly one.
+    #[arg(long = "env", value_name = "ENV")]
+    environment: Option<String>,
+}
+
+impl Target for ApplicationTarget {
+    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
+        let selected =
+            crate::environments::select(client, &self.name_or_id, self.environment.as_deref());
+        Ok(selected.await?.1)
+    }
+}
+
+impl<T: Args + Target> ExecArgs<T> {
+    /// Runs the command in the target and returns its exit code.
     pub(crate) async fn run(&self, client: &Client) -> Result<ExitCode> {
         let command = ExecCommand::parse(self.command.clone())
             .map_err(|error| CliError::new(ErrorKind::Input, error.to_string()))?;
@@ -52,9 +71,7 @@ impl ExecArgs {
                 "--tty requires standard input to be a terminal",
             ));
         }
-        let (_, environment) =
-            crate::environments::select(client, &self.name_or_id, self.environment.as_deref())
-                .await?;
+        let environment = self.target.environment(client).await?;
         let request = ExecRequest {
             service: self.service.clone(),
             command,

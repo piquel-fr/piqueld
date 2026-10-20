@@ -7,6 +7,7 @@ use crate::{
     deployments::{Deployed, Target, UrlArgs, WaitArgs, wait_for_accepted},
     environments::logs,
     error::{CliError, ErrorKind, Result},
+    exec::ExecArgs,
     output::{
         Console,
         reports::{CreatedPreviewReport, DeletionReport},
@@ -60,6 +61,9 @@ pub(crate) enum PreviewCommand {
     Wait(WaitArgs<PreviewArgs>),
     /// Print the URLs of a preview's routes, and whether each is ready.
     Url(UrlArgs<PreviewArgs>),
+    /// Run a one-off command in a running task of a preview's service,
+    /// streaming its output.
+    Exec(ExecArgs<PreviewArgs>),
     /// Confirm and delete a preview with every volume it ever created.
     Delete {
         #[command(flatten)]
@@ -197,6 +201,7 @@ impl PreviewCommand {
             }
             Self::Wait(args) => args.run(console, client).await,
             Self::Url(args) => args.run(console, client).await,
+            Self::Exec(_) => unreachable!("exec sessions run without the command timeout"),
             Self::Delete { target, flags } => delete(client, console, target, flags).await,
             Self::Prune {
                 application, flags, ..
