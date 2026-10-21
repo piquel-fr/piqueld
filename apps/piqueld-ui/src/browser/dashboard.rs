@@ -529,8 +529,10 @@ fn telemetry_cards(telemetry: &TelemetryStatus) -> AnyView {
                 tone,
                 label,
                 &format!(
-                    "{}. {last} {} records dropped since the daemon started.{headers}",
-                    destination.endpoint, destination.dropped
+                    "{}. {last} {} records dropped since the daemon started.{headers} Exports {}.",
+                    destination.endpoint,
+                    destination.dropped,
+                    telemetry.exported()
                 ),
             )
         })

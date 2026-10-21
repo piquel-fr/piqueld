@@ -38,6 +38,9 @@ pub const FILE_LABEL: &str = "io.piqueld.file";
 /// Label on a link network naming the exporting environment; the importing
 /// environment owns the network.
 pub const LINK_LABEL: &str = "io.piqueld.link";
+/// Label marking the containers piqueld runs itself for ingress (the
+/// gateway, the apps node and `cloudflared`) and their egress network.
+pub const INGRESS_LABEL: &str = "io.piqueld.ingress";
 /// Environment variable listing the ingress network's CIDRs in routed services.
 /// Only the gateway and the application's own routed services share that
 /// network, so `X-Forwarded-For` from these peers carries the client address.

@@ -1,4 +1,6 @@
 //! Feeds telemetry export from the journal, the store and the runtime.
+mod containers;
+
 use super::ApplicationService;
 use crate::store::{JournalPosition, StoreError, Visibility, now_ms};
 use crate::telemetry::{EventContext, Journal, ServiceSample};
@@ -14,11 +16,20 @@ const EVENT_PAGE: usize = 100;
 /// How long names stay cached, so renames reach labels.
 const NAMES_TTL: Duration = Duration::from_secs(300);
 
-/// Application and environment names by environment, for metric labels,
-/// looked up when first needed and forgotten every [`NAMES_TTL`].
+/// Names labelling an environment's telemetry, looked up when first needed
+/// and forgotten every [`NAMES_TTL`].
 struct Names {
-    names: HashMap<EnvironmentId, (String, String)>,
+    names: HashMap<EnvironmentId, EnvironmentNames>,
     since: std::time::Instant,
+}
+
+/// The names labelling one environment's telemetry.
+#[derive(Clone)]
+struct EnvironmentNames {
+    application: String,
+    environment: String,
+    /// The preview's slug, for previews.
+    preview: Option<String>,
 }
 
 /// Where the journal exporter is: its exporter, the last event it read, and
@@ -30,16 +41,24 @@ struct Tail {
 }
 
 impl ApplicationService {
-    /// Exports journal events after `start` every second, and samples
-    /// daemon and service gauges every 30 seconds, until cancelled. Each runs
-    /// on its own, so a slow Docker observation never holds up the journal or
-    /// export health, and none holds up reconciliation or requests. Without
-    /// telemetry, only closes a failure left from when it was configured.
+    /// Exports journal events after `start` every second, samples daemon and
+    /// service gauges every 30 seconds, and exports the containers' output
+    /// and usage when enabled, until cancelled. Each runs on its own, so a
+    /// slow Docker observation never holds up the journal or export health,
+    /// and none holds up reconciliation or requests. Without telemetry, only
+    /// closes a failure left from when it was configured. Without container
+    /// export, forgets where it stopped reading, so enabling it again starts
+    /// from the present.
     pub(super) async fn export_telemetry(
         &self,
         start: JournalPosition,
         cancellation: CancellationToken,
     ) {
+        if !self.telemetry.containers()
+            && let Err(error) = self.store.clear_container_cursors().await
+        {
+            tracing::error!(?error, "container log cursors could not be cleared");
+        }
         let Some(journal) = self.telemetry.journal(start.running) else {
             // Close a failure left open while export was configured.
             let healthy = self.observe_export(false).await;
@@ -51,10 +70,7 @@ impl ApplicationService {
         let mut tail = Tail {
             journal,
             cursor: start.event,
-            names: Names {
-                names: HashMap::new(),
-                since: std::time::Instant::now(),
-            },
+            names: Names::default(),
         };
         let mut journal_tick = interval(Duration::from_secs(1));
         let mut daemon_tick = interval(Duration::from_secs(30));
@@ -72,6 +88,11 @@ impl ApplicationService {
             async { while step(&mut daemon_tick, &cancellation, self.sample_daemon()).await {} },
             async {
                 while step(&mut services_tick, &cancellation, self.sample_services()).await {}
+            },
+            async {
+                if self.telemetry.containers() {
+                    self.export_containers(&cancellation).await;
+                }
             },
         );
     }
@@ -114,7 +135,9 @@ impl ApplicationService {
                 tail.journal.record(
                     event,
                     EventContext {
-                        names: labels.as_ref().map(|(a, e)| (a.as_str(), e.as_str())),
+                        names: labels
+                            .as_ref()
+                            .map(|names| (names.application.as_str(), names.environment.as_str())),
                         operation: operation.as_ref(),
                     },
                 );
@@ -180,6 +203,15 @@ impl ApplicationService {
     }
 }
 
+impl Default for Names {
+    fn default() -> Self {
+        Self {
+            names: HashMap::new(),
+            since: std::time::Instant::now(),
+        }
+    }
+}
+
 impl Names {
     /// The names of environment `id`, looked up when unknown; `None` once
     /// it is deleted.
@@ -187,7 +219,7 @@ impl Names {
         &mut self,
         service: &ApplicationService,
         id: &EnvironmentId,
-    ) -> Option<(String, String)> {
+    ) -> Option<EnvironmentNames> {
         if self.since.elapsed() > NAMES_TTL {
             self.names.clear();
             self.since = std::time::Instant::now();
@@ -196,10 +228,14 @@ impl Names {
             return Some(names.clone());
         }
         let stored = service.store.get(id).await.ok()?;
-        let names = (
-            stored.application.application.metadata().name.to_string(),
-            stored.environment.name.to_string(),
-        );
+        let names = EnvironmentNames {
+            application: stored.application.application.metadata().name.to_string(),
+            environment: stored.environment.name.to_string(),
+            preview: match &stored.environment.kind {
+                piqueld_core::EnvironmentKind::Preview(preview) => Some(preview.slug.to_string()),
+                piqueld_core::EnvironmentKind::Environment => None,
+            },
+        };
         self.names.insert(id.clone(), names.clone());
         Some(names)
     }

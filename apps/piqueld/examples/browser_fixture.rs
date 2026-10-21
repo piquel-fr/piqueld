@@ -1,5 +1,6 @@
 //! Isolated UI/API fixture for Playwright. Docker execution is deliberately stubbed.
 use async_trait::async_trait;
+use futures_util::StreamExt as _;
 use piqueld::{
     api::http::{ApiState, UiAssets},
     application::{BoundaryError, RuntimeBoundary},
@@ -46,6 +47,23 @@ impl RuntimeBoundary for Runtime {
     }
     async fn observe(&self, _: &StoredEnvironment) -> Result<ObservedApplication, BoundaryError> {
         Ok(ObservedApplication::default())
+    }
+    /// The fixture runs no containers.
+    async fn containers(&self) -> Result<Vec<piqueld::docker::ManagedContainer>, BoundaryError> {
+        Ok(Vec::new())
+    }
+    async fn container_usage(
+        &self,
+        _: &str,
+    ) -> Result<Option<piqueld::docker::ContainerUsage>, BoundaryError> {
+        Ok(None)
+    }
+    fn container_logs(&self, _: &str, _: i32) -> piqueld::docker::ContainerLogs {
+        futures_util::stream::empty().boxed()
+    }
+    /// No container ever starts.
+    fn container_starts(&self, _: i64) -> piqueld::docker::ContainerStarts {
+        futures_util::stream::pending().boxed()
     }
     async fn readiness(&self) -> (bool, bool) {
         (false, false)

@@ -400,6 +400,11 @@ in
             default = null;
             description = "Host file with gRPC headers for the collector, one `name: value` per line (such as `authorization: Bearer …`), such as an agenix secret, passed to piqueld as a systemd credential.";
           };
+          telemetry.containers = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Also export the stdout/stderr and resource usage of every container piqueld runs, while an endpoint is set.";
+          };
           notifications.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;

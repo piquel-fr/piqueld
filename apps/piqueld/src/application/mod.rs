@@ -5,7 +5,9 @@ pub use runtime::ApplicationRuntime;
 
 use crate::reconcile::ImagesInUse;
 use crate::{
-    docker::{DockerError, Exec, ExecIo},
+    docker::{
+        ContainerLogs, ContainerStarts, ContainerUsage, DockerError, Exec, ExecIo, ManagedContainer,
+    },
     store::{StoreError, StoredEnvironment},
 };
 use async_trait::async_trait;
@@ -103,4 +105,15 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
         &self,
         application: &StoredEnvironment,
     ) -> Result<ObservedApplication, BoundaryError>;
+    /// Lists every container the installation runs, stopped ones included,
+    /// for container telemetry.
+    async fn containers(&self) -> Result<Vec<ManagedContainer>, BoundaryError>;
+    /// Reads a running container's resource usage once; `None` once it is
+    /// gone.
+    async fn container_usage(&self, id: &str) -> Result<Option<ContainerUsage>, BoundaryError>;
+    /// Follows a container's output from `since`, in Unix seconds, until it
+    /// stops.
+    fn container_logs(&self, id: &str, since: i32) -> ContainerLogs;
+    /// Yields each container start from `since`, in Unix seconds.
+    fn container_starts(&self, since: i64) -> ContainerStarts;
 }

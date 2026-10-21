@@ -476,13 +476,14 @@ fn telemetry_status_lists_destinations() {
             dropped: 3,
             failing: true,
         }],
+        containers: true,
     };
     let stdout = Capture::default();
     let mut console = stdout.human_console();
     console.emit(&status).unwrap();
     assert_eq!(
         stdout.text(),
-        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at Unix ms 9, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\n"
+        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at Unix ms 9, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\nTelemetry exports: daemon traces, metrics and logs; container logs and resource usage\n"
     );
 }
 

@@ -283,6 +283,25 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             .await
             .map_err(BoundaryError::from)
     }
+
+    async fn containers(&self) -> Result<Vec<crate::docker::ManagedContainer>, BoundaryError> {
+        Ok(self.docker.managed_containers(&self.instance_id).await?)
+    }
+
+    async fn container_usage(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::docker::ContainerUsage>, BoundaryError> {
+        Ok(self.docker.container_usage(id).await?)
+    }
+
+    fn container_logs(&self, id: &str, since: i32) -> crate::docker::ContainerLogs {
+        self.docker.container_logs(id, since)
+    }
+
+    fn container_starts(&self, since: i64) -> crate::docker::ContainerStarts {
+        self.docker.container_starts(since)
+    }
 }
 
 impl<D: DockerApi> ApplicationRuntime<D> {

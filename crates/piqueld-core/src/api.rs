@@ -719,12 +719,29 @@ pub struct SystemStatus {
     pub telemetry: TelemetryStatus,
 }
 
-/// Export of the daemon's traces, metrics and logs over OTLP.
+/// Export of the daemon's traces, metrics and logs over OTLP, and of its
+/// containers' logs and resource usage.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct TelemetryStatus {
     /// Collectors receiving telemetry; empty when `[telemetry]` sets no
     /// endpoint.
     pub destinations: Vec<TelemetryDestinationStatus>,
+    /// Whether the logs and resource usage of the containers piqueld runs are
+    /// exported along with the daemon's own telemetry.
+    #[serde(default)]
+    pub containers: bool,
+}
+
+impl TelemetryStatus {
+    /// What is exported, as status output describes it.
+    #[must_use]
+    pub const fn exported(&self) -> &'static str {
+        if self.containers {
+            "daemon traces, metrics and logs; container logs and resource usage"
+        } else {
+            "daemon traces, metrics and logs"
+        }
+    }
 }
 
 /// One collector receiving the daemon's telemetry.

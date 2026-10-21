@@ -75,6 +75,11 @@ pub(crate) use timeout::DockerTimeout;
 mod build_queue;
 pub use build_queue::BuildPriority;
 mod configs;
+mod containers;
+pub use containers::{
+    ContainerLogs, ContainerStarts, ContainerState, ContainerUsage, LogLines, ManagedContainer,
+    Workload,
+};
 mod engine;
 mod exec;
 mod files;
@@ -271,6 +276,22 @@ pub trait DockerApi: Send + Sync + 'static {
         since: u32,
         stream: Option<piqueld_core::api::LogStream>,
     ) -> Result<piqueld_core::api::ApplicationLogs, DockerError>;
+
+    /// Lists every container `instance` runs, stopped ones included, for
+    /// container telemetry.
+    async fn managed_containers(
+        &self,
+        instance: &InstanceId,
+    ) -> Result<Vec<ManagedContainer>, DockerError>;
+    /// Reads a running container's resource usage once; `None` once it is
+    /// gone.
+    async fn container_usage(&self, id: &str) -> Result<Option<ContainerUsage>, DockerError>;
+    /// Follows a container's stdout and stderr from `since`, in Unix seconds,
+    /// until it stops; a stopped container's ends once read.
+    fn container_logs(&self, id: &str, since: i32) -> ContainerLogs;
+    /// Yields each container start from `since`, in Unix seconds, replaying
+    /// the ones before the stream connects, until it fails.
+    fn container_starts(&self, since: i64) -> ContainerStarts;
 
     /// Probes Engine reachability independently of Swarm configuration.
     async fn ping(&self) -> Result<(), DockerError>;

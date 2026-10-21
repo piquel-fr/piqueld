@@ -21,7 +21,7 @@ use hyper::Method;
 use piqueld_core::{
     DockerNetworkName,
     manifest::ValidatedRoute,
-    resource::{APPLICATION_LABEL, INSTANCE_LABEL, MANAGED_LABEL},
+    resource::{APPLICATION_LABEL, INGRESS_LABEL, INSTANCE_LABEL, MANAGED_LABEL},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -30,9 +30,6 @@ use std::{
     time::Duration,
 };
 
-/// Marks the gateway container, the apps node, `cloudflared`, and their
-/// egress network.
-const GATEWAY_LABEL: &str = "io.piqueld.ingress";
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
 pub(super) const CONFIGURATION_LABEL: &str = "io.piqueld.ingress-configuration";
 /// The writable scratch space of managed containers with a temporary directory.
@@ -42,7 +39,7 @@ impl Ingress {
     /// Ownership labels applied to the gateway container, the apps node,
     /// `cloudflared`, and the egress network.
     pub(super) fn labels(&self) -> Value {
-        json!({MANAGED_LABEL:"true",INSTANCE_LABEL:self.instance_id,GATEWAY_LABEL:"true"})
+        json!({MANAGED_LABEL:"true",INSTANCE_LABEL:self.instance_id,INGRESS_LABEL:"true"})
     }
 
     /// Rejects resources that exist under a managed name but were not created
@@ -51,7 +48,7 @@ impl Ingress {
         ensure!(
             labels[MANAGED_LABEL] == "true"
                 && labels[INSTANCE_LABEL] == self.instance_id
-                && labels[GATEWAY_LABEL] == "true",
+                && labels[INGRESS_LABEL] == "true",
             "gateway resource is not owned by this installation"
         );
         Ok(())
