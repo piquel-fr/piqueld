@@ -27,7 +27,7 @@ macro_rules! validated_string {
 
         impl std::error::Error for $error {}
 
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, utoipa::ToSchema)]
+        #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, utoipa::ToSchema)]
         $(#[$meta])*
         #[serde(transparent)]
         pub struct $name(String);
@@ -63,6 +63,14 @@ macro_rules! validated_string {
         impl std::fmt::Display for $name {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(self.as_str())
+            }
+        }
+
+        /// Formats as its quoted value, like a `str`, since messages quote
+        /// values with `{:?}`.
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Debug::fmt(self.as_str(), formatter)
             }
         }
 
@@ -307,5 +315,11 @@ mod tests {
             assert!(serde_json::from_str::<ServiceName>(&wire).is_err());
             assert!(serde_json::from_str::<VolumeName>(&wire).is_err());
         }
+    }
+
+    #[test]
+    fn names_debug_as_their_quoted_value() {
+        let name = ApplicationName::parse("notes").unwrap();
+        assert_eq!(format!("application {name:?}"), r#"application "notes""#);
     }
 }
