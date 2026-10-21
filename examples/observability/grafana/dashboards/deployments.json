@@ -397,12 +397,12 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{service_name=\"piqueld\"} | piqueld_application=~\"$application\" | piqueld_event_kind != \"\"",
+          "expr": "{service_name=\"piqueld\"} | piqueld_application=~\"$application\" | piqueld_operation_id != \"\"",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "description": "History events. Open one for a link to its trace.",
+      "description": "History events of operations. Open one for a link to its trace.",
       "options": {
         "showTime": true,
         "wrapLogMessage": true,

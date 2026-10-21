@@ -640,7 +640,11 @@ adjust each `path`. Then:
    OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
    ```
 
-   The collector also accepts OTLP/HTTP on port 4318.
+   The collector also accepts OTLP/HTTP on port 4318. Importing applications
+   can send any telemetry, including records that pass for the daemon's, so
+   list only applications you trust, and replace the placeholder `my-app`
+   before deploying: a name no application holds is granted to whichever
+   application [takes it first](application-manifest.md#links).
 
 Container metrics carry the [container attributes](#container-telemetry)
 `piqueld.application`, `piqueld.environment`, `piqueld.preview`,

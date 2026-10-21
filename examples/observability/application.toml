@@ -137,7 +137,6 @@ memory_bytes = 1073741824
 
 [[spec.services]]
 name = "grafana"
-depends_on = ["prometheus", "tempo", "loki"]
 
 [spec.services.source]
 type = "image"

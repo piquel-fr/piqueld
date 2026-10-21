@@ -43,12 +43,8 @@ datasources:
         queries:
           - name: Span duration
             query: 'histogram_quantile(0.95, sum by (le) (rate(traces_spanmetrics_latency_bucket{$$__tags}[5m])))'
-      serviceMap:
-        datasourceUid: prometheus
       nodeGraph:
         enabled: true
-      lokiSearch:
-        datasourceUid: loki
       streamingEnabled:
         search: true
         metrics: true

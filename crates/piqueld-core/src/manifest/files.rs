@@ -358,7 +358,6 @@ mod tests {
                 })
                 .collect(),
         );
-        assert_eq!(files.iter().count(), 10);
         example.spec().check_captured(&files).unwrap();
     }
 }

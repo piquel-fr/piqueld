@@ -42,8 +42,8 @@
           "type": "loki",
           "uid": "loki"
         },
-        "query": "label_values({piqueld_application=~\"$application\"}, piqueld_environment)",
-        "definition": "label_values({piqueld_application=~\"$application\"}, piqueld_environment)",
+        "query": "label_values({piqueld_workload=~\"service|job\", piqueld_application=~\"$application\"}, piqueld_environment)",
+        "definition": "label_values({piqueld_workload=~\"service|job\", piqueld_application=~\"$application\"}, piqueld_environment)",
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
@@ -62,8 +62,8 @@
           "type": "loki",
           "uid": "loki"
         },
-        "query": "label_values({piqueld_application=~\"$application\", piqueld_environment=~\"$environment\"}, service_name)",
-        "definition": "label_values({piqueld_application=~\"$application\", piqueld_environment=~\"$environment\"}, service_name)",
+        "query": "label_values({piqueld_workload=~\"service|job\", piqueld_application=~\"$application\", piqueld_environment=~\"$environment\"}, service_name)",
+        "definition": "label_values({piqueld_workload=~\"service|job\", piqueld_application=~\"$application\", piqueld_environment=~\"$environment\"}, service_name)",
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
