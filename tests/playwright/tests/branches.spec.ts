@@ -221,9 +221,18 @@ test('an application deploys on push by polling or webhook, and an environment o
   expect(attempts).toBe(1);
   await page.unroute(`**/applications/${app}/webhook/secret`);
   await page.getByRole('button', { name: 'Reload saved configuration', exact: true }).click();
-  const generated = page.waitForResponse(response => response.url().endsWith(`/applications/${app}/webhook/secret`));
+  // Read through a route: Chromium may drop a response body before
+  // `waitForResponse` gets to read it.
+  let generated!: (secret: string) => void;
+  const received = new Promise<string>(resolve => { generated = resolve; });
+  await page.route(`**/applications/${app}/webhook/secret`, async route => {
+    const response = await route.fetch();
+    generated((await response.json()).data.secret);
+    await route.fulfill({ response });
+  });
   await webhook.getByRole('button', { name: 'Generate secret', exact: true }).click();
-  const { secret } = (await (await generated).json()).data;
+  const secret = await received;
+  await page.unroute(`**/applications/${app}/webhook/secret`);
   await expect(webhook.locator('.secret-box')).toHaveText(secret);
   // Only that it was generated is announced, never the secret itself.
   await expect(webhook.locator('[role=status]', { hasText: secret })).toHaveCount(0);
