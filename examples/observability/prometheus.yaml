@@ -1,0 +1,18 @@
+# Prometheus 3.15: receives metrics over OTLP from the collector, and span
+# metrics over remote write from Tempo. It scrapes nothing.
+storage:
+  tsdb:
+    retention:
+      time: 15d
+    # OTLP pushes can arrive out of order.
+    out_of_order_time_window: 30m
+
+otlp:
+  # Labels identifying each container's metrics, as `piqueld_application` and
+  # so on. The daemon's own metrics are `job="piqueld"`.
+  promote_resource_attributes:
+    - piqueld.application
+    - piqueld.environment
+    - piqueld.preview
+    - piqueld.workload
+    - container.name

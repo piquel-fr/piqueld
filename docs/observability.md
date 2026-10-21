@@ -4,7 +4,9 @@ piqueld keeps structured control-plane history in SQLite. Operation records are
 execution state; events are the independently readable historical record. The
 daemon can also push its traces, metrics and logs to an OpenTelemetry collector;
 see [telemetry export](#telemetry-export). It does not manage collectors or
-monitor its own outages from outside.
+monitor its own outages from outside, but an
+[example application](#observability-stack) deploys a collector with Prometheus,
+Tempo, Loki and Grafana.
 
 ## History and diagnostics
 
@@ -480,7 +482,7 @@ piqueld no longer serves Prometheus metrics itself: the `[metrics]` table was
 removed, and configurations that still set it fail to load. Set
 `telemetry.endpoint` to a collector instead. Prometheus 3 receives OTLP itself
 (over HTTP, with `--web.enable-otlp-receiver`), so the collector can forward
-metrics to it with its `otlphttp` exporter, without a scrape endpoint.
+metrics to it with its `otlp_http` exporter, without a scrape endpoint.
 
 ### Receiving telemetry in an application
 
@@ -501,7 +503,7 @@ as it does with the [ingress gateway](ingress.md).
    receives_telemetry = true
    [spec.services.source]
    type = "image"
-   image = "otel/opentelemetry-collector-contrib:0.139.0"
+   image = "otel/opentelemetry-collector-contrib:0.163.2"
    ```
 
    `piquelctl app service telemetry APP SERVICE on|off` and the service's
@@ -584,3 +586,65 @@ include error details. Grant it only to an application whose writers and
 deployers you trust with that, as you would with `system:read`. Its receiving
 service also runs as the daemon's user, which matters only if it escapes its
 container: nothing of the daemon's beyond the socket directory is mounted.
+
+## Observability stack
+
+[`examples/observability`](../examples/observability/application.toml) is an
+ordinary application that stores and shows piqueld's telemetry: an
+OpenTelemetry Collector receiving it, Prometheus keeping metrics for 15 days,
+Tempo and Loki keeping traces and logs for 7, and Grafana. Grafana's data
+sources link logs and traces both ways, and metric exemplars to traces. Its
+dashboards cover the daemon's health, deployments and builds, services
+(replicas and container usage), and logs.
+
+Its configuration files are mounted from the repository with `path`, so it
+deploys from a repository: fork piqueld, or copy the directory into yours and
+adjust each `path`. Then:
+
+1. Edit the manifest: `grafana_hostname`, a hostname for Grafana's private
+   route, which needs a DNS record like any
+   [private route](ingress.md#public-and-private-routes); the applications the
+   collector is exported to; and `spec.manifest`, which should name your
+   repository and either follow a branch or pin the `commit` of a release tag.
+2. Create the application, grant it telemetry, and deploy it:
+
+   ```console
+   piquelctl app apply --file examples/observability/application.toml
+   piquelctl env telemetry observability production on
+   piquelctl app deploy observability --yes
+   ```
+
+   `piquelctl env sync observability production on` makes pushes to its
+   branch deploy it. `piquelctl status` then shows the receiver connected.
+3. Open the URL `piquelctl env url observability` prints, from the tailnet, and
+   sign in as `admin` with the generated password:
+
+   ```console
+   piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
+   ```
+
+   Grafana sets it when it first starts, so regenerating the secret doesn't
+   change it; change it in Grafana instead.
+4. Other applications can send their own telemetry to the collector. List them
+   in the manifest's `[[spec.exports]]`, then import it in each of them and
+   point its OpenTelemetry SDK at it:
+
+   ```toml
+   [[spec.imports]]
+   application = "observability"
+   service = "collector"
+
+   [[spec.services]]
+   name = "web"
+   [spec.services.environment]
+   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
+   ```
+
+   The collector also accepts OTLP/HTTP on port 4318.
+
+Container metrics carry the [container attributes](#container-telemetry)
+`piqueld.application`, `piqueld.environment`, `piqueld.preview`,
+`piqueld.workload` and `container.name` as labels, such as
+`piqueld_application`, and the service as `job`. Loki indexes logs by
+`service_name` and the same `piqueld_*` attributes; everything else, such as
+the trace ID of the daemon's records, is structured metadata.
