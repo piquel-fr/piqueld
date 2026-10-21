@@ -617,11 +617,22 @@ fn repeated_pagination_cursor_is_rejected() {
     let _ = server.finish();
 }
 
-/// Runs `app exec notes web -i -- cat -` against an echo server, feeding `stdin`.
-fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
-    let server = start_server(false, 2, |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/environments/app-notes-01/exec" => {
+/// Runs `<target> web -i -- cat -` against an echo server, feeding `stdin`.
+/// The command must run in environment `runs_in` of `notes`, which has one
+/// preview, `env-preview-01`.
+fn exec_cat(target: &[&str], runs_in: &str, stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
+    let exec = format!("/api/v1/environments/{runs_in}/exec");
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => {
+            let mut view = app_view("app-notes-01", "notes");
+            view["previews"] = json!([environment(
+                "app-notes-01",
+                "env-preview-01",
+                "notes-feat-login-0a1b2c"
+            )]);
+            Reply::json(view)
+        }
+        path if path == exec => {
             assert_eq!(request.method, "GET");
             assert_eq!(request.headers["upgrade"], "websocket");
             Reply::upgrade()
@@ -630,8 +641,8 @@ fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
     });
     let mut child = server
         .command()
-        .args(["app", "exec", "app-notes-01", "web", "-i", "--"])
-        .args(["cat", "-"])
+        .args(target)
+        .args(["web", "-i", "--", "cat", "-"])
         .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -646,7 +657,8 @@ fn exec_cat(stdin: Stdio, input: &[u8]) -> (TestServer, Output) {
 
 #[test]
 fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
-    let (server, output) = exec_cat(Stdio::piped(), b"hello");
+    let target = ["app", "exec", "app-notes-01"];
+    let (server, output) = exec_cat(&target, "app-notes-01", Stdio::piped(), b"hello");
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(output.stdout, b"hello");
     assert_eq!(output.stderr, b"closed");
@@ -654,10 +666,20 @@ fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
 }
 
 #[test]
+fn preview_exec_runs_the_command_in_the_preview() {
+    let target = ["preview", "exec", "app-notes-01", "notes-feat-login-0a1b2c"];
+    let (server, output) = exec_cat(&target, "env-preview-01", Stdio::piped(), b"hello");
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(output.stdout, b"hello");
+    let _ = server.finish();
+}
+
+#[test]
 fn exec_fails_instead_of_closing_stdin_when_it_cannot_be_read() {
     // Reading a directory fails with EISDIR.
     let directory = fs::File::open(env!("CARGO_MANIFEST_DIR")).expect("directory");
-    let (server, output) = exec_cat(directory.into(), b"");
+    let target = ["app", "exec", "app-notes-01"];
+    let (server, output) = exec_cat(&target, "app-notes-01", directory.into(), b"");
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");

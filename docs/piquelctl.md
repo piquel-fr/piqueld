@@ -75,6 +75,7 @@ piquelctl preview show <app> <preview> [--slot <slot>]
 piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
 piquelctl preview wait <app> <preview> [--slot <slot>] [--deployment <id>] [--ready runtime|routes]
 piquelctl preview url <app> <preview> [--slot <slot>] [--route <name>]
+piquelctl preview exec <app> <preview> <service> [--slot <slot>] [-i] [-t] -- <command>...
 piquelctl preview delete <app> <preview> [--slot <slot>]
 piquelctl preview prune <app> --branch-gone
 piquelctl events --application <application-id> --limit 50
@@ -319,7 +320,7 @@ size of those it removed since the daemon started.
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
 is interpreted as seconds. The timeout bounds the complete command, except
-`login`, which waits for browser approval, and an `app exec` session; interactive
+`login`, which waits for browser approval, and an `app exec` or `preview exec` session; interactive
 confirmation prompts do not consume it. Read requests can use the full remaining
 command budget. Idempotent mutations retry one transport failure if time remains;
 a request that exhausts the command budget cannot be retried.
@@ -361,7 +362,7 @@ written to stderr, so stdout remains valid JSON.
 | `env promote --plan` | `PlanView`, with `release` |
 | `app logs` / `env logs` | `ApplicationLogs` |
 | `app validate` | `{ "application": string }` |
-| `app exec` | None; the command's raw output |
+| `app exec` / `preview exec` | None; the command's raw output |
 | `app plan` | `PlanView` |
 | `app route list` | `[RouteStatus]`, each with `"environment": string` (its name) |
 | `app file list` | `[ServiceFile]`, each with `"service": string` |
@@ -723,10 +724,11 @@ administrative work such as creating an invitation or opening a console:
 piquelctl app exec piquel-fr auth -- auth-service invite create
 piquelctl app exec piquel-fr db -i -- psql < dump.sql
 piquelctl app exec piquel-fr auth -it -- /bin/sh
+piquelctl preview exec piquel-fr feat/login auth -it -- /bin/sh
 ```
 
 It runs in the application's only environment; with several, `--env ENV` names
-one. The command runs inside the task, so it shares the task's image, environment,
+one. `preview exec` runs it in a preview instead, addressed like `preview logs`. The command runs inside the task, so it shares the task's image, environment,
 secrets, mounts and networks. It works over every transport, uses account
 authentication and needs no SSH access; the account (or token) needs
 [`apps:exec`](authorization.md) on the application. Output streams to stdout and stderr, and

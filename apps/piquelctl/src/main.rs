@@ -26,8 +26,8 @@ use tokio::time::Instant;
 /// Parses arguments, then dispatches in three stages:
 /// 1. `profiles` is answered from loaded profile files without connecting.
 /// 2. Connection settings are resolved; `login` runs under its own device-flow deadline.
-/// 3. `app exec` streams for as long as the command runs; every other command
-///    runs under the `--timeout` supervisor.
+/// 3. `app exec` and `preview exec` stream for as long as the command runs;
+///    every other command runs under the `--timeout` supervisor.
 ///
 /// Errors are rendered to stderr and mapped to `ErrorKind` exit codes.
 #[tokio::main]
@@ -65,6 +65,9 @@ async fn main() -> ExitCode {
             // A command session is not bounded by the command timeout.
             cli::Command::App {
                 command: cli::AppCommand::Exec(args),
+            } => return args.run(&commands::build_client(&cli)?).await,
+            cli::Command::Preview {
+                command: previews::PreviewCommand::Exec(args),
             } => return args.run(&commands::build_client(&cli)?).await,
             _ => run_with_timeout(&cli, &mut console).await?,
         }

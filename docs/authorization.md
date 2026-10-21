@@ -30,7 +30,7 @@ added later: requests about an environment are checked on its application.
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
 | `previews:deploy` | all or listed applications | Create and deploy [previews](#preview-permissions), including from a local worktree, and read their logs; included in `apps:deploy` |
 | `previews:delete` | all or listed applications | Delete and prune previews; included in `apps:delete` |
-| `apps:exec` | all or listed applications | Run commands in running containers (`piquelctl app exec`), which reaches everything those containers can, including secret values |
+| `apps:exec` | all or listed applications | Run commands in running containers (`piquelctl app exec` and `preview exec`), which reaches everything those containers can, including secret values |
 | `secrets:write` | all or listed applications | Store, regenerate, and delete secret values, and choose which environments may mount a stored secret |
 | `logs:read` | all or listed applications | Runtime, build and job logs, which may contain sensitive output |
 | `events:read` | all or listed applications | Application history, diagnostics, and deployment analytics |
