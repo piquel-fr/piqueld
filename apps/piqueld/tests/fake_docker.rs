@@ -93,6 +93,16 @@ struct FakeDocker {
     fail_job_cleanup: Arc<AtomicBool>,
     /// Blocks removing an operation's own run while held.
     hold_job_cleanup: Arc<Mutex<()>>,
+    /// Counts removals of an operation's own run, including held ones.
+    job_cleanups: Arc<std::sync::atomic::AtomicUsize>,
+    /// Blocks reading a run's output while held.
+    hold_job_output: Arc<Mutex<()>>,
+    /// Counts reads of a run's output, including held ones.
+    job_output_reads: Arc<std::sync::atomic::AtomicUsize>,
+    /// Blocks waiting for removed job runs to stop while held.
+    hold_job_stop: Arc<Mutex<()>>,
+    /// Counts waits for removed job runs to stop, including held ones.
+    job_stop_waits: Arc<std::sync::atomic::AtomicUsize>,
     /// The engine's images; builds and pulls add theirs.
     local_images: Arc<Mutex<Vec<LocalImage>>>,
     /// Holds builds once their image exists, until released.
@@ -776,6 +786,8 @@ impl DockerApi for FakeDocker {
         &self,
         _job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobOutput, DockerError> {
+        self.job_output_reads.fetch_add(1, Ordering::SeqCst);
+        drop(self.hold_job_output.lock().await);
         if self.fail_job_output.load(Ordering::SeqCst) {
             return Err(DockerError::Request("read job output"));
         }
@@ -791,6 +803,7 @@ impl DockerApi for FakeDocker {
         runs: JobRuns<'_>,
     ) -> Result<(), DockerError> {
         if matches!(runs, JobRuns::Of(_)) {
+            self.job_cleanups.fetch_add(1, Ordering::SeqCst);
             let _held = self.hold_job_cleanup.lock().await;
             if self.fail_job_cleanup.load(Ordering::SeqCst) {
                 return Err(DockerError::Request("remove jobs"));
@@ -800,6 +813,23 @@ impl DockerApi for FakeDocker {
             .lock()
             .await
             .retain(|_, (operation, ..)| !runs.selects(Some(operation)));
+        Ok(())
+    }
+
+    async fn wait_jobs_stopped(
+        &self,
+        _ownership: &BTreeMap<String, String>,
+        _runs: JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        self.job_stop_waits.fetch_add(1, Ordering::SeqCst);
+        let _held = self.hold_job_stop.lock().await;
+        Ok(())
+    }
+
+    async fn wait_volumes_released(
+        &self,
+        _job: &piqueld_core::DesiredJobRun,
+    ) -> Result<(), DockerError> {
         Ok(())
     }
 
@@ -1282,6 +1312,95 @@ impl ControllerHarness {
         })
         .await
         .expect("job starts");
+    }
+
+    /// Fails a job and its cleanup, leaving the cleanup pending for scans.
+    async fn leave_job_cleanup_pending(&self) {
+        self.docker.job_exit.store(3, Ordering::SeqCst);
+        self.docker.fail_job_cleanup.store(true, Ordering::SeqCst);
+        let failed = self
+            .apply(manifest_with_jobs(&["migrate"], 300), None)
+            .await;
+        assert_eq!(
+            self.scan_result(&failed).await,
+            (OperationState::Failed, Some("job_failed".into()))
+        );
+        self.docker.fail_job_cleanup.store(false, Ordering::SeqCst);
+    }
+
+    /// Scans once, running `meanwhile` after discovery, while the scan
+    /// retries pending job cleanup.
+    async fn scan_during_cleanup(&self, meanwhile: impl Future<Output = ()>) {
+        let cleanups = self.docker.job_cleanups.load(Ordering::SeqCst);
+        let held = self.docker.hold_job_cleanup.lock().await;
+        let shutdown = CancellationToken::new();
+        let scan = self.controller.scan(&shutdown);
+        tokio::pin!(scan);
+        tokio::select! {
+            result = &mut scan => panic!("scan finished while cleanup was held: {result:?}"),
+            retrying = eventually(Duration::from_secs(10), POLL, async || {
+                (self.docker.job_cleanups.load(Ordering::SeqCst) > cleanups).then_some(())
+            }) => retrying.expect("the scan retries the failed run's cleanup"),
+        }
+        meanwhile.await;
+        drop(held);
+        scan.await.unwrap();
+    }
+
+    /// Adds a service of another installation named like `operation`'s
+    /// prepared service `name`, a conflict blocking its plan, and returns it.
+    async fn add_foreign_service(&self, operation: &Operation, name: &str) -> ObservedService {
+        let desired = self
+            .store
+            .prepared_target(&operation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .services
+            .into_iter()
+            .find(|service| service.logical_name.as_str() == name)
+            .unwrap();
+        let mut labels = foreign_labels(&operation.environment_id);
+        labels.insert(SERVICE_LABEL.into(), name.into());
+        let foreign = ObservedService {
+            labels,
+            ..observed_service(&desired)
+        };
+        self.docker
+            .observed
+            .lock()
+            .await
+            .services
+            .push(foreign.clone());
+        foreign
+    }
+
+    /// Removes `foreign`, resolving its conflict.
+    async fn remove_foreign_service(&self, foreign: &ObservedService) {
+        self.docker
+            .observed
+            .lock()
+            .await
+            .services
+            .retain(|service| service != foreign);
+    }
+
+    /// The logical names of the services this installation runs, sorted.
+    async fn owned_services(&self) -> Vec<String> {
+        let mut names = self
+            .docker
+            .observed
+            .lock()
+            .await
+            .services
+            .iter()
+            .filter(|service| {
+                service.labels.get(INSTANCE_LABEL).map(String::as_str) != Some("other-instance")
+            })
+            .map(|service| service.labels[SERVICE_LABEL].clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
     }
 
     /// The application's newest build record and its retained output.
@@ -2509,6 +2628,35 @@ async fn deploy_dependents(
     (state, harness.docker.rollout.lock().await.clone())
 }
 
+/// A service that disappears while the deployment waits for it fails the
+/// attempt, which is retried, instead of waiting out the convergence timeout.
+#[tokio::test]
+async fn a_service_removed_while_waiting_for_it_fails_the_attempt() {
+    let harness = ControllerHarness::new().await;
+    harness
+        .docker
+        .stall_convergence
+        .store(true, Ordering::SeqCst);
+    let operation = harness.create().await;
+    let remove = async {
+        eventually(Duration::from_secs(10), POLL, async || {
+            (harness.operation(&operation.id).await.phase.as_deref() == Some("wait_for_service"))
+                .then_some(())
+        })
+        .await
+        .expect("the deployment waits for its service");
+        harness.docker.observed.lock().await.services.clear();
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(harness.scan(), remove)
+    })
+    .await
+    .expect("the wait ends once its service is gone");
+    let failed = harness.operation(&operation.id).await;
+    assert_eq!(failed.state, OperationState::Failed);
+    assert_eq!(failed.error_code.as_deref(), Some("docker_request_failed"));
+}
+
 #[tokio::test]
 async fn dependents_roll_out_once_their_dependencies_converge() {
     // `worker` is independent and sorts after the dependent `server`.
@@ -2534,12 +2682,12 @@ async fn dependents_roll_out_once_their_dependencies_converge() {
 
 #[tokio::test]
 async fn each_dependency_gets_the_full_convergence_timeout() {
-    // Each link converges in about 1.25s of 250ms polls: well within the 3s
-    // timeout alone, but the chain as a whole takes longer.
+    // Each link converges in about 1.75s of backed-off polls: well within
+    // the 4s timeout alone, but the chain as a whole takes longer.
     let rollout = deploy_dependents(
         &[("db", &[]), ("api", &["db"]), ("web", &["api"])],
-        &[("db", 6), ("api", 6), ("web", 6)],
-        Duration::from_secs(3),
+        &[("db", 5), ("api", 5), ("web", 5)],
+        Duration::from_secs(4),
     )
     .await;
     assert_eq!(
@@ -3942,9 +4090,10 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
         .slow_services
         .lock()
         .await
-        // Each dependency waits about two seconds, with room for journal I/O.
-        // Their combined wait still exceeds the three-second budget.
-        .extend([("storage".into(), 9), ("db".into(), 9)]);
+        // Each dependency waits about 1.75s of backed-off polls, with room
+        // for journal I/O. Their combined wait still exceeds the three-second
+        // budget.
+        .extend([("storage".into(), 5), ("db".into(), 5)]);
     let mut input = manifest_with_job_dependencies();
     // A prerequisite's own job must succeed before that service is started.
     let mut storage_job = input.spec.jobs[0].clone();
@@ -4101,6 +4250,95 @@ async fn failed_migration_rolls_back_prerequisites_and_repairs_active_services()
             Some(1)
         );
     }
+}
+
+/// A deployment whose own plan a conflict blocks has ended until an
+/// operator resolves it, so repair returns its job prerequisites to the
+/// active target. A conflict planning can't see is retried at once instead,
+/// so its prerequisites stay rather than being rolled back and forth.
+#[tokio::test]
+async fn a_deployment_blocked_by_a_conflict_rolls_back_its_job_prerequisites() {
+    let harness = ControllerHarness::new().await;
+    let mut initial = manifest_with_job_dependencies();
+    initial.spec.jobs.clear();
+    initial.spec.services[0].depends_on.clear();
+    initial
+        .spec
+        .services
+        .retain(|service| matches!(service.name.as_str(), "web" | "other"));
+    let first = harness.apply(initial, None).await;
+    harness.finish(&first).await;
+    let mut replacement = manifest_with_job_dependencies();
+    let mut extra = replacement.spec.services[3].clone();
+    extra.name = "extra".into();
+    replacement.spec.services.push(extra);
+    *harness.docker.conflicting_job.lock().await = Some("migrate".into());
+    let operation = harness.apply(replacement, None).await;
+    for _ in 0..3 {
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("ownership_conflict".into()))
+        );
+        assert_eq!(
+            harness.owned_services().await,
+            ["db", "other", "storage", "web"]
+        );
+    }
+
+    // A foreign service takes the name of the one the deployment adds.
+    let foreign = harness.add_foreign_service(&operation, "extra").await;
+    for _ in 0..8 {
+        harness.scan().await;
+    }
+    assert_eq!(harness.owned_services().await, ["other", "web"]);
+    assert_eq!(harness.started_jobs().await, [] as [String; 0]);
+
+    // Once the conflict is resolved, the deployment rolls out after all.
+    harness.remove_foreign_service(&foreign).await;
+    *harness.docker.conflicting_job.lock().await = None;
+    harness.finish(&operation).await;
+    assert_eq!(
+        harness.owned_services().await,
+        ["db", "extra", "other", "storage", "web"]
+    );
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
+}
+
+/// A conflict blocking a deployment after its exclusive job succeeded keeps
+/// the services the job stopped stopped, as they would run against data in
+/// the new format. The deployment continues once the conflict is resolved.
+#[tokio::test]
+async fn a_conflict_after_an_exclusive_job_succeeded_keeps_its_services_stopped() {
+    let harness = ControllerHarness::new().await;
+    let first = harness.apply(manifest(), None).await;
+    harness.finish(&first).await;
+    let mut replacement = manifest_with_exclusive_job();
+    let mut extra = replacement.spec.services[0].clone();
+    extra.name = "extra".into();
+    extra.mounts.clear();
+    replacement.spec.services.push(extra);
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let operation = harness.apply(replacement, None).await;
+    // The conflict appears while the job runs.
+    let conflict = async {
+        harness.wait_for_job_starts(1).await;
+        let foreign = harness.add_foreign_service(&operation, "extra").await;
+        harness.docker.hold_jobs.store(false, Ordering::SeqCst);
+        foreign
+    };
+    let ((), foreign) = tokio::join!(harness.scan(), conflict);
+    for _ in 0..3 {
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("ownership_conflict".into()))
+        );
+        assert_eq!(harness.owned_services().await, [] as [String; 0]);
+    }
+
+    harness.remove_foreign_service(&foreign).await;
+    harness.finish(&operation).await;
+    assert_eq!(harness.owned_services().await, ["extra", "web"]);
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
 #[tokio::test]
@@ -4291,6 +4529,182 @@ async fn retried_operation_skips_jobs_that_already_succeeded() {
     *harness.docker.conflicting_job.lock().await = None;
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate", "seed"]);
+}
+
+/// Waiting for removed job runs to stop leaves the Docker mutation lock
+/// free, so other environments' changes and secret deletion carry on.
+#[tokio::test]
+async fn waiting_for_job_runs_to_stop_leaves_docker_mutations_free() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    let held = harness.docker.hold_job_stop.lock().await;
+    let shutdown = CancellationToken::new();
+    let scan = harness.controller.scan(&shutdown);
+    tokio::pin!(scan);
+    tokio::select! {
+        result = &mut scan => panic!("scan finished while job runs were stopping: {result:?}"),
+        waiting = eventually(Duration::from_secs(10), POLL, async || {
+            (harness.docker.job_stop_waits.load(Ordering::SeqCst) > 0).then_some(())
+        }) => waiting.expect("the deployment waits for earlier job runs to stop"),
+    }
+    let runtime = harness.controller.runtime(Arc::default());
+    drop(
+        tokio::time::timeout(Duration::from_secs(5), runtime.lock_mutations())
+            .await
+            .expect("the mutation lock is free while job runs stop"),
+    );
+    drop(held);
+    scan.await.unwrap();
+    assert_eq!(
+        harness.operation(&operation.id).await.state,
+        OperationState::Succeeded
+    );
+}
+
+/// A scan processes the operation discovery found. One requested while the
+/// scan retried cleanup is left to the next pass, rather than running under
+/// the scan of the operation it replaced.
+#[tokio::test]
+async fn a_scan_leaves_operations_requested_after_discovery_to_the_next_pass() {
+    let harness = ControllerHarness::new().await;
+    harness.leave_job_cleanup_pending().await;
+    let mut newer = None;
+    harness
+        .scan_during_cleanup(async {
+            newer = Some(harness.apply(manifest(), None).await);
+        })
+        .await;
+    let newer = newer.unwrap();
+    assert_eq!(
+        harness.operation(&newer.id).await.state,
+        OperationState::Requested
+    );
+    harness.finish(&newer).await;
+}
+
+/// A scan acts on the current state of the operation discovery found. One
+/// an earlier scan finished meanwhile is not run again, so its environment
+/// isn't reported degraded by a failed journal write.
+#[tokio::test]
+async fn a_scan_leaves_an_operation_finished_since_discovery_alone() {
+    let harness = ControllerHarness::new().await;
+    harness.leave_job_cleanup_pending().await;
+    let operation = harness.apply(manifest(), None).await;
+    harness
+        .store
+        .transition_operation(
+            &operation.id,
+            OperationState::Requested,
+            OperationState::Running,
+            None,
+        )
+        .await
+        .unwrap();
+    let status = async || {
+        harness
+            .store
+            .status(&operation.environment_id)
+            .await
+            .unwrap()
+            .state
+    };
+    let before = status().await;
+    harness
+        .scan_during_cleanup(async {
+            harness
+                .store
+                .transition_operation(
+                    &operation.id,
+                    OperationState::Running,
+                    OperationState::Succeeded,
+                    None,
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+    assert_eq!(status().await, before);
+    assert_eq!(
+        harness.operation(&operation.id).await.state,
+        OperationState::Succeeded
+    );
+}
+
+/// Shutdown lets a deployment waiting for its job record that the run was
+/// interrupted, instead of dropping it mid-way.
+#[tokio::test]
+async fn shutdown_lets_a_running_job_record_its_interruption() {
+    let harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    let operation = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    let shutdown = CancellationToken::new();
+    let run = harness.controller.run(
+        Arc::default(),
+        Duration::from_mins(1),
+        0,
+        0,
+        shutdown.clone(),
+    );
+    let stop = async {
+        harness.wait_for_job_starts(1).await;
+        shutdown.cancel();
+    };
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, stop) })
+            .await
+            .expect("shutdown finishes within its grace period");
+    result.unwrap();
+    let builds = harness
+        .store
+        .builds(
+            None,
+            Some(&operation.environment_id),
+            &piqueld_core::access::Scope::All,
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        builds.items[0].state,
+        piqueld_core::api::BuildState::Interrupted
+    );
+    // The run is kept for the retried deployment to resume.
+    assert_eq!(harness.docker.jobs.lock().await.len(), 1);
+}
+
+/// A failed migration fails its deployment as soon as its run finished,
+/// before its output is read and its run cleaned up. Dropping the deployment
+/// there, as a shutdown past its grace or a crash does, keeps the failure,
+/// and a restart doesn't run the migration again.
+#[tokio::test]
+async fn a_failed_job_keeps_its_failure_when_its_deployment_is_dropped() {
+    let mut harness = ControllerHarness::new().await;
+    harness.docker.job_exit.store(3, Ordering::SeqCst);
+    let operation = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    let held = harness.docker.hold_job_output.lock().await;
+    let shutdown = CancellationToken::new();
+    tokio::select! {
+        result = harness.controller.scan(&shutdown) => {
+            panic!("scan finished while the output read was held: {result:?}");
+        }
+        reading = eventually(Duration::from_secs(10), POLL, async || {
+            (harness.docker.job_output_reads.load(Ordering::SeqCst) > 0).then_some(())
+        }) => reading.expect("the failed run's output is read"),
+    }
+    drop(held);
+    harness.reopen().await;
+    harness.scan().await;
+    let failed = harness.operation(&operation.id).await;
+    assert_eq!(failed.state, OperationState::Failed);
+    assert_eq!(failed.error_code.as_deref(), Some("job_failed"));
+    assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
 #[tokio::test]
@@ -5407,5 +5821,100 @@ mod promotion {
         assert_eq!(failed.state, OperationState::Failed);
         assert_eq!(failed.error_code.as_deref(), Some("environment_promoted"));
         assert_eq!(shop.harness.pulls().await, pulls);
+    }
+
+    /// An environment made promoted still repairs drift in the build it
+    /// runs: converging its active target again rolls nothing new in.
+    #[tokio::test]
+    async fn a_promoted_environment_repairs_the_build_it_runs() {
+        let promoted = shop_toml("", "", IMAGE);
+        let tracking = promoted.replace(PROMOTED, "");
+        let shop = Shop::new(&tracking).await;
+        let deployed = shop
+            .harness
+            .applications()
+            .deploy(&shop.production, None)
+            .await
+            .unwrap();
+        let deployed = shop.harness.operation(&deployed.id).await;
+        shop.harness.finish(&deployed).await;
+        shop.save(&promoted).await;
+        let production = shop.production.to_string();
+        let web = async || {
+            let mut observed = shop.harness.docker.observed.lock().await;
+            let web = observed
+                .services
+                .iter_mut()
+                .find(|service| service.labels.get(APPLICATION_LABEL) == Some(&production))
+                .unwrap();
+            let replicas = web.replicas;
+            web.replicas = 0;
+            web.convergence = Convergence::Degraded;
+            replicas
+        };
+        web().await;
+        shop.harness.finish(&deployed).await;
+        assert_eq!(web().await, 1);
+    }
+
+    /// A build that prepared its target before the environment was made
+    /// promoted doesn't roll out into it when retried: a promoted
+    /// environment only runs releases.
+    #[tokio::test]
+    async fn a_promoted_environment_never_rolls_out_a_build_prepared_before() {
+        let promoted = shop_toml("", "", IMAGE);
+        let tracking = promoted.replace(PROMOTED, "");
+        let mut shop = Shop::new(&tracking).await;
+        shop.harness.set_convergence_timeout(Duration::from_secs(1));
+        let requested = shop
+            .harness
+            .applications()
+            .deploy(&shop.production, None)
+            .await
+            .unwrap();
+        // It prepares, then fails before rolling out.
+        shop.harness
+            .docker
+            .fail_observations
+            .store(true, Ordering::SeqCst);
+        shop.harness.scan().await;
+        assert_eq!(
+            shop.harness.operation(&requested.id).await.state,
+            OperationState::Failed
+        );
+        assert!(
+            shop.harness
+                .store
+                .prepared_target(&requested.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        shop.harness
+            .docker
+            .fail_observations
+            .store(false, Ordering::SeqCst);
+        shop.save(&promoted).await;
+
+        let retried = shop
+            .harness
+            .applications()
+            .reconcile(&shop.production, None)
+            .await
+            .unwrap();
+        assert_eq!(retried.id, requested.id);
+        shop.harness.scan().await;
+        let failed = shop.harness.operation(&requested.id).await;
+        assert_eq!(failed.state, OperationState::Failed);
+        assert_eq!(failed.error_code.as_deref(), Some("environment_promoted"));
+        assert!(
+            shop.harness
+                .store
+                .get(&shop.production)
+                .await
+                .unwrap()
+                .resolved
+                .is_none()
+        );
     }
 }

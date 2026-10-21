@@ -232,6 +232,19 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_jobs(ownership, runs).await
     }
+    async fn wait_jobs_stopped(
+        &self,
+        ownership: &BTreeMap<String, String>,
+        runs: super::JobRuns<'_>,
+    ) -> Result<(), DockerError> {
+        self.inner.wait_jobs_stopped(ownership, runs).await
+    }
+    async fn wait_volumes_released(
+        &self,
+        job: &piqueld_core::DesiredJobRun,
+    ) -> Result<(), DockerError> {
+        self.inner.wait_volumes_released(job).await
+    }
     async fn remove_network(
         &self,
         name: &str,

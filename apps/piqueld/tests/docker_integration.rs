@@ -819,7 +819,8 @@ impl SwarmScenario {
     /// An exclusive run and a service never share a volume: the run does not
     /// start while a service mounts it, starts once the removed service's
     /// task stopped, and blocks the service until the run is removed. `sh` as
-    /// PID 1 ignores SIGTERM, so removed tasks stop only after the grace period.
+    /// PID 1 ignores SIGTERM, so removed tasks stop only after the grace
+    /// period, which starting the run doesn't wait for: callers wait first.
     async fn exclusive_jobs_hold_their_volume(&self) {
         let docker = &self.engine.docker;
         let mut writer = self.derived_service("writer");
@@ -847,6 +848,11 @@ impl SwarmScenario {
             .remove_service(writer.name.as_str(), &self.labels)
             .await
             .unwrap();
+        assert!(matches!(
+            docker.start_job(&job).await,
+            Err(DockerError::Request(_))
+        ));
+        docker.wait_volumes_released(&job).await.unwrap();
         docker.start_job(&job).await.unwrap();
         assert!(matches!(
             docker.ensure_service(&writer).await,
@@ -867,10 +873,11 @@ impl SwarmScenario {
             .unwrap();
     }
 
-    /// Job removal waits for a run's container to stop even after an earlier
-    /// attempt deleted its service but failed waiting. `sh` as PID 1 ignores
-    /// SIGTERM, so the container outlives its service by the stop grace period.
-    async fn remove_jobs_waits_for_stopping_containers(&self) {
+    /// Waiting for removed job runs covers a run's container until it
+    /// stopped, even after an earlier attempt deleted its service. `sh` as
+    /// PID 1 ignores SIGTERM, so the container outlives its service by the
+    /// stop grace period.
+    async fn job_runs_are_waited_for_until_their_containers_stop(&self) {
         let docker = &self.engine.docker;
         let third = self.job("operation-3", "sleep 300");
         docker.start_job(&third).await.unwrap();
@@ -893,6 +900,10 @@ impl SwarmScenario {
             .await;
         docker
             .remove_jobs(&self.labels, JobRuns::All)
+            .await
+            .unwrap();
+        docker
+            .wait_jobs_stopped(&self.labels, JobRuns::All)
             .await
             .unwrap();
         assert_eq!(running().await, 0);
@@ -1050,7 +1061,9 @@ async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retentio
     scenario.scale_and_reconnect().await;
     scenario.assert_idempotence_and_repair_drift().await;
     scenario.run_jobs().await;
-    scenario.remove_jobs_waits_for_stopping_containers().await;
+    scenario
+        .job_runs_are_waited_for_until_their_containers_stop()
+        .await;
     scenario.exclusive_jobs_hold_their_volume().await;
     scenario.delete_retaining_volume(&http_service).await;
 }

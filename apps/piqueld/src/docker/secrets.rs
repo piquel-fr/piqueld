@@ -46,7 +46,8 @@ impl BollardDocker {
     ///
     /// Secrets are immutable, so an existing owned secret is accepted without
     /// comparing its value. A creation race (HTTP 409) is resolved by
-    /// rechecking ownership of the secret that won.
+    /// rechecking ownership of the secret that won; one removed again since
+    /// fails the request, and the next attempt creates it.
     pub(super) async fn provision_secret(
         &self,
         name: &str,
@@ -70,7 +71,7 @@ impl BollardDocker {
                 .owned_secret(name, ownership)
                 .await?
                 .map(|_| ())
-                .ok_or(DockerError::Unavailable("create secret")),
+                .ok_or(DockerError::Request("create a secret removed concurrently")),
             Err(error) => Err(DockerError::request("create secret", error)),
         }
     }
@@ -99,7 +100,10 @@ impl BollardDocker {
     /// Builds the container secret references for a desired service.
     ///
     /// Each secret must already exist with the service's ownership labels and
-    /// is mounted by ID as a root-owned, world-readable (`0444`) file.
+    /// is mounted by ID as a root-owned, world-readable (`0444`) file. A
+    /// missing one fails the request: every attempt provisions the pinned
+    /// secrets first, so it was removed since, and the next attempt
+    /// provisions it again.
     pub(super) async fn secret_references(
         &self,
         desired: &DesiredService,
@@ -109,7 +113,7 @@ impl BollardDocker {
             let secret = self
                 .owned_secret(&mount.secret_name, &desired.labels)
                 .await?
-                .ok_or(DockerError::Unavailable("required secret version missing"))?;
+                .ok_or(DockerError::Request("find a required secret version"))?;
             references.push(TaskSpecContainerSpecSecrets {
                 secret_id: Some(
                     secret

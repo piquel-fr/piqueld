@@ -6,6 +6,12 @@ use crate::store::JournalAction;
 
 /// Decrypted values keyed by their immutable Docker secret names.
 pub(super) type SecretValues = Vec<(String, zeroize::Zeroizing<Vec<u8>>)>;
+/// First delay between observations while waiting for a service; it
+/// doubles up to [`SERVICE_POLL_MAX`].
+const SERVICE_POLL: Duration = Duration::from_millis(250);
+/// Longest delay between observations while waiting for a service. Each is
+/// a full observation of the environment.
+const SERVICE_POLL_MAX: Duration = Duration::from_secs(1);
 
 impl<D: DockerApi> Controller<D> {
     /// Executes one planned action inside its own journal entry.
@@ -280,9 +286,12 @@ impl<D: DockerApi> Controller<D> {
         ))
     }
 
-    /// Polls observations every 250ms until the named service has converged (or,
-    /// with `removed`, no longer exists). A `Failed` convergence ends the wait with
-    /// `ServiceUpdateFailed`; the deadline yields `ConvergenceTimeout`.
+    /// Polls observations, from every [`SERVICE_POLL`] backing off to every
+    /// [`SERVICE_POLL_MAX`], until the named service has converged (or, with
+    /// `removed`, no longer exists). A `Failed` convergence ends the wait with
+    /// `ServiceUpdateFailed`, and a service that disappeared fails the
+    /// attempt, which is retried, rather than waiting out the deadline, which
+    /// yields `ConvergenceTimeout`.
     pub(super) async fn wait_service(
         &self,
         operation: &Operation,
@@ -291,12 +300,18 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
+        let mut poll = SERVICE_POLL;
         loop {
             let observed = self
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
             match observed.services.iter().find(|s| s.name == name) {
                 None if removed => return Ok(()),
+                None => {
+                    return Err(OperationError::DockerRequestFailed(
+                        "waiting for a service that disappeared",
+                    ));
+                }
                 Some(s) if !removed && s.convergence == Convergence::Converged => return Ok(()),
                 Some(s) if !removed && s.convergence == Convergence::Failed => {
                     return Err(OperationError::ServiceUpdateFailed);
@@ -306,9 +321,9 @@ impl<D: DockerApi> Controller<D> {
             if tokio::time::Instant::now() >= deadline {
                 return Err(OperationError::ConvergenceTimeout);
             }
-            let poll = Duration::from_millis(250)
-                .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
-            Self::pause(cancellation, poll).await?;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            Self::pause(cancellation, poll.min(remaining)).await?;
+            poll = poll.saturating_mul(2).min(SERVICE_POLL_MAX);
         }
     }
 

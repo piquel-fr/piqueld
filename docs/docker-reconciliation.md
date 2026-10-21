@@ -46,8 +46,9 @@ prepared target with the deployment; the controller then reuses that target as
 a retry would, running jobs and rolling out without building, fetching, or
 resolving tags. An environment can't become promoted while a deployment is
 requested or running (`application_busy`), and retrying an earlier deployment
-that never prepared fails with `environment_promoted` instead of fetching or
-building.
+built from its own source fails with `environment_promoted` instead of fetching,
+building, or rolling out a target it prepared before, unless that target is
+already the one the environment runs: repairing its drift rolls nothing new in.
 
 Saving an identical normalized manifest does not schedule work. Apply with
 deployment creates a new deployment even when the manifest is unchanged.
@@ -72,7 +73,10 @@ those volumes and their containers have stopped. Conversely, the adapter
 refuses to create or update a service while a job service of the application
 mounts one of its volumes writable, or a container of a removed run still does.
 Both checks run under the controller's mutation lock, so a service never shares
-a volume with an exclusive run, even one left by a superseded operation. Other services wait for all jobs to succeed, and the job's timeout
+a volume with an exclusive run, even one left by a superseded operation. Waiting
+for removed services and job runs to stop happens outside the lock, so other
+environments' changes carry on meanwhile; the run then starts under the lock
+only if the check still passes. Other services wait for all jobs to succeed, and the job's timeout
 starts only after its dependencies are ready. The run's deadline is recorded
 on its job service when it starts, so a resumed run keeps it. Jobs of a prerequisite service
 must precede jobs that need it; manifest validation rejects the opposite order.
@@ -97,9 +101,18 @@ history retention keeps operations whose cleanup is still pending.
 On shutdown, or when Docker could not report the
 status before the timeout, the run is left for the retried operation to resume;
 a superseded or cancelled operation stops its own run. A failed job fails the
-operation. Once its run has stopped, the deployment has ended, as it has after
-a cancellation, so repair restores the active target: prerequisites roll back
-and stopped services start again. Observation never
+operation as soon as its run finishes, before its output is read and its run
+cleaned up, so a shutdown meanwhile never leaves the operation to be retried and
+the job run again. Once its run has stopped, the deployment has ended, as it has after
+a cancellation or a failure whose own plan an ownership or immutable
+configuration conflict blocks, so repair restores the active target:
+prerequisites roll back and stopped services start again. Once the conflict is
+resolved, the blocked deployment rolls out again. A conflict does not end a
+deployment one of whose exclusive jobs succeeded: the services it stopped would
+run against data in the new format, so they stay stopped, and the prerequisites
+stay, until the conflict is resolved and the deployment continues. Failures that are retried,
+including conflicts planning can't see and failed service updates, keep the
+prerequisites. Observation never
 reports job services, so planning, repair, and health ignore them; deletion
 removes leftovers before the network.
 
@@ -129,7 +142,8 @@ with `deployment_superseded`.
 Every action is followed by observation and fresh planning. No action cursor or
 execution plan is stored. Plans place a service's create or update after the
 convergence waits of its `depends_on` services, so dependents roll out only once
-their dependencies are healthy; independent services still start together. Interrupted attempts are recorded on startup, then
+their dependencies are healthy; independent services still start together. On shutdown,
+running attempts are cancelled and get 10 seconds to record their outcome. Interrupted attempts are recorded on startup, then
 requested again. Each started attempt increments its operation's attempt number.
 
 Transient failures retry indefinitely with exponential delays from 5 to 60
@@ -139,7 +153,8 @@ paused rollouts remain observed without forced mutation. A fresh unblocked plan
 can resume corrective work. Registry request rejections, Git fetch and build
 failures, and secret storage failures require explicit retry or changed intent;
 Docker, Swarm, ingress, journal, image resolution, convergence and preparation
-timeout failures retry automatically.
+timeout failures retry automatically, and their diagnostics are the ones marked
+`retryable`.
 
 Deletion remains running until a fresh observation confirms services and
 networks are absent. Failed deletion attempts record diagnostics and follow the

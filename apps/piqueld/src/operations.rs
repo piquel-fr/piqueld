@@ -196,6 +196,15 @@ impl OperationError {
     pub fn message(&self) -> String {
         format!("{self}")
     }
+
+    /// A repository manifest that could not be read because of `source`: not
+    /// found only when an I/O `NotFound` caused it, invalid otherwise.
+    pub(crate) fn manifest_input(source: anyhow::Error) -> Self {
+        let not_found = source
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        Self::ManifestInput { not_found, source }
+    }
 }
 
 impl From<crate::docker::DockerError> for OperationError {
@@ -487,6 +496,17 @@ mod tests {
     }
 
     #[test]
+    fn only_a_missing_manifest_file_reads_as_not_found() {
+        for (kind, code) in [
+            (std::io::ErrorKind::NotFound, "manifest_not_found"),
+            (std::io::ErrorKind::PermissionDenied, "manifest_invalid"),
+        ] {
+            let error = anyhow::Error::from(std::io::Error::from(kind)).context("manifest path");
+            assert_eq!(OperationError::manifest_input(error).code(), code);
+        }
+    }
+
+    #[test]
     fn registry_failures_keep_classification_and_original_status() {
         for (status_code, expected) in [
             (401, "image_resolution_rejected"),
@@ -590,12 +610,12 @@ mod tests {
             (
                 DockerError::NotManager,
                 DiagnosticCode::SwarmManagerUnavailable,
-                "Inspect the diagnostic",
+                "single-node Swarm",
             ),
             (
                 DockerError::IncompatibleSwarm,
                 DiagnosticCode::SwarmTopologyUnsupported,
-                "Inspect the diagnostic",
+                "single-node Swarm",
             ),
         ] {
             let diagnostic = piqueld_core::observability::Diagnostic::new(

@@ -712,6 +712,33 @@ mod tests {
         );
     }
 
+    /// A secret that another request created, then removed before the
+    /// recheck, fails the request: Docker answered, so it is no outage.
+    #[tokio::test]
+    async fn a_secret_removed_during_creation_is_a_request_failure() {
+        let response = |status: u16| {
+            let body = r#"{"message":"fixture"}"#;
+            (
+                None,
+                format!(
+                    "HTTP/1.1 {status} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+            )
+        };
+        let stub = EngineStub::serve(vec![response(404), response(409), response(404)]);
+        let error = stub
+            .docker
+            .provision_secret("secret", b"value", &std::collections::BTreeMap::new())
+            .await
+            .unwrap_err();
+        stub.task.await.unwrap();
+        assert_eq!(
+            crate::operations::OperationError::from(error).code(),
+            "docker_request_failed"
+        );
+    }
+
     #[test]
     fn update_retry_requires_the_exact_transient_daemon_response() {
         let transient = WireError::Response {

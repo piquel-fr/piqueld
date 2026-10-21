@@ -99,6 +99,8 @@ const IMAGE_UNAVAILABLE: &str = "The image was removed and could not be pulled a
 const ENVIRONMENT_PROMOTED: &str = "The environment was made promoted after this deployment was requested, and promoted environments never build. Promote a release into it instead.";
 /// Guidance for a telemetry collector that keeps failing.
 const TELEMETRY_EXPORT: &str = "Check that the collector at telemetry.endpoint is reachable and accepts the configured headers. Records are dropped until it does.";
+/// Guidance for a Docker Engine that is not the manager of a single-node Swarm.
+const SWARM: &str = "Make Docker Engine the active manager of a single-node Swarm. Reconciliation retries once it is.";
 /// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
@@ -134,9 +136,8 @@ impl DiagnosticCode {
                 true,
                 "Restore writable control-plane storage before infrastructure changes can resume.",
             ),
-            Self::SwarmManagerUnavailable
-            | Self::SwarmTopologyUnsupported
-            | Self::StoredStateCorrupt
+            Self::SwarmManagerUnavailable | Self::SwarmTopologyUnsupported => (Daemon, true, SWARM),
+            Self::StoredStateCorrupt
             | Self::SchemaMismatch
             | Self::InternalError
             | Self::ApplicationCompilationFailed => (Daemon, false, INSPECT_DIAGNOSTIC),
@@ -211,6 +212,13 @@ impl DiagnosticCode {
             | Self::ServiceDegraded => (Application, false, INSPECT_DIAGNOSTIC),
         }
     }
+
+    /// Whether reconciliation retries a failure of this classification on its
+    /// own, with backoff. The one retry policy every caller follows.
+    #[must_use]
+    pub const fn retryable(self) -> bool {
+        self.policy().1
+    }
 }
 
 impl Diagnostic {
@@ -272,6 +280,8 @@ mod tests {
         }
         for (code, retryable) in [
             (DiagnosticCode::DockerUnavailable, true),
+            (DiagnosticCode::SwarmManagerUnavailable, true),
+            (DiagnosticCode::SwarmTopologyUnsupported, true),
             (DiagnosticCode::JournalUnavailable, true),
             (DiagnosticCode::StorageUnavailable, true),
             (DiagnosticCode::ImageResolutionFailed, true),

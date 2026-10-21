@@ -18,7 +18,13 @@ use piqueld_core::{
     api::{BuildState, LogStream},
     manifest::JobRun,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 /// Delay between job progress checks.
 const JOB_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -218,8 +224,8 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Starts the run unless it is running or already succeeded, waits for it,
-    /// and records its output, exit code, and any Docker explanation of a
-    /// failure.
+    /// fails the operation at once if the run failed or timed out, then
+    /// records its output, exit code, and any Docker explanation of a failure.
     async fn execute_job(
         &self,
         operation: &Operation,
@@ -232,17 +238,30 @@ impl<D: DockerApi> Controller<D> {
         let secrets = self
             .service_secrets(&job.container.secrets, ownership)
             .await?;
+        // An exclusive run starts once the services it stopped let go of its
+        // volumes; a newer deployment stops the wait. A run to resume holds
+        // them itself.
+        if job.exclusive_volumes().next().is_some() {
+            let resumable = AtomicBool::new(false);
+            self.retry(operation, journal, cancellation, || async {
+                let status = self.docker.job_status(job).await?;
+                resumable.store(status.resumable(), Ordering::Relaxed);
+                Ok(())
+            })
+            .await?;
+            if !resumable.load(Ordering::Relaxed) {
+                tokio::select! {
+                    () = cancellation.cancelled() => return Err(OperationError::Cancelled),
+                    released = self.wait_unlocked(self.docker.wait_volumes_released(job)) => {
+                        released?;
+                    }
+                }
+            }
+        }
         // A run Docker accepted before a lost response or a restart is resumed.
         // A failed run left by an earlier attempt is replaced: retrying reruns it.
         self.retry(operation, journal, cancellation, || async {
-            if matches!(
-                self.docker.job_status(job).await?,
-                JobStatus::Running { .. }
-                    | JobStatus::Finished {
-                        exit_code: Some(0),
-                        ..
-                    }
-            ) {
+            if self.docker.job_status(job).await?.resumable() {
                 return Ok(());
             }
             self.docker.ensure_swarm(false).await?;
@@ -253,37 +272,49 @@ impl<D: DockerApi> Controller<D> {
         })
         .await?;
         let status = self.wait_job(operation, job, cancellation).await?;
-        let truncated = status != JobStatus::Missing && self.record_output(job, log).await?;
-        if let JobStatus::Finished {
-            exit_code: Some(code),
-            ..
-        } = status
-        {
-            log.exit_code(code).await?;
-        }
         let name = job.logical_name.to_string();
-        let result = match status {
+        let result = match &status {
             JobStatus::Finished {
                 exit_code: Some(0), ..
             } => Ok(()),
-            JobStatus::Finished { exit_code, error } => {
-                if let Some(error) = error {
-                    Self::note(log, &error).await?;
-                }
-                Err(OperationError::JobFailed {
-                    job: name,
-                    exit_code,
-                })
-            }
-            JobStatus::Missing => {
-                Self::note(log, "the job's service was removed before it finished").await?;
-                Err(OperationError::JobFailed {
-                    job: name,
-                    exit_code: None,
-                })
-            }
+            JobStatus::Finished { exit_code, .. } => Err(OperationError::JobFailed {
+                job: name,
+                exit_code: *exit_code,
+            }),
+            JobStatus::Missing => Err(OperationError::JobFailed {
+                job: name,
+                exit_code: None,
+            }),
             JobStatus::Running { .. } => Err(OperationError::JobTimeout(name)),
         };
+        // Persisted, with its cleanup intent, before anything slower: reading
+        // output may outlast a shutdown's grace, and an operation left
+        // running would be retried and run the job again. The operation's
+        // own failure path retries a failed write.
+        if let Err(error) = &result
+            && let Err(failure) = self.fail_operation(operation, error).await
+        {
+            let failure = OperationError::from(failure);
+            self.store
+                .report_diagnostic(&failure.diagnostic(), Some(&operation.environment_id))
+                .await;
+        }
+        let truncated = status != JobStatus::Missing && self.record_output(job, log).await?;
+        let explanation = match status {
+            JobStatus::Finished {
+                exit_code: Some(code),
+                error,
+            } => {
+                log.exit_code(code).await?;
+                error.filter(|_| code != 0)
+            }
+            JobStatus::Finished { error, .. } => error,
+            JobStatus::Missing => Some("the job's service was removed before it finished".into()),
+            JobStatus::Running { .. } => None,
+        };
+        if let Some(explanation) = explanation {
+            Self::note(log, &explanation).await?;
+        }
         // Marked last: a truncated log accepts no further notes.
         if truncated {
             log.truncated().await?;
@@ -364,7 +395,8 @@ impl<D: DockerApi> Controller<D> {
     }
 
     /// Journals removal of the selected job services like other runtime
-    /// mutations. The operation must still be current.
+    /// mutations, then waits for their containers to stop. The operation must
+    /// still be current.
     pub(super) async fn remove_jobs(
         &self,
         operation: &Operation,
@@ -376,33 +408,50 @@ impl<D: DockerApi> Controller<D> {
             .store
             .begin_action(Some(&operation.id), "remove_jobs", None)
             .await?;
-        let result = self
-            .retry(operation, &journal, cancellation, || {
+        let result = async {
+            self.retry(operation, &journal, cancellation, || {
                 self.docker.remove_jobs(ownership, runs)
             })
-            .await;
+            .await?;
+            self.wait_unlocked(self.docker.wait_jobs_stopped(ownership, runs))
+                .await
+        }
+        .await;
         self.close_action(&journal, result).await
     }
 
-    /// Retries durable cleanup independently of deployment execution. The
-    /// mutation lock covers reading and clearing intent, so an old cleanup
-    /// request cannot remove a newly started run of the same operation. Once
+    /// Waits for `released`, which only reads Docker, for at most the
+    /// convergence timeout and outside the mutation lock, so Docker writes
+    /// for every environment carry on meanwhile. That is safe: a job starts,
+    /// and a service is written, only under the lock, after checking that no
+    /// run or service still holds a volume it would share.
+    async fn wait_unlocked(
+        &self,
+        released: impl Future<Output = Result<(), crate::docker::DockerError>>,
+    ) -> Result<(), OperationError> {
+        tokio::time::timeout(self.retry.convergence_timeout, released)
+            .await
+            .map_err(|_| OperationError::ConvergenceTimeout)?
+            .map_err(OperationError::from)
+    }
+
+    /// Retries durable cleanup independently of deployment execution. Once
     /// runs are removed, so are the configs of files only they mounted; a
     /// failed removal is logged and left to the next operation.
     pub(super) async fn retry_job_cleanup(
         &self,
         application: &piqueld_core::EnvironmentId,
     ) -> Result<(), OperationError> {
-        let _guard = self.mutations.lock().await;
         let ownership = self.ownership_labels(application);
         let pending = self.store.pending_job_cleanup(application).await?;
         for operation in &pending {
             self.stop_job_run(operation, &ownership).await?;
         }
-        if !pending.is_empty()
-            && let Err(error) = self.docker.prune_files(&ownership).await
-        {
-            tracing::warn!(?error, "removing unused service files failed");
+        if !pending.is_empty() {
+            let _guard = self.mutations.lock().await;
+            if let Err(error) = self.docker.prune_files(&ownership).await {
+                tracing::warn!(?error, "removing unused service files failed");
+            }
         }
         Ok(())
     }
@@ -410,24 +459,32 @@ impl<D: DockerApi> Controller<D> {
     /// Attempts immediate cleanup even after bookkeeping failed. Failed removal
     /// leaves durable intent for subsequent scans, including after a restart.
     async fn remove_job_run(&self, operation: &Operation, ownership: &BTreeMap<String, String>) {
-        let _guard = self.mutations.lock().await;
         if let Err(error) = self.stop_job_run(&operation.id, ownership).await {
             tracing::warn!(error = ?error, operation = %operation.id, "job service removal failed; cleanup will be retried");
         }
     }
 
-    /// Called under the mutation lock. Clears cleanup intent only when both
-    /// container shutdown and its journal outcome have been confirmed.
+    /// Removes the operation's job run under the mutation lock, waits outside
+    /// it until the run stopped, and only then clears its cleanup intent. An
+    /// environment's runs start only from its own scan, which retries its
+    /// pending cleanup first, so no run of the operation starts meanwhile.
     async fn stop_job_run(
         &self,
         operation: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), OperationError> {
         self.journaled(operation, "remove_jobs", None, async {
-            Ok(self
-                .docker
-                .remove_jobs(ownership, JobRuns::Of(operation))
-                .await?)
+            {
+                let _guard = self.mutations.lock().await;
+                self.docker
+                    .remove_jobs(ownership, JobRuns::Of(operation))
+                    .await?;
+            }
+            self.wait_unlocked(
+                self.docker
+                    .wait_jobs_stopped(ownership, JobRuns::Of(operation)),
+            )
+            .await
         })
         .await?;
         Ok(self.store.finish_job_cleanup(operation).await?)

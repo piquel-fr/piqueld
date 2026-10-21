@@ -4,6 +4,7 @@ use super::{
 };
 use crate::application::RuntimeBoundary;
 use crate::docker::JobRuns;
+use piqueld_core::api::DeploymentOrigin;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
@@ -139,15 +140,7 @@ impl<D: DockerApi> Controller<D> {
             }
             Err(error) => {
                 tracing::error!(code = error.code(), error = ?error, "operation failed");
-                self.record_failure(operation, &error).await?;
-                self.store
-                    .transition_operation(
-                        &operation.id,
-                        OperationState::Running,
-                        OperationState::Failed,
-                        Some((error.code(), &error.message())),
-                    )
-                    .await
+                self.fail_operation(operation, &error).await
             }
         };
         persisted.map(|()| outcome)
@@ -482,8 +475,12 @@ impl<D: DockerApi> Controller<D> {
     /// Resolves the operation's deployable target, reusing a previously saved one.
     ///
     /// Verifies the swarm topology, then returns the saved target, as every
-    /// promotion has from acceptance. Otherwise the environment must still be
-    /// tracking (`environment_promoted` once it was made promoted): fetches
+    /// release, promoted or deployed again, has from acceptance. A build's
+    /// saved target needs the environment still tracking
+    /// (`environment_promoted` once it was made promoted), since a promoted
+    /// environment only runs releases, unless it is already the active
+    /// target: repairing that rolls nothing new in. Otherwise the
+    /// environment must still be tracking: fetches
     /// the deployment manifest, keeps the application's current name, reuses
     /// prior image resolutions unless this is a `Refresh`, pins secret
     /// versions, then resolves images and builds sources. The result is saved
@@ -497,8 +494,19 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<piqueld_core::ResolvedApplication, OperationError> {
         self.check_current(operation).await?;
         self.docker.ensure_swarm(false).await?;
+        let builds = matches!(
+            self.store.deployment_origin(&operation.id).await?,
+            DeploymentOrigin::Build | DeploymentOrigin::Local(_)
+        );
         if let Some(target) = self.store.prepared_target(&operation.id).await? {
+            if builds && !self.store.is_promoted(&operation.id).await? {
+                application.tracking()?;
+            }
             return Ok(target);
+        }
+        // Releases save their target on acceptance.
+        if !builds {
+            return Err(StoreError::Corrupt.into());
         }
         let tracking = application.tracking()?;
         // Cleanup can't remove the images this preparation reuses, pulls, or
@@ -571,8 +579,10 @@ impl<D: DockerApi> Controller<D> {
         Ok(())
     }
 
-    /// Marks the environment degraded with the failure message.
-    async fn record_failure(
+    /// Marks the environment degraded and the running operation failed with
+    /// `error`. A failed job fails its operation as soon as it is known, so
+    /// failing it again finds it failed with that error already.
+    pub(super) async fn fail_operation(
         &self,
         operation: &Operation,
         error: &OperationError,
@@ -584,7 +594,28 @@ impl<D: DockerApi> Controller<D> {
                 Some(&error.message()),
             )
             .await?;
-        Ok(())
+        match self
+            .store
+            .transition_operation(
+                &operation.id,
+                OperationState::Running,
+                OperationState::Failed,
+                Some((error.code(), &error.message())),
+            )
+            .await
+        {
+            Err(StoreError::IllegalTransition) => {
+                let current = self.store.operation(&operation.id).await?;
+                if current.state == OperationState::Failed
+                    && current.error_code.as_deref() == Some(error.code())
+                {
+                    Ok(())
+                } else {
+                    Err(StoreError::IllegalTransition)
+                }
+            }
+            persisted => persisted,
+        }
     }
 }
 

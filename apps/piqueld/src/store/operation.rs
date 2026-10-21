@@ -84,6 +84,25 @@ impl Store {
             .map(OperationRow::decode).transpose()
     }
 
+    /// Fetches the newest operation of every environment that has one, by
+    /// environment, in one query.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub async fn latest_operations(
+        &self,
+    ) -> Result<std::collections::HashMap<EnvironmentId, Operation>, StoreError> {
+        sqlx::query_as!(OperationRow,
+            r#"SELECT o.id AS "id!",o.environment_id,o.kind,o.state,o.generation,o.attempt,o.consecutive_failures,o.phase,o.resource,o.error_code,o.error_message,o.created_at_ms,o.updated_at_ms,o.started_at_ms,o.finished_at_ms FROM environments e JOIN operations o ON o.id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=e.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)"#)
+            .fetch_all(&self.pool).await.map_err(StoreError::database)?
+            .into_iter()
+            .map(|row| {
+                let operation = row.decode()?;
+                Ok((operation.environment_id.clone(), operation))
+            })
+            .collect()
+    }
+
     /// Records a transition only if this is still the latest operation.
     /// `error` must be present exactly when moving to `Failed`. Entering
     /// `Running` counts a new attempt; failures and successes update
@@ -435,7 +454,10 @@ impl Store {
     /// 2. inserts a `requested` operation at its application's current generation;
     /// 3. records the kind's request event.
     ///
-    /// Callers capture its deployment.
+    /// Its creation time is `now`, or just after the environment's newest
+    /// operation's if the clock went back since: every query takes the
+    /// newest creation time as the latest operation. Callers capture its
+    /// deployment.
     pub(super) async fn start_operation(
         tx: &mut Transaction<'_, Sqlite>,
         app: &EnvironmentId,
@@ -444,15 +466,14 @@ impl Store {
     ) -> Result<Operation, StoreError> {
         let app_id = app.as_str();
         sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=?2),environment_id,id,generation,attempt,'operation_superseded','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE environment_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
-        sqlx::query!("UPDATE operations SET state='superseded',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE environment_id=?2 AND state IN ('requested','running')",now,app_id)
-            .execute(&mut **tx).await.map_err(StoreError::database)?;
-        let superseded=sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE environment_id=?1 AND state='superseded' AND updated_at_ms=?2"#,app_id,now).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        let superseded=sqlx::query_scalar!(r#"UPDATE operations SET state='superseded',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE environment_id=?2 AND state IN ('requested','running') RETURNING id AS "id!""#,now,app_id)
+            .fetch_all(&mut **tx).await.map_err(StoreError::database)?;
         for previous in superseded {
             Self::record_deployment_attempt(tx, &previous).await?;
         }
         let id = new_id("operation");
         let name = kind.as_str();
-        sqlx::query!("INSERT INTO operations(id,environment_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,e.id,a.generation,?3,'requested',?4,?4 FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?2",id,app_id,name,now)
+        sqlx::query!("INSERT INTO operations(id,environment_id,generation,kind,state,created_at_ms,updated_at_ms) SELECT ?1,e.id,a.generation,?3,'requested',MAX(?4,(SELECT COALESCE(MAX(o.created_at_ms)+1,?4) FROM operations o WHERE o.environment_id=e.id)),?4 FROM environments e JOIN applications a ON a.id=e.application_id WHERE e.id=?2",id,app_id,name,now)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         let event = match kind {
             OperationKind::Apply => "application_applied",
@@ -471,4 +492,66 @@ pub(crate) struct JournalPosition {
     pub(crate) event: i64,
     /// Operation ID, attempt and start time of every attempt running.
     pub(crate) running: Vec<(String, u64, i64)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{api::Mutation, store::testing::template};
+
+    /// Saves and deploys the empty application `name`, returning its operation.
+    async fn deployed(store: &Store, name: &str) -> Operation {
+        let saved = store.save_template(template(name, "[spec]"), true).await;
+        store.operation(&saved.operation_id.unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn latest_operations_hold_the_newest_operation_of_every_environment() {
+        let (_directory, store) = Store::temporary().await;
+        let alpha = deployed(&store, "alpha").await;
+        let beta = deployed(&store, "beta").await;
+        store
+            .force(Mutation::deploy(alpha.environment_id.clone()))
+            .await
+            .unwrap();
+        let latest = store.latest_operations().await.unwrap();
+        assert_eq!(latest.len(), 2);
+        for id in [&alpha.environment_id, &beta.environment_id] {
+            let expected = store.latest_operation_for_environment(id).await.unwrap();
+            assert_eq!(
+                Some(&latest[id].id),
+                expected.map(|operation| operation.id).as_ref()
+            );
+        }
+        assert_ne!(latest[&alpha.environment_id].id, alpha.id);
+    }
+
+    /// An operation requested after the clock went back is still the latest,
+    /// so it runs instead of the one it superseded.
+    #[tokio::test]
+    async fn operations_stay_ordered_when_the_clock_goes_back() {
+        let (_directory, store) = Store::temporary().await;
+        let first = deployed(&store, "alpha").await;
+        let (_writer, mut tx) = store.begin_immediate().await.unwrap();
+        let second = Store::start_operation(
+            &mut tx,
+            &first.environment_id,
+            OperationKind::Apply,
+            first.created_at_ms - 60_000,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(second.created_at_ms > first.created_at_ms);
+        let latest = store
+            .latest_operation_for_environment(&first.environment_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.id, second.id);
+        assert_eq!(
+            store.operation(&first.id).await.unwrap().state,
+            OperationState::Superseded
+        );
+    }
 }
