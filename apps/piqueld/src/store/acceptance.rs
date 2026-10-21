@@ -296,6 +296,7 @@ impl Store {
             Mutation::RenameEnvironment { id, .. }
             | Mutation::SetBranch { id, .. }
             | Mutation::SetSync { id, .. }
+            | Mutation::SetTelemetry { id, .. }
             | Mutation::Sync(crate::api::ListedHead { id, .. })
             | Mutation::Promotion(
                 PromotionMutation::SetSource { id, .. } | PromotionMutation::Promote { id, .. },
@@ -321,6 +322,11 @@ impl Store {
                 .and_then(|current| current.application.spec().manifest.clone()),
             None => None,
         };
+        if let Some(permission) = mutation.required_installation() {
+            grants
+                .require(piqueld_core::access::Permission::Global(permission))
+                .map_err(StoreError::Denied)?;
+        }
         let required = mutation.required(connection.as_ref());
         match grants.require_change(required, target) {
             Err(_) if replaying && matches!(target, Target::Named(_)) => {
@@ -475,6 +481,9 @@ impl Store {
                 Ok(Self::operation_accepted(&operation))
             }
             Mutation::SetSync { id, enabled } => Self::set_sync_on(tx, id, enabled, now).await,
+            Mutation::SetTelemetry { id, granted } => {
+                Self::set_telemetry_on(tx, id, granted, now).await
+            }
             Mutation::Sync(listed) => Self::sync_on(tx, listed, now).await,
             Mutation::Delete { id } => {
                 let current = Self::checked_environment_on(tx, &id, expected).await?;

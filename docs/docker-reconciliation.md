@@ -329,6 +329,31 @@ An exporting environment links to at most 64 importing environments. The
 oldest keep their links; imports of newer ones stay unconnected until a slot
 frees up.
 
+## Telemetry sockets
+
+In an environment granted telemetry, the service that sets
+[`receives_telemetry`](application-manifest.md#telemetry-receivers) gets the
+socket directory of its own, `<data_dir>/telemetry/<environment-id>/<service>/`,
+as a writable bind mount at `/run/piqueld/telemetry`, and runs as the daemon's
+`uid:gid` instead of its image's user, so the daemon can connect to the socket
+its collector creates there. The runtime policy accepts that one bind mount and
+user override, and the mount's source and the user are compared like any other
+field: a bind mount or user that differs from them is `telemetry` drift.
+
+Like links, the mount is projected each time the target is planned, from the
+grant as it is now, and is never part of a prepared target. Granting or
+revoking telemetry runs a full scan right away, so the controller adds or
+removes the mount within seconds by updating the service, which restarts it,
+as part of ordinary repair. The controller creates the directory, with mode
+`0700`, before it mounts it. Export doesn't wait for any of this: a revoked
+or deleted environment's receiver stops getting telemetry as the request is
+accepted. On full scans, and as an environment's deletion ends, the controller
+removes every directory no service mounts, except the receiving service's
+while the environment is granted, observed under the lock that service
+updates take. That covers revoked and deleted environments, and a renamed
+receiver's old directory once its service is removed. At startup, it removes
+those of environments that no longer exist.
+
 ## Ingress coordination
 
 Runtime targets retain portable route intent regardless of global ingress enablement.

@@ -10,7 +10,7 @@ use piqueld_client::{
     Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
     ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
     SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus,
-    TelemetryStatus, Template, UrlState, VariableValue,
+    TelemetryDestinationStatus, TelemetryStatus, Template, UrlState, VariableValue,
     links::ImportState,
     sync::{SyncState, WebhookSecret, WebhookView, short_commit},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
@@ -144,18 +144,30 @@ report!(StatusReport<'_> as SystemStatus = status, self, out, {
     s.dns.render_human(out)
 });
 
-// Where the daemon's own telemetry goes and how its export is going. Headers
-// appear only as the file they were read from.
+// Where the daemon's own telemetry goes and how its export is going: the
+// configured endpoint and each granted environment's receiving service.
+// Headers appear only as the file they were read from.
 report!(TelemetryStatus, self, out, {
     if self.destinations.is_empty() {
-        return out.label("Telemetry", "not exported ([telemetry] sets no endpoint)");
+        return out.label(
+            "Telemetry",
+            "not exported ([telemetry] sets no endpoint and no environment receives it)",
+        );
     }
     for destination in &self.destinations {
-        let state = match (destination.failing, destination.last_success_ms) {
-            (true, _) => "failing",
-            (false, Some(_)) => "exporting",
-            (false, None) => "nothing exported yet",
-        };
+        let state = destination.state();
+        let receiver = destination
+            .receiver
+            .as_ref()
+            .map(
+                |receiver| match (&receiver.application, &receiver.environment) {
+                    (Some(application), Some(environment)) => {
+                        format!("{application} {environment} at ")
+                    }
+                    _ => format!("{} at ", receiver.environment_id),
+                },
+            )
+            .unwrap_or_default();
         let last = destination
             .last_success_ms
             .map(|at| format!(", last export at Unix ms {at}"))
@@ -168,7 +180,7 @@ report!(TelemetryStatus, self, out, {
         out.label(
             "Telemetry",
             format_args!(
-                "{} ({state}{last}, {} records dropped{headers})",
+                "{receiver}{} ({state}{last}, {} records dropped{headers})",
                 destination.endpoint, destination.dropped
             ),
         )?;
@@ -1202,6 +1214,26 @@ report!(EnvironmentShowReport<'_>, self, out, {
     for (name, mounted) in secrets {
         out.label("Secret", format_args!("{name}: {mounted}"))?;
     }
+    if let Some(telemetry) = &self.detail.telemetry {
+        match (&telemetry.receiver, telemetry.granted) {
+            (Some(service), true) => out.label(
+                "Telemetry",
+                format_args!(
+                    "granted; {service} receives it: {}",
+                    telemetry
+                        .destination
+                        .as_ref()
+                        .map_or("not connected yet", TelemetryDestinationStatus::state)
+                ),
+            )?,
+            (Some(service), false) => out.label(
+                "Telemetry",
+                format_args!("not granted; {service} runs without the telemetry socket"),
+            )?,
+            (None, true) => out.label("Telemetry", "granted; no deployed service receives it")?,
+            (None, false) => {}
+        }
+    }
     for import in self.detail.links.iter().flat_map(|links| &links.imports) {
         let state = match import.state {
             ImportState::Connected => "connected",
@@ -1230,12 +1262,17 @@ report!(EnvironmentShowReport<'_>, self, out, {
 
 named!(EnvironmentView, environment, names, out, {
     out.line(format_args!(
-        "Environment {} ({}), deploys from {}{}.",
+        "Environment {} ({}), deploys from {}{}{}.",
         environment.name,
         environment.id,
         names.describe(&environment.source),
         if environment.sync {
             ", opted into sync"
+        } else {
+            ""
+        },
+        if environment.telemetry {
+            ", granted telemetry"
         } else {
             ""
         }

@@ -162,6 +162,15 @@ impl ApplicationService {
         };
         let urls = self.urls(&stored, &observed_view.services).await?;
         let links = self.store.link_report(id, None, readable).await?;
+        let telemetry = piqueld_core::api::TelemetryReport {
+            granted: stored.environment.telemetry,
+            receiver: stored
+                .resolved
+                .as_ref()
+                .and_then(piqueld_core::ResolvedApplication::telemetry_receiver)
+                .map(|service| service.logical_name.clone()),
+            destination: self.telemetry.receiver(id),
+        };
         let application = self
             .application_view(&stored.environment.application_id, stored.application)
             .await?;
@@ -176,6 +185,7 @@ impl ApplicationService {
             diagnostics,
             urls: Some(urls),
             links: Some(links),
+            telemetry: Some(telemetry),
         })
     }
     /// The manifest a promotion from `source` would deploy next: that of the
@@ -448,6 +458,7 @@ impl ApplicationService {
             self.runtime.check_available().await?;
             ObservedApplication::default()
         };
+        let granted = self.store.telemetry_granted(environment).await?;
         let resolutions = ResolutionSet::default();
         let unresolved = preview_resolution(app, &resolutions);
         let desired = if unresolved.is_empty() {
@@ -459,7 +470,8 @@ impl ApplicationService {
             )
             .map_err(BoundaryError::Compilation)?
             .with_ingress(self.ingress_enabled());
-            Some(self.store.with_links(desired, &observed).await?)
+            let desired = self.store.with_links(desired, &observed).await?;
+            Some(self.telemetry.project(desired, granted))
         } else {
             None
         };
@@ -472,6 +484,7 @@ impl ApplicationService {
         );
         plan.redact_configuration();
         plan.add_jobs(app, environment);
+        plan.warn_telemetry(app, granted);
         if current.is_some() {
             let spec = app.spec();
             // Plans only warn about imports, so list no importers.

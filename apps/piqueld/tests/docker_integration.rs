@@ -180,6 +180,8 @@ impl SwarmScenario {
             labels: service_labels,
             depends_on: Vec::new(),
             rollout: piqueld_core::manifest::ValidatedRollout::default(),
+            receives_telemetry: false,
+            telemetry: None,
         };
         engine.ensure_service_eventually(&service).await;
         assert!(

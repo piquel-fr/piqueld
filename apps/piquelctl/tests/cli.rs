@@ -2716,6 +2716,43 @@ fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
     let _ = server.finish();
 }
 
+#[test]
+fn telemetry_receivers_and_grants_are_sent_as_typed_requests() {
+    assert_saves(
+        app_view("app-notes-01", "notes"),
+        &[
+            "app",
+            "service",
+            "telemetry",
+            "app-notes-01",
+            "web",
+            "on",
+            "--yes",
+        ],
+        "PUT",
+        "services/web/receives-telemetry",
+        &json!({"value": true}),
+    );
+    let server = start_server(false, 2, |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/env-staging-01/telemetry" => {
+            assert_eq!(request.method, "PUT");
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body, json!({"granted": true}));
+            let mut staging = environment("app-notes-01", "env-staging-01", "staging");
+            staging["telemetry"] = json!(true);
+            Reply::json(staging)
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &["env", "telemetry", "app-notes-01", "staging", "on"],
+    );
+    assert_eq!(assert_json_success(&output)["telemetry"], true);
+    let _ = server.finish();
+}
+
 /// `shop`'s production, promoted from its staging environment.
 fn promoted_view() -> Value {
     let mut view = two_environment_view();

@@ -48,7 +48,8 @@ name = "data"
 
 Services support replicas, environment variables, command and argument arrays,
 health checks, startup dependencies, rollout settings, CPU/memory limits, mounts of declared
-named volumes, read-only [files](#files), and file references to application secrets. Named volumes are retained when an application
+named volumes, read-only [files](#files), file references to application secrets, and
+receiving the daemon's [telemetry](#telemetry-receivers). Named volumes are retained when an application
 is deleted. Secret values are never manifest fields (manifests may only ask piqueld to
 generate them), and there are no manifest
 fields for directly published ports. HTTP routes, by exact or wildcard
@@ -137,7 +138,8 @@ and Docker runs it as the health check, for example
 plain HTTP GET to `127.0.0.1` inside the container, without following
 redirects, and passes on a 2xx or 3xx status within the timeout, so Swarm still
 gates tasks and rollouts on health, even for scratch and distroless images.
-Mounts cannot target `/run/piqueld/probe`. Command health checks run their
+Mounts cannot target `/run/piqueld/probe`, nor `/run/piqueld/telemetry`, where
+[telemetry receivers](#telemetry-receivers) get their socket. Command health checks run their
 `command` unchanged, without a shell. Services, mounts,
 volumes, and environment maps are
 canonicalized before hashing. The specification hash is SHA-256 over a versioned
@@ -1041,6 +1043,35 @@ below `reconciliation.convergence_timeout_seconds`.
 that mounts a volume writable, since two tasks then write the same data
 directory. The warning does not block the deployment. Changing either setting
 updates the service once.
+
+## Telemetry receivers
+
+One service per application may receive the daemon's own traces, metrics and
+logs, such as an OpenTelemetry Collector:
+
+```toml
+[[spec.services]]
+name = "collector"
+receives_telemetry = true
+```
+
+A second one fails with `telemetry_receiver_duplicate`, and more than one
+replica with `telemetry_receiver_replicas`, since one collector listens on the
+socket. For the same reason its socket counts as a writable mount, so its
+rollouts stop the old task first unless `rollout.order` says otherwise (which
+warns). The setting is part of
+the manifest and its hash, but the socket it receives on is not: in an
+environment granted telemetry (`piquelctl env telemetry APP ENV on`, which
+requires `telemetry:grant`), piqueld mounts the service's socket directory
+at `/run/piqueld/telemetry`, runs the service as the daemon's user, and exports
+to `/run/piqueld/telemetry/otlp.sock`. Without the grant, the service runs
+without the mount, and `app plan`, promotion plans and the deployment warn with
+`telemetry_not_granted`. The mount follows the grant within seconds, without a
+deployment, which restarts the service. Previews are never granted. Volume
+mounts and files can't use `/run/piqueld/telemetry`. The receiving
+application sees every application's telemetry; see
+[receiving telemetry](observability.md#receiving-telemetry-in-an-application)
+for the collector configuration and what that implies.
 
 ## Jobs
 

@@ -241,6 +241,11 @@ pub struct ValidatedService {
     /// Rollout settings. Omitted when default so existing specification hashes stay stable.
     #[serde(skip_serializing_if = "ValidatedRollout::is_default")]
     pub rollout: ValidatedRollout,
+    /// Whether the service receives the daemon's telemetry once its
+    /// environment is granted it. Omitted when false so existing
+    /// specification hashes stay stable.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub receives_telemetry: bool,
 }
 
 /// A rendered secret file mount.
@@ -751,6 +756,7 @@ impl ValidatedService {
                 })
                 .collect::<Result<_, ValidationErrors>>()?,
             rollout: ValidatedRollout::from_input(value.rollout, &format!("{base}.rollout"))?,
+            receives_telemetry: value.receives_telemetry,
         })
     }
 
@@ -767,9 +773,14 @@ impl ValidatedService {
             .overlaps_writable_volume(self.read_only_mounts())
     }
 
-    /// Read-only flags of the mounts, from which the default rollout order derives.
+    /// Read-only flags of the mounts, from which the default rollout order
+    /// derives. A telemetry receiver's socket counts as a writable mount:
+    /// two collectors can't listen on it at once.
     fn read_only_mounts(&self) -> impl Iterator<Item = bool> + '_ {
-        self.mounts.iter().map(|mount| mount.read_only)
+        self.mounts
+            .iter()
+            .map(|mount| mount.read_only)
+            .chain(self.receives_telemetry.then_some(false))
     }
 
     /// Converts back to the editable input shape used for export.
@@ -809,6 +820,7 @@ impl ValidatedService {
                 .map(ValidatedResourceLimits::to_input),
             depends_on: self.depends_on.iter().map(ToString::to_string).collect(),
             rollout: self.rollout.into(),
+            receives_telemetry: self.receives_telemetry,
         }
     }
 }

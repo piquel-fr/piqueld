@@ -246,6 +246,7 @@ mod tests {
                 commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
                 at_ms: 1,
             }),
+            telemetry: false,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 0,

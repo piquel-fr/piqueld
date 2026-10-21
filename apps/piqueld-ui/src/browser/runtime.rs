@@ -1,8 +1,9 @@
-//! Environment runtime overview: lifecycle status, URLs, links, observed
-//! services, and diagnostics.
+//! Environment runtime overview: lifecycle status, URLs, links, telemetry,
+//! observed services, and diagnostics.
 use super::format::timestamp;
 use super::ui::{
-    Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, route_name, when,
+    Icon, Tone, badge, empty, health_badge, icon, notice, operation_badge, route_name,
+    telemetry_badge, when,
 };
 use super::{DashboardSignals, dashboard_context, release_link};
 use crate::state::ApplicationHealth;
@@ -78,7 +79,7 @@ fn detail_view(
                         )
                     })
             }} {runtime_status_card(detail, signals, client)} {urls_card(detail.urls.as_deref())}
-            {links_card(detail)} {observed_card(&detail.observed)}
+            {links_card(detail)} {telemetry_card(detail)} {observed_card(&detail.observed)}
             {diagnostics_card(&detail.diagnostics)}
         </div>
     }
@@ -396,6 +397,53 @@ fn links_card(detail: &EnvironmentDetailView) -> Option<AnyView> {
                     </thead>
                     <tbody>{imports.collect_view()} {importers.collect_view()}</tbody>
                 </table>
+            </section>
+        }
+        .into_any(),
+    )
+}
+
+/// Whether the environment is granted telemetry, which service receives it,
+/// and whether the daemon is connected to it; nothing when it is neither
+/// granted nor deploys a receiver.
+pub(super) fn telemetry_card(detail: &EnvironmentDetailView) -> Option<AnyView> {
+    let telemetry = detail
+        .telemetry
+        .as_ref()
+        .filter(|telemetry| telemetry.granted || telemetry.receiver.is_some())?;
+    let granted = if telemetry.granted {
+        badge(Tone::Ok, "granted")
+    } else {
+        badge(Tone::Warn, "not granted")
+    };
+    let receiver = telemetry.receiver.as_ref().map_or_else(
+        || "No deployed service receives it.".to_owned(),
+        |service| format!("{service} receives it on /run/piqueld/telemetry/otlp.sock."),
+    );
+    let connection = match (&telemetry.destination, telemetry.granted) {
+        (Some(destination), _) => telemetry_badge(destination),
+        (None, true) if telemetry.receiver.is_some() => badge(Tone::Pending, "not connected yet"),
+        (None, _) => badge(Tone::Neutral, "not exported"),
+    };
+    Some(
+        view! {
+            <section class="card" aria-labelledby="telemetry-title">
+                <header>
+                    <div>
+                        <h3 id="telemetry-title">"Telemetry"</h3>
+                        <p>
+                            "A granted environment's receiving service gets the daemon's traces, metrics and logs from every application."
+                        </p>
+                    </div>
+                </header>
+                <dl class="kv">
+                    <dt>"Grant"</dt>
+                    <dd>{granted}</dd>
+                    <dt>"Receiver"</dt>
+                    <dd>{receiver}</dd>
+                    <dt>"Export"</dt>
+                    <dd>{connection}</dd>
+                </dl>
             </section>
         }
         .into_any(),

@@ -395,6 +395,11 @@ pub struct Service {
     /// Optional rollout order and monitor window.
     #[serde(default, skip_serializing_if = "super::Rollout::is_default")]
     pub rollout: super::Rollout,
+    /// Whether the service receives the daemon's telemetry on the socket
+    /// directory mounted at `/run/piqueld/telemetry`, once its environment is
+    /// granted it. At most one service per application.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receives_telemetry: bool,
 }
 
 /// Serde default for `Service::replicas`.

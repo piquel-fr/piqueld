@@ -81,6 +81,10 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     async fn run_exec(&self, exec: &Exec, io: ExecIo) -> Result<i64, BoundaryError>;
     /// Wakes the reconciler after a mutation requests an immediate scan.
     fn trigger_reconciliation(&self);
+    /// Asks the reconciler for a full scan now, which repairs every
+    /// environment's runtime, e.g. to mount or unmount a telemetry socket.
+    /// Runtimes without a reconciler do nothing.
+    fn trigger_full_scan(&self) {}
     /// Resolves all mutable inputs into a complete immutable target for an environment.
     async fn prepare(
         &self,

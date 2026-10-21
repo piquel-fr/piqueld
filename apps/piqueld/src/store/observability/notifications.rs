@@ -565,12 +565,19 @@ impl Store {
         failed: bool,
         observed: i64,
     ) -> Result<i64, StoreError> {
-        let code = if application.is_some() {
-            DiagnosticCode::ServiceDegraded
-        } else {
-            DiagnosticCode::parse(key).ok_or(StoreError::InvalidInput)?
+        // An environment's keys are its ID, or `<code>:<ID>` for a
+        // dependency of the daemon it hosts, like a telemetry receiver.
+        let code = match (application, key.split_once(':')) {
+            (Some(_), Some((code, _))) => {
+                DiagnosticCode::parse(code).ok_or(StoreError::InvalidInput)?
+            }
+            (Some(_), None) => DiagnosticCode::ServiceDegraded,
+            (None, _) => DiagnosticCode::parse(key).ok_or(StoreError::InvalidInput)?,
         };
         let subject = match (application, key) {
+            (Some(id), key) if key.starts_with("telemetry_export_failed:") => {
+                format!("Telemetry export to environment {id}")
+            }
             (Some(id), _) => format!("Service health for application {id}"),
             (None, "docker_unavailable") => "Docker Engine".into(),
             (None, "swarm_manager_unavailable") => "Swarm manager".into(),

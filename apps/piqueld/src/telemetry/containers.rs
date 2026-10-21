@@ -3,7 +3,7 @@
 //! Unlike the daemon's own records, each container's records carry their own
 //! resource, so they are built as OTLP messages directly rather than through
 //! the SDK, and queued on the same bounded queues.
-use super::Telemetry;
+use super::{Destination, Telemetry};
 use crate::docker::{ContainerLogs, ContainerUsage, DockerError};
 use crate::store::now_ns;
 use futures_util::StreamExt as _;
@@ -62,17 +62,32 @@ pub(crate) struct ContainerExport {
     /// The last line every copy of which was sent or dropped, or where
     /// reading started: where reading resumes after a restart.
     handled: Arc<AtomicI64>,
+    /// Whether it is a task of a receiving service, whose output reaches
+    /// no receiver: a collector logging what it receives would otherwise
+    /// receive its own output again, without end.
+    receiver: bool,
 }
 
 impl ContainerExport {
     /// A container labelled with `attributes`, such as `service.name`, whose
-    /// output is read from `cursor`, in Unix nanoseconds.
-    pub(crate) fn new(attributes: Vec<(&'static str, String)>, cursor: i64) -> Self {
+    /// output is read from `cursor`, in Unix nanoseconds; a `receiver`'s
+    /// output reaches only the configured endpoint.
+    pub(crate) fn new(
+        attributes: Vec<(&'static str, String)>,
+        cursor: i64,
+        receiver: bool,
+    ) -> Self {
         Self {
             resource: Mutex::new(ContainerResource::new(attributes)),
             read: AtomicI64::new(cursor),
             handled: Arc::new(AtomicI64::new(cursor)),
+            receiver,
         }
+    }
+
+    /// Whether its output is exported to `destination`.
+    fn reaches(&self, destination: &Destination) -> bool {
+        !self.receiver || destination.receiver().is_none()
     }
 
     /// Labels its records with `attributes` from now on, such as after its
@@ -455,8 +470,11 @@ impl Telemetry {
             return;
         };
         if !limit.take(Instant::now()) {
-            hub.destinations
-                .each(|destination| destination.drop_records(1));
+            hub.destinations.each(|destination| {
+                if container.reaches(destination) {
+                    destination.drop_records(1);
+                }
+            });
             return;
         }
         let record = LogRecord {
@@ -478,6 +496,9 @@ impl Telemetry {
         });
         let resource = container.resource();
         hub.destinations.each(|destination| {
+            if !container.reaches(destination) {
+                return;
+            }
             let log = (resource.clone(), record.clone(), Arc::clone(&handled));
             if !destination.push_log(super::LogItem::Container(log)) {
                 handled.queued.store(false, Ordering::Relaxed);
@@ -519,14 +540,17 @@ mod tests {
     #[tokio::test]
     async fn container_logs_resume_at_the_read_cursor() {
         let directory = tempfile::tempdir().unwrap();
-        let telemetry = Telemetry::new(&crate::config::TelemetryConfig {
-            endpoint: Some(crate::config::OtlpEndpoint::Unix(
-                directory.path().join("absent.sock"),
-            )),
-            ..Default::default()
-        })
+        let telemetry = Telemetry::new(
+            &crate::config::TelemetryConfig {
+                endpoint: Some(crate::config::OtlpEndpoint::Unix(
+                    directory.path().join("absent.sock"),
+                )),
+                ..Default::default()
+            },
+            crate::telemetry::Sockets::new(directory.path()),
+        )
         .unwrap();
-        let container = ContainerExport::new(vec![], 2_000_000_000);
+        let container = ContainerExport::new(vec![], 2_000_000_000, false);
         let lines = crate::docker::LogLines {
             stream: Some(LogStream::Stdout),
             lines: [1, 2, 3]
@@ -540,6 +564,47 @@ mod tests {
             .unwrap();
         assert_eq!(container.since(), 3);
         assert_eq!(container.cursor(), 2_000_000_000, "lines still queued");
+    }
+
+    /// A receiving service's output reaches the configured endpoint but no
+    /// receiver, so a collector never receives its own output.
+    #[tokio::test]
+    async fn receivers_output_reaches_no_receiver() {
+        let directory = tempfile::tempdir().unwrap();
+        let telemetry = Telemetry::new(
+            &crate::config::TelemetryConfig {
+                endpoint: Some(crate::config::OtlpEndpoint::Unix(
+                    directory.path().join("absent.sock"),
+                )),
+                ..Default::default()
+            },
+            crate::telemetry::Sockets::new(directory.path()),
+        )
+        .unwrap();
+        let receiver = piqueld_core::EnvironmentId::parse("app-otel").unwrap();
+        let service = piqueld_core::ServiceName::parse("collector").unwrap();
+        let listed = std::future::ready(Ok::<_, std::convert::Infallible>(vec![(
+            receiver.clone(),
+            service,
+        )]));
+        telemetry.receive(listed).await.unwrap();
+        let line = || crate::docker::LogLines {
+            stream: Some(LogStream::Stdout),
+            lines: vec![(1, "received".into())],
+        };
+        for container in [true, false].map(|receiver| ContainerExport::new(vec![], 0, receiver)) {
+            let logs = futures_util::stream::iter([Ok(line())]).boxed();
+            telemetry
+                .export_container_logs(&container, logs)
+                .await
+                .unwrap();
+        }
+        let hub = telemetry.0.as_ref().unwrap();
+        let mut queued = Vec::new();
+        hub.destinations.each(|destination| {
+            queued.push((destination.receiver().cloned(), destination.queued_logs()));
+        });
+        assert_eq!(queued, [(None, 2), (Some(receiver), 1)]);
     }
 
     #[test]
@@ -568,6 +633,7 @@ mod tests {
             container: Arc::new(ContainerExport::new(
                 vec![("service.name", "web".into())],
                 0,
+                false,
             )),
             created: 1_000,
             time: 31_000_000_000,

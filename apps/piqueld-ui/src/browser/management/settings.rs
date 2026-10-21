@@ -616,6 +616,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
             Section::Health => ServiceEdit::Healthcheck(service.healthcheck.clone()),
             Section::Dependencies => ServiceEdit::DependsOn(service.depends_on.clone()),
             Section::Rollout => ServiceEdit::Rollout(service.rollout.clone()),
+            Section::Telemetry => ServiceEdit::ReceivesTelemetry(service.receives_telemetry),
             Section::Resources => ServiceEdit::Resources(service.resources.clone()),
         };
         context.save(ApplicationEdit::Service { name, edit }, move |_| {
@@ -660,6 +661,9 @@ const fn section_hint(section: Section) -> &'static str {
         Section::Rollout => {
             "Stop-first never runs two replicas on the same data but is briefly unavailable; start-first avoids downtime. Derived stops first only when a volume is mounted writable."
         }
+        Section::Telemetry => {
+            "In environments granted telemetry, the service gets the daemon's traces, metrics and logs from every application, over an OTLP socket it listens on at /run/piqueld/telemetry/otlp.sock, and runs as the daemon's user. At most one service per application."
+        }
         Section::Resources => "Leave a limit blank to use the runtime default.",
     }
 }
@@ -696,6 +700,19 @@ fn service_fields(section: Section, service: String, form: RwSignal<ServiceForm>
         Section::Health => health_fields(form),
         Section::Dependencies => dependency_fields(service, form),
         Section::Rollout => rollout_fields(form),
+        Section::Telemetry => view! {
+            <label class="checkbox">
+                <input
+                    type="checkbox"
+                    prop:checked={move || form.with(|v| v.receives_telemetry)}
+                    on:change={move |ev| {
+                        form.update(|v| v.receives_telemetry = event_target_checked(&ev));
+                    }}
+                />
+                "Receive telemetry"
+            </label>
+        }
+        .into_any(),
         Section::Resources => view! {
             <div class="form-grid">
                 {text_input("CPU (millicores)", form, |v| v.cpu.clone(), |v, s| v.cpu = s)}
@@ -1221,6 +1238,7 @@ pub(super) fn NewService() -> impl IntoView {
             resources: None,
             depends_on: Vec::new(),
             rollout: Rollout::default(),
+            receives_telemetry: false,
         };
         context.save(ApplicationEdit::AddService(Box::new(service)), move |_| {
             draft.discard();

@@ -61,6 +61,11 @@ pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
         .map(|value| value.parse().expect("every listed value parses"))
 }
 
+/// Parses `on` or `off`, listing both in help and completions.
+pub(crate) fn on_off() -> impl TypedValueParser<Value = bool> {
+    clap::builder::PossibleValuesParser::new(["on", "off"]).map(|value| value == "on")
+}
+
 fn volume_access() -> impl TypedValueParser<Value = JobVolumeAccess> {
     clap::builder::PossibleValuesParser::new(JobVolumeAccess::ALL.map(JobVolumeAccess::as_str))
         .map(|value| value.parse().expect("every listed value parses"))
@@ -182,6 +187,11 @@ pub(crate) enum ServiceCommand {
     DependsOn(StringsArgs),
     /// Replace the rollout order and monitor window; omitted flags use their defaults.
     Rollout(RolloutArgs),
+    /// Make the service receive the daemon's telemetry from every
+    /// application, over the socket mounted at /run/piqueld/telemetry, in
+    /// environments granted it with `env telemetry`. At most one service per
+    /// application.
+    Telemetry(ReceivesTelemetryArgs),
     /// Add, replace, or remove a volume mount by target path.
     Mount {
         #[command(subcommand)]
@@ -224,6 +234,14 @@ pub(crate) struct RolloutArgs {
     /// Seconds to watch each replacement task for failure, 1-3600. Omit for the 30-second default.
     #[arg(long)]
     monitor_seconds: Option<Typed<u32>>,
+}
+#[derive(Debug, Args)]
+pub(crate) struct ReceivesTelemetryArgs {
+    #[command(flatten)]
+    target: ServiceTarget,
+    /// `on` receives telemetry once the environment is granted it; `off` never.
+    #[arg(value_name = "on|off", action = clap::ArgAction::Set, value_parser = on_off())]
+    enabled: bool,
 }
 #[derive(Debug, Args)]
 pub(crate) struct AddServiceArgs {
@@ -868,6 +886,7 @@ impl AddServiceArgs {
             resources: None,
             depends_on: Vec::new(),
             rollout: Rollout::default(),
+            receives_telemetry: false,
         }
     }
 }
@@ -900,6 +919,9 @@ impl ServiceCommand {
                 order: args.order.clone(),
                 monitor_seconds: args.monitor_seconds.clone(),
             })),
+            Self::Telemetry(args) => args
+                .target
+                .field(ServiceEdit::ReceivesTelemetry(args.enabled)),
             Self::Mount { command } => command.edit(),
             Self::Health { command } => command.edit(),
             Self::Cpu(args) => args.target.field(ServiceEdit::Cpu(args.value.clone())),

@@ -581,8 +581,13 @@ image = "nginx:1"
 }
 
 #[test]
-fn the_health_probe_path_is_reserved() {
-    for target in ["/run/piqueld/probe", "/run/piqueld/probe/inner"] {
+fn the_health_probe_and_telemetry_paths_are_reserved() {
+    for target in [
+        "/run/piqueld/probe",
+        "/run/piqueld/probe/inner",
+        "/run/piqueld/telemetry",
+        "/run/piqueld/telemetry/otlp.sock",
+    ] {
         let manifest = format!(
             r#"
 api_version = "piqueld.dev/v1alpha1"
@@ -604,6 +609,52 @@ target = "{target}"
         let errors = parse_toml(&manifest).unwrap_err();
         assert!(has_code(&errors, codes::MOUNT_TARGET_UNSAFE), "{target}");
     }
+}
+
+/// One service per application receives telemetry; the flag is part of the
+/// spec hash.
+#[test]
+fn at_most_one_service_receives_telemetry() {
+    let service = |name: &str| {
+        format!(
+            "[[spec.services]]\nname = \"{name}\"\nreceives_telemetry = true\n[spec.services.source]\ntype = \"image\"\nimage = \"nginx:1\"\n"
+        )
+    };
+    let header = "api_version = \"piqueld.dev/v1alpha1\"\nkind = \"Application\"\n[metadata]\nname = \"notes\"\n";
+    assert_errors(
+        &format!("{header}{}{}", service("a"), service("b")),
+        &[(
+            codes::TELEMETRY_RECEIVER_DUPLICATE,
+            "spec.services[1].receives_telemetry",
+        )],
+    );
+    let id = ApplicationId::parse("app-notes-01").unwrap();
+    let receiving = parse_toml(&format!("{header}{}", service("a")))
+        .unwrap()
+        .normalize(id.clone());
+    let plain = parse_toml(&format!(
+        "{header}{}",
+        service("a").replace("receives_telemetry = true\n", "")
+    ))
+    .unwrap()
+    .normalize(id);
+    assert!(receiving.spec().services[0].receives_telemetry);
+    // One collector listens on the socket, and replacements stop it first.
+    assert_errors(
+        &format!(
+            "{header}{}",
+            service("a").replace("receives_telemetry", "replicas = 2\nreceives_telemetry")
+        ),
+        &[(
+            codes::TELEMETRY_RECEIVER_REPLICAS,
+            "spec.services[0].replicas",
+        )],
+    );
+    assert_eq!(
+        receiving.spec().services[0].rollout_policy().order,
+        piqueld_core::manifest::RolloutOrder::StopFirst
+    );
+    assert_ne!(receiving.spec_hash(), plain.spec_hash());
 }
 
 #[test]

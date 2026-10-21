@@ -56,6 +56,7 @@ piquelctl env list <app>
 piquelctl env create <app> <name> [--branch <branch> [--commit <sha>] | --promote-from <env>]
 piquelctl env branch <app> <env> <branch> [--commit <sha>]
 piquelctl env sync <app> <env> on|off
+piquelctl env telemetry <app> <env> on|off
 piquelctl env source <app> <env> (--promote-from <env> | --tracking)
 piquelctl env promote <app> <env> [--deployment <id> | --release <id>] [--plan]
 piquelctl env show <app> [<env>]
@@ -131,6 +132,18 @@ follows before its first deployment, and a one-off `--branch`/`--commit`
 deployment stays until the branch moves. `env sync … off` opts it out again;
 `env sync` needs no revision and asks no confirmation. Turning sync on, or
 opting in while it is on, needs `apps:deploy` too.
+
+`env telemetry APP ENV on` grants an environment the daemon's
+[telemetry](observability.md#receiving-telemetry-in-an-application): its
+receiving service, marked with `app service telemetry APP SERVICE on`, gets
+the traces, metrics and logs of every application. It needs `telemetry:grant`,
+which no preset includes. `off` revokes it, which stops export at once. Either
+way the controller mounts or unmounts the socket within seconds, which
+restarts the service; nothing is deployed, and `env telemetry` needs no revision
+and asks no confirmation. Previews are never granted. `env show` reports whether
+the environment is granted, which service receives it, and whether the daemon
+is connected; `status` lists the receivers of the environments you can read
+next to the `[telemetry]` endpoint.
 `app show` reports the setting and the last check of the repository, with its
 error; `env show`, `preview show`, and `preview list` report whether each one
 follows pushes (`following`, `off`, `off (pinned)`, `off (not opted in)`,
@@ -350,11 +363,11 @@ written to stderr, so stdout remains valid JSON.
 | `app list` | `{ "items": [{ "application": ApplicationSummary, "environments": [EnvironmentRow] }], "next_cursor": null }` |
 | `app show` | `{ "application": ApplicationView, "environments": [EnvironmentRow] }` |
 | `env list` | `[EnvironmentRow]`, where `EnvironmentRow` is `{ "environment": EnvironmentView, "status": EnvironmentStatusView or null }` |
-| `env show` | `EnvironmentDetailView` (including its `urls` and `links`), with `"stored": [StoredSecret]` |
+| `env show` | `EnvironmentDetailView` (including its `urls`, `links` and `telemetry`), with `"stored": [StoredSecret]` |
 | `env url` / `preview url` | `[RouteUrl]` |
 | `env url --route` / `preview url --route` | `RouteUrl` |
 | `env wait` / `preview wait` | `Deployment` |
-| `env create` / `env rename` / `env branch` / `env sync` / `env source` | `EnvironmentView` |
+| `env create` / `env rename` / `env branch` / `env sync` / `env telemetry` / `env source` | `EnvironmentView` |
 | `app repository webhook show` | `WebhookView` |
 | `app repository webhook rotate` | `WebhookSecret` |
 | `env promote --no-wait` | `{ "application_id": string, "environment_id": string, "deployment_id": string, "operation_id": string, "release_id": string, "origin": DeploymentOrigin }`; the deployment and operation IDs are equal |
@@ -551,6 +564,7 @@ piquelctl app service command notes web --yes -- /usr/bin/server
 piquelctl app service arguments notes web --yes -- --listen "0.0.0.0:8080"
 piquelctl app service depends-on notes web --yes -- postgres
 piquelctl app service rollout notes worker --order stop-first --monitor-seconds 60 --yes
+piquelctl app service telemetry observability collector on --yes
 piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
 piquelctl app service source git notes web https://example.com/app.git --target runtime --build-arg ORIGIN=https://notes.example.com --yes
 piquelctl app service source git notes web https://example.com/app.git --branch main --yes
@@ -752,6 +766,7 @@ to inspect redacted changes and image resolution requirements. Planning may fail
 when Docker observation is unavailable.
 
 Mutating commands require TTY confirmation unless `--yes` is supplied; `env sync`,
+`env telemetry`,
 `app secret access`, `preview create` and `preview deploy` do not ask. Apply,
 delete, rename, field edits, and `env create`, `rename`, `branch` and `source`
 accept `--force` independently of confirmation. Every explicit

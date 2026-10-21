@@ -25,6 +25,8 @@ pub struct ApplicationRuntime<D> {
     instance_id: InstanceId,
     /// Shared with the reconciler loop so mutations can request an immediate scan.
     wake: Arc<Notify>,
+    /// Shared with the reconciler loop so mutations can request a full scan.
+    rescan: Arc<Notify>,
     /// Upper bound for resolving every source and compiling one application.
     prepare_timeout: Duration,
     // Set only for execution, never API previews. Records the source-preparation
@@ -60,6 +62,7 @@ impl<D> ApplicationRuntime<D> {
             docker,
             instance_id: store.instance_id().clone(),
             wake,
+            rescan: Arc::new(Notify::new()),
             prepare_timeout,
             progress: None,
             priority: BuildPriority::Environment,
@@ -69,6 +72,13 @@ impl<D> ApplicationRuntime<D> {
             checkouts: Arc::clone(store.checkouts()),
         }
     }
+    /// Requests full scans through `rescan`, shared with the reconciler.
+    #[must_use]
+    pub(crate) fn with_rescan(mut self, rescan: Arc<Notify>) -> Self {
+        self.rescan = rescan;
+        self
+    }
+
     /// Associates source preparation with the operation whose status is reported.
     pub(crate) fn with_progress(
         mut self,
@@ -170,6 +180,9 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     }
     fn trigger_reconciliation(&self) {
         self.wake.notify_one();
+    }
+    fn trigger_full_scan(&self) {
+        self.rescan.notify_one();
     }
 
     /// Resolves every service source not already present in `reusable`, then

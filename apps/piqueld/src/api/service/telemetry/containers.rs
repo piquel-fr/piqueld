@@ -7,7 +7,7 @@
 //! cursors saved for restarts only pass a line once every copy queued for
 //! export was sent or dropped, so a line still queued when the daemon dies is
 //! read again after the restart rather than lost.
-use super::{ApplicationService, Names, interval, step};
+use super::{ApplicationService, Names, RECEIVERS_INTERVAL, interval, step};
 use crate::application::{BoundaryError, RuntimeBoundary};
 use crate::docker::{ContainerState, DockerError, ManagedContainer, Workload};
 use crate::store::{StoreError, now_ns};
@@ -135,6 +135,44 @@ struct Discovery {
 }
 
 impl ApplicationService {
+    /// Exports containers' telemetry while anything receives it, until
+    /// cancelled: always with a configured endpoint, otherwise while some
+    /// environment's receiving service does, checked every
+    /// [`RECEIVERS_INTERVAL`]. Once nothing does, forgets where it stopped
+    /// reading, so export starts again from the present.
+    pub(super) async fn export_received_containers(&self, cancellation: &CancellationToken) {
+        let mut tick = interval(RECEIVERS_INTERVAL);
+        loop {
+            if !self.telemetry.exporting() {
+                if let Err(error) = self.store.clear_container_cursors().await {
+                    tracing::error!(?error, "container log cursors could not be cleared");
+                }
+                while !self.telemetry.exporting() {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return,
+                        _ = tick.tick() => {}
+                    }
+                }
+            }
+            // Export stops between discoveries, its last cursor save done,
+            // so clearing them afterwards is never undone.
+            let exporting = cancellation.child_token();
+            let unreceived = async {
+                while self.telemetry.exporting() {
+                    tokio::select! {
+                        () = exporting.cancelled() => return,
+                        _ = tick.tick() => {}
+                    }
+                }
+                exporting.cancel();
+            };
+            tokio::join!(self.export_containers(&exporting), unreceived);
+            if cancellation.is_cancelled() {
+                return;
+            }
+        }
+    }
+
     /// Exports the output and resource usage of every container piqueld
     /// runs, until cancelled.
     pub(super) async fn export_containers(&self, cancellation: &CancellationToken) {
@@ -272,7 +310,11 @@ impl ApplicationService {
                     .remove(&container.id)
                     .unwrap_or(discovery.start);
                 Exported {
-                    export: Arc::new(ContainerExport::new(attributes.clone(), cursor)),
+                    export: Arc::new(ContainerExport::new(
+                        attributes.clone(),
+                        cursor,
+                        container.receiver,
+                    )),
                     done: false,
                     restarted: false,
                     follower: None,
@@ -399,8 +441,9 @@ mod tests {
                 created: 0,
                 task: None,
                 workload: Workload::Infrastructure("piqueld-gateway"),
+                receiver: false,
             },
-            export: Arc::new(ContainerExport::new(vec![], 0)),
+            export: Arc::new(ContainerExport::new(vec![], 0, false)),
             done: false,
             restarted: false,
             follower: Some(follower),

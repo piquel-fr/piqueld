@@ -8,7 +8,9 @@ use super::{
 /// The runtime policy emitted by the desired-service Docker specification builder.
 ///
 /// This policy verifies exactly the fields piqueld authors — replication,
-/// update settings, the restart condition and delay, mounts, environment,
+/// update settings, the restart condition and delay, mounts (named volumes,
+/// and a telemetry receiver's socket directory, whose source and user the
+/// desired service compares), environment,
 /// network targets and logical-name aliases, health checks and the probe
 /// config they run, file configs, resource limits, and the placement pin to
 /// the local node.
@@ -16,7 +18,8 @@ use super::{
 /// accepted only at known Engine defaults, so ordinary engine-defaulted
 /// echo-back does not register as drift while unsupported non-default values
 /// do. Security relevant settings piqueld cannot express (privileged
-/// execution, Linux capabilities, sysctls, users, runtimes, log drivers) are
+/// execution, Linux capabilities, sysctls, users other than a telemetry
+/// receiver's, groups, runtimes, log drivers) are
 /// explicitly denied: their presence means out-of-band modification.
 pub(super) struct ServiceRuntimePolicy;
 
@@ -66,7 +69,11 @@ impl ServiceRuntimePolicy {
                     && placement.platforms.as_ref().is_none_or(Vec::is_empty)
             })
             && task.force_update.is_none_or(|value| value == 0)
-            && container.user.is_none()
+            // Only a telemetry receiver runs as another user, the daemon's;
+            // the desired service compares which.
+            && (container.user.is_none()
+                || BollardDocker::observed_telemetry(container)
+                    .is_some_and(|telemetry| !telemetry.source.is_empty()))
             && container.groups.as_ref().is_none_or(Vec::is_empty)
             && container.privileges.is_none()
             && container
@@ -175,19 +182,26 @@ impl ServiceRuntimePolicy {
         })
     }
 
-    /// Requires every mount to be a plain named volume without extra options.
+    /// Requires every mount to be a plain named volume without extra
+    /// options, except one writable bind mount at the telemetry target.
     fn mounts(container: &TaskSpecContainerSpec) -> bool {
         container.mounts.as_ref().is_none_or(|mounts| {
-            mounts.iter().all(|mount| {
-                mount.typ == Some(MountTypeEnum::VOLUME)
-                    && mount.source.as_ref().is_some_and(|value| !value.is_empty())
-                    && mount.target.as_ref().is_some_and(|value| !value.is_empty())
-                    && mount.consistency.as_deref().is_none_or(str::is_empty)
-                    && mount.bind_options.is_none()
-                    && mount.volume_options.is_none()
-                    && mount.image_options.is_none()
-                    && mount.tmpfs_options.is_none()
-            })
+            let telemetry = |mount: &&bollard::models::Mount| {
+                mount.typ == Some(MountTypeEnum::BIND)
+                    && mount.target.as_deref() == Some(piqueld_core::resource::TELEMETRY_TARGET)
+                    && !mount.read_only.unwrap_or(false)
+            };
+            mounts.iter().filter(telemetry).count() <= 1
+                && mounts.iter().all(|mount| {
+                    (mount.typ == Some(MountTypeEnum::VOLUME) || telemetry(&mount))
+                        && mount.source.as_ref().is_some_and(|value| !value.is_empty())
+                        && mount.target.as_ref().is_some_and(|value| !value.is_empty())
+                        && mount.consistency.as_deref().is_none_or(str::is_empty)
+                        && mount.bind_options.is_none()
+                        && mount.volume_options.is_none()
+                        && mount.image_options.is_none()
+                        && mount.tmpfs_options.is_none()
+                })
         })
     }
 
@@ -357,6 +371,8 @@ mod tests {
             .labels(),
             depends_on: Vec::new(),
             rollout: Rollout::default(),
+            receives_telemetry: false,
+            telemetry: None,
         }
     }
 

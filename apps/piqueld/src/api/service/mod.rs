@@ -165,6 +165,16 @@ pub enum Mutation {
     /// Deploy a branch head sync listed, unless sync already acted on it
     /// (see `Store::sync_on`). Needs no application revision.
     Sync(ListedHead),
+    /// Grant or revoke an environment's telemetry, which its receiving
+    /// service then gets from every application. Needs no application
+    /// revision, since it changes nothing the environment deploys, but
+    /// `telemetry:grant` (see [`Self::required_installation`]).
+    SetTelemetry {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// Whether its receiving service gets telemetry.
+        granted: bool,
+    },
     /// Change a preview.
     Preview(PreviewMutation),
 }
@@ -327,7 +337,7 @@ impl Mutation {
         connection: Option<&RepositoryManifest>,
     ) -> &'static [piqueld_core::access::AppPermission] {
         use piqueld_core::access::AppPermission::{
-            Delete, Deploy, PreviewsDelete, PreviewsDeploy, Write,
+            Delete, Deploy, PreviewsDelete, PreviewsDeploy, Read, Write,
         };
         match self {
             Self::Save { deploy: true, .. } | Self::Edit { deploy: true, .. } => &[Write, Deploy],
@@ -350,10 +360,33 @@ impl Mutation {
                 | PreviewMutation::Local { .. },
             ) => &[PreviewsDeploy],
             Self::DeleteApplication { .. } | Self::Delete { .. } => &[Delete],
+            Self::SetTelemetry { .. } => &[Read],
             Self::Preview(PreviewMutation::Delete { .. } | PreviewMutation::Prune { .. }) => {
                 &[PreviewsDelete]
             }
         }
+    }
+
+    /// The installation-wide permission this mutation needs besides
+    /// [`Self::required`]: granting telemetry reaches every application's.
+    #[must_use]
+    pub const fn required_installation(&self) -> Option<piqueld_core::access::GlobalPermission> {
+        match self {
+            Self::SetTelemetry { .. } => {
+                Some(piqueld_core::access::GlobalPermission::TelemetryGrant)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether accepting this mutation may change which environments
+    /// receive telemetry: granting or revoking it, or deleting environments.
+    #[must_use]
+    pub const fn changes_receivers(&self) -> bool {
+        matches!(
+            self,
+            Self::SetTelemetry { .. } | Self::Delete { .. } | Self::DeleteApplication { .. }
+        )
     }
 
     /// Whether this change lets sync deploy what no deployment chose, given
@@ -429,8 +462,8 @@ impl Mutation {
     }
 
     /// Whether submitting this change without `force` lacks the revision
-    /// precondition it needs: every change but reconcile, sync and previews
-    /// needs the inspected revision, and saves over a nonzero one also the
+    /// precondition it needs: every change but reconcile, sync, telemetry
+    /// grants and previews needs the inspected revision, and saves over a nonzero one also the
     /// inspected identity.
     const fn lacks_precondition(&self, expected_generation: Option<u64>) -> bool {
         match self {
@@ -451,9 +484,11 @@ impl Mutation {
             | Self::Promotion(_)
             | Self::Deploy { .. }
             | Self::Delete { .. } => expected_generation.is_none(),
-            Self::Reconcile { .. } | Self::SetSync { .. } | Self::Sync(_) | Self::Preview(_) => {
-                false
-            }
+            Self::Reconcile { .. }
+            | Self::SetSync { .. }
+            | Self::SetTelemetry { .. }
+            | Self::Sync(_)
+            | Self::Preview(_) => false,
         }
     }
 
@@ -838,12 +873,19 @@ impl ApplicationService {
         request_id: Option<&str>,
     ) -> Result<MutationResponse, ApplicationError> {
         mutation.check_submission(expected_generation, force, request_id)?;
+        let receivers = mutation.changes_receivers();
         let (response, wake) = self
             .store
             .accept(actor, mutation, expected_generation, force, request_id)
             .await?;
         if wake {
             self.runtime.trigger_reconciliation();
+        }
+        if receivers {
+            // Stops export to a revoked or deleted receiver before
+            // answering, then lets the controller mount or unmount sockets.
+            self.receive_telemetry().await?;
+            self.runtime.trigger_full_scan();
         }
         Ok(response)
     }

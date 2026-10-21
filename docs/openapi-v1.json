@@ -1076,6 +1076,19 @@
         ],
         "type": "object"
       },
+      "BoolValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "New value; null explicitly clears an optional setting.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "BranchState": {
         "description": "Where a preview's branch is, read on demand with `git ls-remote`.",
         "oneOf": [
@@ -2421,6 +2434,10 @@
             },
             "type": "array"
           },
+          "receives_telemetry": {
+            "description": "Whether the service receives the daemon's telemetry once its\nenvironment is granted it.",
+            "type": "boolean"
+          },
           "replicas": {
             "description": "Desired replica count.",
             "format": "int32",
@@ -2460,6 +2477,25 @@
           "source": {
             "$ref": "#/components/schemas/ResolvedSource",
             "description": "Immutable source resolution used by the service."
+          },
+          "telemetry": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TelemetryMount"
+                  }
+                ],
+                "description": "The telemetry socket directory mounted while the environment is\ngranted. Projected at runtime by\n[`ResolvedApplication::with_telemetry`], never prepared."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           }
         },
         "required": [
@@ -3702,6 +3738,25 @@
                 "$ref": "#/components/schemas/EnvironmentStatusView",
                 "description": "Durable environment lifecycle status."
               },
+              "telemetry": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/TelemetryReport"
+                      }
+                    ],
+                    "description": "Whether it receives the daemon's telemetry. Absent from daemons that\npredate telemetry receivers."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "urls": {
                 "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`]. Absent from daemons\nthat predate URL readiness, which is not the same as no routes.",
                 "items": {
@@ -3833,6 +3888,10 @@
                     "type": "string"
                   }
                 ]
+              },
+              "telemetry": {
+                "description": "Whether it is granted the daemon's telemetry, which its receiving\nservice, if it has one, then gets from every application. Previews\nnever are.",
+                "type": "boolean"
               },
               "updated_at_ms": {
                 "description": "Last update timestamp in Unix milliseconds.",
@@ -6194,6 +6253,25 @@
             "$ref": "#/components/schemas/EnvironmentStatusView",
             "description": "Durable environment lifecycle status."
           },
+          "telemetry": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TelemetryReport"
+                  }
+                ],
+                "description": "Whether it receives the daemon's telemetry. Absent from daemons that\npredate telemetry receivers."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "urls": {
             "description": "The URL of every route the current runtime target renders, and\nwhether each is ready; see [`RouteUrl::derive`]. Absent from daemons\nthat predate URL readiness, which is not the same as no routes.",
             "items": {
@@ -6417,6 +6495,20 @@
         ],
         "type": "object"
       },
+      "EnvironmentTelemetryRequest": {
+        "additionalProperties": false,
+        "description": "Grants or revokes an environment's telemetry.",
+        "properties": {
+          "granted": {
+            "description": "Whether its receiving service gets every application's telemetry.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "granted"
+        ],
+        "type": "object"
+      },
       "EnvironmentValue": {
         "additionalProperties": false,
         "properties": {
@@ -6494,6 +6586,10 @@
                 "type": "string"
               }
             ]
+          },
+          "telemetry": {
+            "description": "Whether it is granted the daemon's telemetry, which its receiving\nservice, if it has one, then gets from every application. Previews\nnever are.",
+            "type": "boolean"
           },
           "updated_at_ms": {
             "description": "Last update timestamp in Unix milliseconds.",
@@ -8379,7 +8475,8 @@
           "system:read",
           "system:operate",
           "accounts:manage",
-          "audit:read"
+          "audit:read",
+          "telemetry:grant"
         ],
         "type": "string"
       },
@@ -10375,6 +10472,10 @@
             "description": "Logical service name.",
             "type": "string"
           },
+          "receives_telemetry": {
+            "description": "Whether the service receives the daemon's telemetry on the socket\ndirectory mounted at `/run/piqueld/telemetry`, once its environment is\ngranted it. At most one service per application.",
+            "type": "boolean"
+          },
           "replicas": {
             "$ref": "#/components/schemas/Typed_u16",
             "description": "Desired replica count."
@@ -10930,6 +11031,10 @@
       "TelemetryDestinationStatus": {
         "description": "One collector receiving the daemon's telemetry.",
         "properties": {
+          "connected": {
+            "description": "Whether the collector accepted the last export.",
+            "type": "boolean"
+          },
           "dropped": {
             "description": "Records dropped since the daemon started, because the queue was full\nor the collector failed or rejected them.",
             "format": "int64",
@@ -10954,12 +11059,152 @@
             "format": "int64",
             "nullable": true,
             "type": "integer"
+          },
+          "receiver": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TelemetryReceiver"
+                  }
+                ],
+                "description": "The environment whose receiving service this is; absent for the\nconfigured endpoint."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           }
         },
         "required": [
           "endpoint",
           "dropped",
           "failing"
+        ],
+        "type": "object"
+      },
+      "TelemetryMount": {
+        "additionalProperties": false,
+        "description": "A telemetry receiver's socket directory, bind-mounted at\n[`TELEMETRY_TARGET`], and the user the service runs as instead of the\nimage's, the daemon's, so the daemon can connect to the socket it creates.",
+        "properties": {
+          "source": {
+            "description": "Absolute host directory.",
+            "type": "string"
+          },
+          "user": {
+            "description": "`uid:gid`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "user"
+        ],
+        "type": "object"
+      },
+      "TelemetryReceiver": {
+        "description": "The environment a telemetry destination is the receiving service of.",
+        "properties": {
+          "application": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationName"
+                  }
+                ],
+                "description": "Its application's current name."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "environment": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EnvironmentName"
+                  }
+                ],
+                "description": "Its current name."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "environment_id": {
+            "$ref": "#/components/schemas/EnvironmentId",
+            "description": "Stable environment ID."
+          }
+        },
+        "required": [
+          "environment_id"
+        ],
+        "type": "object"
+      },
+      "TelemetryReport": {
+        "description": "Whether an environment receives the daemon's telemetry.",
+        "properties": {
+          "destination": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TelemetryDestinationStatus"
+                  }
+                ],
+                "description": "The daemon's export to that service, while it is granted and deployed."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "granted": {
+            "description": "Whether the environment is granted the daemon's telemetry.",
+            "type": "boolean"
+          },
+          "receiver": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ServiceName"
+                  }
+                ],
+                "description": "The deployed service receiving it, if the current runtime target has one."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "granted"
         ],
         "type": "object"
       },
@@ -10971,7 +11216,7 @@
             "type": "boolean"
           },
           "destinations": {
-            "description": "Collectors receiving telemetry; empty when `[telemetry]` sets no\nendpoint.",
+            "description": "Collectors receiving telemetry: the `[telemetry]` endpoint, if set,\nthen the receiving service of each granted environment the caller\ncan read.",
             "items": {
               "$ref": "#/components/schemas/TelemetryDestinationStatus"
             },
@@ -11714,6 +11959,10 @@
           "name": {
             "$ref": "#/components/schemas/ServiceName",
             "description": "Logical service name."
+          },
+          "receives_telemetry": {
+            "description": "Whether the service receives the daemon's telemetry once its\nenvironment is granted it. Omitted when false so existing\nspecification hashes stay stable.",
+            "type": "boolean"
           },
           "replicas": {
             "description": "Desired replica count.",
@@ -20365,6 +20614,189 @@
         "x-piqueld-access": "apps:write"
       }
     },
+    "/api/v1/applications/{id}/services/{service}/receives-telemetry": {
+      "put": {
+        "operationId": "set_service_receives_telemetry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "service",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoolValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "x-piqueld-access": "apps:write"
+      }
+    },
     "/api/v1/applications/{id}/services/{service}/replicas": {
       "put": {
         "operationId": "set_service_replicas",
@@ -26686,6 +27118,124 @@
         },
         "summary": "Opts an environment into or out of its application's sync.",
         "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/environments/{id}/telemetry": {
+      "put": {
+        "description": "A granted environment's receiving service (`receives_telemetry`) gets the\ndaemon's traces, metrics and logs from every application, over the socket\ndirectory mounted at `/run/piqueld/telemetry`, so granting needs\n`telemetry:grant` as well as reading the application. Revoking, like\ndeleting the environment, stops export at once; the controller mounts or\nunmounts the directory within seconds, which rolls the service. Previews\nare never granted it and are `NotFound`. Needs no application revision.",
+        "operationId": "setEnvironmentTelemetry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentTelemetryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EnvironmentView"
+                }
+              }
+            },
+            "description": "Environment telemetry changed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Grants or revokes an environment's telemetry.",
+        "x-piqueld-access": "telemetry:grant"
       }
     },
     "/api/v1/events": {

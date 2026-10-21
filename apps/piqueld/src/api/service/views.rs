@@ -205,6 +205,7 @@ mod tests {
             networks: Vec::new(),
             labels: BTreeMap::new(),
             rollout: None,
+            telemetry: None,
             runtime_configuration_matches: true,
             tasks,
             convergence: Convergence::Converged,

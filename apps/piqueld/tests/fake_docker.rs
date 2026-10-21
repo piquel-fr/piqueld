@@ -350,6 +350,7 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         networks: desired.network_attachments(),
         labels: desired.labels.clone(),
         rollout: Some(desired.rollout_policy()),
+        telemetry: desired.telemetry.clone(),
         runtime_configuration_matches: true,
         tasks: vec![ObservedTask {
             state: TaskState::Running,
@@ -1741,6 +1742,75 @@ async fn deleting_an_exporter_removes_networks_its_deleted_importers_left() {
             .iter()
             .all(|observed| observed.name != network.as_str())
     );
+}
+
+/// A granted environment's receiver gets its socket directory mounted, as
+/// the daemon's user, on the next scan without a deployment. A renamed
+/// receiver gets a directory of its own, and the old one's is removed with
+/// its service. Revoking the grant unmounts it and removes the directories.
+#[tokio::test]
+async fn telemetry_sockets_are_mounted_while_the_environment_is_granted() {
+    let mut harness = ControllerHarness::new().await;
+    let data = tempfile::tempdir().unwrap();
+    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
+        .with_telemetry(Some(piqueld::telemetry::Sockets::new(data.path())));
+    let mut manifest = harness.application.to_manifest();
+    manifest.spec.services[0].receives_telemetry = true;
+    let id = harness.application.id().clone();
+    harness.set_application(manifest.clone().validate().unwrap().normalize(id.clone()));
+    let created = harness.create().await;
+    harness.finish(&created).await;
+    let environment = environment(&harness.application);
+    let mounted = async |harness: &ControllerHarness| {
+        harness.docker.observe(&environment).await.unwrap().services[0]
+            .telemetry
+            .clone()
+    };
+    assert_eq!(mounted(&harness).await, None, "not granted yet");
+
+    let grant = |harness: &ControllerHarness, granted| {
+        let mutation = piqueld::api::Mutation::SetTelemetry {
+            id: environment.clone(),
+            granted,
+        };
+        let applications = harness.applications();
+        async move {
+            Box::pin(applications.accept(Daemon, mutation, None, false, None))
+                .await
+                .unwrap();
+        }
+    };
+    grant(&harness, true).await;
+    harness.scan().await;
+    let sockets = data.path().join("telemetry").join(environment.as_str());
+    let directory = sockets.join(manifest.spec.services[0].name.as_str());
+    let mount = mounted(&harness)
+        .await
+        .expect("granted receivers mount their socket");
+    assert_eq!(mount.source, directory.display().to_string());
+    assert_ne!(mount.user, "");
+    assert!(directory.is_dir());
+
+    manifest.spec.services[0].name = "otel".into();
+    harness.set_application(manifest.validate().unwrap().normalize(id));
+    let renamed = harness.create().await;
+    harness.finish(&renamed).await;
+    harness.scan().await;
+    let mount = mounted(&harness)
+        .await
+        .expect("the renamed receiver mounts its own");
+    assert_eq!(mount.source, sockets.join("otel").display().to_string());
+    assert!(
+        !directory.exists(),
+        "the old receiver's directory is removed"
+    );
+
+    harness.scan().await;
+    grant(&harness, false).await;
+    harness.scan().await;
+    assert_eq!(mounted(&harness).await, None, "revoking unmounts it");
+    harness.scan().await;
+    assert!(!sockets.exists(), "and removes the directories");
 }
 
 #[tokio::test]

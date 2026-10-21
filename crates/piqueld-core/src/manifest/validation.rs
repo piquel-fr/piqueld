@@ -697,6 +697,7 @@ impl ApplicationManifest {
             );
         }
         self.spec.validate_dependencies(&mut errors);
+        self.spec.validate_telemetry_receiver(&mut errors);
         if self.spec.inline_file_bytes() > ServiceFile::MAX_TOTAL_BYTES {
             errors.push(ValidationError::new(
                 codes::FILE_TOTAL_EXCESSIVE,
@@ -860,6 +861,37 @@ impl ApplicationSpec {
                     codes::SERVICE_DEPENDENCY_CYCLE,
                     format!("spec.services[{index}].depends_on"),
                     "dependencies must not form or lead into a cycle",
+                ));
+            }
+        }
+    }
+
+    /// At most one service of an application receives the daemon's
+    /// telemetry, with at most one replica, since each environment has one
+    /// telemetry socket and one collector listens on it.
+    fn validate_telemetry_receiver(&self, errors: &mut Vec<ValidationError>) {
+        let receivers = self
+            .services
+            .iter()
+            .enumerate()
+            .filter(|(_, service)| service.receives_telemetry);
+        for (position, (index, service)) in receivers.enumerate() {
+            if position > 0 {
+                errors.push(ValidationError::new(
+                    codes::TELEMETRY_RECEIVER_DUPLICATE,
+                    format!("spec.services[{index}].receives_telemetry"),
+                    "at most one service of an application may receive telemetry",
+                ));
+            }
+            if service
+                .replicas
+                .literal()
+                .is_some_and(|replicas| *replicas > 1)
+            {
+                errors.push(ValidationError::new(
+                    codes::TELEMETRY_RECEIVER_REPLICAS,
+                    format!("spec.services[{index}].replicas"),
+                    "a service receiving telemetry runs at most one replica, since one collector listens on its socket",
                 ));
             }
         }
@@ -1208,20 +1240,19 @@ impl Service {
                 ));
             }
             validate_absolute_path(&mount.target, &format!("{path}.target"), errors);
-            // HTTP health checks mount piqueld-probe there.
-            if mount.target == piqueld_probe::CONTAINER_PATH
-                || mount
-                    .target
-                    .starts_with(&format!("{}/", piqueld_probe::CONTAINER_PATH))
-            {
-                errors.push(ValidationError::new(
-                    codes::MOUNT_TARGET_UNSAFE,
-                    format!("{path}.target"),
-                    format!(
-                        "mount target {} is reserved for piqueld's health probe",
-                        piqueld_probe::CONTAINER_PATH
-                    ),
-                ));
+            // HTTP health checks mount piqueld-probe there, and telemetry
+            // receivers their socket directory.
+            for (reserved, purpose) in [
+                (piqueld_probe::CONTAINER_PATH, "health probe"),
+                (crate::resource::TELEMETRY_TARGET, "telemetry socket"),
+            ] {
+                if mount.target == reserved || mount.target.starts_with(&format!("{reserved}/")) {
+                    errors.push(ValidationError::new(
+                        codes::MOUNT_TARGET_UNSAFE,
+                        format!("{path}.target"),
+                        format!("mount target {reserved} is reserved for piqueld's {purpose}"),
+                    ));
+                }
             }
             if !targets.insert(mount.target.clone()) {
                 errors.push(ValidationError::new(
