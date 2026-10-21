@@ -54,6 +54,9 @@ arguments = [
   "--config.file=/etc/prometheus/prometheus.yml",
   "--storage.tsdb.path=/prometheus",
   "--web.enable-otlp-receiver",
+  # Counters start from zero at their OTLP start time, so `increase()` counts
+  # their first increment.
+  "--enable-feature=created-timestamp-zero-ingestion",
   # Tempo writes span metrics, with their exemplars.
   "--web.enable-remote-write-receiver",
   "--enable-feature=exemplar-storage",
