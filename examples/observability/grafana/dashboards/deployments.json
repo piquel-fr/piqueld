@@ -57,7 +57,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (increase(piqueld_deployments_total{application=~\"$application\"}[$__interval]))",
+          "expr": "round(sum by (outcome) (increase(piqueld_deployments_total{application=~\"$application\"}[$__interval])))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
@@ -162,7 +162,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (outcome) (increase(piqueld_builds_total{application=~\"$application\"}[$__interval]))",
+          "expr": "round(sum by (outcome) (increase(piqueld_builds_total{application=~\"$application\"}[$__interval])))",
           "legendFormat": "{{outcome}}",
           "refId": "A"
         }
