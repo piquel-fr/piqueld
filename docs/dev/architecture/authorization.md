@@ -162,9 +162,9 @@ since those credentials hand out no lasting access.
 Invitation and enrollment links store their issuer. At redemption, the store
 checks that the issuer could still create the link: still holds
 `accounts:manage` and every grant the invitation hands out, or may still
-change the enrollment's target account. A refused link answers a plain 401
-`authentication_required`, like an expired one, and stays listed until it
-expires. Creating a link needs a credential with its account's full access.
+change the enrollment's target account. A refused link answers 400
+`authentication_invalid`, like an expired or used one, and stays listed until
+it expires. Creating a link needs a credential with its account's full access.
 Revoking one needs the authority to have created it, and a full-access
 credential only for an enrollment link to the caller's own account, like every
 change to it. Deleting the issuer deletes its links (`ON DELETE CASCADE`), and

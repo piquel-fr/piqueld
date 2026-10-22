@@ -262,9 +262,9 @@ piquelctl account delete bob
 - **The change is refused with `permission_exceeded`.** The account holds
   access you don't, or you're handing out access you don't hold. Ask someone
   who holds it.
-- **A link answers "API returned 401 Unauthorized: authentication_required
-  (Sign in with a passkey or run piquelctl login)".** It was already used, has
-  expired, or was revoked. Ask for a new link.
+- **A link answers "API returned 400 Bad Request: authentication_invalid
+  (this link is invalid, expired, or already used)".** It was already used,
+  has expired, or was revoked. Ask for a new link.
 - **The same refusal comes after the browser saved the passkey.** The link
   expired, was revoked or was used in the meantime, or its issuer can't
   create it any more: they lost `accounts:manage` or the access it grants, or,
@@ -272,7 +272,8 @@ piquelctl account delete bob
   passkey from the device, and ask for a new link. A link refused because of
   its issuer stays under **Pending links** until it expires.
 - **Registration fails with `account_conflict`.** Another account has that
-  username, regardless of case. The browser has already saved a passkey by
-  then: delete it from the device, and register again with another name.
+  username, regardless of case. Register again with another name. If someone
+  took the name while you were creating the passkey, the browser has saved
+  it already: delete it from the device first.
 - **Creating a link answers "the host operator is not an account".** Sign in
   with an account to create invitations and enrollment links.

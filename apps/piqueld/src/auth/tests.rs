@@ -2,7 +2,7 @@ use super::*;
 use crate::api::http::Authenticator as _;
 use crate::store::{Invitation, Lockout, NewPasskey, PasskeyOwner, StoreError};
 use piqueld_core::access::{Denied, GlobalPermission, Grants, Permission, Preset, Scope};
-use piqueld_core::auth::{HostOperator, Manage, OperatorLink, User};
+use piqueld_core::auth::{HostOperator, Manage, OperatorLink, RegistrationStart, User};
 
 impl Identity {
     /// The account behind an identity a test signed in as.
@@ -1191,6 +1191,47 @@ async fn setup_link_is_private_stable_and_never_reopens() {
     assert!(!path.exists());
 }
 
+/// Registration refuses up front what finishing it would: a scoped
+/// credential adding a passkey, and a taken username, before any passkey
+/// is created.
+#[tokio::test]
+async fn registration_refuses_scoped_callers_and_taken_usernames_at_start() {
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &Grants::admin()).await;
+    let create = Manage::CreateToken {
+        grants: Preset::ReadOnly.grants(&Scope::All),
+        name: "ci".into(),
+        days: Some(30),
+        tailnet: None,
+    };
+    let secret = f.auth.manage(&alice, create).await.unwrap().token.unwrap();
+    let ci = f.auth.authenticate(&secret).await.unwrap();
+    let start = |invitation: Option<&str>, user_id: Option<&str>| RegistrationStart {
+        invitation: invitation.map(str::to_owned),
+        user_id: user_id.map(str::to_owned),
+        username: "ALICE".into(),
+        display_name: String::new(),
+        passkey_name: "Key".into(),
+    };
+    let own = start(None, Some(&alice.account().id));
+    assert!(matches!(
+        f.auth.registration_start(own, "browser", Some(&ci)).await,
+        Err(AuthError::Denied(Denied::Scoped))
+    ));
+    let invite = Manage::CreateInvitation {
+        grants: Grants::default(),
+    };
+    let link = f.auth.manage(&alice, invite).await.unwrap().invitation_url;
+    let link = link.unwrap();
+    let invitation = link.split_once("#invite=").unwrap().1;
+    assert!(matches!(
+        f.auth
+            .registration_start(start(Some(invitation), None), "browser", None)
+            .await,
+        Err(AuthError::Store(StoreError::AlreadyExists))
+    ));
+}
+
 #[tokio::test]
 async fn challenges_require_the_original_browser_and_expire() {
     let f = Fixture::new().await;
@@ -1201,7 +1242,7 @@ async fn challenges_require_the_original_browser_and_expire() {
     };
     assert!(matches!(
         f.auth.login_finish(input.clone(), "browser-two").await,
-        Err(AuthError::Unauthorized)
+        Err(AuthError::Invalid(_))
     ));
     assert!(f.auth.0.ceremonies.lock().await.contains_key(&ceremony.id));
     assert!(
@@ -1213,7 +1254,7 @@ async fn challenges_require_the_original_browser_and_expire() {
     assert!(!f.auth.0.ceremonies.lock().await.contains_key(&ceremony.id));
     assert!(matches!(
         f.auth.login_finish(input, "browser-one").await,
-        Err(AuthError::Unauthorized)
+        Err(AuthError::Invalid(_))
     ));
     let ceremony = f.auth.login_start("browser").await.unwrap();
     f.auth
@@ -1234,7 +1275,7 @@ async fn challenges_require_the_original_browser_and_expire() {
                 "browser"
             )
             .await,
-        Err(AuthError::Unauthorized)
+        Err(AuthError::Invalid(_))
     ));
 }
 

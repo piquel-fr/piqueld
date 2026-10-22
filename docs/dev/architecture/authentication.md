@@ -73,9 +73,18 @@ directory keeps the hostname, and with it the passkeys.
 - Redeeming a setup, invitation, enrollment or recovery secret consumes it in
   the same transaction that stores the passkey (and creates the account), and
   issues a browser session. A store refusal, such as a concurrent redemption,
-  answers 401. Username uniqueness (`COLLATE NOCASE`) is only checked there,
-  at the finish request, after the browser has created the passkey;
-  a conflict answers 409 `account_conflict` and leaves the invitation usable.
+  answers 400 `authentication_invalid`. Username uniqueness
+  (`COLLATE NOCASE`) is checked when registration starts, before the browser
+  creates the passkey, and enforced again there; a conflict answers 409
+  `account_conflict` and leaves the invitation usable.
+- Ceremony failures that say nothing about the caller's credentials answer
+  400 `authentication_invalid`: a challenge that expired, was already used,
+  or was started in another browser, a missing ceremony cookie, and a setup,
+  invitation or enrollment link that can no longer be redeemed. 401 means the
+  passkey or the signed-in session was refused. Host operator sign-in links,
+  which sign in without a passkey, answer 401 when unusable.
+- A scoped credential can't add a passkey, so `register/start` refuses it
+  with 403, as the finish request would.
 - An invitation or enrollment link is checked again at redemption against its
   issuer's current grants (see
   [authorization](authorization.md#links-act-with-their-issuers-authority)).
