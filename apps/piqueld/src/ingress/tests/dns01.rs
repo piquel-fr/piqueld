@@ -63,6 +63,8 @@ impl Scenario {
             .build();
         self.gateway
             .images
+            .client()
+            .unwrap()
             .create_image(Some(options), None, None)
             .try_collect::<Vec<_>>()
             .await

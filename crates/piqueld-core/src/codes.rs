@@ -91,6 +91,10 @@ pub const HEALTHCHECK_INTERVAL_INVALID: &str = "healthcheck_interval_invalid";
 pub const HEALTHCHECK_INTERVAL_EXCESSIVE: &str = "healthcheck_interval_excessive";
 /// Health-check timeout is not positive or exceeds its interval.
 pub const HEALTHCHECK_TIMEOUT_INVALID: &str = "healthcheck_timeout_invalid";
+/// Health-check start period exceeds its explicit budget.
+pub const HEALTHCHECK_START_PERIOD_EXCESSIVE: &str = "healthcheck_start_period_excessive";
+/// Health-check retries are not positive or exceed their explicit budget.
+pub const HEALTHCHECK_RETRIES_INVALID: &str = "healthcheck_retries_invalid";
 /// Explicit container command does not start with a non-empty executable.
 pub const PROCESS_COMMAND_INVALID: &str = "process_command_invalid";
 /// Container command exceeds its element or byte budget.

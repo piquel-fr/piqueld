@@ -143,11 +143,15 @@ mod tests {
             path: "/health".into(),
             interval_seconds: 10,
             timeout_seconds: 3,
+            start_period_seconds: 0,
+            retries: 3,
         };
         let command = HealthCheck::Command {
             command: vec!["true".into()],
             interval_seconds: 10,
             timeout_seconds: 3,
+            start_period_seconds: 0,
+            retries: 3,
         };
         let matches = |health: &HealthCheck, configs: Vec<TaskSpecContainerSpecConfigs>| {
             HealthProbe::matches(&TaskSpecContainerSpec {

@@ -929,6 +929,8 @@ fn manifest_with_job_dependencies() -> ApplicationManifest {
             command: vec!["ready".into()],
             interval_seconds: 1.into(),
             timeout_seconds: 1.into(),
+            start_period_seconds: 0.into(),
+            retries: 3.into(),
         });
         input.spec.services.push(service);
     }
@@ -2300,6 +2302,34 @@ async fn periodic_recovery_reuses_failed_prepared_target_and_records_health_chan
             .iter()
             .any(|event| event.kind == "operation_failed" && event.attempt == Some(1))
     );
+}
+
+#[tokio::test]
+async fn health_is_degraded_while_an_expected_service_is_missing() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness.create().await;
+    harness.finish(&operation).await;
+    let mut observed = harness
+        .docker
+        .observe(&operation.environment_id)
+        .await
+        .unwrap();
+    // Only an unexpected, converged service runs; the target's is missing.
+    observed.services[0].name = "unexpected".into();
+
+    harness
+        .store
+        .record_health(&operation.id, &observed)
+        .await
+        .unwrap();
+
+    let status = harness
+        .store
+        .status(&operation.environment_id)
+        .await
+        .unwrap();
+    assert_eq!(status.runtime_health.as_deref(), Some("degraded"));
+    assert!(status.health_observed_at_ms.is_some());
 }
 
 #[tokio::test]

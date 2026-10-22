@@ -983,18 +983,27 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
         path: "/health".into(),
         interval_seconds: 10,
         timeout_seconds: 3,
+        start_period_seconds: 0,
+        retries: 3,
     };
     desired.services[0].healthcheck = Some(http.clone());
     let mut snapshot = observed(&desired);
     let piqueld_core::manifest::HealthExecution {
         command,
-        interval_seconds,
-        timeout_seconds,
+        timing:
+            piqueld_core::manifest::HealthTiming {
+                interval_seconds,
+                timeout_seconds,
+                start_period_seconds,
+                retries,
+            },
     } = http.execution();
     desired.services[0].healthcheck = Some(piqueld_core::manifest::ValidatedHealthCheck::Command {
         command,
         interval_seconds,
         timeout_seconds,
+        start_period_seconds,
+        retries,
     });
     assert!(snapshot.services[0].matches(&desired.services[0]));
     let request = PlanRequest::Reconcile {
@@ -1009,6 +1018,8 @@ fn command_and_http_health_checks_have_the_same_runtime_meaning() {
         path: "/health".into(),
         interval_seconds,
         timeout_seconds,
+        start_period_seconds,
+        retries,
     });
     assert!(!snapshot.services[0].matches(&desired.services[0]));
     assert_ne!(

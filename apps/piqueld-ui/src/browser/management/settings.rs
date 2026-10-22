@@ -1122,8 +1122,8 @@ fn file_fields(form: RwSignal<ServiceForm>) -> AnyView {
     .into_any()
 }
 
-/// Health check type selector with the interval, timeout, and HTTP or command
-/// fields relevant to the chosen type.
+/// Health check type selector with the interval, timeout, start period,
+/// retries, and HTTP or command fields relevant to the chosen type.
 fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
     let kind = Memo::new(move |_| form.with(|form| form.health_kind));
     view! {
@@ -1159,6 +1159,13 @@ fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
                     |v, s| v.interval = s,
                 )}
                 {text_input("Timeout (seconds)", form, |v| v.timeout.clone(), |v, s| v.timeout = s)}
+                {text_input(
+                    "Start period (seconds)",
+                    form,
+                    |v| v.start_period.clone(),
+                    |v, s| v.start_period = s,
+                )}
+                {text_input("Retries", form, |v| v.retries.clone(), |v, s| v.retries = s)}
             </Show>
             <Show when={move || {
                 kind.get() == HealthKind::Http

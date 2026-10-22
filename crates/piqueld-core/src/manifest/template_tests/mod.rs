@@ -131,6 +131,8 @@ port = 8080
 path = "/health"
 interval_seconds = 30
 timeout_seconds = 5
+start_period_seconds = 15
+retries = 4
 [spec.services.resources]
 cpu_millis = 500
 memory_bytes = 67108864
@@ -158,6 +160,8 @@ type = "command"
 command = ["test", "ready"]
 interval_seconds = 20
 timeout_seconds = 4
+start_period_seconds = 10
+retries = 2
 [[spec.routes]]
 hostname = "notes.example.com"
 service = "a-image"
@@ -214,6 +218,14 @@ const FIELDS: &[(&str, &str)] = &[
         "spec.services[0].healthcheck.timeout_seconds",
     ),
     (
+        "/spec/services/0/healthcheck/start_period_seconds",
+        "spec.services[0].healthcheck.start_period_seconds",
+    ),
+    (
+        "/spec/services/0/healthcheck/retries",
+        "spec.services[0].healthcheck.retries",
+    ),
+    (
         "/spec/services/0/resources/cpu_millis",
         "spec.services[0].resources.cpu_millis",
     ),
@@ -266,6 +278,14 @@ const FIELDS: &[(&str, &str)] = &[
     (
         "/spec/services/1/healthcheck/timeout_seconds",
         "spec.services[1].healthcheck.timeout_seconds",
+    ),
+    (
+        "/spec/services/1/healthcheck/start_period_seconds",
+        "spec.services[1].healthcheck.start_period_seconds",
+    ),
+    (
+        "/spec/services/1/healthcheck/retries",
+        "spec.services[1].healthcheck.retries",
     ),
     ("/spec/routes/0/hostname", "spec.routes[0].hostname"),
     ("/spec/routes/1/hostname", "spec.routes[1].hostname"),

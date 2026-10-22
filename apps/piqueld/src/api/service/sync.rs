@@ -296,7 +296,6 @@ pub(crate) mod tests {
         pub(crate) service: ApplicationService,
         pub(crate) application: ApplicationId,
         _temp: tempfile::TempDir,
-        _docker: tokio::net::UnixListener,
     }
 
     impl Fixture {
@@ -307,12 +306,11 @@ pub(crate) mod tests {
                     .await
                     .unwrap(),
             );
-            let (service, docker) = ApplicationService::unconnected(store, temp.path());
+            let service = ApplicationService::unconnected(store, temp.path());
             Self {
                 application: Self::save(&service, "notes", sync).await,
                 service,
                 _temp: temp,
-                _docker: docker,
             }
         }
 

@@ -566,7 +566,7 @@ impl Ingress {
         let result = async {
             journal.request().await?;
             tokio::time::timeout(Duration::from_mins(3), async {
-                let mut pull = self.images.create_image(
+                let mut pull = self.images.client()?.create_image(
                     Some(
                         CreateImageOptionsBuilder::default()
                             .from_image(image)

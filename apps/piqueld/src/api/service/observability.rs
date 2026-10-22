@@ -280,7 +280,7 @@ mod tests {
             .insert_credential(&user.id, &credential)
             .await
             .unwrap();
-        let (service, _docker) = ApplicationService::unconnected(store, temp.path());
+        let service = ApplicationService::unconnected(store, temp.path());
         let url = format!("sqlite:{}", database.display());
         let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();
         let address = IpAddr::from([192, 0, 2, 1]);

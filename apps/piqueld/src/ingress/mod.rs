@@ -105,8 +105,9 @@ pub struct Ingress {
     docker: UnixApi,
     /// Caddy's private admin API socket inside the control mount.
     caddy: UnixApi,
-    /// Docker client used only for streaming image pulls.
-    images: bollard::Docker,
+    /// Docker client used only for streaming image pulls, which needs
+    /// Docker's socket only once it pulls.
+    images: crate::docker::BollardDocker,
     /// Public HTTPS client for route probes; never follows redirects or proxies.
     client: reqwest::Client,
     store: Arc<Store>,
@@ -184,11 +185,8 @@ impl Ingress {
             caddy: UnixApi::new(directory.join("control/admin.sock"), request_timeout),
             directory,
             docker: UnixApi::new(socket.into(), request_timeout),
-            images: bollard::Docker::connect_with_unix(
-                socket.to_str().context("Docker socket is not UTF-8")?,
-                request_timeout.as_secs(),
-                bollard::API_DEFAULT_VERSION,
-            )?,
+            images: crate::docker::BollardDocker::connect(socket)
+                .context("Docker socket is not UTF-8")?,
             client: Self::probe_client().build()?,
             store,
             update: Mutex::new(()),
@@ -509,7 +507,9 @@ impl Ingress {
     /// Callers must hold the writer lock. Network failures degrade health;
     /// they fail the call only for `application` (or for any application when
     /// `None`). A disconnected tunnel degrades health without failing the
-    /// call. Node failures degrade only the private listener's health.
+    /// call. Node failures degrade only the private listener's health, which
+    /// public routes do not depend on, but still count towards the
+    /// `ingress_unavailable` condition so they notify.
     async fn synchronize_for(
         &self,
         application: Option<&piqueld_core::EnvironmentId>,
@@ -572,15 +572,7 @@ impl Ingress {
                 }
             );
         let healthy = result.is_ok() && failures.is_empty() && !disconnected;
-        // Health transitions become history, and sustained failures notify
-        // administrators, like other daemon dependencies.
-        if let Err(error) = self
-            .store
-            .observe_condition("ingress_unavailable", None, !healthy, now_ms(), 45_000)
-            .await
-        {
-            tracing::error!(error=?error, "ingress health observation could not be recorded");
-        }
+        self.observe_availability(healthy, &private).await;
         let mut health = self.health.write().await;
         health.healthy = healthy;
         health.gateway = gateway;
@@ -608,6 +600,20 @@ impl Ingress {
             }
         }
         Ok(())
+    }
+
+    /// Records whether ingress is available: the public side is `healthy` and
+    /// the `private` listener too. Transitions become history, and sustained
+    /// failures notify administrators, like other daemon dependencies.
+    async fn observe_availability(&self, healthy: bool, private: &PrivateIngressStatus) {
+        let failed = !(healthy && private.healthy);
+        if let Err(error) = self
+            .store
+            .observe_condition("ingress_unavailable", None, failed, now_ms(), 45_000)
+            .await
+        {
+            tracing::error!(error=?error, "ingress health observation could not be recorded");
+        }
     }
 
     /// The private listener's health once the gateway is up: the apps node's

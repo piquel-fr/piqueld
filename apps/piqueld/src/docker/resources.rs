@@ -100,6 +100,7 @@ impl BollardDocker {
     ) -> Result<NetworkSnapshot, DockerError> {
         let [by_label, by_name] =
             Self::candidate_listings(application, ["list networks", "list networks by name"]);
+        let client = self.client()?;
         let listed = Self::list_unique(
             [
                 by_label,
@@ -107,7 +108,7 @@ impl BollardDocker {
                 ("list linked networks", Self::link_label_filter(application)),
             ],
             |filters| {
-                self.docker.list_networks(Some(
+                client.list_networks(Some(
                     ListNetworksOptionsBuilder::default()
                         .filters(&filters)
                         .build(),
@@ -173,10 +174,11 @@ impl BollardDocker {
         &self,
         application: &EnvironmentId,
     ) -> Result<Vec<ObservedVolume>, DockerError> {
+        let client = self.client()?;
         let volumes = Self::list_unique(
             Self::candidate_listings(application, ["list volumes", "list volumes by name"]),
             |filters| async move {
-                self.docker
+                client
                     .list_volumes(Some(
                         ListVolumesOptionsBuilder::default()
                             .filters(&filters)
@@ -211,10 +213,11 @@ impl BollardDocker {
         &self,
         application: &EnvironmentId,
     ) -> Result<(Vec<bollard::models::Service>, Vec<String>), DockerError> {
+        let client = self.client()?;
         let mut listed = Self::list_unique(
             Self::candidate_listings(application, ["list services", "list services by name"]),
             |filters| {
-                self.docker.list_services(Some(
+                client.list_services(Some(
                     ListServicesOptionsBuilder::default()
                         .filters(&filters)
                         .status(true)
@@ -268,7 +271,7 @@ impl BollardDocker {
             // there is nothing to list for.
             Vec::new()
         } else {
-            self.docker
+            self.client()?
                 .list_tasks(Some(
                     ListTasksOptionsBuilder::default()
                         .filters(&HashMap::from([("service", service_names)]))
@@ -352,7 +355,7 @@ impl BollardDocker {
         kind: ResourceKind,
     ) -> Result<(), DockerError> {
         let Some(existing) = self
-            .docker
+            .client()?
             .inspect_service(name, None::<InspectServiceOptions>)
             .await
             .found()
@@ -368,7 +371,7 @@ impl BollardDocker {
         Self::check_ownership(labels, ownership, kind, name)?;
         // Delete the resource that was inspected, even if the name is replaced
         // between the ownership check and this request.
-        self.docker
+        self.client()?
             .delete_service(&id)
             .await
             .found()
@@ -397,7 +400,7 @@ impl BollardDocker {
     ) -> Result<Option<bollard::models::Network>, DockerError> {
         for attempt in 1..=NETWORK_INSPECT_ATTEMPTS {
             let Some(network) = self
-                .docker
+                .client()?
                 .inspect_network(identifier, None::<InspectNetworkOptions>)
                 .await
                 .found()
@@ -479,7 +482,7 @@ impl DockerApi for BollardDocker {
     async fn ping(&self) -> Result<(), DockerError> {
         DockerTimeout::Request
             .run("ping Docker", async {
-                self.docker
+                self.client()?
                     .ping()
                     .await
                     .map(|_| ())
@@ -529,7 +532,7 @@ impl DockerApi for BollardDocker {
                 {
                     return Err(DockerError::NotManager);
                 }
-                self.docker
+                self.client()?
                     .init_swarm(SwarmInitRequest {
                         // piqueld is intentionally single-host. Do not expose the
                         // manager control port while bootstrapping the local Swarm.
@@ -640,7 +643,7 @@ impl DockerApi for BollardDocker {
         DockerTimeout::ImageResolution
             .run(
                 "resolve image",
-                resolve_image_digest(self.docker.as_ref(), reference),
+                resolve_image_digest(self.client()?, reference),
             )
             .await
     }
@@ -679,7 +682,7 @@ impl DockerApi for BollardDocker {
                     return Err(DockerError::OwnershipConflict);
                 }
                 let existing = self
-                    .docker
+                    .client()?
                     .list_networks(Some(
                         ListNetworksOptionsBuilder::default()
                             .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
@@ -707,7 +710,7 @@ impl DockerApi for BollardDocker {
                         runtime_configuration_matches,
                     );
                 }
-                self.docker
+                self.client()?
                     .create_network(NetworkCreateRequest {
                         name: desired.name.to_string(),
                         driver: Some("overlay".into()),
@@ -736,7 +739,7 @@ impl DockerApi for BollardDocker {
                     return Err(DockerError::OwnershipConflict);
                 }
                 let existing = self
-                    .docker
+                    .client()?
                     .list_volumes(Some(
                         ListVolumesOptionsBuilder::default()
                             .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
@@ -758,7 +761,7 @@ impl DockerApi for BollardDocker {
                         runtime_configuration_matches,
                     );
                 }
-                self.docker
+                self.client()?
                     .create_volume(VolumeCreateOptions {
                         name: Some(desired.name.to_string()),
                         driver: Some("local".into()),
@@ -793,7 +796,7 @@ impl DockerApi for BollardDocker {
                     }
                     self.check_volumes_free(desired).await?;
                     let matches = self
-                        .docker
+                        .client()?
                         .list_services(Some(
                             ListServicesOptionsBuilder::default()
                                 .filters(&HashMap::from([("name", vec![desired.name.to_string()])]))
@@ -843,7 +846,7 @@ impl DockerApi for BollardDocker {
                                     .and_then(|status| status.state),
                             )?;
                             let networks = self
-                                .docker
+                                .client()?
                                 .list_networks(Some(ListNetworksOptionsBuilder::default().build()))
                                 .await
                                 .or_request("list service networks")?;
@@ -917,7 +920,7 @@ impl DockerApi for BollardDocker {
                         service,
                     )?;
                     let Some(inspected) = self
-                        .docker
+                        .client()?
                         .inspect_network(network, None::<InspectNetworkOptions>)
                         .await
                         .found()
@@ -1009,7 +1012,7 @@ impl DockerApi for BollardDocker {
         DockerTimeout::Request
             .run("remove network", async {
                 let Some(existing) = self
-                    .docker
+                    .client()?
                     .inspect_network(name, None::<InspectNetworkOptions>)
                     .await
                     .found()
@@ -1024,7 +1027,7 @@ impl DockerApi for BollardDocker {
                 let labels = existing.labels.unwrap_or_default();
                 Self::check_ownership(labels, ownership, ResourceKind::Network, name)?;
                 // Network IDs make the ownership check and removal target the same object.
-                self.docker
+                self.client()?
                     .remove_network(&id)
                     .await
                     .found()
@@ -1046,7 +1049,7 @@ impl DockerApi for BollardDocker {
         DockerTimeout::Request
             .run("remove volume", async {
                 let Some(existing) = self
-                    .docker
+                    .client()?
                     .inspect_volume(name)
                     .await
                     .found()
@@ -1055,7 +1058,7 @@ impl DockerApi for BollardDocker {
                     return Ok(());
                 };
                 Self::check_ownership(existing.labels, ownership, ResourceKind::Volume, name)?;
-                self.docker
+                self.client()?
                     .remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
                     .await
                     .found()

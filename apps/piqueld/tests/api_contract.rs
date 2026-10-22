@@ -3826,6 +3826,8 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
             path: "/health".into(),
             interval_seconds: 10.into(),
             timeout_seconds: 3.into(),
+            start_period_seconds: 0.into(),
+            retries: 3.into(),
         })),
     )
     .await;
@@ -3834,6 +3836,10 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
     api.edit_service_field(id, ServiceEdit::HealthPath("/live".into()))
         .await;
     api.edit_service_field(id, ServiceEdit::HealthInterval(20.into()))
+        .await;
+    api.edit_service_field(id, ServiceEdit::HealthStartPeriod(60.into()))
+        .await;
+    api.edit_service_field(id, ServiceEdit::HealthRetries(5.into()))
         .await;
     let health = api
         .edit_service_field(id, ServiceEdit::HealthTimeout(5.into()))
@@ -3844,7 +3850,9 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
             port: 9090.into(),
             path: "/live".into(),
             interval_seconds: 20.into(),
-            timeout_seconds: 5.into()
+            timeout_seconds: 5.into(),
+            start_period_seconds: 60.into(),
+            retries: 5.into(),
         })
     );
     api.edit_service_field(
@@ -3853,6 +3861,8 @@ async fn field_edit_health_process_and_resource_endpoints_clear_optional_values(
             command: vec!["true".into()],
             interval_seconds: 10.into(),
             timeout_seconds: 3.into(),
+            start_period_seconds: 0.into(),
+            retries: 3.into(),
         })),
     )
     .await;

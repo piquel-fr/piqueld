@@ -53,7 +53,7 @@ impl BollardDocker {
             return Ok(None);
         };
         let tasks = self
-            .docker
+            .client()?
             .list_tasks(Some(
                 ListTasksOptionsBuilder::default()
                     .filters(&HashMap::from([
@@ -83,7 +83,7 @@ impl BollardDocker {
         };
         let tty = request.tty.is_some();
         let created = self
-            .docker
+            .client()?
             .create_exec(
                 &container,
                 ExecConfig {
@@ -117,7 +117,7 @@ impl BollardDocker {
             mut output,
             mut input,
         } = self
-            .docker
+            .client()?
             .start_exec(
                 &exec.id,
                 Some(StartExecOptions {
@@ -155,6 +155,7 @@ impl BollardDocker {
         };
         // Never returns: a blocked stdin write must not hide a stop, so stops
         // are watched separately.
+        let client = self.client()?;
         let forward_input = async {
             let mut input_open = true;
             while let Some(frame) = frames.recv().await {
@@ -171,7 +172,7 @@ impl BollardDocker {
                             h: size.height.into(),
                             w: size.width.into(),
                         };
-                        if let Err(error) = self.docker.resize_exec(&exec.id, options).await {
+                        if let Err(error) = client.resize_exec(&exec.id, options).await {
                             tracing::debug!(?error, "exec terminal resize failed");
                         }
                     }
@@ -196,7 +197,7 @@ impl BollardDocker {
             result = forward_output => result?,
             never = forward_input => match never {},
         }
-        self.docker
+        self.client()?
             .inspect_exec(&exec.id)
             .await
             .or_request("inspect exec")?

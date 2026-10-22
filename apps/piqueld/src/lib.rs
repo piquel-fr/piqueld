@@ -49,34 +49,33 @@ pub async fn run_until_cancelled(cancellation: CancellationToken) {
     info!("shutdown requested");
 }
 
-/// Converts SIGINT or SIGTERM into cooperative daemon cancellation.
+/// Converts the first SIGINT or SIGTERM into cooperative daemon cancellation,
+/// and exits the process at once on the next one, even when the daemon was
+/// cancelled otherwise, so a stuck shutdown, including its final telemetry
+/// flush, can always be interrupted. Never returns unless the handlers cannot
+/// be installed; leave it running until the process exits.
 ///
 /// # Errors
 ///
-/// Returns an error if the operating-system signal handler cannot be installed.
-pub async fn cancel_on_shutdown_signal(
-    cancellation: CancellationToken,
-) -> Result<(), RuntimeError> {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
+/// Returns an error if the operating-system signal handlers cannot be installed.
+pub async fn handle_shutdown_signals(cancellation: CancellationToken) -> Result<(), RuntimeError> {
+    use tokio::signal::unix::{SignalKind, signal};
 
-        let mut terminate = signal(SignalKind::terminate()).map_err(RuntimeError::Signal)?;
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(RuntimeError::Signal)?;
+    let mut terminate = signal(SignalKind::terminate()).map_err(RuntimeError::Signal)?;
+    let mut shutdown_signal = async || {
         tokio::select! {
-            result = tokio::signal::ctrl_c() => result.map_err(RuntimeError::Signal)?,
+            _ = interrupt.recv() => {},
             _ = terminate.recv() => {},
-            () = cancellation.cancelled() => return Ok(()),
         }
-    }
-
-    #[cfg(not(unix))]
+    };
     tokio::select! {
-        result = tokio::signal::ctrl_c() => result.map_err(RuntimeError::Signal)?,
-        () = cancellation.cancelled() => return Ok(()),
+        () = shutdown_signal() => cancellation.cancel(),
+        () = cancellation.cancelled() => {},
     }
-
-    cancellation.cancel();
-    Ok(())
+    shutdown_signal().await;
+    tracing::error!("second shutdown signal received; exiting without finishing shutdown");
+    std::process::exit(1)
 }
 
 #[cfg(test)]

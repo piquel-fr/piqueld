@@ -897,6 +897,8 @@ impl Scenario {
             command: vec!["test".into(), "-f".into(), "/tmp/ready".into()],
             interval_seconds: 3.into(),
             timeout_seconds: 1.into(),
+            start_period_seconds: 0.into(),
+            retries: 3.into(),
         });
         changed.spec.services.push(next);
         changed.spec.routes[0].service = Some("next".into());
@@ -1438,6 +1440,25 @@ async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
         "{}",
         private.message
     );
+}
+
+#[tokio::test]
+async fn an_unhealthy_apps_node_alone_makes_ingress_unavailable() {
+    let (engine, ingress) = private_ingress().await;
+    let private = PrivateIngressStatus {
+        enabled: true,
+        healthy: false,
+        ..PrivateIngressStatus::default()
+    };
+
+    ingress.observe_availability(true, &private).await;
+
+    let events = engine.history().await;
+    let [health] = events.as_slice() else {
+        panic!("expected one health transition: {events:#?}")
+    };
+    assert_eq!(health.kind, "dependency_health_changed");
+    assert_eq!(health.error_code.as_deref(), Some("ingress_unavailable"));
 }
 
 #[tokio::test]

@@ -649,6 +649,18 @@ pub enum HealthCheck {
         /// Probe timeout in seconds.
         #[serde(default = "default_timeout")]
         timeout_seconds: Typed<u32>,
+        /// Startup grace in seconds, during which failed probes do not count.
+        #[serde(
+            default = "default_start_period",
+            skip_serializing_if = "is_default_start_period"
+        )]
+        start_period_seconds: Typed<u32>,
+        /// Consecutive failed probes that make the container unhealthy.
+        #[serde(
+            default = "default_retries",
+            skip_serializing_if = "is_default_retries"
+        )]
+        retries: Typed<u32>,
     },
     /// Executable command health check.
     Command {
@@ -660,12 +672,96 @@ pub enum HealthCheck {
         /// Probe timeout in seconds.
         #[serde(default = "default_timeout")]
         timeout_seconds: Typed<u32>,
+        /// Startup grace in seconds, during which failed probes do not count.
+        #[serde(
+            default = "default_start_period",
+            skip_serializing_if = "is_default_start_period"
+        )]
+        start_period_seconds: Typed<u32>,
+        /// Consecutive failed probes that make the container unhealthy.
+        #[serde(
+            default = "default_retries",
+            skip_serializing_if = "is_default_retries"
+        )]
+        retries: Typed<u32>,
     },
+}
+
+impl HealthCheck {
+    /// The check's timing settings, whichever variant declared them.
+    #[must_use]
+    pub const fn timing(&self) -> super::HealthTiming<&Typed<u32>> {
+        let (Self::Http {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+            ..
+        }
+        | Self::Command {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+            ..
+        }) = self;
+        super::HealthTiming {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+        }
+    }
+
+    /// The check's timing settings, to edit them.
+    pub const fn timing_mut(&mut self) -> super::HealthTiming<&mut Typed<u32>> {
+        let (Self::Http {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+            ..
+        }
+        | Self::Command {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+            ..
+        }) = self;
+        super::HealthTiming {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+        }
+    }
 }
 
 /// Serde default for the HTTP health-check path.
 fn default_health_path() -> Template {
     "/health".into()
+}
+
+/// Serde default health-check start period, in seconds: none. Defaults are
+/// not serialized, so checks written before it existed keep their spec hash.
+fn default_start_period() -> Typed<u32> {
+    Typed::Literal(super::ValidatedHealthCheck::DEFAULT_START_PERIOD_SECONDS)
+}
+
+/// Whether `value` is [`default_start_period`].
+fn is_default_start_period(value: &Typed<u32>) -> bool {
+    *value == default_start_period()
+}
+
+/// Serde default health-check retries, likewise not serialized.
+fn default_retries() -> Typed<u32> {
+    Typed::Literal(super::ValidatedHealthCheck::DEFAULT_RETRIES)
+}
+
+/// Whether `value` is [`default_retries`].
+fn is_default_retries(value: &Typed<u32>) -> bool {
+    *value == default_retries()
 }
 
 /// Serde default health-check interval, in seconds.

@@ -359,6 +359,78 @@ async fn open_daemon_incidents_remain_manually_retryable() {
         DeliveryState::Pending
     );
 }
+/// As after a downgrade across a category a newer version added.
+#[tokio::test]
+async fn an_undeliverable_delivery_does_not_block_the_next() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db"))
+        .await
+        .unwrap()
+        .with_observability(&notifications());
+    sqlx::query(
+        "INSERT INTO notification_routes(category,destination,fingerprint,after_event_id) \
+         VALUES('retired','test','retired',0)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    // Startup drops the route of an unknown category instead of failing.
+    store.configure_deliveries().await.unwrap();
+    let routes: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM notification_routes WHERE category='retired'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(routes, 0);
+    for code in [
+        piqueld_core::observability::DiagnosticCode::InternalError,
+        piqueld_core::observability::DiagnosticCode::DnsRecordsFailed,
+    ] {
+        let diagnostic = Diagnostic::new(new_id("diagnostic"), code, "Daemon failure".into());
+        store
+            .record_diagnostic(&diagnostic, None, None, Attribution::default())
+            .await
+            .unwrap();
+    }
+    store.process_notifications().await.unwrap();
+    // The delivery due first can no longer be decoded.
+    let poisoned: String = sqlx::query_scalar(
+        "UPDATE notification_deliveries SET category='retired' WHERE id=(SELECT id FROM \
+         notification_deliveries ORDER BY next_attempt_ms,id LIMIT 1) RETURNING id",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+
+    let (claimed, _) = store.claim_delivery().await.unwrap().unwrap();
+
+    assert_ne!(claimed.id, poisoned);
+    let settled: (String, Option<String>) =
+        sqlx::query_as("SELECT state,last_error FROM notification_deliveries WHERE id=?1")
+            .bind(&poisoned)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        settled,
+        (
+            "failed".into(),
+            Some("Unknown notification category".into())
+        )
+    );
+    // History leaves it out and it cannot be retried, rather than failing.
+    let listed = store.deliveries(None, 100).await.unwrap().items;
+    assert_eq!(
+        listed.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+        [claimed.id.as_str()]
+    );
+    assert!(matches!(
+        store
+            .retry_delivery(crate::api::Actor::Daemon, &poisoned)
+            .await,
+        Err(StoreError::InvalidInput)
+    ));
+}
 #[tokio::test]
 async fn disabling_cancels_pending_and_reenabling_never_replays() {
     let temp = tempfile::tempdir().unwrap();

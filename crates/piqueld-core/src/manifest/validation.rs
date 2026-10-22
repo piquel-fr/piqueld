@@ -35,6 +35,9 @@ const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
 const MAX_SECRET_MOUNTS_PER_SERVICE: usize = 64;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
+const MAX_HEALTHCHECK_START_PERIOD_SECONDS: u32 = 3_600;
+/// Accepted consecutive failures before a container is unhealthy.
+const HEALTHCHECK_RETRIES: std::ops::RangeInclusive<u32> = 1..=100;
 pub(super) const MAX_CPU_MILLIS: u32 = 1_048_576;
 /// Accepted replica counts of a service.
 pub(super) const REPLICAS: std::ops::RangeInclusive<u16> = 1..=100;
@@ -410,6 +413,8 @@ pub fn safe_decode_path(path: &str) -> String {
         "path",
         "interval_seconds",
         "timeout_seconds",
+        "start_period_seconds",
+        "retries",
         "cpu_millis",
         "memory_bytes",
         "generate",
@@ -1494,16 +1499,17 @@ impl Job {
 
 impl HealthCheck {
     /// Validates a health check's probe, then its timing: interval in
-    /// `1..=MAX_HEALTHCHECK_INTERVAL_SECONDS` and timeout in `1..=interval`.
+    /// `1..=MAX_HEALTHCHECK_INTERVAL_SECONDS`, timeout in `1..=interval`,
+    /// start period up to `MAX_HEALTHCHECK_START_PERIOD_SECONDS` and retries
+    /// in `HEALTHCHECK_RETRIES`.
     ///
     /// HTTP paths must be normalized absolute paths without query or fragment.
     fn validate(&self, path: &str, errors: &mut Vec<ValidationError>) {
-        let (interval, timeout) = match self {
+        match self {
             HealthCheck::Http {
                 port,
                 path: request_path,
-                interval_seconds,
-                timeout_seconds,
+                ..
             } => {
                 if port.literal() == Some(&0) {
                     errors.push(ValidationError::new(
@@ -1533,13 +1539,8 @@ impl HealthCheck {
                         "HTTP health-check path must start with / and contain no whitespace",
                     ));
                 }
-                (interval_seconds.literal(), timeout_seconds.literal())
             }
-            HealthCheck::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => {
+            HealthCheck::Command { command, .. } => {
                 if command.first().is_none_or(|value| {
                     value
                         .as_literal()
@@ -1560,10 +1561,47 @@ impl HealthCheck {
                     codes::PROCESS_COMMAND_EXCESSIVE,
                     errors,
                 );
-                (interval_seconds.literal(), timeout_seconds.literal())
             }
-        };
-        let Some(&interval) = interval else {
+        }
+        self.validate_timing(path, errors);
+    }
+
+    /// Validates the timing part of [`Self::validate`].
+    fn validate_timing(&self, path: &str, errors: &mut Vec<ValidationError>) {
+        let super::HealthTiming {
+            interval_seconds,
+            timeout_seconds,
+            start_period_seconds,
+            retries,
+        } = self.timing();
+        if start_period_seconds
+            .literal()
+            .is_some_and(|&start_period| start_period > MAX_HEALTHCHECK_START_PERIOD_SECONDS)
+        {
+            errors.push(ValidationError::new(
+                codes::HEALTHCHECK_START_PERIOD_EXCESSIVE,
+                format!("{path}.start_period_seconds"),
+                format!(
+                    "health-check start period must be at most {MAX_HEALTHCHECK_START_PERIOD_SECONDS} seconds"
+                ),
+            ));
+        }
+        if retries
+            .literal()
+            .is_some_and(|retries| !HEALTHCHECK_RETRIES.contains(retries))
+        {
+            errors.push(ValidationError::new(
+                codes::HEALTHCHECK_RETRIES_INVALID,
+                format!("{path}.retries"),
+                format!(
+                    "health-check retries must be between {} and {}",
+                    HEALTHCHECK_RETRIES.start(),
+                    HEALTHCHECK_RETRIES.end()
+                ),
+            ));
+        }
+        let (Some(&interval), timeout) = (interval_seconds.literal(), timeout_seconds.literal())
+        else {
             return;
         };
         if interval == 0 {

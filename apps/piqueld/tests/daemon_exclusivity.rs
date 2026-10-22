@@ -1,4 +1,5 @@
-//! Startup must exclude competing processes before touching durable state.
+//! Startup must exclude competing processes before touching durable state,
+//! and needs nothing else, not even Docker, to serve.
 
 #[path = "support/daemon.rs"]
 mod daemon;
@@ -6,10 +7,11 @@ mod daemon;
 use parking_lot::Mutex;
 use piqueld::DirectoryLock;
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},
     process::{Child, Command, Stdio},
     sync::{Arc, Barrier},
+    time::{Duration, Instant},
 };
 
 // A concurrent spawn can inherit another test's flock until exec closes the
@@ -136,4 +138,79 @@ fn lock_holder_process() {
     std::io::stdout().flush().unwrap();
     let mut input = String::new();
     std::io::stdin().read_line(&mut input).unwrap();
+}
+
+/// Sends `request` to the Unix API `socket` and returns the whole response,
+/// waiting up to 30 seconds for the daemon to listen.
+fn unix_request(socket: &std::path::Path, request: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut stream = loop {
+        match std::os::unix::net::UnixStream::connect(socket) {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(Instant::now() < deadline, "the API never listened: {error}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[test]
+fn the_api_serves_without_docker_and_stops_on_sigterm() {
+    let _process_test = PROCESS_TEST.lock();
+    // Not below the working directory: the socket address must stay short.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path();
+    let runtime = path.join("run");
+    std::fs::create_dir(&runtime).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Docker has not started: its socket does not exist.
+    let docker = path.join("docker.sock");
+    let config = path.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[server]\ndata_dir={:?}\nruntime_dir={runtime:?}\n[docker]\nsocket={docker:?}\n",
+            path.join("state")
+        ),
+    )
+    .unwrap();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_piqueld"))
+        .arg("--config")
+        .arg(&config)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let response = unix_request(
+        &runtime.join("piqueld.sock"),
+        "GET /api/v1/system/readiness HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    rustix::process::kill_process(
+        rustix::process::Pid::from_child(&daemon),
+        rustix::process::Signal::TERM,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            daemon.kill().unwrap();
+            panic!("the daemon did not stop on SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    assert!(
+        response.starts_with("HTTP/1.1 503"),
+        "readiness must answer, reporting Docker unavailable: {response}"
+    );
+    assert!(status.success(), "{status}");
 }

@@ -22,6 +22,9 @@ const DEFAULT_CONFIG_PATH: &str = "/etc/piqueld/config.toml";
 type ApiTask = tokio::task::JoinHandle<Result<(), std::io::Error>>;
 /// Time open connections get to finish after shutdown is requested.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Time every task gets to stop after shutdown is requested, well within
+/// the NixOS unit's `TimeoutStopSec`. A second signal exits at once instead.
+const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_mins(1);
 /// Time queued telemetry gets to reach its collectors on exit.
 const TELEMETRY_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -119,8 +122,10 @@ async fn main() -> Result<()> {
 ///    state is opened.
 /// 2. Starts the application service and reconciliation controller.
 /// 3. Serves the dashboard/API over TCP and the Unix API socket.
-/// 4. After cancellation, waits for every task and pending audit record, and
-///    surfaces the first failure.
+/// 4. After cancellation, waits up to `SHUTDOWN_DEADLINE` for every task and
+///    pending audit record, and surfaces the first failure. Past the
+///    deadline, it exits the process instead, while it still holds the
+///    directory locks. A second shutdown signal exits at once.
 async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
     piqueld::prepare_data_dir(&config.server.data_dir)
         .await
@@ -145,7 +150,7 @@ async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
 
     let cancellation = CancellationToken::new();
     let (state, auth, controller) =
-        match ApplicationService::start(&config, telemetry, cancellation.clone()).await {
+        match ApplicationService::start(&config, telemetry.clone(), cancellation.clone()).await {
             Ok(started) => started,
             Err(error) => {
                 if let Some(node) = tailnet {
@@ -156,10 +161,11 @@ async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
         };
     let state = state.with_tailnet(tailnet.as_ref().map(Node::status));
 
-    // OS signal handling
+    // OS signal handling. The handler only returns if it cannot be
+    // installed, which stops the daemon too.
     let signal_cancellation = cancellation.clone();
     let signal_task = tokio::spawn(async move {
-        let result = piqueld::cancel_on_shutdown_signal(signal_cancellation.clone()).await;
+        let result = piqueld::handle_shutdown_signals(signal_cancellation.clone()).await;
         signal_cancellation.cancel();
         result
     });
@@ -169,21 +175,57 @@ async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
 
     piqueld::run_until_cancelled(cancellation).await;
 
-    signal_task.await.context("shutdown task failed")??;
-    for api in apis {
-        api.await
-            .context("HTTP API task failed")?
-            .context("HTTP API failed")?;
-    }
-    audit.drain_audit(SHUTDOWN_GRACE).await;
-    controller
-        .await
-        .context("reconciliation controller failed")?
-        .context("reconciliation controller stopped unexpectedly")?;
-    if let Some(supervisor) = tailnet_supervisor {
-        supervisor.await.context("tailnet supervisor failed")??;
-    }
-    Ok(())
+    // Every task is joined, even after one failed, before the first failure
+    // is reported.
+    let shutdown = async {
+        let mut results = Vec::new();
+        for api in apis {
+            results.push(
+                api.await
+                    .context("HTTP API task failed")
+                    .and_then(|served| served.context("HTTP API failed")),
+            );
+        }
+        audit.drain_audit(SHUTDOWN_GRACE).await;
+        results.push(
+            controller
+                .await
+                .context("reconciliation controller failed")
+                .and_then(|result| {
+                    result.context("reconciliation controller stopped unexpectedly")
+                }),
+        );
+        if let Some(supervisor) = tailnet_supervisor {
+            results.push(
+                supervisor
+                    .await
+                    .context("tailnet supervisor failed")
+                    .flatten(),
+            );
+        }
+        results.into_iter().collect::<Result<()>>()
+    };
+    let Ok(result) = tokio::time::timeout(SHUTDOWN_DEADLINE, shutdown).await else {
+        // Returning would release the directory locks while unfinished
+        // workers still write, so exit while this process holds them.
+        tracing::error!(
+            deadline_seconds = SHUTDOWN_DEADLINE.as_secs(),
+            "shutdown did not finish in time; exiting with tasks still running"
+        );
+        telemetry.shutdown(TELEMETRY_GRACE).await;
+        std::process::exit(1);
+    };
+    // A running handler stays active, so a second signal still exits during
+    // the final telemetry flush; the process ends it.
+    let signals = if signal_task.is_finished() {
+        signal_task
+            .await
+            .context("signal handler failed")
+            .and_then(|result| result.context("signal handler stopped"))
+    } else {
+        Ok(())
+    };
+    signals.and(result)
 }
 
 /// Every endpoint the daemon serves, bound before it opens any state, so

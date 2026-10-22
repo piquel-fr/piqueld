@@ -215,7 +215,7 @@ impl BollardDocker {
             .filters(&HashMap::from([("label", labels.to_vec())]))
             .build();
         let tasks = self
-            .docker
+            .client()?
             .list_tasks(Some(options))
             .await
             .or_request("list tasks")?;
@@ -270,7 +270,7 @@ impl BollardDocker {
 
     /// Services carrying every label in `labels`.
     async fn labelled_services(&self, labels: Vec<String>) -> Result<Vec<Service>, DockerError> {
-        self.docker
+        self.client()?
             .list_services(Some(
                 ListServicesOptionsBuilder::default()
                     .filters(&HashMap::from([("label", labels)]))
@@ -285,7 +285,7 @@ impl BollardDocker {
         &self,
         labels: Vec<String>,
     ) -> Result<Vec<ContainerSummary>, DockerError> {
-        self.docker
+        self.client()?
             .list_containers(Some(
                 ListContainersOptionsBuilder::default()
                     .filters(&HashMap::from([("label", labels)]))
@@ -323,7 +323,7 @@ impl BollardDocker {
             if tasks.iter().any(|task| {
                 Self::container_mounts(task).any(|(mounted, _)| mounted == volume.as_str())
             }) || !self
-                .docker
+                .client()?
                 .list_containers(Some(options))
                 .await
                 .or_request("list volume containers")?
@@ -386,7 +386,7 @@ impl BollardDocker {
     ) -> Result<Option<(Option<SystemTime>, Vec<Task>)>, DockerError> {
         let name = job.container.name.as_str();
         let Some(service) = self
-            .docker
+            .client()?
             .inspect_service(name, None::<InspectServiceOptions>)
             .await
             .found()
@@ -407,7 +407,7 @@ impl BollardDocker {
             .id
             .ok_or(DockerError::Request("read job service identity"))?;
         let tasks = self
-            .docker
+            .client()?
             .list_tasks(Some(
                 ListTasksOptionsBuilder::default()
                     .filters(&HashMap::from([("service", vec![id])]))
@@ -448,7 +448,7 @@ impl BollardDocker {
         let Some(container) = container else {
             return Ok(JobOutput::default());
         };
-        let mut logs = self.docker.logs(
+        let mut logs = self.client()?.logs(
             &container,
             Some(
                 LogsOptionsBuilder::default()
@@ -496,7 +496,7 @@ impl BollardDocker {
             .get(APPLICATION_LABEL)
             .ok_or(DockerError::Validation("job ownership"))?;
         let services = self
-            .docker
+            .client()?
             .list_services(Some(
                 ListServicesOptionsBuilder::default()
                     .filters(&HashMap::from([(

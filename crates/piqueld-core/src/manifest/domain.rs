@@ -124,6 +124,17 @@ pub enum ValidatedHealthCheck {
         interval_seconds: u32,
         /// Probe timeout in seconds.
         timeout_seconds: u32,
+        /// Startup grace in seconds, during which failed probes do not count.
+        /// Omitted when zero, so targets keep their encoding.
+        #[serde(default, skip_serializing_if = "ValidatedHealthCheck::is_zero")]
+        start_period_seconds: u32,
+        /// Consecutive failed probes that make the container unhealthy.
+        /// Omitted when the default.
+        #[serde(
+            default = "ValidatedHealthCheck::default_retries",
+            skip_serializing_if = "ValidatedHealthCheck::is_default_retries"
+        )]
+        retries: u32,
     },
     /// Executable command health check.
     Command {
@@ -133,6 +144,17 @@ pub enum ValidatedHealthCheck {
         interval_seconds: u32,
         /// Probe timeout in seconds.
         timeout_seconds: u32,
+        /// Startup grace in seconds, during which failed probes do not count.
+        /// Omitted when zero, so targets keep their encoding.
+        #[serde(default, skip_serializing_if = "ValidatedHealthCheck::is_zero")]
+        start_period_seconds: u32,
+        /// Consecutive failed probes that make the container unhealthy.
+        /// Omitted when the default.
+        #[serde(
+            default = "ValidatedHealthCheck::default_retries",
+            skip_serializing_if = "ValidatedHealthCheck::is_default_retries"
+        )]
+        retries: u32,
     },
 }
 
@@ -142,10 +164,34 @@ pub enum ValidatedHealthCheck {
 pub struct HealthExecution {
     /// Executable and arguments, run directly without a shell.
     pub command: Vec<String>,
+    /// When the command runs and how its failures count.
+    pub timing: HealthTiming,
+}
+
+/// When a health check probes and how many failures it tolerates, whichever
+/// variant declared it: values, or references to a manifest's settings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HealthTiming<T = u32> {
     /// Probe interval in seconds.
-    pub interval_seconds: u32,
+    pub interval_seconds: T,
     /// Probe timeout in seconds.
-    pub timeout_seconds: u32,
+    pub timeout_seconds: T,
+    /// Startup grace in seconds, during which failed probes do not count.
+    pub start_period_seconds: T,
+    /// Consecutive failed probes that make the container unhealthy.
+    pub retries: T,
+}
+
+impl<T> HealthTiming<T> {
+    /// Each setting with its manifest field name.
+    pub fn fields(self) -> [(&'static str, T); 4] {
+        [
+            ("interval_seconds", self.interval_seconds),
+            ("timeout_seconds", self.timeout_seconds),
+            ("start_period_seconds", self.start_period_seconds),
+            ("retries", self.retries),
+        ]
+    }
 }
 
 impl HealthExecution {
@@ -162,37 +208,75 @@ impl ValidatedHealthCheck {
     pub const DEFAULT_INTERVAL_SECONDS: u32 = 10;
     /// Probe timeout applied when a check declares none.
     pub const DEFAULT_TIMEOUT_SECONDS: u32 = 3;
+    /// Startup grace applied when a check declares none.
+    pub const DEFAULT_START_PERIOD_SECONDS: u32 = 0;
+    /// Consecutive failures tolerated when a check declares no retries.
+    pub const DEFAULT_RETRIES: u32 = 3;
 
     /// Returns the direct command and timing Docker runs for this check.
     /// HTTP checks run `piqueld-probe`, which piqueld mounts into the container.
     #[must_use]
     pub fn execution(&self) -> HealthExecution {
-        match self {
-            Self::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => HealthExecution {
-                command: command.clone(),
-                interval_seconds: *interval_seconds,
-                timeout_seconds: *timeout_seconds,
-            },
+        let timing = self.timing();
+        let command = match self {
+            Self::Command { command, .. } => command.clone(),
+            Self::Http { port, path, .. } => piqueld_probe::HttpProbe {
+                port: *port,
+                path: path.clone(),
+                timeout_seconds: timing.timeout_seconds,
+            }
+            .command(),
+        };
+        HealthExecution { command, timing }
+    }
+
+    /// The check's timing, whichever variant declared it.
+    #[must_use]
+    pub const fn timing(&self) -> HealthTiming {
+        match *self {
             Self::Http {
-                port,
-                path,
                 interval_seconds,
                 timeout_seconds,
-            } => HealthExecution {
-                command: piqueld_probe::HttpProbe {
-                    port: *port,
-                    path: path.clone(),
-                    timeout_seconds: *timeout_seconds,
-                }
-                .command(),
-                interval_seconds: *interval_seconds,
-                timeout_seconds: *timeout_seconds,
+                start_period_seconds,
+                retries,
+                ..
+            }
+            | Self::Command {
+                interval_seconds,
+                timeout_seconds,
+                start_period_seconds,
+                retries,
+                ..
+            } => HealthTiming {
+                interval_seconds,
+                timeout_seconds,
+                start_period_seconds,
+                retries,
             },
         }
+    }
+
+    /// Serde default for `retries`.
+    const fn default_retries() -> u32 {
+        Self::DEFAULT_RETRIES
+    }
+
+    /// Whether `retries` is the default, which is not serialized.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if passes a reference"
+    )]
+    const fn is_default_retries(retries: &u32) -> bool {
+        *retries == Self::DEFAULT_RETRIES
+    }
+
+    /// Whether `seconds` is zero, which is not serialized.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if passes a reference"
+    )]
+    const fn is_zero(seconds: &u32) -> bool {
+        *seconds == 0
     }
 }
 
@@ -430,20 +514,30 @@ impl ValidatedHealthCheck {
                 path: request_path,
                 interval_seconds,
                 timeout_seconds,
+                start_period_seconds,
+                retries,
             } => Self::Http {
                 port: port.into_value(path("port"))?,
                 path: request_path.into_text(path("path"))?,
                 interval_seconds: interval_seconds.into_value(path("interval_seconds"))?,
                 timeout_seconds: timeout_seconds.into_value(path("timeout_seconds"))?,
+                start_period_seconds: start_period_seconds
+                    .into_value(path("start_period_seconds"))?,
+                retries: retries.into_value(path("retries"))?,
             },
             input::HealthCheck::Command {
                 command,
                 interval_seconds,
                 timeout_seconds,
+                start_period_seconds,
+                retries,
             } => Self::Command {
                 command: Template::into_texts(command, &format!("{base}.command"))?,
                 interval_seconds: interval_seconds.into_value(path("interval_seconds"))?,
                 timeout_seconds: timeout_seconds.into_value(path("timeout_seconds"))?,
+                start_period_seconds: start_period_seconds
+                    .into_value(path("start_period_seconds"))?,
+                retries: retries.into_value(path("retries"))?,
             },
         })
     }
@@ -451,26 +545,22 @@ impl ValidatedHealthCheck {
     /// Converts back to the editable input shape used for export.
     #[must_use]
     pub fn to_input(&self) -> input::HealthCheck {
+        let timing = self.timing();
         match self {
-            Self::Http {
-                port,
-                path,
-                interval_seconds,
-                timeout_seconds,
-            } => input::HealthCheck::Http {
+            Self::Http { port, path, .. } => input::HealthCheck::Http {
                 port: (*port).into(),
                 path: Template::literal(path),
-                interval_seconds: (*interval_seconds).into(),
-                timeout_seconds: (*timeout_seconds).into(),
+                interval_seconds: timing.interval_seconds.into(),
+                timeout_seconds: timing.timeout_seconds.into(),
+                start_period_seconds: timing.start_period_seconds.into(),
+                retries: timing.retries.into(),
             },
-            Self::Command {
-                command,
-                interval_seconds,
-                timeout_seconds,
-            } => input::HealthCheck::Command {
+            Self::Command { command, .. } => input::HealthCheck::Command {
                 command: Template::literals(command),
-                interval_seconds: (*interval_seconds).into(),
-                timeout_seconds: (*timeout_seconds).into(),
+                interval_seconds: timing.interval_seconds.into(),
+                timeout_seconds: timing.timeout_seconds.into(),
+                start_period_seconds: timing.start_period_seconds.into(),
+                retries: timing.retries.into(),
             },
         }
     }

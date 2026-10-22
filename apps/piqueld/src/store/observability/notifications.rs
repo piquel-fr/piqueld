@@ -42,8 +42,13 @@ impl NotificationConfig {
     }
 }
 
+/// Error recorded on a delivery cancelled because its category or
+/// destination is no longer configured.
+const CHANGED_BY_CONFIGURATION: &str = "Disabled or changed by configuration";
+
 impl Store {
-    /// Reads delivery history without destination credentials or response bodies.
+    /// Reads delivery history without destination credentials or response
+    /// bodies, leaving out deliveries of a category this version does not know.
     /// # Errors
     /// Returns pagination or storage errors.
     pub async fn deliveries(
@@ -68,20 +73,28 @@ impl Store {
         Ok(Page {
             items: rows
                 .into_iter()
-                .map(|r| {
-                    Ok(NotificationDelivery {
+                .filter_map(|r| {
+                    // Deliveries of a category this version does not know,
+                    // such as one added by a newer version, are left out.
+                    let Some(category) = NotificationCategory::parse(&r.category) else {
+                        tracing::warn!(delivery_id = %r.id, category = %r.category, "delivery of an unknown category is not listed");
+                        return None;
+                    };
+                    Some(Ok(NotificationDelivery {
                         id: r.id,
                         event_id: r.event_id,
                         destination: r.destination,
-                        category: NotificationCategory::parse(&r.category)
-                            .ok_or(StoreError::Corrupt)?,
-                        state: DeliveryState::parse(&r.state).ok_or(StoreError::Corrupt)?,
+                        category,
+                        state: match DeliveryState::parse(&r.state) {
+                            Some(state) => state,
+                            None => return Some(Err(StoreError::Corrupt)),
+                        },
                         attempts: r.attempts,
                         created_at_ms: r.created_at_ms,
                         next_attempt_ms: r.next_attempt_ms,
                         updated_at_ms: r.updated_at_ms,
                         last_error: r.last_error,
-                    })
+                    }))
                 })
                 .collect::<Result<_, StoreError>>()?,
             next_cursor,
@@ -115,13 +128,16 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
-        let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
-        if !self
-            .notifications
-            .delivers(category, &row.destination, &row.destination_fingerprint)
-        {
-            return Err(StoreError::InvalidInput);
-        }
+        // A category this version does not know cannot be delivered.
+        let category = NotificationCategory::parse(&row.category)
+            .filter(|category| {
+                self.notifications.delivers(
+                    *category,
+                    &row.destination,
+                    &row.destination_fingerprint,
+                )
+            })
+            .ok_or(StoreError::InvalidInput)?;
         // Never replay an old failure after its destination acknowledged recovery.
         let recovered = sqlx::query_scalar!(
             "SELECT COUNT(*) FROM notification_recovery_sources s
@@ -197,22 +213,23 @@ impl Store {
         .map_err(StoreError::database)?;
         let now = now_ms();
         for row in rows {
-            let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
+            // `claim_delivery` fails a delivery of an unknown category.
+            let Some(category) = NotificationCategory::parse(&row.category) else {
+                continue;
+            };
             if !self.notifications.delivers(
                 category,
                 &row.destination,
                 &row.destination_fingerprint,
             ) {
-                sqlx::query!(
-                    "UPDATE notification_deliveries
-                    SET state='cancelled',last_error='Disabled or changed by configuration',updated_at_ms=?1
-                    WHERE id=?2",
+                Self::settle_undeliverable(
+                    &mut tx,
+                    &row.id,
+                    DeliveryState::Cancelled,
+                    CHANGED_BY_CONFIGURATION,
                     now,
-                    row.id,
                 )
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::database)?;
+                .await?;
             }
         }
         let routes =
@@ -221,12 +238,13 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
         for route in routes {
-            let category =
-                NotificationCategory::parse(&route.category).ok_or(StoreError::Corrupt)?;
-            if !self
-                .notifications
-                .delivers(category, &route.destination, &route.fingerprint)
-            {
+            // A category this version does not know, such as one added by a
+            // newer version before a downgrade, is not delivered either.
+            if NotificationCategory::parse(&route.category).is_none_or(|category| {
+                !self
+                    .notifications
+                    .delivers(category, &route.destination, &route.fingerprint)
+            }) {
                 sqlx::query!(
                     "DELETE FROM notification_routes WHERE category=?1 AND destination=?2",
                     route.category,
@@ -580,7 +598,7 @@ impl Store {
             (Some(id), _) => format!("Service health for application {id}"),
             (None, "docker_unavailable") => "Docker Engine".into(),
             (None, "swarm_manager_unavailable") => "Swarm manager".into(),
-            (None, "ingress_unavailable") => "Managed ingress gateway".into(),
+            (None, "ingress_unavailable") => "Managed ingress".into(),
             (None, "certificate_renewal_failed") => "DNS-01 certificate renewal".into(),
             (None, "telemetry_export_failed") => "Telemetry export".into(),
             _ => key.to_owned(),
@@ -793,71 +811,69 @@ impl Store {
     ///    failure is settled and at least one was delivered;
     /// 4. leases it for 30 seconds by pushing `next_attempt_ms` and counting the attempt.
     ///
-    /// Fails with `StoreError::InvalidInput` if its destination is no longer configured.
+    /// A delivery that can no longer be sent (an unknown category, or a
+    /// destination or category since removed from the configuration) is
+    /// settled with an error instead, so it cannot block the ones behind it.
     pub(crate) async fn claim_delivery(
         &self,
     ) -> Result<Option<(NotificationDelivery, WebhookDestination)>, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        let expired = now.saturating_sub(seconds_ms(self.notifications.retry_window_seconds));
-        // A recovery's retry window starts when it can first be sent, not while
-        // it is waiting for acknowledgement of the original failure.
-        sqlx::query!(
-            "UPDATE notification_deliveries
-            SET state='failed',last_error='Delivery retry window expired',updated_at_ms=?1
-            WHERE state='pending' AND retry_started_at_ms<?2
-            AND (category!='recovery' OR attempts>0)",
-            now,
-            expired,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        sqlx::query!(
-            "UPDATE notification_deliveries
-            SET state='cancelled',last_error='No failure notification was acknowledged',updated_at_ms=?1
-            WHERE state='pending' AND category='recovery' AND NOT EXISTS (
-            SELECT 1 FROM notification_recovery_sources s
-            JOIN notification_deliveries failure ON failure.id=s.failure_id
-            WHERE s.recovery_id=notification_deliveries.id
-            AND failure.state IN ('pending','delivered')
-            )",
-            now,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        let row = sqlx::query!(
-            "SELECT id AS \"id!\",destination,destination_fingerprint,event_id,category,attempts,
-            created_at_ms,updated_at_ms,last_error
-            FROM notification_deliveries d
-            WHERE state='pending' AND next_attempt_ms<=?1
-            AND (category!='recovery' OR (
-            EXISTS (SELECT 1 FROM notification_recovery_sources s
-            JOIN notification_deliveries f ON f.id=s.failure_id
-            WHERE s.recovery_id=d.id AND f.state='delivered')
-            AND NOT EXISTS (SELECT 1 FROM notification_recovery_sources s
-            JOIN notification_deliveries f ON f.id=s.failure_id
-            WHERE s.recovery_id=d.id AND f.state='pending')
-            ))
-            ORDER BY next_attempt_ms,id LIMIT 1",
-            now,
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
-        let Some(row) = row else {
-            // Expiration/cancellation still needs committing when nothing is due.
-            tx.commit().await.map_err(StoreError::database)?;
-            return Ok(None);
+        self.settle_expired_deliveries(&mut tx, now).await?;
+        let (row, category, destination) = loop {
+            let row = sqlx::query!(
+                "SELECT id AS \"id!\",destination,destination_fingerprint,event_id,category,attempts,
+                created_at_ms,updated_at_ms,last_error
+                FROM notification_deliveries d
+                WHERE state='pending' AND next_attempt_ms<=?1
+                AND (category!='recovery' OR (
+                EXISTS (SELECT 1 FROM notification_recovery_sources s
+                JOIN notification_deliveries f ON f.id=s.failure_id
+                WHERE s.recovery_id=d.id AND f.state='delivered')
+                AND NOT EXISTS (SELECT 1 FROM notification_recovery_sources s
+                JOIN notification_deliveries f ON f.id=s.failure_id
+                WHERE s.recovery_id=d.id AND f.state='pending')
+                ))
+                ORDER BY next_attempt_ms,id LIMIT 1",
+                now,
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+            let Some(row) = row else {
+                // Expiration/cancellation still needs committing when nothing is due.
+                tx.commit().await.map_err(StoreError::database)?;
+                return Ok(None);
+            };
+            let Some(category) = NotificationCategory::parse(&row.category) else {
+                Self::settle_undeliverable(
+                    &mut tx,
+                    &row.id,
+                    DeliveryState::Failed,
+                    "Unknown notification category",
+                    now,
+                )
+                .await?;
+                continue;
+            };
+            let Some(destination) = self
+                .notifications
+                .destination(&row.destination, &row.destination_fingerprint)
+                .filter(|_| self.notifications.category_enabled(category))
+                .cloned()
+            else {
+                Self::settle_undeliverable(
+                    &mut tx,
+                    &row.id,
+                    DeliveryState::Cancelled,
+                    CHANGED_BY_CONFIGURATION,
+                    now,
+                )
+                .await?;
+                continue;
+            };
+            break (row, category, destination);
         };
-        let category = NotificationCategory::parse(&row.category).ok_or(StoreError::Corrupt)?;
-        let destination = self
-            .notifications
-            .destination(&row.destination, &row.destination_fingerprint)
-            .filter(|_| self.notifications.category_enabled(category))
-            .cloned()
-            .ok_or(StoreError::InvalidInput)?;
         let lease = now.saturating_add(30_000);
         sqlx::query!(
             "UPDATE notification_deliveries
@@ -886,6 +902,67 @@ impl Store {
             },
             destination,
         )))
+    }
+
+    /// Steps 1 and 2 of `claim_delivery`: settles the pending deliveries that
+    /// can no longer be sent at `now`.
+    async fn settle_expired_deliveries(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let expired = now.saturating_sub(seconds_ms(self.notifications.retry_window_seconds));
+        // A recovery's retry window starts when it can first be sent, not while
+        // it is waiting for acknowledgement of the original failure.
+        sqlx::query!(
+            "UPDATE notification_deliveries
+            SET state='failed',last_error='Delivery retry window expired',updated_at_ms=?1
+            WHERE state='pending' AND retry_started_at_ms<?2
+            AND (category!='recovery' OR attempts>0)",
+            now,
+            expired,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!(
+            "UPDATE notification_deliveries
+            SET state='cancelled',last_error='No failure notification was acknowledged',updated_at_ms=?1
+            WHERE state='pending' AND category='recovery' AND NOT EXISTS (
+            SELECT 1 FROM notification_recovery_sources s
+            JOIN notification_deliveries failure ON failure.id=s.failure_id
+            WHERE s.recovery_id=notification_deliveries.id
+            AND failure.state IN ('pending','delivered')
+            )",
+            now,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
+    /// Settles the pending delivery `id` as `state` with `error`, for
+    /// `claim_delivery` to move past it.
+    async fn settle_undeliverable(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &str,
+        state: DeliveryState,
+        error: &str,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let state = state.as_str();
+        sqlx::query!(
+            "UPDATE notification_deliveries SET state=?1,last_error=?2,updated_at_ms=?3 WHERE id=?4",
+            state,
+            error,
+            now,
+            id,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
     }
 
     /// Records the result of a claimed attempt. Only pending deliveries change;

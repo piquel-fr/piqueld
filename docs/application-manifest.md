@@ -106,6 +106,8 @@ error whose message names the offending environment key where applicable:
 | Applications per export | 64 |
 | Job timeout | 86,400 seconds |
 | Health-check interval | 3,600 seconds |
+| Health-check start period | 3,600 seconds |
+| Health-check retries | 1–100 |
 | Rollout monitor | 3,600 seconds |
 | CPU limit | 1,048,576 millicores |
 
@@ -123,6 +125,8 @@ port = 8080
 path = "/health"
 interval_seconds = 10
 timeout_seconds = 3
+start_period_seconds = 30       # failed checks do not count while it starts
+retries = 3                     # consecutive failures before unhealthy
 
 [spec.services.resources]
 cpu_millis = 500                # millicores
@@ -131,7 +135,13 @@ memory_bytes = 536870912
 
 Defaults are replicas `1`, empty command and arguments, writable mounts, and
 health-check values of path `/health`, interval `10` seconds, timeout `3`
-seconds, and `3` retries. HTTP health checks need nothing in the image: piqueld
+seconds, no start period, and `3` retries. During the start period, failed
+checks do not count towards `retries`, so slow-starting services are not
+restarted, while a passing check makes the container healthy at once. A start
+period does not extend `reconciliation.convergence_timeout_seconds` (120 seconds
+by default): a service whose first check passes later still fails its
+deployment, so raise that setting for such services. HTTP
+health checks need nothing in the image: piqueld
 mounts its static `piqueld-probe` at `/run/piqueld/probe` as a Swarm config
 and Docker runs it as the health check, for example
 `/run/piqueld/probe http --port 8080 --path /health --timeout 3`. It sends one

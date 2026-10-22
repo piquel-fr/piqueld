@@ -19,7 +19,7 @@ impl BollardDocker {
         ownership: &BTreeMap<String, String>,
     ) -> Result<Option<Secret>, DockerError> {
         let Some(secret) = self
-            .docker
+            .client()?
             .inspect_secret(name)
             .await
             .found()
@@ -63,7 +63,7 @@ impl BollardDocker {
             data: Some(base64::engine::general_purpose::STANDARD.encode(value)),
             ..Default::default()
         };
-        match self.docker.create_secret(spec).await {
+        match self.client()?.create_secret(spec).await {
             Ok(_) => Ok(()),
             Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 409, ..
@@ -88,7 +88,7 @@ impl BollardDocker {
                     .id
                     .as_deref()
                     .ok_or(DockerError::Validation("secret ID missing"))?;
-                self.docker
+                self.client()?
                     .delete_secret(id)
                     .await
                     .found()

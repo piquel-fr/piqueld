@@ -864,6 +864,30 @@ fn snapshot_origin(snapshot: &LocalSnapshot) -> String {
     }
 }
 
+/// An environment's observed runtime health and how long ago it was
+/// observed, which grows when health scans stop.
+///
+/// ```text
+/// ready (observed 12 s ago)
+/// unknown
+/// ```
+fn runtime_health(status: &EnvironmentStatusView) -> String {
+    let health = status.runtime_health.as_deref().unwrap_or("unknown");
+    let Some(observed) = status.health_observed_at_ms else {
+        return health.into();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |now| i64::try_from(now.as_millis()).unwrap_or(i64::MAX));
+    let seconds = now.saturating_sub(observed).max(0) / 1000;
+    let age = match seconds {
+        0..120 => format!("{seconds} s"),
+        120..7_200 => format!("{} min", seconds / 60),
+        _ => format!("{} h", seconds / 3_600),
+    };
+    format!("{health} (observed {age} ago)")
+}
+
 /// A branch state in words, with the commits involved.
 fn branch_state(state: &BranchState) -> String {
     match state {
@@ -927,10 +951,7 @@ report!(PreviewView, self, out, {
     ))?;
     out.blank()?;
     out.label("Intent", self.status.state)?;
-    out.label(
-        "Runtime",
-        self.status.runtime_health.as_deref().unwrap_or("unknown"),
-    )?;
+    out.label("Runtime", runtime_health(&self.status))?;
     out.label("Branch", branch_state(&self.branch))?;
     if let DeploymentOrigin::Local(snapshot) = &self.origin {
         out.label("Deploys", snapshot_origin(snapshot))?;
@@ -1174,10 +1195,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
     ))?;
     out.blank()?;
     out.label("Intent", status.state)?;
-    out.label(
-        "Runtime",
-        status.runtime_health.as_deref().unwrap_or("unknown"),
-    )?;
+    out.label("Runtime", runtime_health(status))?;
     out.label(
         "Source",
         Names(&application.environments).source(&environment.source),

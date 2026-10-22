@@ -58,8 +58,9 @@ impl ApplicationService {
             }
         }
     }
-    /// Attempts at most one webhook delivery per second until cancelled.
-    /// Errors are logged and never stop the worker.
+    /// Attempts webhook deliveries one at a time until cancelled, claiming
+    /// the next as soon as one is attempted, and checking again every second
+    /// while none is due. Errors are logged and never stop the worker.
     pub(super) async fn deliver_notifications(
         &self,
         client: reqwest::Client,
@@ -67,21 +68,28 @@ impl ApplicationService {
     ) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut idle = true;
         loop {
+            if idle {
+                tokio::select! {
+                    () = cancellation.cancelled() => return,
+                    _ = tick.tick() => {}
+                }
+            }
             let result = tokio::select! {
                 () = cancellation.cancelled() => return,
-                _ = tick.tick() => tokio::select! {
-                    () = cancellation.cancelled() => return,
-                    result = self.deliver_next_notification(&client) => result,
-                },
+                result = self.deliver_next_notification(&client) => result,
             };
-            if let Err(error) = result {
+            // A failure waits for the next tick, like an empty outbox.
+            idle = !result.unwrap_or_else(|error| {
                 tracing::error!(error=?error, "notification delivery failed");
-            }
+                false
+            });
         }
     }
 
-    /// Ingests new events into the outbox, then claims and sends one due delivery.
+    /// Ingests new events into the outbox, then claims and sends one due
+    /// delivery. Returns whether one was due.
     ///
     /// The payload is either the versioned JSON envelope or a Discord message
     /// (truncated to 1900 chars, mentions disabled). The delivery ID is sent as
@@ -92,17 +100,20 @@ impl ApplicationService {
     /// - Any other status: failed permanently.
     ///
     /// Error messages stored for the delivery never include receiver response bodies.
-    async fn deliver_next_notification(&self, client: &reqwest::Client) -> Result<(), StoreError> {
+    async fn deliver_next_notification(
+        &self,
+        client: &reqwest::Client,
+    ) -> Result<bool, StoreError> {
         // Queued deliveries, retries and recoveries must not wait on new-event ingestion.
         if let Err(error) = self.store.process_notifications().await {
             tracing::error!(error=?error, "notification event processing failed");
         }
         let Some((delivery, destination)) = self.store.claim_delivery().await? else {
-            return Ok(());
+            return Ok(false);
         };
         let event = match self.store.event(delivery.event_id).await {
             Ok(event) => event,
-            Err(StoreError::NotFound) => return Ok(()), // Application deletion removed the outbox row too.
+            Err(StoreError::NotFound) => return Ok(true), // Application deletion removed the outbox row too.
             Err(error) => return Err(error),
         };
         let payload = match destination.kind {
@@ -178,7 +189,8 @@ impl ApplicationService {
         };
         self.store
             .complete_delivery(&delivery.id, state, message.as_deref(), delay)
-            .await
+            .await?;
+        Ok(true)
     }
 }
 
@@ -256,7 +268,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let (service, _docker) = ApplicationService::unconnected(store.clone(), temp.path());
+        let service = ApplicationService::unconnected(store.clone(), temp.path());
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let worker = tokio::spawn(async move {
