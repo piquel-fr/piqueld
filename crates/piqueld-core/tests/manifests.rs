@@ -1035,6 +1035,92 @@ proptest! {
     }
 }
 
+/// The schema rejects what serde rejects: unknown fields of tagged variants
+/// and integers beyond their Rust type.
+#[test]
+fn manifest_json_schema_matches_serde_strictness() {
+    use piqueld_core::manifest::{Build, HealthCheck, SecretGenerator, Source};
+    use piqueld_core::sync::RepositorySync;
+    use serde::de::DeserializeOwned;
+    use serde_json::{Value, json};
+
+    /// Whether serde decodes a value as one type.
+    type Decodes = fn(&Value) -> bool;
+
+    fn decodes<T: DeserializeOwned>(value: &Value) -> bool {
+        serde_json::from_value::<T>(value.clone()).is_ok()
+    }
+    let schema = piqueld_core::manifest::ApplicationManifest::json_schema();
+    let definitions = &schema["definitions"];
+    // Each value adds `extra` to a valid variant: the variant's schema admits
+    // it exactly when serde does.
+    let cases: [(&str, &str, Value, Decodes); 7] = [
+        (
+            "RepositorySync",
+            "mode",
+            json!({"mode": "off", "extra": 300}),
+            decodes::<RepositorySync>,
+        ),
+        (
+            "RepositorySync",
+            "mode",
+            json!({"mode": "webhook", "extra": 300}),
+            decodes::<RepositorySync>,
+        ),
+        (
+            "RepositorySync",
+            "mode",
+            json!({"mode": "poll", "extra": 300}),
+            decodes::<RepositorySync>,
+        ),
+        (
+            "Source",
+            "type",
+            json!({"type": "image", "image": "nginx:1", "extra": 1}),
+            decodes::<Source>,
+        ),
+        (
+            "Build",
+            "type",
+            json!({"type": "docker", "dockerfile": "Dockerfile", "extra": 1}),
+            decodes::<Build>,
+        ),
+        (
+            "HealthCheck",
+            "type",
+            json!({"type": "command", "command": ["true"], "extra": 1}),
+            decodes::<HealthCheck>,
+        ),
+        (
+            "SecretGenerator",
+            "type",
+            json!({"type": "rsa", "bits": 3072, "extra": 1}),
+            decodes::<SecretGenerator>,
+        ),
+    ];
+    for (name, tag, value, decodes) in cases {
+        let variant = definitions[name]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|variant| variant["properties"][tag]["enum"][0] == value[tag])
+            .unwrap();
+        let admitted = variant["additionalProperties"] != false;
+        assert_eq!(admitted, decodes(&value), "{value}");
+    }
+    assert_eq!(definitions["Typed_u16"]["oneOf"][0]["maximum"], 65_535);
+    assert_eq!(definitions["Typed_u32"]["oneOf"][0]["maximum"], u32::MAX);
+    assert_eq!(definitions["Typed_u64"]["oneOf"][0]["maximum"], u64::MAX);
+    assert_eq!(
+        definitions["Job"]["properties"]["timeout_seconds"]["maximum"],
+        u32::MAX
+    );
+    assert_eq!(
+        definitions["SecretGenerator"]["oneOf"][0]["properties"]["bytes"]["maximum"],
+        65_535
+    );
+}
+
 #[test]
 fn manifest_json_schema_is_self_contained() {
     fn references(value: &serde_json::Value, found: &mut Vec<String>) {

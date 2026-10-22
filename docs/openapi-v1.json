@@ -7814,6 +7814,7 @@
           "timeout_seconds": {
             "description": "Seconds the job may run before the deployment fails.",
             "format": "int32",
+            "maximum": 4294967295,
             "minimum": 0,
             "type": "integer"
           },
@@ -9956,6 +9957,7 @@
               "interval_seconds": {
                 "description": "Seconds between listings, from 60 to 86400.",
                 "format": "int32",
+                "maximum": 4294967295,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -10600,6 +10602,7 @@
               "bytes": {
                 "description": "Number of random bytes before encoding.",
                 "format": "int32",
+                "maximum": 65535,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -10626,6 +10629,7 @@
               "bits": {
                 "description": "Modulus size in bits.",
                 "format": "int32",
+                "maximum": 65535,
                 "minimum": 0,
                 "type": "integer"
               },
