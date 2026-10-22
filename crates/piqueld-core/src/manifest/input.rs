@@ -33,6 +33,39 @@ impl ApplicationManifest {
         let mut schema = crate::json_schema::standalone::<Self>("piqueld application manifest");
         schema["properties"]["api_version"]["const"] = APPLICATION_API_VERSION.into();
         schema["properties"]["kind"]["const"] = APPLICATION_KIND.into();
+        // utoipa expresses `deny_unknown_fields` on structs only, not on the
+        // variants of these internally tagged enums. serde enforces it on
+        // their struct variants only: a unit variant, whose sole property is
+        // its tag, ignores other fields.
+        for name in [
+            Source::name(),
+            Build::name(),
+            HealthCheck::name(),
+            SecretGenerator::name(),
+            crate::sync::RepositorySync::name(),
+        ] {
+            for variant in schema["definitions"][name.as_ref()]["oneOf"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+                .filter(|variant| {
+                    variant["properties"]
+                        .as_object()
+                        .is_some_and(|p| p.len() > 1)
+                })
+            {
+                variant["additionalProperties"] = false.into();
+            }
+        }
+        // utoipa bounds unsigned integers from below only; typed fields'
+        // literals are their first alternative.
+        for (name, maximum) in [
+            ("Typed_u16", u64::from(u16::MAX)),
+            ("Typed_u32", u64::from(u32::MAX)),
+            ("Typed_u64", u64::MAX),
+        ] {
+            schema["definitions"][name]["oneOf"][0]["maximum"] = maximum.into();
+        }
         schema
     }
 }
@@ -450,7 +483,7 @@ pub struct Job {
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails, from 1 to 86,400.
     #[serde(default = "default_job_timeout")]
-    #[schema(default = default_job_timeout)]
+    #[schema(default = default_job_timeout, maximum = 4_294_967_295_u32)]
     pub timeout_seconds: u32,
     /// How the job mounts its service's volumes. `read-only` mounts every
     /// volume read-only, so the job runs beside the services. `exclusive`
@@ -887,6 +920,7 @@ pub enum SecretGenerator {
     /// Random bytes from the operating system, encoded as text.
     Random {
         /// Number of random bytes before encoding, from 16 to 512.
+        #[schema(maximum = 65_535)]
         bytes: u16,
         /// Text encoding of the bytes: lowercase `hex`, or unpadded
         /// `base64url`.
@@ -897,6 +931,7 @@ pub enum SecretGenerator {
     /// An RSA private key, in PKCS#8 PEM.
     Rsa {
         /// Size of the key in bits: 2048, 3072 or 4096.
+        #[schema(maximum = 65_535)]
         bits: u16,
     },
 }

@@ -7920,6 +7920,7 @@
             "default": 300,
             "description": "Seconds the job may run before the deployment fails, from 1 to 86,400.",
             "format": "int32",
+            "maximum": 4294967295,
             "minimum": 0,
             "type": "integer"
           },
@@ -10089,6 +10090,7 @@
                 "default": 300,
                 "description": "Seconds between listings, from 60 to 86,400.",
                 "format": "int32",
+                "maximum": 4294967295,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -10738,6 +10740,7 @@
               "bytes": {
                 "description": "Number of random bytes before encoding, from 16 to 512.",
                 "format": "int32",
+                "maximum": 65535,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -10769,6 +10772,7 @@
               "bits": {
                 "description": "Size of the key in bits: 2048, 3072 or 4096.",
                 "format": "int32",
+                "maximum": 65535,
                 "minimum": 0,
                 "type": "integer"
               },

@@ -137,8 +137,10 @@ struct Schema {
     one_of: Vec<Schema>,
     #[serde(default)]
     all_of: Vec<Schema>,
-    minimum: Option<i64>,
-    maximum: Option<i64>,
+    // i128 holds both the signed bounds and the largest unsigned ones,
+    // such as `u64::MAX`.
+    minimum: Option<i128>,
+    maximum: Option<i128>,
 }
 
 /// A schema's `type`: one name, or several, such as `["integer", "null"]`.

@@ -114,6 +114,7 @@
       "description": "How to build a Git source's image.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Build the image with Docker Buildx, from a Dockerfile.",
           "properties": {
             "args": {
@@ -318,6 +319,7 @@
       "description": "How Docker checks that a service's containers are healthy.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Send an HTTP `GET` to a port of the container. A 2xx or 3xx status\npasses. The image needs nothing for it.",
           "properties": {
             "interval_seconds": {
@@ -383,6 +385,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Run a command in the container, without a shell. Exit code 0 passes.",
           "properties": {
             "command": {
@@ -517,6 +520,7 @@
           "default": 300,
           "description": "Seconds the job may run before the deployment fails, from 1 to 86,400.",
           "format": "int32",
+          "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
@@ -709,12 +713,14 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List the repository's branch heads every `interval_seconds`.",
           "properties": {
             "interval_seconds": {
               "default": 300,
               "description": "Seconds between listings, from 60 to 86,400.",
               "format": "int32",
+              "maximum": 4294967295,
               "minimum": 0,
               "type": "integer"
             },
@@ -896,11 +902,13 @@
       "description": "How piqueld generates a secret's value.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Random bytes from the operating system, encoded as text.",
           "properties": {
             "bytes": {
               "description": "Number of random bytes before encoding, from 16 to 512.",
               "format": "int32",
+              "maximum": 65535,
               "minimum": 0,
               "type": "integer"
             },
@@ -927,11 +935,13 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "An RSA private key, in PKCS#8 PEM.",
           "properties": {
             "bits": {
               "description": "Size of the key in bits: 2048, 3072 or 4096.",
               "format": "int32",
+              "maximum": 65535,
               "minimum": 0,
               "type": "integer"
             },
@@ -1114,6 +1124,7 @@
       "description": "Where a service's image comes from.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Pull a prebuilt image from a registry.",
           "properties": {
             "image": {
@@ -1134,6 +1145,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Build the image from a Git repository.",
           "properties": {
             "build": {
@@ -1204,6 +1216,7 @@
       "oneOf": [
         {
           "format": "int32",
+          "maximum": 65535,
           "minimum": 0,
           "type": "integer"
         },
@@ -1218,6 +1231,7 @@
       "oneOf": [
         {
           "format": "int32",
+          "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
@@ -1232,6 +1246,7 @@
       "oneOf": [
         {
           "format": "int64",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "type": "integer"
         },
