@@ -708,6 +708,8 @@ it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate N
 generates a new version for the next deployment. A value discarded by key
 recovery has nothing left to keep, so the next deployment that mounts it
 generates a new one. Removing a declaration retains the generated value.
+`app plan` lists a changed declaration as `secrets.<name>`, never a
+value.
 
 ## Promoted environments
 
