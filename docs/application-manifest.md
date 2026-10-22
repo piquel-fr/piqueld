@@ -238,6 +238,11 @@ variables. System variables:
 
 `secrets.*` is reserved for secret references.
 
+Variable values are not secret: plans, `app show`, `env show`, deployments and
+the dashboard show them, even where they render into `environment` values,
+which plans otherwise redact. Mount passwords and keys as secret files
+(`[[spec.services.secrets]]`) instead.
+
 References are allowed in values: service `environment` values, `command` and
 `arguments`, health check settings, `replicas`, resource limits, rollout `order`
 and `monitor_seconds`, route `hostname` and redirect `to`, job `command`, import `environment`, service
