@@ -244,9 +244,13 @@ impl ApplicationTemplate {
             .collect()
     }
 
-    /// Whether `target` renders the same saved configuration as `renamed`
-    /// does in `other`. Renames keep an environment resolved only when this
-    /// holds, since `${{ app.name }}` and `${{ env.name }}` read names.
+    /// Whether `target` renders the same configuration as `renamed` does in
+    /// `other`. Renames keep an environment resolved only when this holds,
+    /// since `${{ app.name }}` and `${{ env.name }}` read names.
+    ///
+    /// Both render as a plan does, so values that also read `deployment.*`
+    /// or `git.*` are compared rendered too. A configuration that does not
+    /// render or validate, e.g. for a missing value, is never alike.
     #[must_use]
     pub fn renders_like(
         &self,
@@ -254,7 +258,16 @@ impl ApplicationTemplate {
         other: &Self,
         renamed: &RenderTarget,
     ) -> bool {
-        self.saved(target) == other.saved(renamed)
+        self.previewed(target)
+            .is_some_and(|spec| other.previewed(renamed) == Some(spec))
+    }
+
+    /// `target`'s configuration rendered and validated as a plan renders it,
+    /// or `None` when a value does not render or the result is invalid.
+    fn previewed(&self, target: &RenderTarget) -> Option<ValidatedSpec> {
+        let context = RenderContext::preview(target.clone(), self.spec.manifest.as_ref());
+        let rendering = self.render(&context).ok()?;
+        Some(rendering.application.spec().clone())
     }
 
     /// `target`'s saved configuration, rendered outside any deployment.
