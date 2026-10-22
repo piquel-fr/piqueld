@@ -238,10 +238,10 @@ pub(crate) enum Command {
     /// Print a one-time link that signs a browser in as the host operator.
     ///
     /// The browser gets full access for 12 hours. The link works once within 10
-    /// minutes. Run it on the daemon host as root or as the daemon's user,
-    /// without `PIQUELD_TOKEN` or a saved login: the daemon serves it only over
-    /// its Unix socket, to the host operator. Issuing it raises a security
-    /// notification.
+    /// minutes. Run it on the daemon host as root or as the daemon's user: the
+    /// daemon serves it only over its Unix socket, to the host operator. It
+    /// never sends `PIQUELD_TOKEN` or a saved login. Issuing it raises a
+    /// security notification.
     SignInLink,
     /// Print the link that creates the first account.
     ///

@@ -1734,6 +1734,12 @@ async fn operator_sign_in_links_work_once_and_act_as_the_operator() {
     assert_eq!(signed_in, operator);
     let again = f.auth.operator_sign_in(&link).await;
     assert!(matches!(again, Err(AuthError::Unauthorized)));
+    // Unusable links are turned away without waiting for the writer.
+    let writer = f.auth.0.store.hold_writer().await;
+    let guess = f.auth.operator_sign_in(&link);
+    let guess = tokio::time::timeout(std::time::Duration::from_secs(1), guess).await;
+    assert!(matches!(guess, Ok(Err(AuthError::Unauthorized))));
+    drop(writer);
     let identity = f.auth.authenticate(&token).await.unwrap();
     assert!(identity.user().is_none());
     assert_eq!(identity.grants, Grants::admin());
