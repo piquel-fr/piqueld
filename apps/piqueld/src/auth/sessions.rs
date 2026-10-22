@@ -1,7 +1,7 @@
 //! Durable opaque sessions, host operator sessions, and short-lived,
 //! explicitly approved device logins.
 use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
-use crate::store::{Actor, Caller, NewCredential};
+use crate::store::{Actor, Caller, NewCredential, StoreError};
 use piqueld_core::access::{Denied, Grants};
 use piqueld_core::auth::{
     DeviceRequest, DeviceStart, DeviceToken, HostOperator, OperatorLink, Principal, Session, User,
@@ -310,10 +310,14 @@ impl Auth {
         Ok((identity, owner.last_used_at))
     }
     /// Revokes the credential or host operator session used for the current
-    /// request; the host operator over the Unix socket has none.
+    /// request; the host operator over the Unix socket has none. One revoked
+    /// since the request authenticated counts as signed out.
     pub(crate) async fn logout(&self, identity: &Identity) -> Result<()> {
         if let Some(id) = identity.credential_id() {
-            self.0.store.revoke_credential(identity.actor(), id).await?;
+            match self.0.store.revoke_credential(identity.actor(), id).await {
+                Ok(()) | Err(StoreError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }
