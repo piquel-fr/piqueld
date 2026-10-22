@@ -9,7 +9,8 @@ use super::{
 };
 use crate::api::Restore;
 use piqueld_core::{
-    api::DeploymentOrigin, manifest::ApplicationTemplate, resource::ResolvedApplication,
+    NormalizedApplication, api::DeploymentOrigin, manifest::ApplicationTemplate,
+    resource::ResolvedApplication,
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -102,9 +103,11 @@ impl Store {
     /// Accepts restoring `deployment` into `environment` in `tx`, where
     /// nothing can change underneath: it starts a deployment recorded as a
     /// restore of it, with its rendered manifest, values and release, pins the
-    /// secret versions it pinned (failing, naming them, for those gone since),
-    /// and saves its prepared target under the application's current name,
-    /// with links bound again. A branch-following or promoted environment's
+    /// secret versions it pinned (failing, naming them, for those gone since,
+    /// and with `secret_access_denied` for stored secrets the environment may
+    /// no longer mount), and saves its prepared target under the
+    /// application's current name, its links bound to the applications it
+    /// bound while they still exist. A branch-following or promoted environment's
     /// own manifest becomes the restored one. Its images are then retention
     /// roots, so callers holding cleanup off may let go once this commits.
     pub(super) async fn accept_restore_on(
@@ -126,10 +129,22 @@ impl Store {
             now,
         )
         .await?;
+        let row = sqlx::query!(
+            "SELECT manifest_json,template_json FROM deployments WHERE id=?1",
+            deployment
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        // Access narrowed since applies: only versions are kept as they were.
+        let rendered: NormalizedApplication =
+            serde_json::from_str(&row.manifest_json).map_err(StoreError::corrupt)?;
+        Self::check_secret_access_on(tx, &environment.environment, &rendered).await?;
         Self::restore_secret_pins_on(tx, &operation, deployment, &target.secret_names).await?;
         let name = environment.application.application.metadata().name.clone();
         target.name = name.clone();
-        Box::pin(Self::bind_links_on(tx, &mut target)).await?;
+        let bindings = std::mem::take(&mut target.bindings);
+        Box::pin(Self::bind_links_from_on(tx, &mut target, &bindings)).await?;
         let origin = serde_json::to_string(&DeploymentOrigin::Restore {
             deployment: deployment.to_owned(),
         })
@@ -145,15 +160,8 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        let template = sqlx::query_scalar!(
-            "SELECT template_json FROM deployments WHERE id=?1",
-            deployment
-        )
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
         // The deployment keeps the files it captured.
-        let template = serde_json::from_str::<ApplicationTemplate>(&template)
+        let template = serde_json::from_str::<ApplicationTemplate>(&row.template_json)
             .map_err(StoreError::corrupt)?
             .with_name(name)
             .without_files()

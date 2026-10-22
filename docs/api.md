@@ -366,8 +366,12 @@ that never succeeded, and 409 `image_unavailable` naming the service and image
 when an image is gone and can't be pulled again by digest; a missing registry
 image is pulled again first. Acceptance fails with 409
 `restore_secrets_unavailable`, listing in `details.secrets` every secret whose
-pinned version was deleted or discarded by key recovery since, and with
-`secret_deleting` while one is being deleted. A request repeating an accepted
+pinned version was deleted or discarded by key recovery since, with
+`secret_access_denied` for a stored secret whose access list no longer allows
+the environment (access narrowed since applies; only versions are kept), and
+with `secret_deleting` while one is being deleted. Links stay bound to the
+applications the deployment bound while they exist, so an application that
+took a bound one's name since gains nothing. A request repeating an accepted
 one's `Idempotency-Key` returns its response before any check. Previews
 restore through `POST /api/v1/previews/{id}/restore`, which needs
 `previews:deploy`.

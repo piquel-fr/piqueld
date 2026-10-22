@@ -239,7 +239,8 @@ never rebuilt; image cleanup keeps each environment's last
 `images.keep_deployments` successful deployments, and only a preview's current
 one), and
 `restore_secrets_unavailable` naming the secrets whose pinned versions were
-deleted or discarded by key recovery since. `preview history` and
+deleted or discarded by key recovery since, or `secret_access_denied` for a
+stored secret whose access no longer allows the environment. `preview history` and
 `preview restore` do the same for a preview.
 
 A [preview](application-manifest.md#previews) is a disposable deployment of

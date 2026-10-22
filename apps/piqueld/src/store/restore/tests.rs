@@ -1,21 +1,29 @@
 use super::*;
 use crate::api::Actor::Daemon;
 use crate::api::{Mutation, MutationResponse, Restore};
-use crate::store::{OperationState, testing::prebuilt};
+use crate::store::{
+    OperationState,
+    testing::{prebuilt, template},
+};
 use piqueld_core::{
-    NormalizedApplication, ResolutionSet, ResolvedSource, ServiceName, compile_application,
-    manifest::{SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount},
+    ApplicationId, NormalizedApplication, ResolutionSet, ResolvedSource, ServiceName,
+    api::{EnvironmentAccess, SecretAccess},
+    compile_application,
+    manifest::{Export, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount},
 };
 use std::collections::BTreeMap;
 
-/// `prebuilt`'s `notes`, whose `web` mounts the generated secret `token`.
+/// `prebuilt`'s `notes`, whose `web` mounts the generated secret `token`
+/// and the stored secret `stripe`.
 fn notes() -> NormalizedApplication {
     let app = prebuilt("app-restore-test");
     let mut manifest = app.to_manifest();
-    manifest.spec.services[0].secrets.push(SecretMount {
-        name: "token".into(),
-        target: "/run/secrets/token".into(),
-    });
+    for name in ["token", "stripe"] {
+        manifest.spec.services[0].secrets.push(SecretMount {
+            name: name.into(),
+            target: format!("/run/secrets/{name}"),
+        });
+    }
     manifest.spec.secrets.push(SecretDeclaration {
         name: "token".into(),
         generate: SecretGenerator::Random {
@@ -24,6 +32,20 @@ fn notes() -> NormalizedApplication {
         },
     });
     manifest.validate().unwrap().normalize(app.id().clone())
+}
+
+/// Saves `app` and stores `stripe` for every environment, returning its
+/// environment.
+async fn save(store: &Store, app: &NormalizedApplication) -> EnvironmentId {
+    store
+        .save_application(&ApplicationTemplate::from(app), None, None)
+        .await
+        .unwrap();
+    store
+        .put_stored_secret(Daemon, app.id(), "stripe", 0, b"key".to_vec(), None)
+        .await
+        .unwrap();
+    EnvironmentId::default_for(app.id())
 }
 
 /// Deploys `app` with `web` running the digest of `byte` and the current
@@ -97,11 +119,7 @@ async fn accept(store: &Store, restore: Restore) -> Result<Operation, StoreError
 async fn restores_exactly_what_the_deployment_ran() {
     let (_temp, store) = Store::temporary().await;
     let app = notes();
-    store
-        .save_application(&ApplicationTemplate::from(&app), None, None)
-        .await
-        .unwrap();
-    let environment = EnvironmentId::default_for(app.id());
+    let environment = save(&store, &app).await;
     let first = deploy(&store, &app, 'a', true).await;
     store
         .regenerate_secret(Daemon, &environment, "token", 1)
@@ -147,11 +165,7 @@ async fn refuses_what_cannot_run_again() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("db")).await.unwrap();
     let app = notes();
-    store
-        .save_application(&ApplicationTemplate::from(&app), None, None)
-        .await
-        .unwrap();
-    let environment = EnvironmentId::default_for(app.id());
+    let environment = save(&store, &app).await;
     let succeeded = deploy(&store, &app, 'a', true).await;
     let failed = deploy(&store, &app, 'b', false).await;
     assert!(matches!(
@@ -179,7 +193,8 @@ async fn refuses_what_cannot_run_again() {
     store.recover_secret_key(Daemon).await.unwrap();
     assert!(matches!(
         restore(&store, &environment, &succeeded.id).await,
-        Err(StoreError::Restore(RestoreError::SecretsGone { secrets, .. })) if secrets == ["token"]
+        Err(StoreError::Restore(RestoreError::SecretsGone { secrets, .. }))
+            if secrets == ["stripe", "token"]
     ));
     // Nothing was accepted.
     assert_eq!(
@@ -191,4 +206,58 @@ async fn refuses_what_cannot_run_again() {
             .id,
         failed.id
     );
+}
+
+/// Access to stored secrets narrowed since applies to a restore, though it
+/// keeps the versions it pinned.
+#[tokio::test]
+async fn narrowed_secret_access_applies_to_restores() {
+    let (_temp, store) = Store::temporary().await;
+    let app = notes();
+    let environment = save(&store, &app).await;
+    let first = deploy(&store, &app, 'a', true).await;
+    deploy(&store, &app, 'b', true).await;
+    let none = SecretAccess {
+        environments: EnvironmentAccess::Only([].into()),
+        previews: false,
+    };
+    store
+        .set_secret_access(Daemon, app.id(), "stripe", &none)
+        .await
+        .unwrap();
+    assert!(matches!(
+        restore(&store, &environment, &first.id).await,
+        Err(StoreError::SecretAccessDenied { secret, .. }) if secret == "stripe"
+    ));
+}
+
+/// A restore keeps the applications its links were bound to, so one taking
+/// a bound application's name since gains nothing.
+#[tokio::test]
+async fn restored_links_stay_bound_to_their_applications() {
+    let (_temp, store) = Store::temporary().await;
+    let saved = store.save_template(template("shop", "[spec]"), false).await;
+    let shop = ApplicationId::parse(saved.application_id).unwrap();
+    let app = notes();
+    let mut manifest = app.to_manifest();
+    manifest.spec.exports.push(Export {
+        service: "web".into(),
+        applications: vec!["shop".into()],
+        previews: false,
+    });
+    let exporting = manifest.validate().unwrap().normalize(app.id().clone());
+    let environment = save(&store, &exporting).await;
+    let first = deploy(&store, &exporting, 'a', true).await;
+    // The next deployment exports nothing, so binds nothing.
+    deploy(&store, &app, 'b', true).await;
+    let rename = Mutation::Rename {
+        id: shop.clone(),
+        name: "market".into(),
+    };
+    store.force(rename).await.unwrap();
+    store.save_template(template("shop", "[spec]"), false).await;
+
+    let restored = restore(&store, &environment, &first.id).await.unwrap();
+    let target = store.prepared_target(&restored.id).await.unwrap().unwrap();
+    assert_eq!(target.bindings.into_values().collect::<Vec<_>>(), [shop]);
 }
