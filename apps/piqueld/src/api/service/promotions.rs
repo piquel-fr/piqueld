@@ -7,7 +7,7 @@ use piqueld_core::{
     EnvironmentId, Plan, PlanRequest, ResolvedApplication, ValidationErrors,
     api::{
         AcceptedPromotion, ManifestChange, PlanView, PromotionSelection, ReleasePlan,
-        SecretProblem, ServiceRolloutView,
+        RuntimeCoverage, SecretProblem, ServiceRolloutView,
     },
     compile_release,
     manifest::{PREVIEW_DEPLOYMENT_ID, Rendering},
@@ -211,6 +211,7 @@ impl ApplicationService {
             operation,
             changes: ManifestChange::between_applications(baseline.as_ref(), app),
             environments: Vec::new(),
+            runtime_coverage: RuntimeCoverage::of(Some(&plan)),
             plan,
             rollouts: ServiceRolloutView::for_application(app),
             variables: rendering.values.clone(),

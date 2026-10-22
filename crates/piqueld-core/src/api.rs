@@ -573,6 +573,9 @@ pub struct PlanView {
     /// Ordered runtime plan for the selected environment; unresolved images are
     /// explicit actions. Empty when no environment is selected.
     pub plan: Plan,
+    /// How much of the runtime change `plan` lists.
+    #[serde(default)]
+    pub runtime_coverage: RuntimeCoverage,
     /// The value of every variable in scope for the selected environment,
     /// keyed by reference, e.g. `vars.domain`. Empty when none is selected.
     #[serde(default)]
@@ -583,6 +586,56 @@ pub struct PlanView {
     /// the release, its origin, new volumes, and unusable secrets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleasePlan>,
+}
+
+/// How much of the runtime change a plan lists.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCoverage {
+    /// Every runtime action the change needs, as observed when planning.
+    #[default]
+    Complete,
+    /// Sources must be resolved or built first: the plan lists that and
+    /// the declared jobs, while network, volume, and service changes are
+    /// planned once the deployment has resolved the sources.
+    Resolution,
+    /// None: without a selected environment, a plan compares saved
+    /// manifests only.
+    Omitted,
+}
+
+impl RuntimeCoverage {
+    /// The coverage of the runtime plan of the selected environment, or
+    /// [`Self::Omitted`] without one.
+    #[must_use]
+    pub fn of(plan: Option<&Plan>) -> Self {
+        match plan {
+            None => Self::Omitted,
+            Some(plan)
+                if plan
+                    .actions
+                    .iter()
+                    .any(|action| action.reason == crate::ActionReason::ResolutionRequired) =>
+            {
+                Self::Resolution
+            }
+            Some(_) => Self::Complete,
+        }
+    }
+
+    /// What a plan leaves out, for people; `None` when it is complete.
+    #[must_use]
+    pub const fn note(self) -> Option<&'static str> {
+        match self {
+            Self::Complete => None,
+            Self::Resolution => Some(
+                "Network, volume, and service changes are not listed yet: the deployment plans them once it has resolved the sources. Source resolution and declared jobs are listed.",
+            ),
+            Self::Omitted => Some(
+                "Runtime actions are not planned: select an environment to compare with its runtime.",
+            ),
+        }
+    }
 }
 
 /// A service's effective rollout order and monitor window.

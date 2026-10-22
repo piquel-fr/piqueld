@@ -532,7 +532,11 @@ differences and the runtime plan compare with the environment selected by
 `environment=ID` (by default the application's only environment): its last
 deployment snapshot, not saved configuration, and its observed runtime. Without a
 selection and with several environments, they compare the saved manifests as
-written and the runtime plan is empty. A new application renders for the
+written and the runtime plan is empty. `runtime_coverage` says how much of the
+runtime change the plan lists: `complete`; `resolution` when sources must be
+resolved or built first, so the plan lists those actions and declared jobs,
+while network, volume and service changes are
+planned by the deployment; or `omitted` without an environment. A new application renders for the
 first environment it declares that builds, or `production`. An environment of another
 application returns 404, and a promoted one 409 `environment_promoted`: plan its
 promotion instead. Image tags report resolution requirements even when unchanged,

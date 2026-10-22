@@ -612,6 +612,9 @@ impl Names<'_> {
                 summary.blocking_conflicts
             ),
         )?;
+        if let Some(note) = plan.runtime_coverage.note() {
+            out.line(format_args!("  {note}"))?;
+        }
         for (index, action) in plan.plan.actions.iter().enumerate() {
             let mut description = action.human_description().to_ascii_lowercase();
             if let Some(first) = description.get_mut(..1) {
