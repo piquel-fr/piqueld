@@ -1414,3 +1414,63 @@ async fn successful_deployments_notify_with_their_names() {
     ];
     assert_eq!(delivered, expected);
 }
+/// A deployment waits for the recovery it brought, and is sent when that
+/// recovery is cancelled because the failure was never acknowledged; failed,
+/// it can be retried like any occurrence.
+#[tokio::test]
+async fn deployments_follow_cancelled_recoveries_and_stay_retryable() {
+    let (_temp, store) = Store::temporary().await;
+    let mut both = settings();
+    both.categories.insert(
+        NotificationCategory::DeploymentSucceeded,
+        piqueld_core::observability::CategoryRule::default(),
+    );
+    store
+        .add_destination("test", "https://example.com/private-token", both)
+        .await;
+    let op = application(&store).await;
+    fail(&store, &op).await;
+    store
+        .retry_operation(&store.operation(&op.id).await.unwrap())
+        .await
+        .unwrap();
+    store.mark_running(&op.id).await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    // The failure, still unacknowledged, holds the recovery, which holds the deployment.
+    let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(failure.category, NotificationCategory::DeploymentFailures);
+    store
+        .complete_delivery(
+            &failure.id,
+            DeliveryState::Pending,
+            Some("Receiver down"),
+            3600,
+        )
+        .await
+        .unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    sqlx::query("UPDATE notification_deliveries SET retry_started_at_ms=0 WHERE id=?1")
+        .bind(&failure.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let (deployed, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(deployed.category, NotificationCategory::DeploymentSucceeded);
+    store
+        .complete_delivery(&deployed.id, DeliveryState::Failed, Some("Rejected"), 0)
+        .await
+        .unwrap();
+    store
+        .retry_delivery(crate::api::Actor::Daemon, &deployed.id)
+        .await
+        .unwrap();
+}

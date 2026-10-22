@@ -152,9 +152,11 @@ impl Store {
                     return Err(StoreError::InvalidInput);
                 }
             }
-            // Security events and daemon starts report one occurrence, not
-            // an incident that closes, so they stay retryable.
-            NotificationCategory::Security | NotificationCategory::DaemonStarted => {}
+            // Security events, daemon starts and deployments report one
+            // occurrence, not an incident that closes, so they stay retryable.
+            NotificationCategory::Security
+            | NotificationCategory::DaemonStarted
+            | NotificationCategory::DeploymentSucceeded => {}
             // A closed incident cannot be announced again without a matching recovery.
             _ => {
                 let open = sqlx::query_scalar!(
@@ -357,9 +359,7 @@ impl Store {
         Ok(())
     }
     /// Queues a delivery of `event` to every enabled destination in its
-    /// `notification_audience` receiving `category` since before it. A
-    /// destination already notified of the event, such as of the recovery a
-    /// successful deployment brings, is not notified again.
+    /// `notification_audience` receiving `category` since before it.
     async fn enqueue(
         tx: &mut Transaction<'_, Sqlite>,
         event: i64,
@@ -371,8 +371,7 @@ impl Store {
             JOIN notification_destination_categories c ON c.destination_id=au.destination_id
                 AND c.category=?2 AND c.after_event_id<au.event_id
             JOIN notification_destinations d ON d.id=au.destination_id AND d.enabled=1
-            WHERE au.event_id=?1 AND NOT EXISTS (SELECT 1 FROM notification_deliveries x
-                WHERE x.event_id=au.event_id AND x.destination_id=d.id)",
+            WHERE au.event_id=?1",
             event,
             category,
         )
@@ -738,9 +737,11 @@ impl Store {
     }
     /// Claims the next due delivery for the notification worker:
     /// 1. fails pending deliveries whose retry window expired;
-    /// 2. cancels recoveries none of whose failures can still be delivered;
+    /// 2. cancels recoveries none of whose failures can still be delivered,
+    ///    and deployments whose recovery was delivered;
     /// 3. picks the earliest due delivery, holding recoveries until every linked
-    ///    failure is settled and at least one was delivered;
+    ///    failure is settled and at least one was delivered, and deployments
+    ///    while their recovery is pending;
     /// 4. leases it for 30 seconds by pushing `next_attempt_ms` and counting the attempt.
     ///
     /// A delivery that can no longer be sent (an unknown category, or a
@@ -773,6 +774,10 @@ impl Store {
                 JOIN notification_deliveries f ON f.id=s.failure_id
                 WHERE s.recovery_id=d.id AND f.state='pending')
                 ))
+                AND (d.category!='deployment_succeeded' OR NOT EXISTS (
+                SELECT 1 FROM notification_deliveries r WHERE r.event_id=d.event_id
+                AND r.category='recovery' AND r.destination_id=d.destination_id
+                AND r.state='pending'))
                 ORDER BY d.next_attempt_ms,d.id LIMIT 1",
                 now,
             )
@@ -821,7 +826,7 @@ impl Store {
         let lease = now.saturating_add(30_000);
         sqlx::query!(
             "UPDATE notification_deliveries
-            SET retry_started_at_ms=CASE WHEN category='recovery' AND attempts=0 THEN ?2 ELSE retry_started_at_ms END,
+            SET retry_started_at_ms=CASE WHEN category IN ('recovery','deployment_succeeded') AND attempts=0 THEN ?2 ELSE retry_started_at_ms END,
             attempts=attempts+1,next_attempt_ms=?1,updated_at_ms=?2 WHERE id=?3",
             lease,
             now,
@@ -857,12 +862,13 @@ impl Store {
     ) -> Result<(), StoreError> {
         let expired = now.saturating_sub(RETRY_WINDOW_MS);
         // A recovery's retry window starts when it can first be sent, not while
-        // it is waiting for acknowledgement of the original failure.
+        // it is waiting for acknowledgement of the original failure; so does
+        // a deployment's, waiting for the recovery it brought.
         sqlx::query!(
             "UPDATE notification_deliveries
             SET state='failed',last_error='Delivery retry window expired',updated_at_ms=?1
             WHERE state='pending' AND retry_started_at_ms<?2
-            AND (category!='recovery' OR attempts>0)",
+            AND (category NOT IN ('recovery','deployment_succeeded') OR attempts>0)",
             now,
             expired,
         )
@@ -878,6 +884,20 @@ impl Store {
             WHERE s.recovery_id=notification_deliveries.id
             AND failure.state IN ('pending','delivered')
             )",
+            now,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        // A deployment that cleared a failure is announced by its recovery
+        // when that is delivered, and on its own otherwise.
+        sqlx::query!(
+            "UPDATE notification_deliveries
+            SET state='cancelled',last_error='Its recovery was delivered instead',updated_at_ms=?1
+            WHERE state='pending' AND category='deployment_succeeded' AND EXISTS (
+            SELECT 1 FROM notification_deliveries r WHERE r.event_id=notification_deliveries.event_id
+            AND r.category='recovery' AND r.destination_id=notification_deliveries.destination_id
+            AND r.state='delivered')",
             now,
         )
         .execute(&mut **tx)

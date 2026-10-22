@@ -287,9 +287,9 @@ Each destination has a unique name, such as `ops`, a kind (`json` or
   [security notifications](#security-notifications)), `daemon_started`
   (see [daemon start notifications](#daemon-start-notifications)) and
   `deployment_succeeded`, each successful deployment. A new destination
-  receives all of them but `deployment_succeeded`. A destination is notified
-  once per event: when a deployment clears a failure it was sent, it receives
-  the recovery, not the deployment too.
+  receives all of them but `deployment_succeeded`. A deployment that clears a
+  failure a destination was sent waits for that recovery: once the recovery
+  is delivered the deployment is not sent too, and otherwise it is.
 - **A message per category**, of 1–1000 characters, sent with each of its
   notifications. Discord sends it as the message text, so mentions in it, such
   as a role's `<@&ROLE_ID>`, notify; nothing else in a notification does.
@@ -358,9 +358,10 @@ in each reader's time zone; delivery and event IDs are left out.
 
 The outbox is durable and separate from runtime work. JSON payloads contain
 `version: 2`, `instance_id`, `delivery_id`, `category`, a `title` such as
-`Deployment failed`, the `subject` (`application`, `environment`, `preview`
-and `branch`, null for daemon notifications), the category's `message` (or
-null), and the source `event`; test notifications have a null `category`.
+`Deployment failed`, the `subject`, an object whose `application`,
+`environment` and `branch` are null for daemon notifications and whose
+`preview` is a boolean, the category's `message` (or null), and the source
+`event`; test notifications have a null `category`.
 Version 1 payloads had neither `title` nor `subject`. Payloads are not signed. Every request
 carries `Idempotency-Key: <delivery_id>`; delivery is at least once, so receivers
 should deduplicate. Retries preserve that ID through restart and manual retry.
