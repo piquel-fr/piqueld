@@ -239,7 +239,8 @@ progress.
 `env promote --plan` prints the release and its provenance and images, its
 origin, the rendered changes, the runtime plan, new (empty) volumes, and each
 unusable secret, without changing anything. It exits with the conflict code 3
-when the plan is blocked or lists secrets. `--release ID --plan` plans an
+when the plan is blocked, as it is by each missing image that can't be pulled
+again (`image_unavailable`), or lists secrets. `--release ID --plan` plans an
 earlier release for any environment.
 
 A [preview](application-manifest.md#previews) is a disposable deployment of
