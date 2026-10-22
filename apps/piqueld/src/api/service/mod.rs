@@ -3,6 +3,7 @@
 mod admission;
 mod exec;
 mod history;
+mod notification_message;
 mod notification_worker;
 mod observability;
 mod previews;
@@ -568,6 +569,8 @@ pub struct ApplicationService {
     admission: Arc<admission::Admission>,
     /// Sends notifications, queued or tests.
     notifier: notification_worker::Notifier,
+    /// The website's origin, `auth.public_url`, which notifications link to.
+    public_url: String,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -595,7 +598,17 @@ impl ApplicationService {
             listings: Arc::default(),
             admission: Arc::default(),
             notifier: notification_worker::Notifier::default(),
+            public_url: String::new(),
         }
+    }
+
+    /// Links notifications to the dashboard at `public_url`, the website's origin.
+    #[must_use]
+    pub fn with_public_url(mut self, public_url: &str) -> Self {
+        public_url
+            .trim_end_matches('/')
+            .clone_into(&mut self.public_url);
+        self
     }
 
     /// Ends long-lived connections, like event streams and commands, once

@@ -28,8 +28,8 @@ pub(crate) enum NotificationCommand {
     /// List destinations and what each receives; URLs cannot be read back.
     List,
     /// Create a destination, or change one. Unset options keep the current
-    /// settings; a new destination receives every category about every
-    /// application, without previews.
+    /// settings; a new destination receives every category but
+    /// successful deployments about every application, without previews.
     Set(SetArgs),
     /// Send a test notification to a destination now.
     Test {
@@ -345,10 +345,14 @@ report!(Page<NotificationDelivery>, self, out, {
     }
     for delivery in &self.items {
         out.line(format_args!(
-            "{}  {}  {}  {}  {} attempts{}",
+            "{}  {}  {}  {}  {}  {} attempts{}",
             delivery.id,
             delivery.destination,
             delivery.category,
+            delivery
+                .subject
+                .describe()
+                .unwrap_or_else(|| "daemon".into()),
             delivery.state,
             delivery.attempts,
             delivery

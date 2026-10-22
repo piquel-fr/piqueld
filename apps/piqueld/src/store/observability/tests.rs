@@ -421,6 +421,18 @@ async fn put(store: &Store, settings: &DestinationSettings, url: Option<&str>) {
         .await
         .unwrap();
 }
+/// Delivers every due delivery, returning their destinations and categories.
+async fn drain(store: &Store) -> Vec<(String, NotificationCategory)> {
+    let mut delivered = Vec::new();
+    while let Some((delivery, _)) = store.claim_delivery().await.unwrap() {
+        store
+            .complete_delivery(&delivery.id, DeliveryState::Delivered, None, 0)
+            .await
+            .unwrap();
+        delivered.push((delivery.destination, delivery.category));
+    }
+    delivered
+}
 /// Fails `op`'s deployment and processes the failure's notifications.
 async fn fail(store: &Store, op: &Operation) {
     store
@@ -1314,4 +1326,91 @@ async fn the_audit_chain_detects_alteration_and_survives_pruning() {
         Some(4),
         "removing breaks the next record"
     );
+}
+/// Successful deployments notify only destinations receiving them, naming
+/// the application and environment as of then.
+#[tokio::test]
+async fn successful_deployments_notify_with_their_names() {
+    let (_temp, store) = Store::temporary().await;
+    notify(&store).await;
+    let mut deployments = settings();
+    deployments.categories = [(
+        NotificationCategory::DeploymentSucceeded,
+        piqueld_core::observability::CategoryRule::default(),
+    )]
+    .into();
+    let url = "https://example.com/deployments";
+    store.add_destination("deployments", url, deployments).await;
+    let op = named_application(&store, "shop").await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let (delivery, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(delivery.destination, "deployments");
+    assert_eq!(delivery.category, NotificationCategory::DeploymentSucceeded);
+    assert_eq!(
+        delivery.subject.describe().as_deref(),
+        Some("shop / production")
+    );
+    store
+        .complete_delivery(&delivery.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+
+    // After a failure, the success is the recovery alone.
+    let mut both = settings();
+    both.categories.retain(|category, _| {
+        matches!(
+            category,
+            NotificationCategory::DeploymentFailures | NotificationCategory::Recovery
+        )
+    });
+    both.categories.insert(
+        NotificationCategory::DeploymentSucceeded,
+        piqueld_core::observability::CategoryRule::default(),
+    );
+    let name = DestinationName::parse("deployments").unwrap();
+    let request = DestinationRequest {
+        settings: both,
+        url: None,
+    };
+    store
+        .put_notification_destination(Actor::Daemon, &name, request)
+        .await
+        .unwrap();
+    store.retry_operation(&op).await.unwrap();
+    store.mark_running(&op.id).await;
+    fail(&store, &op).await;
+    drain(&store).await;
+    store
+        .retry_operation(&store.operation(&op.id).await.unwrap())
+        .await
+        .unwrap();
+    store.mark_running(&op.id).await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let mut delivered = drain(&store).await;
+    delivered.sort();
+    let recovery = NotificationCategory::Recovery;
+    let expected = [
+        ("deployments".to_owned(), recovery),
+        ("test".to_owned(), recovery),
+    ];
+    assert_eq!(delivered, expected);
 }

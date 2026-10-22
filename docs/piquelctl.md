@@ -137,7 +137,7 @@ opting in while it is on, needs `apps:deploy` too.
 `notification` manages [notification destinations](observability.md#notifications).
 `notification set NAME` creates a destination, or changes one; options it
 omits keep the current settings, and a new destination receives every category
-about every application, without previews. The URL is read from `--url-file`
+but `deployment_succeeded` about every application, without previews. The URL is read from `--url-file`
 or `--url-stdin`, never an argument, and is required to create one. `--kind
 json|discord` picks the payload, `--enabled true|false` pauses it,
 `--categories a,b` replaces the categories it receives, and

@@ -124,6 +124,8 @@ string_enum! {
         Security => "security",
         /// Each daemon start, with its version, once it is ready to serve.
         DaemonStarted => "daemon_started",
+        /// Each successful deployment. New destinations do not receive it.
+        DeploymentSucceeded => "deployment_succeeded",
     }
 }
 impl NotificationCategory {
@@ -138,6 +140,7 @@ impl NotificationCategory {
             Self::Recovery => "Recoveries",
             Self::Security => "Security events",
             Self::DaemonStarted => "Daemon starts",
+            Self::DeploymentSucceeded => "Deployments",
         }
     }
 }
@@ -228,7 +231,8 @@ pub struct DestinationSettings {
 
 impl DestinationSettings {
     /// Settings for a new destination: enabled, every application without
-    /// previews, and every category without a message.
+    /// previews, and every category but `deployment_succeeded`, without a
+    /// message.
     #[must_use]
     pub fn new(kind: DestinationKind) -> Self {
         Self {
@@ -236,6 +240,7 @@ impl DestinationSettings {
             enabled: true,
             categories: NotificationCategory::ALL
                 .into_iter()
+                .filter(|category| *category != NotificationCategory::DeploymentSucceeded)
                 .map(|category| (category, CategoryRule::default()))
                 .collect(),
             applications: ApplicationSelection::All,
@@ -298,6 +303,9 @@ pub struct NotificationDelivery {
     pub event_id: i64,
     /// Name of the destination it was sent to, kept after the destination is deleted.
     pub destination: String,
+    /// What it is about, by name, as of when it was queued.
+    #[serde(default)]
+    pub subject: NotificationSubject,
     /// Notification category, including recovery.
     pub category: NotificationCategory,
     /// Current delivery lifecycle state.
@@ -312,6 +320,33 @@ pub struct NotificationDelivery {
     pub updated_at_ms: i64,
     /// Safe delivery failure summary.
     pub last_error: Option<String>,
+}
+
+/// What a notification is about, by the names its application, environment
+/// or preview had when it was queued; empty for daemon notifications.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(default)]
+pub struct NotificationSubject {
+    /// The application.
+    pub application: Option<crate::ApplicationName>,
+    /// The environment, or the preview's slug.
+    pub environment: Option<crate::EnvironmentName>,
+    /// Whether the environment is a preview.
+    pub preview: bool,
+    /// The branch the environment or preview deploys, if any.
+    pub branch: Option<crate::GitBranch>,
+}
+
+impl NotificationSubject {
+    /// `shop / production`, `shop`, or `None` for daemon notifications.
+    #[must_use]
+    pub fn describe(&self) -> Option<String> {
+        let application = self.application.as_ref()?;
+        Some(match &self.environment {
+            Some(environment) => format!("{application} / {environment}"),
+            None => application.to_string(),
+        })
+    }
 }
 
 /// Aggregated duration for one action phase.

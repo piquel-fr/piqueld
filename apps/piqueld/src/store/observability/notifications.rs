@@ -6,7 +6,7 @@ use piqueld_core::{
     api::Page,
     observability::{
         DeliveryState, Diagnostic, DiagnosticCode, EventScope, NotificationCategory,
-        NotificationDelivery,
+        NotificationDelivery, NotificationSubject,
     },
 };
 use sqlx::{Sqlite, Transaction};
@@ -30,7 +30,7 @@ impl Store {
         let paging = Paging::new(limit)?;
         let cursor = Paging::cursor(cursor)?;
         let mut rows = sqlx::query!(
-            "SELECT id AS \"id!\",event_id,destination,category,state,attempts,created_at_ms,next_attempt_ms,updated_at_ms,last_error
+            "SELECT id AS \"id!\",event_id,destination,subject_json,category,state,attempts,created_at_ms,next_attempt_ms,updated_at_ms,last_error
             FROM notification_deliveries
             WHERE ?1 IS NULL OR id<?1
             ORDER BY id DESC LIMIT ?2",
@@ -55,6 +55,10 @@ impl Store {
                         id: r.id,
                         event_id: r.event_id,
                         destination: r.destination,
+                        subject: match Self::subject(r.subject_json) {
+                            Ok(subject) => subject,
+                            Err(error) => return Some(Err(error)),
+                        },
                         category,
                         state: match DeliveryState::parse(&r.state) {
                             Some(state) => state,
@@ -70,6 +74,14 @@ impl Store {
                 .collect::<Result<_, StoreError>>()?,
             next_cursor,
         })
+    }
+    /// Decodes a delivery's stored subject; deliveries queued before
+    /// subjects were stored have an empty one.
+    fn subject(json: Option<String>) -> Result<NotificationSubject, StoreError> {
+        json.map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(StoreError::corrupt)
     }
     /// Retries a failed delivery only while its destination still exists,
     /// unchanged, enabled, receiving its category and, unless it is a
@@ -237,7 +249,7 @@ impl Store {
     }
     /// Applies one event to notification state. A successful operation closes the
     /// application's build and deployment failure conditions (queueing
-    /// recoveries). Failed operations and daemon diagnostics open a condition and
+    /// recoveries), and notifies unless it was a deletion. Failed operations and daemon diagnostics open a condition and
     /// notify immediately the first time it opens; repeats while it is open are
     /// deduplicated. Dependency outages are skipped here because
     /// `observe_condition` notifies them only once sustained.
@@ -266,6 +278,15 @@ impl Store {
                     event.id,
                 )
                 .await?;
+            }
+            let operation = event.operation_id.as_deref();
+            let kind = sqlx::query_scalar!("SELECT kind FROM operations WHERE id=?1", operation)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(StoreError::database)?;
+            if app.is_some() && kind.is_some_and(|kind| kind != "delete") {
+                let deployed = NotificationCategory::DeploymentSucceeded;
+                return Self::enqueue(tx, event.id, deployed).await;
             }
         }
         // Security events and daemon starts each notify; neither is a
@@ -336,7 +357,9 @@ impl Store {
         Ok(())
     }
     /// Queues a delivery of `event` to every enabled destination in its
-    /// `notification_audience` receiving `category` since before it.
+    /// `notification_audience` receiving `category` since before it. A
+    /// destination already notified of the event, such as of the recovery a
+    /// successful deployment brings, is not notified again.
     async fn enqueue(
         tx: &mut Transaction<'_, Sqlite>,
         event: i64,
@@ -348,7 +371,8 @@ impl Store {
             JOIN notification_destination_categories c ON c.destination_id=au.destination_id
                 AND c.category=?2 AND c.after_event_id<au.event_id
             JOIN notification_destinations d ON d.id=au.destination_id AND d.enabled=1
-            WHERE au.event_id=?1",
+            WHERE au.event_id=?1 AND NOT EXISTS (SELECT 1 FROM notification_deliveries x
+                WHERE x.event_id=au.event_id AND x.destination_id=d.id)",
             event,
             category,
         )
@@ -363,7 +387,8 @@ impl Store {
     }
 
     /// Queues one delivery of `event` to a destination idempotently and
-    /// returns its ID, new or existing.
+    /// returns its ID, new or existing. The delivery keeps the current names
+    /// of the event's application and environment as its subject.
     async fn enqueue_destination(
         tx: &mut Transaction<'_, Sqlite>,
         event: i64,
@@ -376,8 +401,13 @@ impl Store {
         sqlx::query!(
             "INSERT INTO notification_deliveries(
             id,event_id,destination,destination_id,category,state,
-            created_at_ms,retry_started_at_ms,next_attempt_ms,updated_at_ms
-            ) VALUES(?1,?2,?3,?4,?5,'pending',?6,?6,?6,?6)
+            created_at_ms,retry_started_at_ms,next_attempt_ms,updated_at_ms,subject_json
+            ) SELECT ?1,?2,?3,?4,?5,'pending',?6,?6,?6,?6,
+            json_object('application',a.name,'environment',v.name,
+                'preview',json(IIF(v.kind='preview','true','false')),'branch',v.branch)
+            FROM events e LEFT JOIN applications a ON a.id=e.application_id
+            LEFT JOIN environments v ON v.id=e.environment_id
+            WHERE e.id=?2
             ON CONFLICT(event_id,destination,category) DO NOTHING",
             id,
             event,
@@ -482,11 +512,24 @@ impl Store {
             (Some(_), None) => DiagnosticCode::ServiceDegraded,
             (None, _) => DiagnosticCode::parse(key).ok_or(StoreError::InvalidInput)?,
         };
-        let subject = match (application, key) {
-            (Some(id), key) if key.starts_with("telemetry_export_failed:") => {
-                format!("Telemetry export to environment {id}")
+        // Environments are named as `application / environment`.
+        let environment = match application {
+            Some(id) => sqlx::query_scalar!(
+                "SELECT a.name||' / '||v.name AS \"name!: String\" FROM environments v
+                JOIN applications a ON a.id=v.application_id WHERE v.id=?1",
+                id,
+            )
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(StoreError::database)?
+            .or_else(|| Some(id.to_owned())),
+            None => None,
+        };
+        let subject = match (environment, key) {
+            (Some(name), key) if key.starts_with("telemetry_export_failed:") => {
+                format!("Telemetry export to {name}")
             }
-            (Some(id), _) => format!("Service health for application {id}"),
+            (Some(name), _) => format!("Service health of {name}"),
             (None, "docker_unavailable") => "Docker Engine".into(),
             (None, "swarm_manager_unavailable") => "Swarm manager".into(),
             (None, "ingress_unavailable") => "Managed ingress".into(),
@@ -712,7 +755,7 @@ impl Store {
         Self::settle_expired_deliveries(&mut tx, now).await?;
         let (row, category, destination) = loop {
             let row = sqlx::query!(
-                "SELECT d.id AS \"id!\",d.destination,d.event_id,d.category,d.attempts,
+                "SELECT d.id AS \"id!\",d.destination,d.subject_json,d.event_id,d.category,d.attempts,
                 d.created_at_ms,d.updated_at_ms,d.last_error,
                 n.id AS \"destination_id?\",n.kind AS \"kind?\",n.nonce AS \"nonce?\",
                 n.ciphertext AS \"ciphertext?\",c.message,
@@ -793,6 +836,7 @@ impl Store {
                 id: row.id,
                 event_id: row.event_id,
                 destination: row.destination,
+                subject: Self::subject(row.subject_json)?,
                 category,
                 state: DeliveryState::Pending,
                 attempts: row.attempts + 1,

@@ -1,12 +1,12 @@
 //! Background observation and webhook delivery, and test notifications.
 //! Neither executes infrastructure mutations.
-use super::{ApplicationError, ApplicationService};
+use super::{ApplicationError, ApplicationService, notification_message::Notification};
 use crate::store::{StoreError, now_ms};
 use piqueld_core::{
     Event,
     observability::{
         DeliveryState, DestinationKind, DestinationName, DestinationTest, EventScope,
-        NotificationCategory,
+        NotificationSubject,
     },
 };
 use std::time::Duration;
@@ -202,13 +202,13 @@ impl ApplicationService {
                 return Err(error);
             }
         };
-        let payload = self.payload(
-            destination.kind,
-            &delivery.id,
-            Some(delivery.category),
-            &event,
-            destination.message.as_deref(),
-        );
+        let notification = Notification {
+            category: Some(delivery.category),
+            event: &event,
+            subject: &delivery.subject,
+            message: destination.message.as_deref(),
+        };
+        let payload = self.payload(destination.kind, &delivery.id, &notification);
         let (state, message, delay) = match self.notifier.post(&url, &delivery.id, &payload).await {
             Attempt::Delivered => (DeliveryState::Delivered, None, 0),
             Attempt::Retry { error, retry_after } => (
@@ -243,7 +243,13 @@ impl ApplicationService {
             ..Event::default()
         };
         let id = format!("test-{}", uuid::Uuid::now_v7().simple());
-        let payload = self.payload(destination.kind, &id, None, &event, None);
+        let notification = Notification {
+            category: None,
+            event: &event,
+            subject: &NotificationSubject::default(),
+            message: None,
+        };
+        let payload = self.payload(destination.kind, &id, &notification);
         Ok(match self.notifier.post(&url, &id, &payload).await {
             Attempt::Delivered => DestinationTest {
                 delivered: true,
@@ -256,49 +262,17 @@ impl ApplicationService {
         })
     }
 
-    /// What a destination of `kind` receives for `event`, with its
-    /// category's `message`: the versioned JSON envelope, or a Discord message
-    /// whose content is `message` and whose embed describes the event. Test
-    /// notifications have no category.
+    /// What a destination of `kind` receives for `notification`, with
+    /// `delivery` as its delivery ID.
     fn payload(
         &self,
         kind: DestinationKind,
         delivery: &str,
-        category: Option<NotificationCategory>,
-        event: &Event,
-        message: Option<&str>,
+        notification: &Notification<'_>,
     ) -> serde_json::Value {
         match kind {
-            DestinationKind::Json => serde_json::json!({
-                "version": 1,
-                "instance_id": self.store.instance_id(),
-                "delivery_id": delivery,
-                "category": category,
-                "message": message,
-                "event": event,
-            }),
-            DestinationKind::Discord => {
-                let summary = event.message.as_deref().unwrap_or(&event.kind);
-                let application = event
-                    .environment_id
-                    .as_ref()
-                    .map_or_else(|| "daemon".to_owned(), ToString::to_string);
-                let diagnostic = event.diagnostic.as_ref().map_or_else(String::new, |d| {
-                    format!("\nDiagnostic: {}\n{}", d.id, d.next_action)
-                });
-                let category = category.map_or("test", NotificationCategory::as_str);
-                let text = format!(
-                    "piqueld · {category}\n{summary}\nApplication: {application}\nEvent: {} · Delivery: {delivery}{diagnostic}",
-                    event.id,
-                );
-                // Only the content pings: it is the category message alone,
-                // the operator's own text. Mentions in embeds never notify.
-                serde_json::json!({
-                    "content": message.unwrap_or_default(),
-                    "embeds": [{"description": text.chars().take(4000).collect::<String>()}],
-                    "allowed_mentions": {"parse": ["users", "roles", "everyone"]},
-                })
-            }
+            DestinationKind::Json => notification.json(delivery, self.store.instance_id().as_str()),
+            DestinationKind::Discord => notification.discord(&self.public_url),
         }
     }
 }
@@ -396,7 +370,7 @@ mod tests {
         let requests = requests.lock().await;
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0], requests[1]);
-        assert_eq!(requests[0].1["version"], 1);
+        assert_eq!(requests[0].1["version"], 2);
         assert_eq!(requests[0].1["delivery_id"], requests[0].0);
         let delivery = store.deliveries(None, 100).await.unwrap().items.remove(0);
         assert_eq!(delivery.attempts, 2);

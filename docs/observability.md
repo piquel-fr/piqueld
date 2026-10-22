@@ -284,9 +284,12 @@ Each destination has a unique name, such as `ops`, a kind (`json` or
 
 - **Categories**: `build_failures`, `deployment_failures`,
   `service_degradation`, `daemon_failures`, `recovery`, `security` (see
-  [security notifications](#security-notifications)) and `daemon_started`
-  (see [daemon start notifications](#daemon-start-notifications)). A new
-  destination receives all of them.
+  [security notifications](#security-notifications)), `daemon_started`
+  (see [daemon start notifications](#daemon-start-notifications)) and
+  `deployment_succeeded`, each successful deployment. A new destination
+  receives all of them but `deployment_succeeded`. A destination is notified
+  once per event: when a deployment clears a failure it was sent, it receives
+  the recovery, not the deployment too.
 - **A message per category**, of 1–1000 characters, sent with each of its
   notifications. Discord sends it as the message text, so mentions in it, such
   as a role's `<@&ROLE_ID>`, notify; nothing else in a notification does.
@@ -338,11 +341,27 @@ Manual retry cannot replay a failed alert after its condition closes, even if no
 receiver acknowledged that alert. Recovery deliveries remain manually retryable
 until the same condition opens again.
 
+Each delivery keeps the names of the application, and of the environment or
+preview, it is about as they were when it was queued, as its `subject`, so
+notifications name them even after a rename or deletion.
+
+Discord messages send the category's message as their text, and describe the
+notification in an embed coloured by category, whose title starts with an
+emoji, such as `❌ Deployment failed · shop / production`: red ❌ for build
+and deployment failures and 🛑 for daemon failures, amber ⚠️ for service
+degradation, green ✅ for recoveries and 🚀 for deployments, 🔐 for security
+events, 🔄 for daemon starts and 🔔 for tests. Fields name the application,
+environment or preview, and branch, with the cause and next step of a
+failure. The title links to the dashboard at `auth.public_url`: the
+diagnostic, else the environment or preview. Discord shows the event's time
+in each reader's time zone; delivery and event IDs are left out.
+
 The outbox is durable and separate from runtime work. JSON payloads contain
-`version: 1`, `instance_id`, `delivery_id`, `category`, the category's
-`message` (or null), and the source `event`; test notifications have a null
-`category`. Discord messages send the category's message as their text and
-describe the event in an embed. Payloads are not signed. Every request
+`version: 2`, `instance_id`, `delivery_id`, `category`, a `title` such as
+`Deployment failed`, the `subject` (`application`, `environment`, `preview`
+and `branch`, null for daemon notifications), the category's `message` (or
+null), and the source `event`; test notifications have a null `category`.
+Version 1 payloads had neither `title` nor `subject`. Payloads are not signed. Every request
 carries `Idempotency-Key: <delivery_id>`; delivery is at least once, so receivers
 should deduplicate. Retries preserve that ID through restart and manual retry.
 

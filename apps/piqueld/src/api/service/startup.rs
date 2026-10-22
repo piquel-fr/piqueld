@@ -84,6 +84,7 @@ impl ApplicationService {
             .with_configuration(config.view())
             .with_ingress(Arc::clone(&ingress))
             .with_webhook_hostname(config.ingress.webhook_hostname.clone())
+            .with_public_url(config.public_url())
             .with_telemetry(telemetry)
             .with_shutdown(cancellation.clone());
         let webhook_listener = ingress
