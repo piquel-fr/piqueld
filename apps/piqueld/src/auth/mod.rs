@@ -213,11 +213,13 @@ impl Auth {
     /// ```text
     /// https://piqueld.example.com   accepted
     /// http://localhost:8080         accepted (development)
+    /// http://dev.localhost:8080     accepted (development)
     /// https://10.0.0.1              rejected (no DNS hostname)
     /// https://example.com/piqueld   rejected (path)
     /// ```
     /// # Errors
-    /// Requires HTTPS, except for HTTP localhost development.
+    /// Requires HTTPS, except for HTTP development on `localhost` or its
+    /// subdomains, which browsers resolve to loopback and treat as secure.
     pub fn validate_origin(value: &str) -> Result<url::Url> {
         let url = url::Url::parse(value).map_err(|_| AuthError::Invalid("invalid public_url"))?;
         if url.domain().is_none()
@@ -227,10 +229,11 @@ impl Auth {
             || url.query().is_some()
             || url.fragment().is_some()
             || !(url.scheme() == "https"
-                || (url.scheme() == "http" && url.domain() == Some("localhost")))
+                || (url.scheme() == "http"
+                    && url.domain().is_some_and(piqueld_core::auth::is_localhost)))
         {
             return Err(AuthError::Invalid(
-                "public_url must be an HTTPS origin (or http://localhost for development)",
+                "public_url must be an HTTPS origin (or http://localhost or a subdomain of it for development)",
             ));
         }
         Ok(url)

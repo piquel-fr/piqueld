@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use std::time::Duration;
 
 use crate::{ClientError, Envelope, ErrorBody, TransportFailure, generated};
+use piqueld_core::auth::is_localhost;
 
 /// Upper bound on buffered response bodies for every operation.
 const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -84,19 +85,29 @@ impl Client {
                 "base URL must be an HTTP or HTTPS origin",
             ));
         }
-        Self::native(base_url.trim_end_matches('/'), |builder| {
-            if url.host_str() != Some("localhost") {
-                return builder;
-            }
-            let port = url.port_or_known_default().unwrap_or(80);
-            builder.resolve_to_addrs(
-                "localhost",
-                &[
-                    std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), port),
-                    std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port),
-                ],
-            )
-        })
+        Self::native(
+            base_url.trim_end_matches('/'),
+            |builder| match Self::pinned_loopback(&url) {
+                Some((host, addresses)) => builder.resolve_to_addrs(host, &addresses),
+                None => builder,
+            },
+        )
+    }
+
+    /// The loopback addresses that `url`'s host, `localhost` or a subdomain of
+    /// it, always resolves to, whatever the system resolver says. Browsers
+    /// resolve these names the same way, so credentials may go to them over
+    /// plain HTTP.
+    fn pinned_loopback(url: &url::Url) -> Option<(&str, [std::net::SocketAddr; 2])> {
+        let host = url.host_str().filter(|host| is_localhost(host))?;
+        let port = url.port_or_known_default().unwrap_or(80);
+        Some((
+            host,
+            [
+                std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), port),
+                std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port),
+            ],
+        ))
     }
 
     /// Creates a client for a Unix-domain socket.
@@ -314,13 +325,14 @@ impl ClientState {
     ///
     /// ```text
     /// http://localhost:7845 + bearer      -> allowed (loopback)
+    /// http://dev.localhost:7845 + bearer  -> allowed (loopback)
     /// https://daemon.example + bearer     -> allowed (TLS)
     /// http://daemon.example + bearer      -> rejected without the opt-in
     /// http://daemon.example/api/v1/system -> allowed (no credential)
     /// ```
     fn validate_auth_transport(&self, url: &url::Url) -> Result<(), String> {
         let local = match url.host() {
-            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Domain(_)) => Client::pinned_loopback(url).is_some(),
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
             Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
             _ => false,
@@ -649,6 +661,7 @@ mod tests {
         for endpoint in [
             "https://daemon.example",
             "http://localhost:7845",
+            "http://dev.localhost:7845",
             "http://127.0.0.1:7845",
             "http://[::1]:7845",
             "http://100.64.0.1:7845",
@@ -685,5 +698,21 @@ mod tests {
         );
         client.generated.inner.prepare(&mut request).unwrap();
         assert!(request.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn localhost_subdomains_are_pinned_to_loopback() {
+        let pinned = |url: &str| {
+            Client::pinned_loopback(&url::Url::parse(url).unwrap())
+                .map(|(host, addresses)| (host.to_owned(), addresses.map(|a| a.to_string())))
+        };
+        assert_eq!(
+            pinned("http://dev.localhost:7845"),
+            Some((
+                "dev.localhost".to_owned(),
+                ["[::1]:7845".to_owned(), "127.0.0.1:7845".to_owned()]
+            ))
+        );
+        assert_eq!(pinned("http://localhost.example:7845"), None);
     }
 }
