@@ -11,8 +11,11 @@ Docker Engine or another instance's state.
 just dev
 ```
 
-This watches the daemon, dashboard, and crate sources (hidden files aside),
-rebuilds the daemon with the embedded dashboard, and restarts it on every save. Stopping it gives the
+This watches the daemon, dashboard, and crate sources, the migrations, the
+Cargo manifests and build settings (`.cargo/config.toml`,
+`rust-toolchain.toml`), and `piqueld.local.toml` (hidden files aside),
+rebuilds the daemon with the
+embedded dashboard, and restarts it on every save. Stopping it gives the
 daemon its graceful shutdown period before terminating any remaining processes.
 `just dev start` does the same in the background and returns once the instance
 is ready, printing its dashboard URL.
@@ -111,7 +114,7 @@ Set `docker.socket = "/var/run/docker.sock"` to use the host engine instead;
 | `just dev status` | Print the state, URL, socket, and log files |
 | `just dev config [--force]` | Write `piqueld.local.toml` unless it exists, or replace it |
 | `just dev stop` | Stop the daemon and watcher; the engine keeps running |
-| `just dev clean` | Stop, then delete the engine, its volume, and the instance's state |
+| `just dev clean` | Stop, then delete the engine, its volume, and the instance's state; a container of that name that `just dev` did not create for this worktree is kept |
 | `just dev prune` | Stop and clean the instances of worktrees that no longer exist |
 | `just dev tailnet up [ARGS]` | Start the shared tailnet node and log it in |
 | `just dev tailnet stop` | Stop the shared tailnet node |

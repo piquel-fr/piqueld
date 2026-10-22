@@ -32,12 +32,13 @@ minutes: run it as a background command rather than polling. If it prints:
 
 ## Iterate
 
-Every save under `apps/piqueld`, `apps/piqueld-ui`, `crates`, or the Cargo
-manifests rebuilds and restarts the daemon. Run `just dev wait` after editing
-and before testing: it treats files saved after the current build started as
-unbuilt, so it never returns the previous build. Then reload the preview with
-`preview_navigate`. Data survives restarts; pending passkey ceremonies and CLI
-device logins do not.
+Every save under `apps/piqueld`, `apps/piqueld-ui`, `crates`, `migrations`, the
+Cargo manifests and build settings, or `piqueld.local.toml` rebuilds and
+restarts the daemon. Run `just dev wait` after editing and before testing: it
+treats files saved after the current build started as unbuilt, so it never
+returns the previous build. Then reload the preview with `preview_navigate`.
+Data survives restarts; pending passkey ceremonies and CLI device logins do
+not.
 
 ## Use it
 
