@@ -31,7 +31,6 @@ let
     );
   privateIngress = cfg.settings.ingress.private;
   tunnel = cfg.settings.ingress.tunnel;
-  destinations = cfg.settings.notifications.destinations;
   # `_file` settings name host files. systemd copies each into the unit's
   # private $CREDENTIALS_DIRECTORY, so the files may stay root-only, and the
   # daemon resolves the credential name there. These are the set ones among
@@ -70,7 +69,6 @@ let
       }
     ]
   );
-  webhookCredential = index: "webhook-${toString index}";
   providers = cfg.settings.dns.providers;
   # Credential files of a DNS provider, by setting name.
   dnsFiles =
@@ -82,13 +80,6 @@ let
         {
           server.data_dir = cfg.dataDir;
           server.runtime_dir = cfg.runtimeDir;
-          notifications.destinations = lib.imap0 (
-            index: destination:
-            withoutNulls (
-              destination
-              // lib.optionalAttrs (destination.url_file != null) { url_file = webhookCredential index; }
-            )
-          ) destinations;
           dns.providers = lib.imap0 (
             index: provider:
             withoutNulls (
@@ -114,7 +105,7 @@ in
 {
   imports = [
     (lib.mkRemovedOptionModule [ "services" "piqueld" "notificationDestinationsFile" ]
-      "Declare destinations in services.piqueld.settings.notifications.destinations, using url_file for private URLs."
+      "Notification destinations are managed with `piquelctl notification` or the dashboard."
     )
   ];
   options.services.piqueld = {
@@ -405,89 +396,6 @@ in
             default = true;
             description = "Also export the stdout/stderr and resource usage of every container piqueld runs, while an endpoint is set.";
           };
-          notifications.enabled = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Deliver webhook notifications to the configured destinations. Re-enabling never replays old events.";
-          };
-          notifications.destinations = lib.mkOption {
-            type = lib.types.listOf (
-              lib.types.submodule {
-                options = {
-                  name = lib.mkOption {
-                    type = lib.types.str;
-                    description = "Unique destination name, used in the delivery ledger.";
-                  };
-                  kind = lib.mkOption {
-                    type = lib.types.enum [
-                      "json"
-                      "discord"
-                    ];
-                    default = "json";
-                    description = "Payload format.";
-                  };
-                  enabled = lib.mkOption {
-                    type = lib.types.bool;
-                    default = true;
-                    description = "Deliver to this destination.";
-                  };
-                  url = lib.mkOption {
-                    type = lib.types.nullOr lib.types.str;
-                    default = null;
-                    description = "Webhook URL. URLs often contain credentials and this one enters the Nix store; prefer url_file.";
-                  };
-                  url_file = credentialFile "Host file with the webhook URL, such as an agenix secret, passed to piqueld as a systemd credential.";
-                };
-              }
-            );
-            default = [ ];
-            description = "Webhook destinations. Each needs exactly one of url and url_file.";
-          };
-          notifications.build_failures = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify on build failures.";
-          };
-          notifications.deployment_failures = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify on deployment attempt failures.";
-          };
-          notifications.service_degradation = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify on sustained service degradation.";
-          };
-          notifications.daemon_failures = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify on shared dependency and internal daemon failures.";
-          };
-          notifications.security = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify on security-relevant access changes and activity, such as new administrators, privileged tokens, and bursts of refused requests.";
-          };
-          notifications.daemon_started = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify each time the daemon starts, with its version.";
-          };
-          notifications.recovery = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Notify when an alerted condition clears.";
-          };
-          notifications.failure_threshold_seconds = lib.mkOption {
-            type = lib.types.ints.between 0 86400;
-            default = 120;
-            description = "Seconds a dependency or service failure must be continuously observed before notifying.";
-          };
-          notifications.retry_window_seconds = lib.mkOption {
-            type = lib.types.ints.between 1 604800;
-            default = 86400;
-            description = "Maximum automatic delivery retry window in seconds.";
-          };
         };
       };
       default = { };
@@ -507,12 +415,6 @@ in
       {
         assertion = tunnel.enabled -> tunnel.credentials_file != null;
         message = "services.piqueld.settings.ingress.tunnel.credentials_file is required while the tunnel is enabled";
-      }
-      {
-        assertion = lib.all (
-          destination: (destination.url == null) != (destination.url_file == null)
-        ) destinations;
-        message = "services.piqueld.settings.notifications.destinations: each entry needs exactly one of url and url_file";
       }
       {
         assertion = lib.all (
@@ -563,12 +465,6 @@ in
         ExecStart = "${cfg.package}/bin/piqueld --config ${configuration}";
         LoadCredential =
           map (credential: "${credential.name}:${credential.file}") settingCredentials
-          ++ lib.concatLists (
-            lib.imap0 (
-              index: destination:
-              lib.optional (destination.url_file != null) "${webhookCredential index}:${destination.url_file}"
-            ) destinations
-          )
           ++ lib.concatLists (
             lib.imap0 (
               index: provider:

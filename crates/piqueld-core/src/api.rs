@@ -1620,6 +1620,9 @@ pub struct SecretKeyRecovery {
     /// Stored and generated versions discarded; already unavailable versions
     /// are excluded.
     pub discarded_versions: i64,
+    /// Notification destinations deleted, since their URLs were encrypted.
+    #[serde(default)]
+    pub deleted_destinations: i64,
 }
 
 /// Managed gateway health, per listener, and route diagnostics.

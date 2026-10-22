@@ -344,6 +344,7 @@ impl From<StoreError> for ApiError {
             StoreError::Lockout(lockout) => {
                 Self::new(StatusCode::CONFLICT, "account_lockout", lockout.message())
             }
+            StoreError::Destination(error) => error.into(),
             StoreError::Denied(denied) => denied.into(),
             StoreError::CredentialRevoked => crate::auth::AuthError::Unauthorized.into(),
             StoreError::AlreadyExists => Self::new(
@@ -379,6 +380,19 @@ impl From<StoreError> for ApiError {
                 )
             }
         }
+    }
+}
+
+impl From<crate::store::DestinationError> for ApiError {
+    /// Rejects an invalid destination change with 400.
+    fn from(error: crate::store::DestinationError) -> Self {
+        use crate::store::DestinationError;
+        let code = match error {
+            DestinationError::UrlRequired => "destination_url_required",
+            DestinationError::UrlInvalid => "destination_url_invalid",
+            DestinationError::UnknownApplication(_) => "destination_application_unknown",
+        };
+        Self::new(StatusCode::BAD_REQUEST, code, error.to_string())
     }
 }
 
@@ -459,6 +473,7 @@ invalid_input! {
     EnvironmentNameError => "environment_name_invalid", |_| "environment names must be 1-63 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit";
     GitBranchError => "git_branch_invalid", |error| error.to_string();
     PreviewSlotError => "preview_slot_invalid", |error| error.to_string();
+    piqueld_core::observability::DestinationNameError => "destination_name_invalid", |error| error.to_string();
 }
 
 impl From<piqueld_core::ValidationErrors> for ApiError {

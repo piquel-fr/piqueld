@@ -210,6 +210,41 @@ impl ApplicationService {
     ) -> Result<Page<NotificationDelivery>, ApplicationError> {
         Ok(self.store.deliveries(cursor, limit).await?)
     }
+    /// Lists notification destinations, without URLs.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn notification_destinations(
+        &self,
+    ) -> Result<Vec<piqueld_core::observability::NotificationDestination>, ApplicationError> {
+        Ok(self.store.notification_destinations().await?)
+    }
+    /// Creates or replaces a notification destination.
+    /// # Errors
+    /// Returns refusal, invalid destination, secret storage or storage failures.
+    pub async fn put_notification_destination(
+        &self,
+        actor: super::Actor<'_>,
+        name: &piqueld_core::observability::DestinationName,
+        request: piqueld_core::observability::DestinationRequest,
+    ) -> Result<piqueld_core::observability::NotificationDestination, ApplicationError> {
+        Ok(self
+            .store
+            .put_notification_destination(actor, name, request)
+            .await?)
+    }
+    /// Deletes a notification destination.
+    /// # Errors
+    /// Returns refusal, absence or storage failures.
+    pub async fn delete_notification_destination(
+        &self,
+        actor: super::Actor<'_>,
+        name: &piqueld_core::observability::DestinationName,
+    ) -> Result<(), ApplicationError> {
+        Ok(self
+            .store
+            .delete_notification_destination(actor, name)
+            .await?)
+    }
     /// Requests another delivery attempt under the current configuration.
     /// # Errors
     /// Returns absent, disabled or invalid delivery errors.

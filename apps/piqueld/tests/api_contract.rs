@@ -7115,3 +7115,65 @@ async fn telemetry_grants_need_the_telemetry_grant_permission() {
     };
     assert!(environment.telemetry);
 }
+
+/// Destinations need `notifications:manage` to change, and it or
+/// `system:read` to list; they require HTTPS URLs and never return them.
+#[tokio::test]
+async fn notification_destinations_need_their_permissions_and_hide_urls() {
+    let f = GrantFixture::new().await;
+    let database = database(&f.temp);
+    let manager = [("notifications:manage", None)];
+    let manager = seed_account(&database, "notifier", &manager).await;
+    let reader = seed_account(&database, "reader", &[("system:read", None)]).await;
+    let uri = "/api/v1/notifications/destinations/ops";
+    let request = |url: &str| {
+        serde_json::json!({
+            "settings": {
+                "kind": "discord",
+                "enabled": true,
+                "categories": {"deployment_failures": {"message": "<@&1234>"}},
+                "applications": {"only": [f.blog]},
+                "previews": false,
+            },
+            "url": url,
+        })
+    };
+    let url = "https://discord.example/api/webhooks/private-token";
+    assert_eq!(
+        f.router.call(&reader, "PUT", uri, request(url)).await.0,
+        403
+    );
+    let (status, error) = f
+        .router
+        .call(&manager, "PUT", uri, request("http://discord.example/hook"))
+        .await;
+    assert_eq!(
+        (status, &error["code"]),
+        (400, &"destination_url_invalid".into())
+    );
+    assert_eq!(
+        f.router.call(&manager, "PUT", uri, request(url)).await.0,
+        200
+    );
+    let list = "/api/v1/notifications/destinations";
+    let (status, listed) = f
+        .router
+        .call(&reader, "GET", list, serde_json::Value::Null)
+        .await;
+    assert_eq!(status, 200);
+    let settings = &listed["data"][0]["settings"];
+    assert_eq!(settings["applications"]["only"][0], f.blog.as_str());
+    assert_eq!(
+        settings["categories"]["deployment_failures"]["message"],
+        "<@&1234>"
+    );
+    assert!(!listed.to_string().contains("private-token"), "{listed}");
+    // Managers list destinations to change them, without `system:read`.
+    let (status, _) = f
+        .router
+        .call(&manager, "GET", list, serde_json::Value::Null)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(f.router.status(&manager, "DELETE", uri).await, 200);
+    assert_eq!(f.router.status(&manager, "DELETE", uri).await, 404);
+}

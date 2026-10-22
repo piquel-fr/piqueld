@@ -320,8 +320,7 @@ impl Store {
 
     /// Records a daemon-scoped `daemon_started` event whose resource is
     /// `version`, noting the previously started version when it differs.
-    /// Delivered as a `daemon_started` notification, so it must be recorded
-    /// after `configure_deliveries` for new destinations to receive it.
+    /// Delivered as a `daemon_started` notification.
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn record_daemon_started(&self, version: &str) -> Result<(), StoreError> {

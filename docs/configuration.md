@@ -106,13 +106,6 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `telemetry.endpoint` | none ([telemetry export](observability.md#telemetry-export) off) |
 | `telemetry.headers_file` | none |
 | `telemetry.containers` | `true` ([container logs and resource usage](observability.md#container-telemetry) exported with the daemon's) |
-| `notifications.enabled` | `false` |
-| `notifications.security` | `true` ([security notifications](observability.md#security-notifications); like every category, sent only when `notifications.enabled`) |
-| `notifications.daemon_started` | `true` ([daemon start notifications](observability.md#daemon-start-notifications)) |
-| other `notifications` category switches | `true` |
-| `notifications.failure_threshold_seconds` | `120` (`0..=86400`) |
-| `notifications.retry_window_seconds` | `86400` (`1..=604800`) |
-| `notifications.destinations` | `[]` |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 | `build_history.log_max_bytes` | `4194304` (4 MiB; `1..=67108864`) |
 | `build_history.log_retention_days` | `30` (`1..=3650`) |
@@ -342,8 +335,10 @@ Native clients without browser headers continue to work. The Unix socket skips
 the TCP hostname and Fetch Metadata checks; authentication and its origin checks
 still apply on every API transport.
 
-See [observability](observability.md) for notification category switches, webhook
-destinations, telemetry export, diagnostic ownership and retention semantics.
+See [observability](observability.md) for telemetry export, diagnostic
+ownership and retention semantics. [Notification destinations](observability.md#notifications)
+are managed through the API, CLI and dashboard rather than this file; a
+`[notifications]` table is rejected as unknown.
 
 ## Tailnet node
 
@@ -442,32 +437,29 @@ max_token_days = 90
 
 ## Credential files
 
-Settings that carry credentials, such as webhook `url`, also accept a `_file`
-variant (`url_file`) that reads the value from a file at startup. Setting both
-variants is an error. Surrounding whitespace, such as a trailing newline, is
-removed, and an empty file is rejected, as is anything but a regular file
-(symlinks to one are followed).
+Settings that carry credentials are only accepted as `_file` settings, which
+read the value from a file at startup. Surrounding whitespace, such as a
+trailing newline, is removed, and an empty file is rejected, as is anything but
+a regular file (symlinks to one are followed).
 Relative paths resolve against `$CREDENTIALS_DIRECTORY` and may not contain
 `.` or `..` components, so systemd
 `LoadCredential=`, agenix and sops-nix work unchanged:
 
 ```toml
-[[notifications.destinations]]
-name = "discord"
-kind = "discord"
-url_file = "discord-webhook" # $CREDENTIALS_DIRECTORY/discord-webhook
+[telemetry]
+endpoint = "https://otel.example.com:4317"
+headers_file = "otlp-headers" # $CREDENTIALS_DIRECTORY/otlp-headers
 ```
 
-`tailscale.auth_key_file` has no inline variant and follows the same path
-rules, but piqueld hands the path to Tailscale instead of reading the key, so the
+`tailscale.auth_key_file` follows the same path rules, but piqueld hands the path to Tailscale instead of reading the key, so the
 file only has to exist for the node's first login.
-`ingress.private.auth_key_file` has no inline variant either. piqueld reads it at
+piqueld reads `ingress.private.auth_key_file` at
 startup and writes it, mode 0600, to `<data_dir>/ingress/tailscale/config/auth-key`
 for the apps node's container, which only uses it for its first login.
-`ingress.tunnel.credentials_file` has no inline variant: piqueld reads it at
+piqueld reads `ingress.tunnel.credentials_file` at
 startup, checks that it is a tunnel credentials file, and writes it, mode 0600, to
 `<data_dir>/ingress/tunnel/credentials.json` for the `cloudflared` container.
-`telemetry.headers_file` has no inline variant either: piqueld reads it at
+piqueld reads `telemetry.headers_file` at
 startup and sends its `name: value` lines as gRPC headers with every
 [telemetry export](observability.md#telemetry-export).
 
@@ -498,7 +490,8 @@ Restore `secrets.key` from backup whenever possible. If it cannot be recovered,
 `piquelctl secrets recover-key --yes` discards **all stored values for every
 application on the daemon**. It refuses while the current key still works.
 Names, generations, file references and deployment history remain; discarded
-versions are marked unavailable. Docker secrets and running services are left in
+versions are marked unavailable. [Notification destinations](observability.md#notifications),
+whose URLs are encrypted with the same key, are deleted; create them again. Docker secrets and running services are left in
 place. An unusable key file is renamed to `secrets.key.retired-<ms>` rather than
 deleted, since it may match another database backup.
 

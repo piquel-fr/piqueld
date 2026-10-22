@@ -160,7 +160,8 @@ compare them later to detect that.
 ### Security notifications
 
 The `security` notification category reports changes to who can access the
-daemon, as daemon history events that each notify immediately:
+daemon, and to where its notifications go, as daemon history events that each
+notify immediately:
 
 | Event | When |
 | --- | --- |
@@ -171,6 +172,7 @@ daemon, as daemon history events that each notify immediately:
 | `access_denial_burst` | 20 requests from one address and account are refused within a minute; at most once every 10 minutes per address and account while it continues |
 | `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
 | `secret_key_recovered` | The secrets master key was recovered, discarding stored values |
+| `notification_destination_changed` | A [notification destination](#notifications) was created, changed, disabled or deleted. A changed destination receives it only when it stays the same receiver |
 
 ### Daemon start notifications
 
@@ -223,6 +225,10 @@ caller holds `events:read` on, and daemon history requires `system:read`. See th
 | `GET /api/v1/diagnostics/{id}` | Original event and details for an occurrence |
 | `GET /api/v1/system/resources` | Cached process, storage and queue measurements |
 | `GET /api/v1/analytics/deployments` | Deployment outcomes, retries, durations and failure codes |
+| `GET /api/v1/notifications/destinations` | [Notification destinations](#notifications), without URLs; `system:read` or `notifications:manage` |
+| `PUT /api/v1/notifications/destinations/{name}` | Create or replace a destination |
+| `DELETE /api/v1/notifications/destinations/{name}` | Delete a destination |
+| `POST /api/v1/notifications/destinations/{name}/test` | Send a test notification now |
 | `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
 | `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy |
 
@@ -249,8 +255,8 @@ without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
 The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation
 history. Error feedback links to the specific diagnostic where available. Views
-refresh while visible. Configuration is displayed read-only, with destination
-URLs omitted; only the file a URL was read from is shown.
+refresh while visible. Host settings are displayed read-only; credentials show
+only the file they were read from.
 
 Resource snapshots are cached for five seconds. They include process uptime,
 resident memory and CPU, DB/WAL sizes, available disk, retained event and
@@ -259,41 +265,58 @@ measurements that are unavailable are null and omitted from exported metrics, no
 zero.
 These are current samples; piqueld does not persist a resource time series.
 
-## Webhooks
+## Notifications
 
-Configuration is loaded at startup; restart after changing it. Example:
+Notifications go to destinations: webhooks stored in the database and managed
+through the API, `piquelctl notification`, or the dashboard's Notifications
+page. Changes apply at once. For example, to send deployment failures about
+`shop` to Discord, mentioning a role:
 
-```toml
-[notifications]
-enabled = true
-build_failures = true
-deployment_failures = true
-service_degradation = true
-daemon_failures = true
-recovery = true
-security = true # access changes; see "Security notifications"
-daemon_started = true # see "Daemon start notifications"
-failure_threshold_seconds = 120
-retry_window_seconds = 86400
-
-[[notifications.destinations]]
-name = "operations"
-kind = "json" # or "discord"
-url = "https://receiver.example/private-webhook"
-enabled = true
+```console
+piquelctl notification set ops --kind discord --url-file discord-url \
+  --categories deployment_failures,recovery --apps shop \
+  --message 'deployment_failures=<@&123456789012345678>'
+piquelctl notification test ops
 ```
 
-Webhook URLs are credentials. Use `url_file` instead of `url` to read one from a
-file, such as a systemd credential; see [configuration](configuration.md#credential-files).
-Destination names must be unique and 1–63 bytes long. `failure_threshold_seconds`
-accepts `0..=86400` and `retry_window_seconds` `1..=604800`.
+Each destination has a unique name, such as `ops`, a kind (`json` or
+`discord`), a URL, and chooses what it receives:
+
+- **Categories**: `build_failures`, `deployment_failures`,
+  `service_degradation`, `daemon_failures`, `recovery`, `security` (see
+  [security notifications](#security-notifications)) and `daemon_started`
+  (see [daemon start notifications](#daemon-start-notifications)). A new
+  destination receives all of them.
+- **A message per category**, of 1–1000 characters, sent with each of its
+  notifications. Discord sends it as the message text, so mentions in it, such
+  as a role's `<@&ROLE_ID>`, notify; nothing else in a notification does.
+- **Applications**: every application, including later ones, or a list, by
+  ID so renaming one keeps it selected. Daemon notifications, such as daemon
+  failures, security events and daemon starts, reach a destination whatever
+  its applications.
+- **Previews**: whether it receives notifications about previews; a new
+  destination does not.
+
+Listing destinations needs `system:read` or `notifications:manage`, and
+changing them `notifications:manage`. URLs are credentials: they are stored encrypted with
+the [secret master key](configuration.md#secret-storage) and never returned,
+and lost-key recovery deletes the destinations.
+
+Disabling a destination, removing a category, or narrowing its applications
+or previews cancels the pending deliveries affected; recoveries still follow
+the failures it was sent. Enabling it again, or adding a category, starts
+after the latest event and never replays history. A new URL or kind makes it a new
+receiver: its pending deliveries are cancelled, and it never receives the
+recovery of a failure sent before. Deleting a destination cancels its pending
+deliveries; delivery history keeps its name. A test notification is sent at
+once, outside the delivery queue and history.
 
 Build/deployment failures notify once until a successful operation clears that
 condition. Service degradation is observed at environment health level. Docker,
 Swarm and managed ingress gateway health are dependency conditions under
 `daemon_failures`; deployments failing because a dependency is unavailable do not
 notify separately. Dependency and service failures must remain continuously
-observed for the configured threshold; stale observations and process downtime do not count toward it.
+observed for two minutes; stale observations and process downtime do not count toward it.
 Internal daemon errors notify immediately, grouped by stable failure code.
 Recovery notifications apply to observed dependencies/services and successful
 operations that clear an alerted condition. Internal error groups without a
@@ -304,8 +327,8 @@ Those internal daemon groups retain one original event per failure code while
 open, even with age pruning enabled. A quiet period or restart is not treated as
 proof of recovery and does not re-arm their notifications.
 
-Recovery is paired with failure deliveries at each destination, including its
-configured URL identity. A new or changed destination never receives recovery for
+Recovery is paired with failure deliveries at each destination, as long as it
+keeps its URL and kind. A new or changed destination never receives recovery for
 a failure it was not sent. Recovery waits until all paired failure deliveries
 finish retrying and at least one was acknowledged. If none was acknowledged,
 recovery is cancelled. These relationships survive restart and protect the
@@ -316,27 +339,26 @@ receiver acknowledged that alert. Recovery deliveries remain manually retryable
 until the same condition opens again.
 
 The outbox is durable and separate from runtime work. JSON payloads contain
-`version: 1`, `instance_id`, `delivery_id`, `category`, and the source `event`.
-Discord messages include diagnostic context, are truncated to 1,900 characters,
-and disable mentions. Payloads are not signed. Every request
+`version: 1`, `instance_id`, `delivery_id`, `category`, the category's
+`message` (or null), and the source `event`; test notifications have a null
+`category`. Discord messages send the category's message as their text and
+describe the event in an embed. Payloads are not signed. Every request
 carries `Idempotency-Key: <delivery_id>`; delivery is at least once, so receivers
 should deduplicate. Retries preserve that ID through restart and manual retry.
 
 Destinations require HTTPS; HTTP is allowed only for localhost or loopback IP
 addresses. Requests time out after ten seconds and do not follow redirects. Transport
 failures, HTTP 408/429 and 5xx retry with exponential backoff, capped at one hour,
-within the configured window (24 hours by default). Integer `Retry-After` values
+for 24 hours. Integer `Retry-After` values
 are honored up to one hour. Other non-2xx responses fail permanently. Manual retry
 starts a new retry window while preserving identity, creation time and attempt
 count. Delivery history exposes safe failure summaries, never response bodies.
 Deliveries are sent one at a time, back to back while any is due. After a
-downgrade, a category this version does not know is not delivered: startup drops
-its routes, a queued delivery of it fails instead of holding up the rest, and
+downgrade, a category this version does not know is not delivered: destinations
+do not list it, a queued delivery of it fails instead of holding up the rest, and
 history leaves it out.
 
-Disabling a category/destination or changing its URL cancels pending deliveries
-at startup. Re-enabling activates new events only, without replaying historical
-failures. Deletion removes environment-owned queued deliveries; a request already
+Deletion removes environment-owned queued deliveries; a request already
 in flight cannot be unsent. Copies already delivered to external systems are
 outside piqueld's deletion policy.
 

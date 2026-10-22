@@ -9,6 +9,7 @@ mod editing;
 mod environments;
 mod error;
 mod exec;
+mod notifications;
 mod output;
 mod previews;
 mod profiles;

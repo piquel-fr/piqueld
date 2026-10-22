@@ -23,10 +23,13 @@ pub(crate) enum SecurityEvent {
     NewAddress,
     /// The secret master key was recovered, discarding stored values.
     SecretKeyRecovered,
+    /// A notification destination was created, changed or deleted, which
+    /// could silence notifications.
+    DestinationChanged,
 }
 
 impl SecurityEvent {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::AdminGranted,
         Self::PrivilegedToken,
         Self::DenialBurst,
@@ -34,6 +37,7 @@ impl SecurityEvent {
         Self::OperatorSignInIssued,
         Self::NewAddress,
         Self::SecretKeyRecovered,
+        Self::DestinationChanged,
     ];
 
     /// Event kind in daemon history.
@@ -46,6 +50,7 @@ impl SecurityEvent {
             Self::OperatorSignInIssued => "operator_sign_in_issued",
             Self::NewAddress => "credential_new_address",
             Self::SecretKeyRecovered => "secret_key_recovered",
+            Self::DestinationChanged => "notification_destination_changed",
         }
     }
 

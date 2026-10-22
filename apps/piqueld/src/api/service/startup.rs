@@ -68,13 +68,7 @@ impl ApplicationService {
         );
         // Actions left open by a previous process can never finish; close them first.
         store.interrupt_actions(None).await?;
-        store.configure_deliveries().await?;
-        // Webhooks never follow redirects, so a target cannot bounce requests elsewhere.
-        let webhook_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .context("failed to initialize webhook client")?;
+        store.restart_failure_windows().await?;
         let ingress = Arc::new(crate::ingress::Ingress::from_config(
             config,
             Arc::clone(&store),
@@ -144,7 +138,7 @@ impl ApplicationService {
                 runtime,
                 background
                     .observe_notifications(scan_interval.as_secs(), cancellation.child_token()),
-                background.deliver_notifications(webhook_client, cancellation.child_token()),
+                background.deliver_notifications(cancellation.child_token()),
                 background.sync(cancellation.child_token()),
                 background.serve_webhooks(webhook_listener, cancellation.child_token()),
                 background.export_telemetry(journaled, cancellation.child_token())

@@ -1,17 +1,25 @@
 //! Cached local measurements and bounded historical aggregates, alongside the
-//! diagnostic event history (`event`) and notification delivery (`notifications`).
+//! diagnostic event history (`event`), notification destinations
+//! (`destinations`) and delivery (`notifications`).
 mod containers;
+mod destinations;
 mod event;
 mod notifications;
+
+pub use destinations::DestinationError;
+
+/// Error recorded on a delivery cancelled because its destination was
+/// disabled, changed or deleted.
+pub(crate) const DESTINATION_CHANGED: &str = "The destination was disabled, changed or deleted";
+use destinations::DestinationRow;
 
 use super::{Store, StoreError, now_ms};
 use piqueld_core::observability::{ActionDuration, DaemonStats, DeploymentAnalytics, FailureCount};
 
 impl Store {
-    /// Configures startup-loaded observability without exposing destination secrets.
+    /// Configures startup-loaded history retention.
     #[must_use]
     pub fn with_observability(mut self, config: &crate::config::DaemonConfig) -> Self {
-        self.notifications = config.notifications.clone();
         self.daemon_event_days = config.retention.daemon_event_days;
         self.audit_days = config.retention.audit_days;
         self

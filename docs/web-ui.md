@@ -20,6 +20,10 @@ Applications, and Builds; the Observe section (Events, Errors, Analytics,
 Notifications); and the System section (Daemon status, Host settings, Accounts,
 Audit). Notifications, Daemon status and Host settings need `system:read`;
 retrying a failed notification delivery needs `system:operate`.
+Notifications lists [destinations](observability.md#notifications) and
+deliveries. With `notifications:manage` it adds, edits, tests and deletes
+destinations: their kind, URL (write-only), categories with an optional message
+each, applications and previews.
 Its footer shows daemon connectivity and the signed-in account with a sign-out
 button. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its environment's history.

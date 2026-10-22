@@ -566,6 +566,26 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::observability::NotificationDelivery>>"
     },
     {
+      "schema": "Envelope_Vec_NotificationDestination",
+      "name": "EnvelopeVecNotificationDestination",
+      "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::observability::NotificationDestination>>"
+    },
+    {
+      "schema": "Envelope_NotificationDestination",
+      "name": "EnvelopeNotificationDestination",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::NotificationDestination>"
+    },
+    {
+      "schema": "DestinationRequest",
+      "name": "DestinationRequest",
+      "rustType": "piqueld_core::observability::DestinationRequest"
+    },
+    {
+      "schema": "Envelope_DestinationTest",
+      "name": "EnvelopeDestinationTest",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::DestinationTest>"
+    },
+    {
       "schema": "EventScope",
       "name": "EventScope",
       "rustType": "piqueld_core::observability::EventScope"

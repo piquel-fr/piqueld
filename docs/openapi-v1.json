@@ -541,6 +541,35 @@
         ],
         "type": "object"
       },
+      "ApplicationSelection": {
+        "description": "The applications a destination receives notifications about. Daemon-wide\nnotifications, such as daemon failures, security events and daemon starts,\nreach every destination receiving their category.",
+        "oneOf": [
+          {
+            "description": "Every application, including ones created later.",
+            "enum": [
+              "all"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Only these applications, by ID: renaming one keeps it selected, and\ndeleting one removes it from the list.",
+            "properties": {
+              "only": {
+                "description": "Only these applications, by ID: renaming one keeps it selected, and\ndeleting one removes it from the list.",
+                "items": {
+                  "$ref": "#/components/schemas/ApplicationId"
+                },
+                "type": "array",
+                "uniqueItems": true
+              }
+            },
+            "required": [
+              "only"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ApplicationSpec": {
         "additionalProperties": false,
         "description": "User-provided application resource lists.",
@@ -1422,6 +1451,33 @@
           "interrupted"
         ],
         "type": "string"
+      },
+      "CategoryRule": {
+        "additionalProperties": false,
+        "description": "How one category is delivered to a destination.",
+        "properties": {
+          "message": {
+            "default": null,
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/NotificationMessage"
+                  }
+                ],
+                "description": "Text sent with each notification of the category. Discord sends it as\nthe message content, so mentions in it notify."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "type": "object"
       },
       "Ceremony": {
         "description": "Server-generated, browser-bound `WebAuthn` challenge.",
@@ -2553,6 +2609,92 @@
         ],
         "type": "object"
       },
+      "DestinationKind": {
+        "description": "Payload format a destination receives.",
+        "enum": [
+          "json",
+          "discord"
+        ],
+        "type": "string"
+      },
+      "DestinationName": {
+        "description": "Unique name of a notification destination, such as `ops`.",
+        "type": "string"
+      },
+      "DestinationRequest": {
+        "additionalProperties": false,
+        "description": "Creates or replaces a destination.",
+        "properties": {
+          "settings": {
+            "$ref": "#/components/schemas/DestinationSettings",
+            "description": "What it receives and how."
+          },
+          "url": {
+            "description": "Webhook URL: HTTPS, or HTTP to a loopback address. Required to create\na destination; omitted, an existing one keeps its URL. A new URL or\nkind makes it a new receiver: pending deliveries are cancelled, and\nrecoveries of failures sent before are never sent to it.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "type": "object"
+      },
+      "DestinationSettings": {
+        "additionalProperties": false,
+        "description": "What a destination receives and how. Its URL is write-only, see\n[`DestinationRequest`].",
+        "properties": {
+          "applications": {
+            "$ref": "#/components/schemas/ApplicationSelection",
+            "description": "Applications it receives notifications about."
+          },
+          "categories": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CategoryRule"
+            },
+            "description": "Categories it receives. Adding one never replays earlier events.",
+            "type": "object"
+          },
+          "enabled": {
+            "description": "Whether it receives notifications. Disabling cancels pending\ndeliveries; enabling again never replays what happened meanwhile.",
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DestinationKind",
+            "description": "Payload format."
+          },
+          "previews": {
+            "description": "Whether it receives notifications about previews.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "enabled",
+          "categories",
+          "applications",
+          "previews"
+        ],
+        "type": "object"
+      },
+      "DestinationTest": {
+        "description": "Outcome of a test notification.",
+        "properties": {
+          "delivered": {
+            "description": "Whether the receiver acknowledged it with a 2xx status.",
+            "type": "boolean"
+          },
+          "error": {
+            "description": "Safe failure summary, such as the receiver's HTTP status, when it was not.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivered"
+        ],
+        "type": "object"
+      },
       "DeviceApprove": {
         "description": "Browser confirmation of the code shown by the initiating CLI.",
         "properties": {
@@ -3613,6 +3755,33 @@
         ],
         "type": "object"
       },
+      "Envelope_DestinationTest": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Outcome of a test notification.",
+            "properties": {
+              "delivered": {
+                "description": "Whether the receiver acknowledged it with a 2xx status.",
+                "type": "boolean"
+              },
+              "error": {
+                "description": "Safe failure summary, such as the receiver's HTTP status, when it was not.",
+                "nullable": true,
+                "type": "string"
+              }
+            },
+            "required": [
+              "delivered"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_DnsStatus": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -4138,6 +4307,45 @@
             },
             "required": [
               "groups"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_NotificationDestination": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "A notification destination; its URL is never returned.",
+            "properties": {
+              "created_at_ms": {
+                "description": "Creation timestamp.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "name": {
+                "$ref": "#/components/schemas/DestinationName",
+                "description": "Unique name."
+              },
+              "settings": {
+                "$ref": "#/components/schemas/DestinationSettings",
+                "description": "What it receives and how."
+              },
+              "updated_at_ms": {
+                "description": "Last change timestamp.",
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "name",
+              "settings",
+              "created_at_ms",
+              "updated_at_ms"
             ],
             "type": "object"
           }
@@ -4924,7 +5132,7 @@
                       "type": "integer"
                     },
                     "destination": {
-                      "description": "Configured destination name.",
+                      "description": "Name of the destination it was sent to, kept after the destination is deleted.",
                       "type": "string"
                     },
                     "event_id": {
@@ -5518,6 +5726,11 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "deleted_destinations": {
+                "description": "Notification destinations deleted, since their URLs were encrypted.",
+                "format": "int64",
+                "type": "integer"
+              },
               "discarded_versions": {
                 "description": "Stored and generated versions discarded; already unavailable versions\nare excluded.",
                 "format": "int64",
@@ -5719,6 +5932,48 @@
               "required": [
                 "preview",
                 "operation"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_Vec_NotificationDestination": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "items": {
+              "description": "A notification destination; its URL is never returned.",
+              "properties": {
+                "created_at_ms": {
+                  "description": "Creation timestamp.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "name": {
+                  "$ref": "#/components/schemas/DestinationName",
+                  "description": "Unique name."
+                },
+                "settings": {
+                  "$ref": "#/components/schemas/DestinationSettings",
+                  "description": "What it receives and how."
+                },
+                "updated_at_ms": {
+                  "description": "Last change timestamp.",
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "settings",
+                "created_at_ms",
+                "updated_at_ms"
               ],
               "type": "object"
             },
@@ -8136,7 +8391,7 @@
         "type": "object"
       },
       "NotificationCategory": {
-        "description": "Global notification categories supported by daemon configuration.",
+        "description": "What a notification reports. Each destination chooses the categories it receives.",
         "enum": [
           "build_failures",
           "deployment_failures",
@@ -8166,7 +8421,7 @@
             "type": "integer"
           },
           "destination": {
-            "description": "Configured destination name.",
+            "description": "Name of the destination it was sent to, kept after the destination is deleted.",
             "type": "string"
           },
           "event_id": {
@@ -8210,6 +8465,40 @@
           "updated_at_ms"
         ],
         "type": "object"
+      },
+      "NotificationDestination": {
+        "description": "A notification destination; its URL is never returned.",
+        "properties": {
+          "created_at_ms": {
+            "description": "Creation timestamp.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "$ref": "#/components/schemas/DestinationName",
+            "description": "Unique name."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/DestinationSettings",
+            "description": "What it receives and how."
+          },
+          "updated_at_ms": {
+            "description": "Last change timestamp.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "settings",
+          "created_at_ms",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      },
+      "NotificationMessage": {
+        "description": "Text sent with every notification of one category, such as a Discord\nrole mention (`<@&ROLE_ID>`): 1–1000 characters.",
+        "type": "string"
       },
       "ObservedApplicationView": {
         "description": "Bounded observed runtime state for one environment.",
@@ -8517,7 +8806,8 @@
           "system:operate",
           "accounts:manage",
           "audit:read",
-          "telemetry:grant"
+          "telemetry:grant",
+          "notifications:manage"
         ],
         "type": "string"
       },
@@ -10275,6 +10565,11 @@
           },
           "affected_secrets": {
             "description": "Logical secrets, stored and generated, whose values were discarded.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "deleted_destinations": {
+            "description": "Notification destinations deleted, since their URLs were encrypted.",
             "format": "int64",
             "type": "integer"
           },
@@ -28949,6 +29244,274 @@
         "x-piqueld-access": "system:operate"
       }
     },
+    "/api/v1/notifications/destinations": {
+      "get": {
+        "description": "Needs `system:read` or `notifications:manage`. URLs are write-only and\nnever returned.",
+        "operationId": "notificationDestinations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Vec_NotificationDestination"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists notification destinations by name.",
+        "x-piqueld-access": "authenticated"
+      }
+    },
+    "/api/v1/notifications/destinations/{name}": {
+      "delete": {
+        "description": "Cancels its pending deliveries; delivery history keeps its name.",
+        "operationId": "deleteNotificationDestination",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_bool"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Deletes a notification destination.",
+        "x-piqueld-access": "notifications:manage"
+      },
+      "put": {
+        "description": "Creating one requires `url`; omitted, an existing destination keeps its\nURL. A new URL or kind makes it a new receiver: its pending deliveries are\ncancelled, and recoveries of failures it was sent before are not sent.\nDisabling it or removing a category cancels the pending deliveries\naffected; enabling it or adding a category never replays earlier events.\nInvalid URLs fail with 400 `destination_url_invalid`, a missing one with\n`destination_url_required`, and unknown applications with\n`destination_application_unknown`.",
+        "operationId": "putNotificationDestination",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_NotificationDestination"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Creates or replaces a notification destination.",
+        "x-piqueld-access": "notifications:manage"
+      }
+    },
+    "/api/v1/notifications/destinations/{name}/test": {
+      "post": {
+        "description": "Sends it at once, outside the delivery queue and history, and reports\nwhether the receiver acknowledged it.",
+        "operationId": "testNotificationDestination",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_DestinationTest"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Sends a test notification to a destination.",
+        "x-piqueld-access": "notifications:manage"
+      }
+    },
     "/api/v1/openapi.json": {
       "get": {
         "operationId": "openApiDocument",
@@ -29476,7 +30039,7 @@
     },
     "/api/v1/system/secrets/recover-key": {
       "post": {
-        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones); metadata and running services are kept. Only a lost key\nis recovered: while something is encrypted (the key verifier, a value or a\nwebhook secret), one that is missing, does not hold 32 bytes, or decrypts\nnone of it. Fails with 409 while the key decrypts the verifier, when there\nis no verifier but it decrypts a value or webhook secret, or when nothing\nis encrypted and the key file is missing or loads. When nothing is\nencrypted but the key file does not hold 32 bytes, moves it aside and\nsucceeds with nothing discarded. Fails with 503 `secret_storage_unavailable`, discarding\nnothing, when it decrypts a value or webhook secret but not a corrupt\nverifier, or can't be read for another reason, such as an I/O error or a\nkey file that is not private.\nThe next value write generates a new key.",
+        "description": "Discards every application's stored secret values, every environment's\ngenerated secret values, and the repository webhook secrets (applications\ngenerate new ones), and deletes the notification destinations, whose URLs\nit encrypts; metadata and running services are kept. Only a lost key\nis recovered: while something is encrypted (the key verifier, a value or a\nwebhook secret), one that is missing, does not hold 32 bytes, or decrypts\nnone of it. Fails with 409 while the key decrypts the verifier, when there\nis no verifier but it decrypts a value or webhook secret, or when nothing\nis encrypted and the key file is missing or loads. When nothing is\nencrypted but the key file does not hold 32 bytes, moves it aside and\nsucceeds with nothing discarded. Fails with 503 `secret_storage_unavailable`, discarding\nnothing, when it decrypts a value or webhook secret but not a corrupt\nverifier, or can't be read for another reason, such as an I/O error or a\nkey file that is not private.\nThe next value write generates a new key.",
         "operationId": "recoverSecretKey",
         "responses": {
           "200": {

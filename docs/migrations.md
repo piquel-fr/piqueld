@@ -260,6 +260,16 @@ as with the application, the column is cleared. `deployments.origin_json`
 records where each deployment came from, and every existing deployment becomes
 `{"type":"build"}`. Nothing is redeployed.
 
+`0029_notification_destinations.sql` stores [notification destinations](observability.md#notifications)
+in the database, managed through the API instead of the daemon configuration:
+each destination's URL, encrypted with the secret master key, its categories
+with their messages and activation watermarks, and its applications. Deliveries
+reference their destination by ID, replacing the configuration fingerprint, and
+the per-category routes table is dropped. Destinations configured in
+`[notifications]` are not imported, and pending deliveries to them are
+cancelled; remove that table from the configuration, which now rejects it, and
+create the destinations again.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

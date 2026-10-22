@@ -1,10 +1,11 @@
 //! Behavioral tests for durable diagnostics, deletion, crash recovery and delivery policies.
 use crate::api::{Mutation, MutationResponse};
-use crate::config::{DaemonConfig, WebhookDestination, WebhookKind};
+use crate::config::DaemonConfig;
 use crate::store::testing::template;
 use crate::store::*;
 use piqueld_core::observability::{
-    DeliveryState, Diagnostic, EventFilter, EventScope, NotificationCategory,
+    ApplicationSelection, DeliveryState, DestinationKind, DestinationName, DestinationRequest,
+    DestinationSettings, Diagnostic, EventFilter, EventScope, NotificationCategory,
 };
 
 async fn application(store: &Store) -> Operation {
@@ -17,16 +18,20 @@ async fn named_application(store: &Store, name: &str) -> Operation {
     store.mark_running(&operation_id).await;
     store.operation(&operation_id).await.unwrap()
 }
-fn notifications() -> DaemonConfig {
-    let mut config = DaemonConfig::default();
-    config.notifications.enabled = true;
-    config.notifications.destinations.push(WebhookDestination {
-        name: "test".into(),
-        url: "https://example.com/private-token".into(),
-        enabled: true,
-        kind: WebhookKind::Json,
-    });
-    config
+/// Settings receiving every application, preview and category, except
+/// security events, which destination changes raise.
+fn settings() -> DestinationSettings {
+    let mut settings = DestinationSettings {
+        previews: true,
+        ..DestinationSettings::new(DestinationKind::Json)
+    };
+    settings.categories.remove(&NotificationCategory::Security);
+    settings
+}
+/// Adds the destination `test` with [`settings`].
+async fn notify(store: &Store) {
+    let url = "https://example.com/private-token";
+    store.add_destination("test", url, settings()).await;
 }
 #[tokio::test]
 async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_deletion() {
@@ -128,9 +133,8 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
 async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");
-    let config = notifications();
-    let store = Store::open(path).await.unwrap().with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(path).await.unwrap();
+    notify(&store).await;
     let mut op = application(&store).await;
     for _ in 0..2 {
         store
@@ -196,12 +200,8 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
 async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
     for failed_before_close in [false, true] {
         let temp = tempfile::tempdir().unwrap();
-        let config = notifications();
-        let store = Store::open(temp.path().join("db"))
-            .await
-            .unwrap()
-            .with_observability(&config);
-        store.configure_deliveries().await.unwrap();
+        let store = Store::open(temp.path().join("db")).await.unwrap();
+        notify(&store).await;
         let op = application(&store).await;
         store
             .transition_operation(
@@ -268,12 +268,8 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
 #[tokio::test]
 async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
     let temp = tempfile::tempdir().unwrap();
-    let config = notifications();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    notify(&store).await;
     let op = application(&store).await;
     let rerun = async |to: OperationState, error: Option<(&str, &str)>| {
         store
@@ -329,12 +325,8 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
 #[tokio::test]
 async fn open_daemon_incidents_remain_manually_retryable() {
     let temp = tempfile::tempdir().unwrap();
-    let config = notifications();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    notify(&store).await;
     let diagnostic = Diagnostic::new(
         new_id("diagnostic"),
         piqueld_core::observability::DiagnosticCode::InternalError,
@@ -362,26 +354,8 @@ async fn open_daemon_incidents_remain_manually_retryable() {
 /// As after a downgrade across a category a newer version added.
 #[tokio::test]
 async fn an_undeliverable_delivery_does_not_block_the_next() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&notifications());
-    sqlx::query(
-        "INSERT INTO notification_routes(category,destination,fingerprint,after_event_id) \
-         VALUES('retired','test','retired',0)",
-    )
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    // Startup drops the route of an unknown category instead of failing.
-    store.configure_deliveries().await.unwrap();
-    let routes: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM notification_routes WHERE category='retired'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
-    assert_eq!(routes, 0);
+    let (_temp, store) = Store::temporary().await;
+    notify(&store).await;
     for code in [
         piqueld_core::observability::DiagnosticCode::InternalError,
         piqueld_core::observability::DiagnosticCode::DnsRecordsFailed,
@@ -431,17 +405,24 @@ async fn an_undeliverable_delivery_does_not_block_the_next() {
         Err(StoreError::InvalidInput)
     ));
 }
-#[tokio::test]
-async fn disabling_cancels_pending_and_reenabling_never_replays() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("db");
-    let mut config = notifications();
-    let store = Store::open(&path)
+/// Replaces the settings of the destination `test`, keeping its URL unless
+/// `url` is given.
+async fn put(store: &Store, settings: &DestinationSettings, url: Option<&str>) {
+    let request = DestinationRequest {
+        settings: settings.clone(),
+        url: url.map(Into::into),
+    };
+    store
+        .put_notification_destination(
+            Actor::Daemon,
+            &DestinationName::parse("test").unwrap(),
+            request,
+        )
         .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
-    let op = application(&store).await;
+        .unwrap();
+}
+/// Fails `op`'s deployment and processes the failure's notifications.
+async fn fail(store: &Store, op: &Operation) {
     store
         .transition_operation(
             &op.id,
@@ -452,42 +433,149 @@ async fn disabling_cancels_pending_and_reenabling_never_replays() {
         .await
         .unwrap();
     store.process_notifications().await.unwrap();
-    drop(store);
-    config.notifications.enabled = false;
-    let store = Store::open(&path)
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+}
+#[tokio::test]
+async fn disabling_cancels_pending_and_reenabling_never_replays() {
+    let (_temp, store) = Store::temporary().await;
+    notify(&store).await;
+    let op = application(&store).await;
+    fail(&store, &op).await;
+    let mut settings = settings();
+    settings.enabled = false;
+    put(&store, &settings, None).await;
     assert_eq!(
         store.deliveries(None, 100).await.unwrap().items[0].state,
         DeliveryState::Cancelled
     );
-    drop(store);
-    config.notifications.enabled = true;
-    let store = Store::open(&path)
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    settings.enabled = true;
+    put(&store, &settings, None).await;
     store.process_notifications().await.unwrap();
     assert!(store.claim_delivery().await.unwrap().is_none());
-    assert!(!format!("{config:?}").contains("private-token"));
+}
+/// A new URL makes the destination a new receiver, which is never sent the
+/// recovery of a failure the old one received.
+#[tokio::test]
+async fn new_urls_receive_no_recovery_of_earlier_failures() {
+    let (_temp, store) = Store::temporary().await;
+    notify(&store).await;
+    let op = application(&store).await;
+    fail(&store, &op).await;
+    let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(&failure.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    let settings = settings();
+    put(&store, &settings, Some("https://example.com/private-token")).await;
+    store.process_notifications().await.unwrap();
     assert!(
-        !serde_json::to_string(&config.view())
-            .unwrap()
-            .contains("private-token")
+        store.claim_delivery().await.unwrap().is_none(),
+        "unchanged URL"
+    );
+    put(&store, &settings, Some("https://example.com/new-token")).await;
+    store
+        .retry_operation(&store.operation(&op.id).await.unwrap())
+        .await
+        .unwrap();
+    store.mark_running(&op.id).await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    let history = store.deliveries(None, 100).await.unwrap().items;
+    assert!(
+        history
+            .iter()
+            .all(|d| d.category != NotificationCategory::Recovery)
+    );
+}
+/// Enabling a destination again keeps the failures it was sent, so their
+/// recovery still reaches it.
+#[tokio::test]
+async fn reenabled_destinations_still_receive_recoveries() {
+    let (_temp, store) = Store::temporary().await;
+    notify(&store).await;
+    let op = application(&store).await;
+    fail(&store, &op).await;
+    let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
+    store
+        .complete_delivery(&failure.id, DeliveryState::Delivered, None, 0)
+        .await
+        .unwrap();
+    let mut settings = settings();
+    settings.enabled = false;
+    put(&store, &settings, None).await;
+    settings.enabled = true;
+    put(&store, &settings, None).await;
+    store
+        .retry_operation(&store.operation(&op.id).await.unwrap())
+        .await
+        .unwrap();
+    store.mark_running(&op.id).await;
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+    let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
+    assert_eq!(recovery.category, NotificationCategory::Recovery);
+}
+/// Destinations receive notifications about their applications, previews
+/// only when they ask, and daemon notifications whatever their applications.
+#[tokio::test]
+async fn destinations_receive_their_applications_and_daemon_notifications() {
+    let (_temp, store) = Store::temporary().await;
+    notify(&store).await;
+    let watched = named_application(&store, "watched").await;
+    let other = named_application(&store, "other").await;
+    let mut settings = settings();
+    settings.previews = false;
+    settings.applications = ApplicationSelection::Only(
+        [ApplicationId::parse(watched.environment_id.as_str()).unwrap()].into(),
+    );
+    fail(&store, &other).await;
+    // Narrowing the applications cancels what is pending about the others.
+    put(&store, &settings, None).await;
+    let cancelled = store.deliveries(None, 100).await.unwrap().items.remove(0);
+    assert_eq!(cancelled.state, DeliveryState::Cancelled);
+    assert!(store.claim_delivery().await.unwrap().is_none());
+    fail(&store, &watched).await;
+    store.record_daemon_started("0.1.0").await.unwrap();
+    store.process_notifications().await.unwrap();
+    let mut categories = Vec::new();
+    while let Some((delivery, _)) = store.claim_delivery().await.unwrap() {
+        categories.push(delivery.category);
+        store
+            .complete_delivery(&delivery.id, DeliveryState::Delivered, None, 0)
+            .await
+            .unwrap();
+    }
+    categories.sort();
+    assert_eq!(
+        categories,
+        [
+            NotificationCategory::DeploymentFailures,
+            NotificationCategory::DaemonStarted
+        ]
     );
 }
 #[tokio::test]
 async fn sustained_observation_requires_continuity_and_emits_one_recovery() {
     let temp = tempfile::tempdir().unwrap();
-    let config = notifications();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    notify(&store).await;
     for timestamp in [1000, 31_000, 61_000, 91_000] {
         store
             .observe_condition("docker_unavailable", None, true, timestamp, 45_000)
@@ -518,13 +606,13 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
     for daemon in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("db");
-        let mut config = notifications();
+        let mut config = DaemonConfig::default();
         config.retention.daemon_event_days = 1;
         let store = Store::open(&path)
             .await
             .unwrap()
             .with_observability(&config);
-        store.configure_deliveries().await.unwrap();
+        notify(&store).await;
         let op = application(&store).await;
         let application = (!daemon).then_some(op.environment_id.as_str());
         let key = application.unwrap_or("docker_unavailable");
@@ -557,7 +645,7 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
             .await
             .unwrap()
             .with_observability(&config);
-        store.configure_deliveries().await.unwrap();
+        store.restart_failure_windows().await.unwrap();
         store
             .observe_condition(key, application, false, started + 150_000, 45_000)
             .await
@@ -652,15 +740,10 @@ async fn pruning_marks_stream_gaps_and_analytics_coverage() {
 async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");
-    let mut config = notifications();
-    let mut second = config.notifications.destinations[0].clone();
-    second.name = "second".into();
-    config.notifications.destinations.push(second);
-    let store = Store::open(&path)
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(&path).await.unwrap();
+    notify(&store).await;
+    let url = "https://example.com/second";
+    store.add_destination("second", url, settings()).await;
     let op = application(&store).await;
     store
         .transition_operation(
@@ -689,15 +772,12 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
         .unwrap();
     drop(store);
 
-    // A newly enabled destination did not receive the failure and must not receive recovery.
-    let mut added = config.notifications.destinations[0].clone();
-    added.name = "new-destination".into();
-    config.notifications.destinations.push(added);
-    let store = Store::open(&path)
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    // A new destination did not receive the failure and must not receive recovery.
+    let store = Store::open(&path).await.unwrap();
+    let url = "https://example.com/new";
+    store
+        .add_destination("new-destination", url, settings())
+        .await;
     store
         .retry_operation(&store.operation(&op.id).await.unwrap())
         .await
@@ -724,11 +804,8 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
     assert_eq!(store.deliveries(None, 100).await.unwrap().items.len(), 4);
     drop(store);
 
-    let store = Store::open(&path)
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(&path).await.unwrap();
+    store.restart_failure_windows().await.unwrap();
     assert!(store.claim_delivery().await.unwrap().is_none());
     // The delayed failure's acknowledgement makes only its own recovery eligible.
     store
@@ -746,12 +823,8 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
 #[tokio::test]
 async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_due() {
     let temp = tempfile::tempdir().unwrap();
-    let config = notifications();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    notify(&store).await;
     let op = application(&store).await;
     store
         .transition_operation(
@@ -819,12 +892,8 @@ async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_du
 #[tokio::test]
 async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destination() {
     let temp = tempfile::tempdir().unwrap();
-    let config = notifications();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    notify(&store).await;
     let op = application(&store).await;
     for code in ["git_build_failed", "service_update_failed"] {
         store
@@ -1015,13 +1084,10 @@ fn refused(peer: &str) -> NewAuditEvent {
 /// security deliveries can be retried.
 #[tokio::test]
 async fn refusal_bursts_and_new_addresses_notify_as_security() {
-    let temp = tempfile::tempdir().unwrap();
-    let config = notifications();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&config);
-    store.configure_deliveries().await.unwrap();
+    let (_temp, store) = Store::temporary().await;
+    let url = "https://example.com/private-token";
+    let settings = DestinationSettings::new(DestinationKind::Json);
+    store.add_destination("test", url, settings).await;
     // A sustained burst alerts once per cooldown, then again once it passes.
     for _ in 0..25 {
         store.record_audit(&refused("203.0.113.9")).await.unwrap();
@@ -1091,11 +1157,8 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
 #[tokio::test]
 async fn daemon_starts_notify_with_version_changes() {
     let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_observability(&notifications());
-    store.configure_deliveries().await.unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    notify(&store).await;
     for version in ["0.1.0", "0.1.0", "0.2.0"] {
         store.record_daemon_started(version).await.unwrap();
     }

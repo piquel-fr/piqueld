@@ -707,7 +707,7 @@ prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its environment.
 
 See [observability](observability.md) for diagnostic history, daemon statistics, analytics, telemetry
-export and webhook delivery configuration.
+export, and [notification destinations](observability.md#notifications) and their deliveries.
 
 Manually set secrets live in one store per application; generated secrets
 belong to their environment. Secret endpoints expose metadata only:
@@ -786,8 +786,8 @@ the quota remains readable and deployable; new writes require freeing space.
 `POST /api/v1/system/secrets/recover-key` recovers from a lost master key by
 discarding stored and generated values for **all applications and
 environments**. A key is lost, and recovered, only when something is
-encrypted (the database's key verifier, a stored or generated value, or a
-webhook secret) and `secrets.key` is missing, does not hold exactly 32 bytes,
+encrypted (the database's key verifier, a stored or generated value, a
+webhook secret, or a notification destination's URL) and `secrets.key` is missing, does not hold exactly 32 bytes,
 or decrypts none of it. It returns 409 `secret_key_usable` while the key
 decrypts the verifier, when there is no verifier but the key decrypts a
 stored value or webhook secret, or when nothing is encrypted and the key file
@@ -801,12 +801,13 @@ error or a key file that is not private to the daemon user (fix the host and
 retry the request that failed). Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
 preserved. Every application's [webhook secret](ingress.md#push-webhooks) is deleted
-too; generate a new one. Supplying replacement stored values creates new versions, and an
+too; generate a new one. So is every [notification destination](observability.md#notifications);
+create them again. Supplying replacement stored values creates new versions, and an
 explicit new deployment is required to adopt them; that deployment also generates
 new values for discarded generated secrets it mounts. Deployments that need
 discarded stored values fail with `secret_unavailable` and the logical names. The response contains
-`affected_environments`, `affected_applications`, `affected_secrets` and
-`discarded_versions`; no key or
+`affected_environments`, `affected_applications`, `affected_secrets`,
+`discarded_versions` and `deleted_destinations`; no key or
 secret value is returned. Repeating the request after a lost response returns
 `secret_key_usable`, because no stored value then needs the old key; it never
 creates a key.

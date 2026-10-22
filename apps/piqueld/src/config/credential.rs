@@ -1,6 +1,6 @@
-//! Secret-bearing settings, given inline or read from a credential file.
+//! Secret-bearing settings, read from credential files given as `key_file`.
 //!
-//! Every such setting `key` also accepts `key_file`. Relative file paths resolve
+//! Relative file paths resolve
 //! against `$CREDENTIALS_DIRECTORY`, so systemd `LoadCredential=` works
 //! unchanged, and cannot leave it. Files are read once while the configuration
 //! loads, except during a [`Resolution::Structural`] check, and must be regular
@@ -130,26 +130,7 @@ impl std::fmt::Display for CredentialFile {
 }
 
 impl Credential {
-    /// Resolves the `key`/`key_file` pair of one configuration entry.
-    ///
-    /// # Errors
-    ///
-    /// Exactly one variant must be set, and a file must be a readable, non-empty regular file.
-    pub(super) fn resolve(
-        key: &'static str,
-        inline: Option<String>,
-        file: Option<CredentialFile>,
-    ) -> Result<Self, CredentialError> {
-        match (inline, file) {
-            (Some(value), None) => Ok(Self::from(value)),
-            (None, Some(file)) => Self::read(key, file),
-            (Some(_), Some(_)) => Err(CredentialError::Conflict { key }),
-            (None, None) => Err(CredentialError::Missing { key }),
-        }
-    }
-
-    /// Reads a credential file, for settings accepted only as `key_file`.
-    /// Surrounding whitespace, such as a trailing newline, is removed. A
+    /// Reads the credential file of the `key_file` setting. Surrounding whitespace, such as a trailing newline, is removed. A
     /// structural check leaves the file unread.
     ///
     /// # Errors
@@ -230,18 +211,6 @@ impl std::fmt::Debug for Credential {
 /// Serde only keeps the rendered message, so read failures include their cause.
 #[derive(Debug, Error)]
 pub enum CredentialError {
-    /// Both variants were set.
-    #[error("set only one of `{key}` and `{key}_file`")]
-    Conflict {
-        /// Inline setting name.
-        key: &'static str,
-    },
-    /// Neither variant was set.
-    #[error("`{key}` or `{key}_file` is required")]
-    Missing {
-        /// Inline setting name.
-        key: &'static str,
-    },
     /// A relative path was given outside a systemd credential context.
     #[error("relative credential file {} requires $CREDENTIALS_DIRECTORY", path.display())]
     NoDirectory {
@@ -261,7 +230,7 @@ pub enum CredentialError {
     /// The file could not be read.
     #[error("could not read `{key}_file` {}: {error}", path.display())]
     Read {
-        /// Inline setting name.
+        /// Setting name, without `_file`.
         key: &'static str,
         /// Resolved path.
         path: PathBuf,
@@ -271,7 +240,7 @@ pub enum CredentialError {
     /// The file contained only whitespace.
     #[error("`{key}_file` {} is empty", path.display())]
     Empty {
-        /// Inline setting name.
+        /// Setting name, without `_file`.
         key: &'static str,
         /// Resolved path.
         path: PathBuf,
@@ -326,20 +295,14 @@ mod tests {
     }
 
     #[test]
-    fn exactly_one_non_empty_variant_is_required() {
+    fn unreadable_files_are_refused_without_their_contents() {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), " \n").unwrap();
-        for (inline, path) in [
-            (Some("secret".to_owned()), Some(file.path().to_path_buf())),
-            (None, None),
-            (None, Some(file.path().to_path_buf())),
-            (None, Some(file.path().join("missing"))),
-        ] {
-            let path = path.map(|path| CredentialFile::resolve(path, None).unwrap());
-            let error = Credential::resolve("url", inline, path).unwrap_err();
-            assert!(!error.to_string().contains("secret"), "{error}");
+        for path in [file.path().to_path_buf(), file.path().join("missing")] {
+            let file = CredentialFile::resolve(path, None).unwrap();
+            assert!(Credential::read("headers", file).is_err());
         }
-        let inline = Credential::resolve("url", Some("secret".into()), None).unwrap();
+        let inline = Credential::from("secret");
         assert_eq!(format!("{inline} {inline:?}"), "inline Credential(inline)");
     }
 }

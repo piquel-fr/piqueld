@@ -57,7 +57,7 @@ async fn sqlx_applies_migrations_and_preserves_instance_identity() {
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     )
     .await;
-    assert_eq!(table_count, 50);
+    assert_eq!(table_count, 52);
     let schema_version = scalar(&mut connection, "PRAGMA user_version").await;
     assert_eq!(schema_version, SCHEMA_VERSION.cast_signed());
 }
