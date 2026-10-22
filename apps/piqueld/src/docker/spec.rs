@@ -9,6 +9,11 @@ use super::{
 use piqueld_core::manifest::{HealthExecution, RolloutOrder, RolloutPolicy};
 use piqueld_core::resource::TELEMETRY_TARGET;
 
+/// Opens a Go template action in the fields Swarm expands.
+const SWARM_OPEN: &str = "{{";
+/// A Go template action that prints [`SWARM_OPEN`].
+const SWARM_ESCAPED_OPEN: &str = r#"{{"{{"}}"#;
+
 impl BollardDocker {
     /// Builds the service specification pinned to `node_id`, then resolves
     /// the inputs Docker assigns: each pinned secret becomes its immutable
@@ -121,7 +126,7 @@ impl BollardDocker {
                     desired
                         .environment
                         .iter()
-                        .map(|(key, value)| format!("{key}={value}"))
+                        .map(|(key, value)| format!("{key}={}", Self::swarm_literal(value)))
                         .collect(),
                 ),
                 mounts: Some(
@@ -129,7 +134,7 @@ impl BollardDocker {
                         .mounts
                         .iter()
                         .map(|mount| Mount {
-                            target: Some(mount.target.clone()),
+                            target: Some(Self::swarm_literal(&mount.target)),
                             source: Some(mount.volume_name.to_string()),
                             typ: Some(MountTypeEnum::VOLUME),
                             read_only: Some(mount.read_only),
@@ -249,6 +254,29 @@ impl BollardDocker {
     /// Converts whole seconds into Docker's nanosecond durations.
     pub(super) fn seconds_to_nanoseconds(seconds: u32) -> i64 {
         i64::from(seconds) * NANOSECONDS_PER_SECOND
+    }
+
+    /// `value` written so Swarm passes it on as is. Swarm expands Go
+    /// templates in environment values and mount fields when it creates each
+    /// task, so every `{{` is written as the action [`SWARM_ESCAPED_OPEN`],
+    /// which prints `{{`. [`Self::swarm_text`] reads it back.
+    ///
+    /// ```text
+    /// {{.Service.Name}} -> {{"{{"}}.Service.Name}}
+    /// ```
+    pub(super) fn swarm_literal(value: &str) -> String {
+        value.replace(SWARM_OPEN, SWARM_ESCAPED_OPEN)
+    }
+
+    /// The value [`Self::swarm_literal`] wrote as `text`.
+    pub(super) fn swarm_text(text: &str) -> String {
+        text.replace(SWARM_ESCAPED_OPEN, SWARM_OPEN)
+    }
+
+    /// Whether [`Self::swarm_literal`] wrote `text`. Other text, such as a
+    /// raw `{{` written before values were escaped, is expanded by Swarm.
+    pub(super) fn is_swarm_literal(text: &str) -> bool {
+        Self::swarm_literal(&Self::swarm_text(text)) == text
     }
 
     /// Maps an empty list to `None` so the image's defaults stay in effect.
