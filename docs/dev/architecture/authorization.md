@@ -143,8 +143,14 @@ credentials and invitations. A limited credential without `audit:read` reads
 only its own requests in the audit trail, rather than its account's.
 
 Deleting an application removes the grants on it once the application row is
-finally deleted, after its last environment. Limited credentials, tokens and
-CLI logins alike, left without any grant are then revoked.
+finally deleted, after its last environment.
+
+Limited credentials, tokens and CLI logins alike, left without any grant
+expire a minute later, or earlier if they already would. Until then they can
+still reach their own account, but no application.
+
+The minute lets a `piquelctl app delete` run with such a token see its
+deletion finish (404) rather than lose its session (401).
 
 ## Creator grants
 
