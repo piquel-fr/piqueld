@@ -77,7 +77,10 @@ Image references reject URL schemes, credentials, malformed tags, and malformed
 digests; registry hostnames are validated case-insensitively and canonicalized
 to lowercase (IPv6 literal hosts are not accepted). Mount targets are normalized
 absolute paths below `/`; environment names and runtime strings reject invalid
-control data. `PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
+control data. Environment values and mount targets reach the container as
+written once [variables](#variables) are rendered. Docker Swarm's own `{{ }}`
+templates, such as `{{.Service.Name}}`, are not expanded.
+`PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
 routed services (see [managed ingress](../guides/ingress.md#client-addresses)).
 Health-check paths are absolute, health-check timeouts cannot exceed their
 interval, and resource limits must specify CPU, memory, or both.

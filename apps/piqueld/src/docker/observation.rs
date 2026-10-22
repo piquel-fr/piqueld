@@ -184,6 +184,7 @@ impl BollardDocker {
     }
 
     /// Parses `KEY=value` environment entries, dropping entries without `=`.
+    /// Values read back as piqueld wrote them, before Swarm escaping.
     pub(super) fn observed_environment(
         container: &TaskSpecContainerSpec,
     ) -> BTreeMap<String, String> {
@@ -195,7 +196,7 @@ impl BollardDocker {
             .filter_map(|entry| {
                 entry
                     .split_once('=')
-                    .map(|(key, value)| (key.into(), value.into()))
+                    .map(|(key, value)| (key.into(), Self::swarm_text(value)))
             })
             .collect()
     }
@@ -212,7 +213,7 @@ impl BollardDocker {
             .filter_map(|mount| {
                 Some(ObservedMount {
                     volume_name: mount.source?,
-                    target: mount.target?,
+                    target: Self::swarm_text(&mount.target?),
                     read_only: mount.read_only.unwrap_or(false),
                 })
             })

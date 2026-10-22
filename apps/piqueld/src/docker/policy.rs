@@ -182,7 +182,8 @@ impl ServiceRuntimePolicy {
     }
 
     /// Requires every mount to be a plain named volume without extra
-    /// options, except one writable bind mount at the telemetry target.
+    /// options, except one writable bind mount at the telemetry target, with
+    /// a target Swarm passes on as written.
     fn mounts(container: &TaskSpecContainerSpec) -> bool {
         container.mounts.as_ref().is_none_or(|mounts| {
             let telemetry = |mount: &&bollard::models::Mount| {
@@ -194,7 +195,9 @@ impl ServiceRuntimePolicy {
                 && mounts.iter().all(|mount| {
                     (mount.typ == Some(MountTypeEnum::VOLUME) || telemetry(&mount))
                         && mount.source.as_ref().is_some_and(|value| !value.is_empty())
-                        && mount.target.as_ref().is_some_and(|value| !value.is_empty())
+                        && mount.target.as_ref().is_some_and(|value| {
+                            !value.is_empty() && BollardDocker::is_swarm_literal(value)
+                        })
                         && mount.consistency.as_deref().is_none_or(str::is_empty)
                         && mount.bind_options.is_none()
                         && mount.volume_options.is_none()
@@ -204,14 +207,15 @@ impl ServiceRuntimePolicy {
         })
     }
 
-    /// Requires well-formed `KEY=value` entries with unique, non-empty keys.
+    /// Requires well-formed `KEY=value` entries with unique, non-empty keys,
+    /// whose values Swarm passes on as written.
     fn environment(container: &TaskSpecContainerSpec) -> bool {
         container.env.as_ref().is_none_or(|environment| {
             let mut keys = BTreeSet::new();
             environment.iter().all(|entry| {
-                entry
-                    .split_once('=')
-                    .is_some_and(|(key, _)| !key.is_empty() && keys.insert(key))
+                entry.split_once('=').is_some_and(|(key, value)| {
+                    !key.is_empty() && keys.insert(key) && BollardDocker::is_swarm_literal(value)
+                })
             })
         })
     }
@@ -433,6 +437,55 @@ mod tests {
         update.monitor = Some(5_000_000_000);
         update.order = Some(ServiceSpecUpdateConfigOrderEnum::EMPTY);
         assert_eq!(BollardDocker::observed_rollout(&spec), None);
+    }
+
+    /// Swarm would expand `{{` as a Go template, so it is escaped when
+    /// authored and read back as written.
+    #[test]
+    fn template_text_is_authored_literally_and_observed_back() {
+        let text = r#"${{ vars.x }} {{.Service.Name}} {{{ {{"{{"}}"#;
+        let mut desired = desired(vec![DesiredMount {
+            volume_name: piqueld_core::DockerVolumeName::parse("app-policy-data").unwrap(),
+            target: "/data/{{.Task.Slot}}".into(),
+            read_only: false,
+        }]);
+        desired.environment.insert("TEXT".into(), text.into());
+        let spec = BollardDocker::service_spec(&desired, "local-node").unwrap();
+        let container = spec.task_template.as_ref().unwrap().container_spec.as_ref();
+        assert!(container.unwrap().env.as_ref().unwrap().contains(
+            &r#"TEXT=${{"{{"}} vars.x }} {{"{{"}}.Service.Name}} {{"{{"}}{ {{"{{"}}"{{"{{"}}"}}"#.into()
+        ));
+        let observed = BollardDocker::observe_service(&spec, "local-node", Vec::new(), None)
+            .expect("observed service");
+        assert_eq!(observed.environment, desired.environment);
+        assert_eq!(observed.mounts[0].target, "/data/{{.Task.Slot}}");
+        assert!(observed.matches(&desired));
+
+        // Specs written before escaping are drift, so reconciling rewrites them.
+        let unescaped = |edit: fn(&mut TaskSpecContainerSpec)| {
+            let mut spec = spec.clone();
+            edit(
+                spec.task_template
+                    .as_mut()
+                    .unwrap()
+                    .container_spec
+                    .as_mut()
+                    .unwrap(),
+            );
+            BollardDocker::observe_service(&spec, "local-node", Vec::new(), None)
+                .expect("observed service")
+                .drift(&desired)
+        };
+        assert_eq!(
+            unescaped(|container| container.env = Some(vec!["TEXT={{.Service.Name}}".into()])),
+            ["environment", "runtime_policy"]
+        );
+        assert_eq!(
+            unescaped(|container| {
+                container.mounts.as_mut().unwrap()[0].target = Some("/data/{{.Task.Slot}}".into());
+            }),
+            ["runtime_policy"]
+        );
     }
 
     #[test]
