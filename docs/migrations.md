@@ -265,7 +265,9 @@ in the database, managed through the API instead of the daemon configuration:
 each destination's URL, encrypted with the secret master key, its categories
 with their messages and activation watermarks, and its applications. Deliveries
 reference their destination by ID, replacing the configuration fingerprint, and
-the per-category routes table is dropped. Destinations configured in
+record the names of the application and environment or preview they are about
+when queued; earlier deliveries have none. The per-category routes table is
+dropped. Destinations configured in
 `[notifications]` are not imported, and pending deliveries to them are
 cancelled; remove that table from the configuration, which now rejects it, and
 create the destinations again.

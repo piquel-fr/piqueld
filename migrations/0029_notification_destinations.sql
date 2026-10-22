@@ -58,6 +58,11 @@ ALTER TABLE notification_deliveries ADD COLUMN destination_id TEXT
 ALTER TABLE notification_deliveries DROP COLUMN destination_fingerprint;
 CREATE INDEX delivery_destination ON notification_deliveries(destination_id);
 
+-- What each delivery is about, by name, as of when it was queued: a JSON
+-- `NotificationSubject`, so notifications name the application, environment
+-- or preview even after a rename or deletion. Earlier deliveries have none.
+ALTER TABLE notification_deliveries ADD COLUMN subject_json TEXT;
+
 -- Configured destinations are gone, so nothing pending can be sent.
 UPDATE notification_deliveries
 SET state = 'cancelled', last_error = 'Destinations moved out of the daemon configuration'
