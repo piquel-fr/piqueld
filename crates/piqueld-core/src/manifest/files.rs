@@ -336,4 +336,28 @@ mod tests {
         }
         assert_eq!("644".parse::<FileMode>().unwrap().to_string(), "0644");
     }
+
+    /// The observability example validates, and a deployment can capture
+    /// every repository file it mounts.
+    #[test]
+    fn the_observability_example_captures_its_files() {
+        let example = crate::manifest::parse_template_toml(include_str!(
+            "../../../../examples/observability/application.toml"
+        ))
+        .unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let files = RepositoryFiles(
+            example
+                .spec()
+                .repository_file_paths()
+                .into_iter()
+                .map(|path| {
+                    let content = std::fs::read_to_string(root.join(path))
+                        .unwrap_or_else(|error| panic!("{path}: {error}"));
+                    (path.to_owned(), content)
+                })
+                .collect(),
+        );
+        example.spec().check_captured(&files).unwrap();
+    }
 }
