@@ -5158,6 +5158,10 @@
                       "$ref": "#/components/schemas/DeliveryState",
                       "description": "Current delivery lifecycle state."
                     },
+                    "subject": {
+                      "$ref": "#/components/schemas/NotificationSubject",
+                      "description": "What it is about, by name, as of when it was queued."
+                    },
                     "updated_at_ms": {
                       "description": "Last update timestamp.",
                       "format": "int64",
@@ -8399,7 +8403,8 @@
           "daemon_failures",
           "recovery",
           "security",
-          "daemon_started"
+          "daemon_started",
+          "deployment_succeeded"
         ],
         "type": "string"
       },
@@ -8446,6 +8451,10 @@
           "state": {
             "$ref": "#/components/schemas/DeliveryState",
             "description": "Current delivery lifecycle state."
+          },
+          "subject": {
+            "$ref": "#/components/schemas/NotificationSubject",
+            "description": "What it is about, by name, as of when it was queued."
           },
           "updated_at_ms": {
             "description": "Last update timestamp.",
@@ -8499,6 +8508,77 @@
       "NotificationMessage": {
         "description": "Text sent with every notification of one category, such as a Discord\nrole mention (`<@&ROLE_ID>`): 1–1000 characters.",
         "type": "string"
+      },
+      "NotificationSubject": {
+        "description": "What a notification is about, by the names its application, environment\nor preview had when it was queued; empty for daemon notifications.",
+        "properties": {
+          "application": {
+            "default": null,
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationName"
+                  }
+                ],
+                "description": "The application."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "branch": {
+            "default": null,
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/GitBranch"
+                  }
+                ],
+                "description": "The branch the environment or preview deploys, if any."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "environment": {
+            "default": null,
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EnvironmentName"
+                  }
+                ],
+                "description": "The environment, or the preview's slug."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "preview": {
+            "default": false,
+            "description": "Whether the environment is a preview.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       },
       "ObservedApplicationView": {
         "description": "Bounded observed runtime state for one environment.",

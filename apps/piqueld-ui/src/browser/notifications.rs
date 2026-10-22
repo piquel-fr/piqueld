@@ -587,6 +587,7 @@ fn Deliveries(refresh: Refresh, cursor: RwSignal<Option<String>>) -> impl IntoVi
                                                 <tr>
                                                     <th>"Destination"</th>
                                                     <th>"Category"</th>
+                                                    <th>"About"</th>
                                                     <th>"State"</th>
                                                     <th class="num">"Attempts"</th>
                                                     <th>"Updated"</th>
@@ -630,6 +631,7 @@ fn delivery_row(delivery: NotificationDelivery, retry: Retry) -> AnyView {
         <tr>
             <td title={delivery.id.clone()}>{delivery.destination}</td>
             <td>{delivery.category.label()}</td>
+            <td>{delivery.subject.describe().unwrap_or_else(|| "daemon".into())}</td>
             <td>{badge(tone, delivery.state.to_string())}</td>
             <td class="num">{delivery.attempts}</td>
             <td class="muted">{when(delivery.updated_at_ms)}</td>
