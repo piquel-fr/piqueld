@@ -366,6 +366,35 @@ pub enum Manage {
     },
 }
 
+impl Manage {
+    /// What the action changes, as the audit trail records it: its name, the
+    /// account, passkey, credential, or invitation it targets, and the name
+    /// or grants it sets, e.g. `revoke_credential "0190…"` or
+    /// `set_grants "0190…" (apps:read, logs:read)`. Values the caller sent
+    /// are quoted and escaped, as they are recorded before validation, even
+    /// for refused requests.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::UpdateUser {
+                user_id, username, ..
+            } => format!("update_user {user_id:?} {username:?}"),
+            Self::DeleteUser { user_id } => format!("delete_user {user_id:?}"),
+            Self::RemovePasskey { id } => format!("remove_passkey {id:?}"),
+            Self::RenamePasskey { id, name } => format!("rename_passkey {id:?} {name:?}"),
+            Self::RevokeCredential { id } => format!("revoke_credential {id:?}"),
+            Self::RevokeAll { user_id } => format!("revoke_all {user_id:?}"),
+            Self::SetGrants { user_id, grants } => format!("set_grants {user_id:?} ({grants})"),
+            Self::CreateInvitation { grants } => format!("create_invitation ({grants})"),
+            Self::CreateEnrollment { user_id } => format!("create_enrollment {user_id:?}"),
+            Self::RevokeInvitation { id } => format!("revoke_invitation {id:?}"),
+            Self::CreateToken { grants, name, .. } => {
+                format!("create_token {name:?} ({grants})")
+            }
+        }
+    }
+}
+
 /// Management result. Secrets are disclosed only once.
 #[derive(Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct Managed {
@@ -463,5 +492,13 @@ mod tests {
             format!("{token:?}"),
             r#"DeviceToken { status: "complete", user: None, token: <redacted> }"#
         );
+    }
+
+    /// Account action descriptions quote and escape what the caller sent, so
+    /// it cannot forge lines in the audit trail.
+    #[test]
+    fn descriptions_escape_caller_values() {
+        let revoke = Manage::RevokeCredential { id: "a\nb".into() };
+        assert_eq!(revoke.describe(), r#"revoke_credential "a\nb""#);
     }
 }

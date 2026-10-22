@@ -1,6 +1,6 @@
 //! Shared observability operations, independent of HTTP and the browser.
 use super::{ApplicationError, ApplicationService};
-use crate::store::Visibility;
+use crate::store::{NewAuditEvent, Visibility};
 use piqueld_core::{
     Event,
     api::Page,
@@ -10,6 +10,7 @@ use piqueld_core::{
 };
 use std::collections::HashSet;
 use std::net::IpAddr;
+use std::sync::atomic::Ordering;
 
 impl ApplicationService {
     /// Lists structured events with indexed filters, limited to `visible`.
@@ -93,21 +94,42 @@ impl ApplicationService {
     /// by neither an account nor the host operator, also need one of half as
     /// many slots of their own, so a flood of them cannot crowd out records of
     /// identified callers.
-    pub(crate) fn record_audit(&self, event: crate::store::NewAuditEvent) {
+    ///
+    /// Records dropped or whose write failed are counted, and the next one
+    /// written follows a [`NewAuditEvent::lost`] marker counting them, so
+    /// the trail shows where records are missing.
+    pub(crate) fn record_audit(&self, event: NewAuditEvent) {
+        let lost = &self.audit_lost;
         let anonymous = if event.user_id.is_some() || event.operator.is_some() {
             None
         } else {
             let Ok(slot) = self.anonymous_backlog.clone().try_acquire_owned() else {
                 tracing::error!(action = %event.action, "anonymous audit backlog is full; record dropped");
+                lost.fetch_add(1, Ordering::Relaxed);
                 return;
             };
             Some(slot)
         };
         let store = std::sync::Arc::clone(&self.store);
         let action = event.action.clone();
-        self.in_background(&action, anonymous, async move {
-            store.record_audit(&event).await
+        let gap = lost.swap(0, Ordering::Relaxed);
+        let unwritten = std::sync::Arc::clone(lost);
+        let admitted = self.in_background(&action, anonymous, async move {
+            if gap > 0
+                && let Err(error) = store.record_audit(&NewAuditEvent::lost(gap)).await
+            {
+                unwritten.fetch_add(gap + 1, Ordering::Relaxed);
+                return Err(error);
+            }
+            let written = store.record_audit(&event).await;
+            if written.is_err() {
+                unwritten.fetch_add(1, Ordering::Relaxed);
+            }
+            written
         });
+        if !admitted {
+            lost.fetch_add(gap + 1, Ordering::Relaxed);
+        }
     }
     /// Notes that `credential_id`, owned by `user_id`, was used from
     /// `address`, raising a security event the first time a credential
@@ -334,5 +356,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(noted, 1);
+    }
+
+    /// An audit record that could not be written leaves a marker counting it
+    /// before the next one, so the trail shows the gap.
+    #[tokio::test]
+    async fn lost_audit_records_leave_a_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("db");
+        let store = Arc::new(Store::open(&database).await.unwrap());
+        let service = ApplicationService::unconnected(Arc::clone(&store), temp.path());
+        let url = format!("sqlite:{}", database.display());
+        let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();
+        let drained = std::time::Duration::from_secs(5);
+        for (rename, action) in [
+            ("audit_events RENAME TO hidden", "POST /lost"),
+            ("hidden RENAME TO audit_events", "POST /written"),
+        ] {
+            let rename = format!("ALTER TABLE {rename}");
+            sqlx::query(&rename).execute(&mut db).await.unwrap();
+            let mut event = NewAuditEvent::lost(0);
+            event.action = action.into();
+            service.record_audit(event);
+            service.drain_audit(drained).await;
+        }
+        let actions: Vec<String> =
+            sqlx::query_scalar("SELECT action FROM audit_events ORDER BY id")
+                .fetch_all(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(
+            actions,
+            ["audit records missing before this one: 1", "POST /written"]
+        );
     }
 }

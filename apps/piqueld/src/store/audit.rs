@@ -68,6 +68,30 @@ struct AuditRow {
 }
 
 impl NewAuditEvent {
+    /// Marks the place of `count` earlier records that could not be written,
+    /// because the backlog was full or storage failed, so the trail shows
+    /// the gap instead of hiding it: a `failed` record with status 503 and
+    /// no caller.
+    pub(crate) fn lost(count: u64) -> Self {
+        Self {
+            action: format!("audit records missing before this one: {count}"),
+            outcome: AuditOutcome::Failed,
+            status: 503,
+            user_id: None,
+            username: None,
+            credential_id: None,
+            credential_kind: None,
+            scoped: None,
+            peer: None,
+            tailnet: None,
+            request_id: None,
+            application_id: None,
+            environment_id: None,
+            permission: None,
+            operator: None,
+        }
+    }
+
     /// The row to store as `id` at `created_at_ms`, before its link exists.
     fn row(&self, id: i64, created_at_ms: i64) -> AuditRow {
         AuditRow {
