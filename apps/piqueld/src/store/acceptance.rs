@@ -1,7 +1,7 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
 use super::auth::access::{EnvironmentOwner, Holder};
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
-use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation, Restore};
+use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
     AcceptedOperation, CreatedPreview, DeletedApplication, EnvironmentView, RenamedApplication,
@@ -500,18 +500,7 @@ impl Store {
                 };
                 Ok(Self::operation_accepted(&operation))
             }
-            Mutation::Restore(restore) => {
-                // Neither needs the application revision.
-                let current = match &restore {
-                    Restore::Environment { id, .. } => {
-                        Self::checked_environment_on(tx, id, None).await?
-                    }
-                    Restore::Preview { id, .. } => Self::preview_on(tx, id).await?,
-                };
-                // Boxed: it would otherwise grow every acceptance future.
-                let restored = Self::accept_restore_on(tx, &current, restore.parts().1);
-                Ok(Self::operation_accepted(&Box::pin(restored).await?))
-            }
+            Mutation::Restore(restore) => Box::pin(Self::restore_on(tx, restore)).await,
             Mutation::Promotion(mutation) => self.promotion_on(tx, mutation, expected, now).await,
             // Boxed: preview changes would otherwise grow every acceptance future.
             Mutation::Preview(mutation) => {
@@ -762,7 +751,7 @@ impl Store {
     }
 
     /// Responds with an accepted environment operation.
-    fn operation_accepted(operation: &Operation) -> Accepted {
+    pub(super) fn operation_accepted(operation: &Operation) -> Accepted {
         Accepted {
             response: MutationResponse::Operation(AcceptedOperation::from(operation)),
             wake: true,

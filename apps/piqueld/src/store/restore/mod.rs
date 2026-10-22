@@ -5,8 +5,9 @@
 //! is saved in the accepting transaction. Restores never run jobs.
 use super::{
     ApplicationState, EnvironmentId, Operation, OperationKind, Store, StoreError,
-    StoredEnvironment, now_ms,
+    StoredEnvironment, acceptance::Accepted, now_ms,
 };
+use crate::api::Restore;
 use piqueld_core::{
     api::DeploymentOrigin, manifest::ApplicationTemplate, resource::ResolvedApplication,
 };
@@ -38,6 +39,21 @@ pub enum RestoreError {
 }
 
 impl Store {
+    /// Accepts `restore` in `tx`: finds its environment, or its preview,
+    /// only among its own kind, then restores the deployment (see
+    /// `accept_restore_on`). Neither needs the application revision.
+    pub(super) async fn restore_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        restore: Restore,
+    ) -> Result<Accepted, StoreError> {
+        let current = match &restore {
+            Restore::Environment { id, .. } => Self::checked_environment_on(tx, id, None).await?,
+            Restore::Preview { id, .. } => Self::preview_on(tx, id).await?,
+        };
+        let operation = Self::accept_restore_on(tx, &current, restore.parts().1).await?;
+        Ok(Self::operation_accepted(&operation))
+    }
+
     /// The prepared target of `environment`'s deployment `deployment`, which
     /// must have succeeded (`deployment_not_restorable`): what restoring it
     /// deploys, read before acceptance so the caller can make sure its images
