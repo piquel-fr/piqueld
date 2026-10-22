@@ -13,11 +13,12 @@ use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Build, Client, Export, FileMode, FileSource, GitRepository, HealthCheck,
     Import, Job, JobRun, JobVolumeAccess, Mount, Redirect, RedirectStatus, RepositoryManifest,
-    Rollout, RolloutOrder, Route, SavedApplication, Service, ServiceFile, Source, SourceRepository,
-    Template, Typed, Variable, Visibility, Volume,
+    Rollout, RolloutOrder, Route, SavedApplication, SecretMount, Service, ServiceFile, Source,
+    SourceRepository, Template, Typed, Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
+use std::collections::BTreeMap;
 
 /// How an application follows pushes, before `--interval` applies to `poll`.
 #[derive(Clone, Copy, Debug)]
@@ -64,6 +65,16 @@ pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
 /// Parses `on` or `off`, listing both in help and completions.
 pub(crate) fn on_off() -> impl TypedValueParser<Value = bool> {
     clap::builder::PossibleValuesParser::new(["on", "off"]).map(|value| value == "on")
+}
+
+/// Parses a `KEY=VALUE` flag such as `--build-arg` at its first `=`, so values
+/// may contain `=`. Fails when the value has no `=`; names are checked by
+/// manifest validation.
+fn key_value(value: &str) -> std::result::Result<(String, String), String> {
+    value
+        .split_once('=')
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .ok_or_else(|| "expected `=` between the two parts".to_owned())
 }
 
 fn volume_access() -> impl TypedValueParser<Value = JobVolumeAccess> {
@@ -285,21 +296,13 @@ pub(crate) struct GitBuildArgs {
     #[arg(long, requires = "git", default_value = ".")]
     context: Template,
     /// Docker build argument; repeat for several. Values are not secret.
-    #[arg(long = "build-arg", value_name = "KEY=VALUE", requires = "git", value_parser = Self::parse_arg)]
+    #[arg(long = "build-arg", value_name = "KEY=VALUE", requires = "git", value_parser = key_value)]
     build_args: Vec<(String, String)>,
     /// Multi-stage build target.
     #[arg(long, requires = "git")]
     target: Option<Template>,
 }
 impl GitBuildArgs {
-    /// Parses a `--build-arg` value at its first `=`, so values may contain `=`.
-    /// Fails when the value has no `=`; names are checked by manifest validation.
-    fn parse_arg(value: &str) -> std::result::Result<(String, String), String> {
-        value
-            .split_once('=')
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            .ok_or_else(|| "build arguments must use KEY=VALUE".to_owned())
-    }
     /// Git source that builds `url` with Docker using these settings.
     fn source(&self, url: &str) -> Source {
         Source::Git {
@@ -624,9 +627,54 @@ pub(crate) struct SetJobArgs {
     /// access, or read-only for a new job.
     #[arg(long, value_parser = volume_access())]
     volume_access: Option<JobVolumeAccess>,
+    /// Environment variable only the job gets, added to its service's; repeat
+    /// for several. Replaces the job's own variables, which are kept otherwise.
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = key_value)]
+    environment: Vec<(String, String)>,
+    /// Remove the job's own environment variables.
+    #[arg(long, conflicts_with = "environment")]
+    clear_env: bool,
+    /// Secret only the job mounts, added to its service's; repeat for several.
+    /// Replaces the job's own secrets, which are kept otherwise.
+    #[arg(long = "secret", value_name = "NAME=TARGET", value_parser = key_value)]
+    secrets: Vec<(String, String)>,
+    /// Remove the job's own secrets.
+    #[arg(long, conflicts_with = "secrets")]
+    clear_secrets: bool,
     /// Command elements after --, replacing the service's command and arguments.
     #[arg(last = true, required = true)]
     command: Vec<Template>,
+}
+impl SetJobArgs {
+    /// The job's own environment: the `--env` entries, none with
+    /// `--clear-env`, or otherwise those of `current`, the job it replaces.
+    fn environment(&self, current: Option<&Job>) -> BTreeMap<String, Template> {
+        if self.clear_env || !self.environment.is_empty() {
+            return self
+                .environment
+                .iter()
+                .map(|(key, value)| (key.clone(), value.as_str().into()))
+                .collect();
+        }
+        current
+            .map(|job| job.environment.clone())
+            .unwrap_or_default()
+    }
+    /// The job's own secrets: the `--secret` mounts, none with
+    /// `--clear-secrets`, or otherwise those of `current`, the job it replaces.
+    fn secrets(&self, current: Option<&Job>) -> Vec<SecretMount> {
+        if self.clear_secrets || !self.secrets.is_empty() {
+            return self
+                .secrets
+                .iter()
+                .map(|(name, target)| SecretMount {
+                    name: name.as_str().into(),
+                    target: target.clone(),
+                })
+                .collect();
+        }
+        current.map(|job| job.secrets.clone()).unwrap_or_default()
+    }
 }
 #[derive(Debug, Args)]
 pub(crate) struct MoveJobArgs {
@@ -888,7 +936,7 @@ impl AddServiceArgs {
                 |url| self.build.source(url),
             ),
             replicas: Typed::Literal(1),
-            environment: std::collections::BTreeMap::new(),
+            environment: BTreeMap::new(),
             command: Vec::new(),
             arguments: Vec::new(),
             mounts: Vec::new(),
@@ -1163,18 +1211,21 @@ impl JobCommand {
         let existing = jobs.iter().position(|job| job.name == target.job);
         match (self, existing) {
             (Self::Set(args), existing) => {
+                let current = existing.map(|index| &jobs[index]);
                 let job = Job {
                     name: target.job.clone(),
                     service: args.service.clone(),
                     command: args.command.clone(),
+                    environment: args.environment(current),
+                    secrets: args.secrets(current),
                     run: JobRun::BeforeRollout,
                     timeout_seconds: args
                         .timeout_seconds
-                        .or_else(|| existing.map(|index| jobs[index].timeout_seconds))
+                        .or_else(|| current.map(|job| job.timeout_seconds))
                         .unwrap_or(Job::DEFAULT_TIMEOUT_SECONDS),
                     volume_access: args
                         .volume_access
-                        .or_else(|| existing.map(|index| jobs[index].volume_access))
+                        .or_else(|| current.map(|job| job.volume_access))
                         .unwrap_or_default(),
                 };
                 match existing {

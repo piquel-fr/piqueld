@@ -183,6 +183,12 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   };
   await fill(0, 'seed', ['seed']);
   await fill(1, 'migrate', ['migrate', '--all']);
+  await job(0).getByRole('button', { name: 'Add variable', exact: true }).click();
+  await job(0).getByLabel('Key', { exact: true }).fill('SEED_PASSWORD_FILE');
+  await job(0).getByLabel('Value', { exact: true }).fill('/run/secrets/seed');
+  await job(0).getByRole('button', { name: 'Add secret file', exact: true }).click();
+  await job(0).getByLabel('Secret name', { exact: true }).fill('seed-password');
+  await job(0).getByLabel('Container path', { exact: true }).fill('/run/secrets/seed');
   await job(1).getByLabel('Timeout (seconds)', { exact: true }).fill('60');
   await job(1).getByRole('button', { name: 'Move up', exact: true }).click();
   await save(page);
@@ -193,6 +199,9 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await expect(job(0).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('60');
   await expect(job(1).getByLabel('Name', { exact: true })).toHaveValue('seed');
   await expect(job(1).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('300');
+  await expect(job(1).getByLabel('Key', { exact: true })).toHaveValue('SEED_PASSWORD_FILE');
+  await expect(job(1).getByLabel('Container path', { exact: true })).toHaveValue('/run/secrets/seed');
+  await expect(job(0).getByLabel('Key', { exact: true })).toHaveCount(0);
 
   await job(1).getByRole('button', { name: 'Remove', exact: true }).first().click();
   await save(page);

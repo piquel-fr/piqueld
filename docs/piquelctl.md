@@ -629,6 +629,7 @@ piquelctl app route remove notes notes.example.com --yes
 piquelctl env visibility notes staging private --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
 piquelctl app job set notes migrate web --volume-access exclusive --yes -- notes migrate
+piquelctl app job set notes migrate web --env OWNER_PASSWORD_FILE=/run/secrets/owner --secret owner-password=/run/secrets/owner --yes -- notes migrate
 piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
 piquelctl app export set auth api --applications notes,billing --yes
@@ -686,6 +687,10 @@ and sums the CPU and memory limits of the previews' deployed replicas.
 `job set` adds a job after the existing ones, or replaces the job with that name
 in place, keeping its timeout and volume access unless `--timeout-seconds` or
 `--volume-access` is given (300 seconds and `read-only` for a new job).
+`--env KEY=VALUE` and `--secret NAME=TARGET`, repeated for several, set the
+environment variables and secret files only the job's container gets, added
+to its service's; given, they replace the job's own, which are otherwise kept.
+`--clear-env` and `--clear-secrets` remove them.
 `read-only` mounts the service's volumes read-only; `exclusive` keeps writable
 volumes writable and stops every service mounting them until the rollout. `job move` sets a job's 1-based position in the run order. Jobs run in
 their saved order before each rollout; like routes, job edits

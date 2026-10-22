@@ -433,6 +433,16 @@
           },
           "type": "array"
         },
+        "environment": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Template"
+          },
+          "description": "Environment variables only the job's container gets, added to its\nservice's. A name the service also sets is an error.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "name": {
           "description": "Logical job name.",
           "type": "string"
@@ -440,6 +450,13 @@
         "run": {
           "$ref": "#/definitions/JobRun",
           "description": "Deployment point at which the job runs."
+        },
+        "secrets": {
+          "description": "Secrets only the job's container mounts, added to its service's. A\ntarget the service also mounts is an error.",
+          "items": {
+            "$ref": "#/definitions/SecretMount"
+          },
+          "type": "array"
         },
         "service": {
           "description": "Service whose prepared image, environment, secrets, and mounts the job reuses.",

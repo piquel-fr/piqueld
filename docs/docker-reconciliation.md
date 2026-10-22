@@ -61,7 +61,8 @@ candidate or report it as successfully deployed.
 
 Before promotion, each deployment runs its `before-rollout` jobs as Swarm
 replicated jobs pinned to the local node, without restarts, health checks, or
-network aliases. A blocked plan runs no jobs; otherwise the private network and
+network aliases. A job's container is its service's, plus the environment
+variables and secrets the job declares. A blocked plan runs no jobs; otherwise the private network and
 volumes they need are ensured first. Before each job, the referenced service's
 `depends_on` and transitive dependencies roll out to their prepared configuration
 and converge using normal service health checks and convergence deadlines. The

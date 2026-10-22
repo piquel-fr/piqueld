@@ -114,9 +114,7 @@ impl Store {
         let id = app.id().as_str();
         let mounted = app
             .spec()
-            .services
-            .iter()
-            .flat_map(|service| &service.secrets)
+            .secret_mounts()
             .filter_map(|secret| secret.name.as_literal())
             .collect::<Vec<_>>();
         Self::check_secret_references(

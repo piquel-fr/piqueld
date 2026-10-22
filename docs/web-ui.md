@@ -144,7 +144,9 @@ Jobs inherit the referenced service's startup dependencies, which start or
 update and become healthy first. Other services wait for all jobs to succeed;
 if a job fails, its dependencies return to the running deployment. A job's
 volume access is read-only by default; exclusive access stops the services
-using its writable volumes until the rollout. The Links tab edits the
+using its writable volumes until the rollout. Each job also lists the
+environment variables and secret files only its container gets, added to its
+service's. The Links tab edits the
 application's [links](application-manifest.md#links): the services it exports
 and the applications that may import them (and whether their previews may),
 and the services of other applications it imports, with an optional

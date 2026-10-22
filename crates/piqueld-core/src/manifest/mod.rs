@@ -1,8 +1,8 @@
 //! Public application manifests and their validated, canonical domain model.
 
 // Sorts every order-insensitive collection of a specification (services by
-// name, their mounts, secrets, files, and dependencies, then volumes, routes,
-// generated secrets, exports, and imports) so equivalent manifests serialize and hash
+// name, their mounts, secrets, files, and dependencies, then job secrets,
+// volumes, routes, generated secrets, exports, and imports) so equivalent manifests serialize and hash
 // identically. Process arguments and other ordered lists are untouched. Both
 // `ApplicationSpec` and `ValidatedSpec` have these fields.
 macro_rules! sort_unordered {
@@ -15,6 +15,9 @@ macro_rules! sort_unordered {
             service.secrets.sort();
             service.files.sort();
             service.depends_on.sort();
+        }
+        for job in &mut spec.jobs {
+            job.secrets.sort();
         }
         spec.volumes.sort();
         spec.routes.sort();

@@ -7785,6 +7785,13 @@
             },
             "type": "array"
           },
+          "environment": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Template"
+            },
+            "description": "Environment variables only the job's container gets, added to its\nservice's. A name the service also sets is an error.",
+            "type": "object"
+          },
           "name": {
             "description": "Logical job name.",
             "type": "string"
@@ -7792,6 +7799,13 @@
           "run": {
             "$ref": "#/components/schemas/JobRun",
             "description": "Deployment point at which the job runs."
+          },
+          "secrets": {
+            "description": "Secrets only the job's container mounts, added to its service's. A\ntarget the service also mounts is an error.",
+            "items": {
+              "$ref": "#/components/schemas/SecretMount"
+            },
+            "type": "array"
           },
           "service": {
             "description": "Service whose prepared image, environment, secrets, and mounts the job reuses.",
@@ -12117,6 +12131,13 @@
             },
             "type": "array"
           },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment variables added to the service's. Omitted when empty so\nexisting specification hashes stay stable.",
+            "type": "object"
+          },
           "name": {
             "$ref": "#/components/schemas/JobName",
             "description": "Logical job name."
@@ -12124,6 +12145,13 @@
           "run": {
             "$ref": "#/components/schemas/JobRun",
             "description": "Deployment point at which the job runs."
+          },
+          "secrets": {
+            "description": "Secrets added to the service's. Omitted when empty so existing\nspecification hashes stay stable.",
+            "items": {
+              "$ref": "#/components/schemas/ValidatedSecretMount"
+            },
+            "type": "array"
           },
           "service": {
             "$ref": "#/components/schemas/ServiceName",

@@ -2,7 +2,9 @@
 use super::super::ui::{add_button, empty, limited_add_button, remove_button};
 use super::{Draft, Rows, editor};
 use leptos::prelude::*;
-use piqueld_client::{ApplicationManifest, Job, JobRun, JobVolumeAccess, edit::ApplicationEdit};
+use piqueld_client::{
+    ApplicationManifest, Job, JobRun, JobVolumeAccess, SecretMount, edit::ApplicationEdit,
+};
 
 /// One editable job. The command keeps one element per row, without shell parsing.
 #[derive(Clone, PartialEq)]
@@ -10,6 +12,10 @@ struct JobDraft {
     name: String,
     service: String,
     command: Vec<String>,
+    /// Environment variables the job adds, as key/value rows.
+    environment: Vec<[String; 2]>,
+    /// Secrets the job adds, as name/container path rows.
+    secrets: Vec<[String; 2]>,
     timeout: String,
     volume_access: JobVolumeAccess,
 }
@@ -20,6 +26,8 @@ impl Default for JobDraft {
             name: String::new(),
             service: String::new(),
             command: vec![String::new()],
+            environment: Vec::new(),
+            secrets: Vec::new(),
             timeout: Job::DEFAULT_TIMEOUT_SECONDS.to_string(),
             volume_access: JobVolumeAccess::default(),
         }
@@ -42,6 +50,19 @@ impl JobDraft {
                 .iter()
                 .map(|value| value.as_str().into())
                 .collect(),
+            environment: self
+                .environment
+                .into_iter()
+                .map(|[key, value]| (key, value.into()))
+                .collect(),
+            secrets: self
+                .secrets
+                .into_iter()
+                .map(|[name, target]| SecretMount {
+                    name: name.into(),
+                    target,
+                })
+                .collect(),
             run: JobRun::BeforeRollout,
             timeout_seconds: self
                 .timeout
@@ -58,6 +79,16 @@ impl From<Job> for JobDraft {
             name: job.name,
             service: job.service,
             command: job.command.iter().map(ToString::to_string).collect(),
+            environment: job
+                .environment
+                .into_iter()
+                .map(|(key, value)| [key, value.to_string()])
+                .collect(),
+            secrets: job
+                .secrets
+                .into_iter()
+                .map(|secret| [secret.name.to_string(), secret.target])
+                .collect(),
             timeout: job.timeout_seconds.to_string(),
             volume_access: job.volume_access,
         }
@@ -119,6 +150,117 @@ fn command_rows(jobs: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
     .into_any()
 }
 
+/// A two-column list of rows a job adds to its service's container.
+#[derive(Clone, Copy)]
+struct PairRows {
+    title: &'static str,
+    labels: [&'static str; 2],
+    add: &'static str,
+    /// Values of a newly added row.
+    new: [&'static str; 2],
+    read: fn(&JobDraft) -> &Vec<[String; 2]>,
+    write: fn(&mut JobDraft) -> &mut Vec<[String; 2]>,
+}
+
+impl PairRows {
+    const ENVIRONMENT: Self = Self {
+        title: "Environment",
+        labels: ["Key", "Value"],
+        add: "Add variable",
+        new: ["", ""],
+        read: |j| &j.environment,
+        write: |j| &mut j.environment,
+    };
+    const SECRETS: Self = Self {
+        title: "Secrets",
+        labels: ["Secret name", "Container path"],
+        add: "Add secret file",
+        new: ["", "/run/secrets/"],
+        read: |j| &j.secrets,
+        write: |j| &mut j.secrets,
+    };
+
+    /// Column `column` of `row`, as an input editing it.
+    fn input(
+        self,
+        jobs: RwSignal<Vec<JobDraft>>,
+        index: usize,
+        row: usize,
+        column: usize,
+    ) -> AnyView {
+        view! {
+            <label class="field">
+                <span>{self.labels[column]}</span>
+                <input
+                    type="text"
+                    prop:value={move || {
+                        jobs.field(
+                            index,
+                            |j| (self.read)(j).get(row).map(|pair| pair[column].clone()).unwrap_or_default(),
+                        )
+                    }}
+                    on:input={move |event| {
+                        jobs.edit(
+                            index,
+                            |j| {
+                                if let Some(pair) = (self.write)(j).get_mut(row) {
+                                    pair[column] = event_target_value(&event);
+                                }
+                            },
+                        );
+                    }}
+                />
+            </label>
+        }
+        .into_any()
+    }
+
+    /// The rows of job `index`, one per pair, plus a button adding one.
+    fn view(self, jobs: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
+        view! {
+            <div>
+                <h4 class="hint" style="margin-bottom:8px">
+                    {self.title}
+                </h4>
+                <div class="form-list">
+                    <For
+                        each={move || {
+                            (0..jobs.field(index, |j| (self.read)(j).len())).collect::<Vec<_>>()
+                        }}
+                        key={|row| *row}
+                        children={move |row| {
+                            view! {
+                                <div class="form-row">
+                                    {self.input(jobs, index, row, 0)}
+                                    {self.input(jobs, index, row, 1)}
+                                    {remove_button(move || {
+                                        jobs.edit(
+                                            index,
+                                            |j| {
+                                                (self.write)(j).remove(row);
+                                            },
+                                        );
+                                    })}
+                                </div>
+                            }
+                        }}
+                    />
+                </div>
+                {add_button(
+                    self.add,
+                    move || {
+                        jobs.edit(
+                            index,
+                            |j| (self.write)(j).push(self.new.map(String::from)),
+                        );
+                    },
+                )}
+            </div>
+        }
+        .into_any()
+    }
+}
+
 /// Job editor. Rows are drafted as [`JobDraft`] text and re-synced from saved
 /// configuration only while there are no local edits. Saving validates the
 /// timeouts and replaces all jobs; their order is their execution order.
@@ -150,7 +292,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                 <div>
                     <h3>"Jobs"</h3>
                     <p>
-                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment and dependencies return to the running deployment. Volumes are read-only unless the job has exclusive access, which stops every service using its writable volumes until the rollout. Each command element is one row; no shell parsing is applied."
+                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Environment variables and secrets added here reach only the job's container, never the service's replicas, and can't replace ones the service sets. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment and dependencies return to the running deployment. Volumes are read-only unless the job has exclusive access, which stops every service using its writable volumes until the rollout. Each command element is one row; no shell parsing is applied."
                     </p>
                 </div>
             </header>
@@ -248,6 +390,8 @@ pub(super) fn JobSettings() -> impl IntoView {
                                     </div>
                                 </div>
                                 {command_rows(jobs, index)}
+                                {PairRows::ENVIRONMENT.view(jobs, index)}
+                                {PairRows::SECRETS.view(jobs, index)}
                             </div>
                         }
                     }}

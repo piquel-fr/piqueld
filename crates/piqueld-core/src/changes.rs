@@ -332,6 +332,8 @@ image="example:1"
                     name: (*name).into(),
                     service: "web".into(),
                     command: vec![(*command).into()],
+                    environment: std::collections::BTreeMap::new(),
+                    secrets: Vec::new(),
                     run: crate::manifest::JobRun::BeforeRollout,
                     timeout_seconds: 300,
                     volume_access: crate::manifest::JobVolumeAccess::ReadOnly,

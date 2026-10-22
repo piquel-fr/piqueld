@@ -110,6 +110,14 @@ pub struct ApplicationSpec {
 }
 
 impl ApplicationSpec {
+    /// Every secret mount of the services and jobs.
+    pub fn secret_mounts(&self) -> impl Iterator<Item = &SecretMount> {
+        self.services
+            .iter()
+            .flat_map(|service| &service.secrets)
+            .chain(self.jobs.iter().flat_map(|job| &job.secrets))
+    }
+
     /// Disconnects the manifest repository. "self" sources keep building from
     /// the former repository, and declared environments return to the saved
     /// manifest, which has no branches to follow.
@@ -417,6 +425,14 @@ pub struct Job {
     pub service: String,
     /// Command replacing the service's command and arguments.
     pub command: Vec<Template>,
+    /// Environment variables only the job's container gets, added to its
+    /// service's. A name the service also sets is an error.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, Template>,
+    /// Secrets only the job's container mounts, added to its service's. A
+    /// target the service also mounts is an error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretMount>,
     /// Deployment point at which the job runs.
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails.

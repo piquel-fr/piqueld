@@ -53,6 +53,14 @@ pub struct ValidatedJob {
     pub service: ServiceName,
     /// Command replacing the service's command and arguments.
     pub command: Vec<String>,
+    /// Environment variables added to the service's. Omitted when empty so
+    /// existing specification hashes stay stable.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    /// Secrets added to the service's. Omitted when empty so existing
+    /// specification hashes stay stable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<ValidatedSecretMount>,
     /// Deployment point at which the job runs.
     pub run: JobRun,
     /// Seconds the job may run before the deployment fails.
@@ -341,6 +349,39 @@ pub struct ValidatedSecretMount {
     pub target: String,
 }
 
+impl ValidatedSecretMount {
+    /// Converts the secret mounts of the service or job at `base`, whose
+    /// names must be rendered.
+    fn from_inputs(
+        values: Vec<input::SecretMount>,
+        base: &str,
+    ) -> Result<Vec<Self>, ValidationErrors> {
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, secret)| {
+                Ok(Self {
+                    name: secret
+                        .name
+                        .into_text(|| format!("{base}.secrets[{index}].name"))?,
+                    target: secret.target,
+                })
+            })
+            .collect()
+    }
+
+    /// Converts back to the editable input shape used for export.
+    fn to_inputs(values: &[Self]) -> Vec<input::SecretMount> {
+        values
+            .iter()
+            .map(|secret| input::SecretMount {
+                name: Template::literal(&secret.name),
+                target: secret.target.clone(),
+            })
+            .collect()
+    }
+}
+
 /// Where a mounted secret's value comes from.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -412,6 +453,20 @@ impl Template {
             .into_iter()
             .enumerate()
             .map(|(index, value)| value.into_text(|| format!("{base}[{index}]")))
+            .collect()
+    }
+
+    /// Converts each map value, keeping its key; `base` locates error paths.
+    fn into_text_map(
+        values: BTreeMap<String, Self>,
+        base: &str,
+    ) -> Result<BTreeMap<String, String>, ValidationErrors> {
+        values
+            .into_iter()
+            .map(|(key, value)| {
+                let text = value.into_text(|| format!("{base}.{key}"))?;
+                Ok((key, text))
+            })
             .collect()
     }
 
@@ -674,12 +729,14 @@ impl ValidatedSpec {
         })
     }
 
-    /// Names of the secrets that at least one service mounts.
+    /// Names of the secrets that at least one service or job mounts.
     #[must_use]
     pub fn mounted_secret_names(&self) -> BTreeSet<&str> {
         self.services
             .iter()
-            .flat_map(|service| service.secrets.iter().map(|secret| secret.name.as_str()))
+            .flat_map(|service| &service.secrets)
+            .chain(self.jobs.iter().flat_map(|job| &job.secrets))
+            .map(|secret| secret.name.as_str())
             .collect()
     }
 
@@ -751,6 +808,11 @@ impl ValidatedJob {
                 ValidationErrors::invalid_name(format!("{path}.service"), source)
             })?,
             command: Template::into_texts(value.command, &format!("{path}.command"))?,
+            environment: Template::into_text_map(
+                value.environment,
+                &format!("{path}.environment"),
+            )?,
+            secrets: ValidatedSecretMount::from_inputs(value.secrets, &path)?,
             run: value.run,
             timeout_seconds: value.timeout_seconds,
             volume_access: value.volume_access,
@@ -763,6 +825,8 @@ impl ValidatedJob {
             name: self.name.to_string(),
             service: self.service.to_string(),
             command: Template::literals(&self.command),
+            environment: Template::literal_map(&self.environment),
+            secrets: ValidatedSecretMount::to_inputs(&self.secrets),
             run: self.run,
             timeout_seconds: self.timeout_seconds,
             volume_access: self.volume_access,
@@ -779,29 +843,13 @@ impl ValidatedService {
                 .map_err(|source| ValidationErrors::invalid_name(format!("{base}.name"), source))?,
             source: ValidatedSource::from_input(value.source, &format!("{base}.source"))?,
             replicas: value.replicas.into_value(|| format!("{base}.replicas"))?,
-            environment: value
-                .environment
-                .into_iter()
-                .map(|(key, value)| {
-                    let text = value.into_text(|| format!("{base}.environment.{key}"))?;
-                    Ok((key, text))
-                })
-                .collect::<Result<_, ValidationErrors>>()?,
+            environment: Template::into_text_map(
+                value.environment,
+                &format!("{base}.environment"),
+            )?,
             command: Template::into_texts(value.command, &format!("{base}.command"))?,
             arguments: Template::into_texts(value.arguments, &format!("{base}.arguments"))?,
-            secrets: value
-                .secrets
-                .into_iter()
-                .enumerate()
-                .map(|(secret_index, secret)| {
-                    Ok(ValidatedSecretMount {
-                        name: secret
-                            .name
-                            .into_text(|| format!("{base}.secrets[{secret_index}].name"))?,
-                        target: secret.target,
-                    })
-                })
-                .collect::<Result<_, ValidationErrors>>()?,
+            secrets: ValidatedSecretMount::from_inputs(value.secrets, &base)?,
             files: value.files,
             mounts: value
                 .mounts
@@ -882,14 +930,7 @@ impl ValidatedService {
             environment: Template::literal_map(&self.environment),
             command: Template::literals(&self.command),
             arguments: Template::literals(&self.arguments),
-            secrets: self
-                .secrets
-                .iter()
-                .map(|secret| input::SecretMount {
-                    name: Template::literal(&secret.name),
-                    target: secret.target.clone(),
-                })
-                .collect(),
+            secrets: ValidatedSecretMount::to_inputs(&self.secrets),
             files: self.files.clone(),
             mounts: self
                 .mounts

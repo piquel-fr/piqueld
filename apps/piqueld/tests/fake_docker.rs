@@ -904,6 +904,8 @@ fn manifest_with_jobs(jobs: &[&str], timeout_seconds: u32) -> ApplicationManifes
             name: (*name).into(),
             service: "web".into(),
             command: vec!["notes".into(), (*name).into()],
+            environment: std::collections::BTreeMap::new(),
+            secrets: Vec::new(),
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds,
             volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
@@ -4517,6 +4519,44 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     assert!(run.log_truncated);
     assert_eq!(output, "migrated\npiqueld: task: non-zero exit (3)\n");
     assert!(harness.docker.jobs.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_secret_only_a_job_mounts_is_generated_for_the_job_alone() {
+    use piqueld_core::manifest::{SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount};
+    let harness = ControllerHarness::new().await;
+    let mut input = manifest_with_jobs(&["migrate"], 300);
+    input.spec.secrets.push(SecretDeclaration {
+        name: "owner-password".into(),
+        generate: SecretGenerator::Random {
+            bytes: 16,
+            encoding: SecretEncoding::Hex,
+        },
+    });
+    input.spec.jobs[0].secrets.push(SecretMount {
+        name: "owner-password".into(),
+        target: "/run/secrets/owner-password".into(),
+    });
+    let deployment = harness.apply(input, None).await;
+    harness.finish(&deployment).await;
+    let target = harness.target(&deployment.environment_id).await;
+    let pinned = &target.secret_names["owner-password"];
+    assert!(
+        harness
+            .docker
+            .secret_values
+            .lock()
+            .await
+            .contains_key(pinned)
+    );
+    assert_eq!(target.services[0].secrets, []);
+    assert_eq!(
+        target.jobs[0].container.secrets,
+        [piqueld_core::resource::SecretFile {
+            secret_name: pinned.clone(),
+            target: "/run/secrets/owner-password".into(),
+        }]
+    );
 }
 
 #[tokio::test]

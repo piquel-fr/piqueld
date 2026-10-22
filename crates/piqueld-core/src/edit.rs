@@ -699,6 +699,8 @@ mod tests {
             name: "migrate".into(),
             service: "web".into(),
             command: vec!["migrate".into()],
+            environment: std::collections::BTreeMap::new(),
+            secrets: Vec::new(),
             run: JobRun::BeforeRollout,
             timeout_seconds: 300,
             volume_access: crate::manifest::JobVolumeAccess::ReadOnly,

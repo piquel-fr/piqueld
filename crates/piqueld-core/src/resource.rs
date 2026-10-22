@@ -2,7 +2,7 @@
 
 use crate::manifest::dependencies::StartupOrder;
 use crate::manifest::domain::{
-    ValidatedJob as Job, ValidatedMount as Mount, ValidatedService as Service,
+    ValidatedJob as Job, ValidatedMount as Mount, ValidatedSecretMount, ValidatedService as Service,
 };
 use crate::names::validated_string;
 use crate::{
@@ -222,6 +222,18 @@ pub struct ResolutionSet {
 }
 
 impl ResolutionSet {
+    /// The pinned Docker secret of each mount in `secrets`. Must only run after
+    /// [`Self::errors`] finds none: it panics on an unpinned secret.
+    fn secret_files<'a>(
+        &'a self,
+        secrets: &'a [ValidatedSecretMount],
+    ) -> impl Iterator<Item = SecretFile> + 'a {
+        secrets.iter().map(|secret| SecretFile {
+            secret_name: self.secret_names[&secret.name].clone(),
+            target: secret.target.clone(),
+        })
+    }
+
     /// Collects every reason [`compile_application`] cannot proceed with these
     /// resolutions: unresolved sources, unpinned secrets, uncaptured
     /// repository files, and resolutions that do not match their source. A
@@ -251,11 +263,24 @@ impl ResolutionSet {
                     ));
                 }
             }
-            for secret in &service.secrets {
+        }
+        let mounts = app
+            .spec()
+            .services
+            .iter()
+            .map(|service| (service.name.as_str(), &service.secrets))
+            .chain(
+                app.spec()
+                    .jobs
+                    .iter()
+                    .map(|job| (job.name.as_str(), &job.secrets)),
+            );
+        for (owner, secrets) in mounts {
+            for secret in secrets {
                 if !self.secret_names.contains_key(&secret.name) {
                     errors.push(CompileError::new(
                         codes::SECRET_UNRESOLVED,
-                        service.name.as_str(),
+                        owner,
                         format!("secret {} has not been pinned", secret.name),
                     ));
                 }
@@ -655,14 +680,7 @@ impl DesiredService {
                     read_only: mount.read_only,
                 })
                 .collect(),
-            secrets: service
-                .secrets
-                .iter()
-                .map(|secret| SecretFile {
-                    secret_name: resolutions.secret_names[&secret.name].clone(),
-                    target: secret.target.clone(),
-                })
-                .collect(),
+            secrets: resolutions.secret_files(&service.secrets).collect(),
             files: service
                 .files
                 .iter()
@@ -779,10 +797,17 @@ pub struct DesiredJob {
 
 impl DesiredJob {
     /// Builds a job's run as a copy of its service's container: its command,
-    /// one replica, no health check, dependencies, or rollout settings, and its
-    /// own Docker name and labels. Validation guarantees that every job
-    /// references a declared service.
-    fn compile(job: &Job, services: &[DesiredService], environment_ownership: &Ownership) -> Self {
+    /// the environment variables and secrets it adds, one replica, no health
+    /// check, dependencies, or rollout settings, and its own Docker name and
+    /// labels. Validation guarantees that every job references a declared
+    /// service and overrides none of its settings; like
+    /// [`DesiredService::compile`], it panics on an unpinned secret.
+    fn compile(
+        job: &Job,
+        services: &[DesiredService],
+        resolutions: &ResolutionSet,
+        environment_ownership: &Ownership,
+    ) -> Self {
         let mut container = services
             .iter()
             .find(|service| service.logical_name == job.service)
@@ -793,6 +818,10 @@ impl DesiredJob {
         container.replicas = 1;
         container.command.clone_from(&job.command);
         container.arguments.clear();
+        container.environment.extend(job.environment.clone());
+        container
+            .secrets
+            .extend(resolutions.secret_files(&job.secrets));
         container.healthcheck = None;
         container.depends_on.clear();
         container.rollout = ValidatedRollout::default();
@@ -965,7 +994,7 @@ impl ResolvedApplication {
                 .spec()
                 .jobs
                 .iter()
-                .map(|job| DesiredJob::compile(job, &services, &ownership))
+                .map(|job| DesiredJob::compile(job, &services, resolutions, &ownership))
                 .collect(),
             secret_names: resolutions.secret_names.clone(),
             routes: app.spec().routes.clone(),
