@@ -1481,6 +1481,19 @@ async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
             serde_json::from_value::<piqueld_core::auth::Ceremony>(response.json()).unwrap();
         }
     }
+    // The browser trust policy runs before authentication, so an untrusted
+    // host learns nothing about the route's credentials. Like every API
+    // response, the refusal is never cached.
+    let response = server
+        .send(
+            Method::GET,
+            "/api/v1/system/status",
+            &[("host", "attacker.example")],
+            Vec::new(),
+        )
+        .await;
+    response.assert_error(StatusCode::FORBIDDEN, "browser_access_denied");
+    assert_eq!(response.header("cache-control"), Some("no-store"));
 }
 
 #[tokio::test]
@@ -1715,6 +1728,38 @@ async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
     let status = client.system_status().await.expect("status over unix");
     assert_eq!(status.api_version, "v1");
     assert_lifecycle(&client).await;
+}
+
+/// Environments refuse an invalid branch or commit like previews do, as a
+/// malformed request field rather than a manifest validation failure.
+#[tokio::test]
+async fn environment_branches_are_validated_like_preview_branches() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let saved = server
+        .client()
+        .apply_and_deploy(&new_application())
+        .await
+        .unwrap();
+    let id = &saved.environment_id;
+    let json = [("content-type", "application/json")];
+    for (method, path, body, code) in [
+        (
+            Method::POST,
+            format!("/api/v1/applications/{id}/environments"),
+            r#"{"name":"staging","branch":"bad..branch","expected_generation":1}"#,
+            "git_branch_invalid",
+        ),
+        (
+            Method::PUT,
+            format!("/api/v1/environments/{id}/branch"),
+            r#"{"branch":"main","commit":"abc","expected_generation":1}"#,
+            "git_commit_invalid",
+        ),
+    ] {
+        let response = server.send(method, &path, &json, body.into()).await;
+        response.assert_error(StatusCode::BAD_REQUEST, code);
+    }
 }
 
 #[tokio::test]
@@ -2178,6 +2223,11 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     );
     request.expected_generation = Some(0);
     let accepted = api.client.apply_and_deploy(&request).await.unwrap();
+    // Creating it again finds its name taken, like a rename would.
+    assert_eq!(
+        api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
+        "application_name_collision"
+    );
     request.expected_generation = Some(1);
     assert_eq!(
         api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
@@ -3500,6 +3550,38 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     );
 }
 
+/// Creating an application under the name of a repository-managed one is a
+/// name collision, not an edit refused for being repository-managed.
+#[tokio::test]
+async fn creating_over_a_repository_managed_name_collides() {
+    use piqueld_client::{GitRepository, RepositoryManifest, edit::ApplicationEdit};
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api.save().await;
+    let repository = ApplicationEdit::Repository(Some(RepositoryManifest {
+        repository: GitRepository {
+            url: "https://example.com/infra.git".into(),
+            branch: "main".into(),
+            commit: None,
+        },
+        path: "app.toml".into(),
+        sync: piqueld_core::sync::RepositorySync::Off,
+    }));
+    let options = piqueld_client::edit::EditOptions {
+        expected_generation: Some(1),
+        ..Default::default()
+    };
+    api.client
+        .edit_application(&saved.application_id, &repository, &options)
+        .await
+        .unwrap();
+    // A runtime change, which the repository-managed check would refuse.
+    let mut request = new_application();
+    request.manifest.spec.services[0].replicas = 2.into();
+    let error = api.client.apply_application(&request).await.unwrap_err();
+    assert_eq!(api_error(error).code, "application_name_collision");
+}
+
 #[tokio::test]
 async fn field_edits_validate_atomically_and_preserve_git_ownership() {
     use piqueld_client::{
@@ -4188,6 +4270,7 @@ async fn every_documented_operation_requires_authentication() {
                         Request::builder()
                             .method(method.as_str())
                             .uri(&uri)
+                            .header("host", "localhost")
                             .header("content-type", "application/json")
                             .header("x-request-id", "anonymous-contract")
                             .body(Body::from("{}"))
@@ -4199,10 +4282,12 @@ async fn every_documented_operation_requires_authentication() {
                     StatusCode::UNAUTHORIZED,
                     "{method} {path} must require authentication"
                 );
-                assert_eq!(response.header("x-request-id"), Some("anonymous-contract"));
+                // The daemon replaces a client-supplied request ID.
+                let request_id = response.header("x-request-id").unwrap();
+                assert_ne!(request_id, "anonymous-contract");
                 let error: piqueld_core::api::ErrorBody =
                     serde_json::from_slice(&response.body).unwrap();
-                assert_eq!(error.request_id, "anonymous-contract");
+                assert_eq!(error.request_id, request_id);
                 checked += 1;
             }
         }
@@ -5206,8 +5291,9 @@ async fn credentials_presented_by_the_host_operator_keep_their_meaning() {
 
 /// A fixed tailnet: `100.64.0.1` is Alice's laptop, `100.64.0.2` a CI runner,
 /// `100.64.0.3` a runner that just lost `tag:ci`, which only a cached (not
-/// fresh) lookup still reports, and `100.64.0.4` a runner that just left the
-/// tailnet, which only a cached lookup still finds.
+/// fresh) lookup still reports, `100.64.0.4` a runner that just left the
+/// tailnet, which only a cached lookup still finds, and `100.64.0.5` a runner
+/// whose fresh lookups time out.
 struct FakeTailnet;
 
 #[async_trait]
@@ -5216,21 +5302,23 @@ impl piqueld::tailnet::TailnetLookup for FakeTailnet {
         &self,
         peer: std::net::SocketAddr,
         fresh: bool,
-    ) -> Option<piqueld_core::tailnet::TailnetPeer> {
+    ) -> Result<Option<piqueld_core::tailnet::TailnetPeer>, piqueld::tailnet::LookupTimedOut> {
         let (login, node, tags) = match peer.ip().to_string().as_str() {
             "100.64.0.1" => (Some("alice@example.com".into()), "laptop", Vec::new()),
             "100.64.0.2" => (None, "runner", vec!["tag:ci".to_owned()]),
             "100.64.0.3" if fresh => (None, "retired", vec!["tag:old".to_owned()]),
             "100.64.0.3" => (None, "retired", vec!["tag:ci".to_owned()]),
-            "100.64.0.4" if fresh => return None,
+            "100.64.0.4" if fresh => return Ok(None),
             "100.64.0.4" => (None, "vanished", vec!["tag:ci".to_owned()]),
-            _ => return None,
+            "100.64.0.5" if fresh => return Err(piqueld::tailnet::LookupTimedOut),
+            "100.64.0.5" => (None, "busy", vec!["tag:ci".to_owned()]),
+            _ => return Ok(None),
         };
-        Some(piqueld_core::tailnet::TailnetPeer {
+        Ok(Some(piqueld_core::tailnet::TailnetPeer {
             login,
             node: node.into(),
             tags,
-        })
+        }))
     }
 }
 
@@ -5305,6 +5393,8 @@ async fn tailnet_bound_tokens_work_only_from_matching_devices() {
     assert_eq!(retagged, 401, "a cached identity never authorizes");
     let vanished = me(&tailnet, Some([100, 64, 0, 4])).await;
     assert_eq!(vanished, 401, "nor stands in for a failed lookup");
+    let busy = me(&tailnet, Some([100, 64, 0, 5])).await;
+    assert_eq!(busy, 503, "a lookup that timed out is no mismatch");
     assert_eq!(me(&unix, None).await, 401, "outside the tailnet");
     let from = refusals(&state, |events| {
         (events.len() >= 4).then(|| {
@@ -5359,8 +5449,8 @@ async fn the_dashboard_socket_names_clients_by_the_gateways_header() {
     assert_eq!(through_gateway(None).await, 403, "not through the gateway");
 }
 
-/// A runner whose tag is `tag:ci` when it connects, and `tag:old` on every
-/// later fresh lookup.
+/// A runner whose tag is `tag:ci` on the first lookup, and `tag:old` on every
+/// later one, so authorizing a connection must look it up only once.
 struct Retagged(std::sync::atomic::AtomicUsize);
 
 #[async_trait]
@@ -5368,19 +5458,15 @@ impl piqueld::tailnet::TailnetLookup for Retagged {
     async fn whois(
         &self,
         _: std::net::SocketAddr,
-        fresh: bool,
-    ) -> Option<piqueld_core::tailnet::TailnetPeer> {
-        let lookups = if fresh {
-            self.0.fetch_add(1, Ordering::SeqCst)
-        } else {
-            0
-        };
+        _: bool,
+    ) -> Result<Option<piqueld_core::tailnet::TailnetPeer>, piqueld::tailnet::LookupTimedOut> {
+        let lookups = self.0.fetch_add(1, Ordering::SeqCst);
         let tag = if lookups == 0 { "tag:ci" } else { "tag:old" };
-        Some(piqueld_core::tailnet::TailnetPeer {
+        Ok(Some(piqueld_core::tailnet::TailnetPeer {
             login: None,
             node: "runner".into(),
             tags: vec![tag.to_owned()],
-        })
+        }))
     }
 }
 
@@ -5472,28 +5558,39 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
                 503,
                 "storage_unavailable",
             ),
+            // A bearer that could not be checked is no reason to require
+            // the ceremony's Origin.
+            (
+                "POST",
+                "/api/v1/auth/register/start",
+                "x".repeat(43),
+                "",
+                503,
+                "storage_unavailable",
+            ),
         ] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("host", "localhost")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("x-request-id", "auth-correlation");
+            if !origin.is_empty() {
+                request = request.header("origin", origin);
+            }
             let response = tokio::time::timeout(
                 Duration::from_secs(2),
-                listener.send(
-                    Request::builder()
-                        .method(method)
-                        .uri(path)
-                        .header("authorization", format!("Bearer {bearer}"))
-                        .header("origin", origin)
-                        .header("x-request-id", "auth-correlation")
-                        .body(Body::empty())
-                        .unwrap(),
-                ),
+                listener.send(request.body(Body::empty()).unwrap()),
             )
             .await
             .expect("authentication errors must not wait for a diagnostic write");
             assert_eq!(response.status.as_u16(), status);
-            assert_eq!(response.header("x-request-id"), Some("auth-correlation"));
+            let request_id = response.header("x-request-id").unwrap();
+            assert_ne!(request_id, "auth-correlation");
             let error: piqueld_core::api::ErrorBody =
                 serde_json::from_slice(&response.body).unwrap();
             assert_eq!(error.code, code);
-            assert_eq!(error.request_id, "auth-correlation");
+            assert_eq!(error.request_id, request_id);
             if status == 503 {
                 let id = error.details["diagnostic_id"].as_str().unwrap();
                 assert!(id.starts_with("diagnostic-"));
@@ -5507,6 +5604,61 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
         }
     }
     transaction.rollback().await.unwrap();
+}
+
+/// Authentication endpoints answer undecodable bodies, and bodies over the
+/// small limit of public sign-in endpoints, with the usual JSON error, code,
+/// and request ID.
+#[tokio::test]
+async fn authentication_bodies_fail_with_structured_errors() {
+    let temp = TempDir::new().unwrap();
+    let store = Store::open(database(&temp)).await.unwrap();
+    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
+    let unix = api_router(state(&temp).await, auth);
+    let oversized = format!(r#"{{"device_code":"{}"}}"#, "x".repeat(64 * 1024));
+    for (content_type, body, status, code) in [
+        ("application/json", "{", 400, "json_malformed"),
+        ("text/plain", "{}", 415, "content_type_unsupported"),
+        (
+            "application/json",
+            oversized.as_str(),
+            413,
+            "request_body_too_large",
+        ),
+    ] {
+        let request = Request::post("/api/v1/auth/device/poll")
+            .header("content-type", content_type)
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        let response = unix.send(request).await;
+        assert_eq!(response.status.as_u16(), status);
+        let error: piqueld_core::api::ErrorBody = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(error.code, code);
+        assert_eq!(
+            response.header("x-request-id"),
+            Some(error.request_id.as_str())
+        );
+    }
+}
+
+/// Expensive requests beyond their kind's budget answer 503 `server_busy`
+/// at once, without recording a diagnostic, until the budget frees up.
+#[tokio::test]
+async fn expensive_requests_beyond_their_budget_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = state(&temp).await;
+    let server = Server::tcp(router(state.clone(), FakeAuth)).await;
+    let analytics = async || {
+        let path = "/api/v1/analytics/deployments";
+        server.send(Method::GET, path, &[], Vec::new()).await
+    };
+    let analysing = piqueld::api::Expensive::Analytics;
+    let held: Vec<_> = std::iter::from_fn(|| state.admit(analysing).ok()).collect();
+    let refused = analytics().await;
+    refused.assert_error(StatusCode::SERVICE_UNAVAILABLE, "server_busy");
+    assert!(refused.json()["details"].get("diagnostic_id").is_none());
+    drop(held);
+    assert_eq!(analytics().await.status, StatusCode::OK);
 }
 
 /// Secret lifecycle history names secrets, never values. A stored secret no
@@ -5605,6 +5757,29 @@ fn put_stored_token(
         .header("x-expected-generation", generation.to_string())
         .body(Body::from(value))
         .unwrap()
+}
+
+/// Secret uploads refuse a repeated `X-Expected-Generation` rather than
+/// trusting the first, and the wrong content type before reading the body.
+#[tokio::test]
+async fn stored_secret_uploads_check_their_headers_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = router(state(&temp).await, FakeAuth);
+    let server = Server::tcp(api.clone()).await;
+    let app = create_and_inspect(&server.client(), &manifest()).await;
+    let mut repeated = put_stored_token(&app.environment_id, "", 0, "value");
+    let headers = repeated.headers_mut();
+    headers.append("x-expected-generation", "1".parse().unwrap());
+    let response = api.send(repeated).await;
+    response.assert_error(StatusCode::BAD_REQUEST, "secret_generation_required");
+    // A body over the request limit would fail with 413 once read.
+    let mut text = put_stored_token(&app.environment_id, "", 0, "value");
+    text.headers_mut()
+        .insert("content-type", "text/plain".parse().unwrap());
+    let oversized = vec![b'x'; piqueld_core::api::MAX_REQUEST_BODY_BYTES + 1];
+    *text.body_mut() = Body::from(oversized);
+    let response = api.send(text).await;
+    response.assert_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "secret_content_type");
 }
 
 #[tokio::test]

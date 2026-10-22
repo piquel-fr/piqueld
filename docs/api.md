@@ -23,6 +23,14 @@ Responses use a `data` envelope; lists contain `items` and an opaque
 `next_cursor`. Errors expose a safe message, code, details, and request ID.
 Clients poll for progress.
 
+Request bodies are limited to 2 MiB, and to 64 KiB on the public sign-in
+endpoints (16 KiB for device starts); larger ones fail with `413
+request_body_too_large`. A body that sends nothing for a minute fails with
+`408 request_body_timeout`. Deployment analytics, logs, commands and event
+streams each run a bounded number at once across all listeners (4 analytics
+reads, 8 log reads, 32 commands, 128 event streams); more fail at once with
+`503 server_busy`, which records no diagnostic. Retry them shortly.
+
 An application owns the saved manifest and its configuration revision
 (`generation`). Its environments deploy that manifest; each owns its deployment
 history, operations, status, volumes, generated secrets, routes, and Docker
@@ -281,6 +289,8 @@ creation require preconditions unless the endpoint is explicitly
 called with the query parameter `force=true`. Missing preconditions return 400
 `precondition_required`. Apply requires generation zero to create an absent name,
 or both the inspected application ID and generation to update an existing name.
+Generation zero for a taken name returns 409 `application_name_collision`, as
+renames do.
 Deploy and delete require `expected_generation` in its query; renames,
 environment creation, source changes and promotions take it in JSON.
 Revision mismatches return 409 `generation_conflict`; identity mismatches return
@@ -468,8 +478,8 @@ would add none, fails with 422 `environment_unknown`, naming it in
 environment with a `branch`, or changing the branch of one,
 for an application without a manifest repository fails with 422
 `manifest_validation_failed` and `manifest_repository_required` in
-`details.errors`, as does an invalid branch or commit (`git_branch_invalid`,
-`git_commit_invalid`). Changing a branch or source
+`details.errors`. An invalid branch or commit fails with 400
+`git_branch_invalid` or `git_commit_invalid`, as for previews. Changing a branch or source
 advances the application revision and leaves that environment unresolved until
 it deploys or is promoted into.
 
@@ -544,9 +554,9 @@ socket. Only setup/login endpoints and TCP `/health` are public; see
 [authentication](authentication.md). What each caller may do is decided by its
 [grants](authorization.md); every operation names its requirement in the
 contract's `x-piqueld-access` extension. TCP requests also validate Host and browser
-Fetch Metadata headers; DNS names need `server.allowed_hosts` (see
+Fetch Metadata headers before authentication; DNS names need `server.allowed_hosts` (see
 [configuration](configuration.md)). Rejected requests return
-`403 browser_access_denied`. Authentication checks API mutation origins against
+`403 browser_access_denied`, even without credentials. Authentication checks API mutation origins against
 `auth.public_url`, returning `403 origin_mismatch` for rejected origins.
 Undecodable URL path parameters return `400 path_invalid`, and malformed IDs
 `400 application_id_invalid` or `environment_id_invalid`, with the usual JSON
@@ -599,7 +609,8 @@ handshakes must send the configured `Origin`, like mutations.
 The client's first message is a JSON text message such as `{ "service": "auth",
 "command": ["auth-service", "invite", "create"], "stdin": false, "tty": null }`;
 `tty` takes an initial `{ "width", "height" }` size and reports terminal output
-as stdout. Every later message is binary: a one-byte tag, then the payload, at
+as stdout. Without it within 30 seconds, the session fails with 408
+`exec_request_timeout`. Every later message is binary: a one-byte tag, then the payload, at
 most 1 MiB per message. Clients send stdin bytes (1), stdin end (2; ignored with
 a terminal, where disconnecting detaches) and terminal resizes (3, `u16` width
 then height). Closing the connection, rather than sending stdin end, stops the
@@ -719,9 +730,9 @@ belong to their environment. Secret endpoints expose metadata only:
   422 `manifest_validation_failed` with `secret_name_conflict` in `details.errors`. Each store
   (and each environment's generated secrets) supports at most 100 logical secrets,
   1,000 retained values and 100 MiB of ciphertext. Discarded unavailable versions
-  do not consume this value quota. Creating a 101st secret returns 400
-  `invalid_request`; exceeding the retained-version or byte quota returns 409
-  `secret_quota_exceeded`; delete unused secrets to free space.
+  do not consume this value quota. Creating a 101st secret or exceeding the
+  retained-version or byte quota returns 409 `secret_quota_exceeded`; delete
+  unused secrets to free space.
 - `PUT /api/v1/applications/{id}/secrets/{name}/access` replaces the access list
   with a JSON `SecretAccess` body. Environments must belong to the application
   (400 otherwise).
@@ -744,7 +755,7 @@ belong to their environment. Secret endpoints expose metadata only:
   environment whose Docker secrets it removes. It reserves the secret, releases the database writer
   lock, then removes Docker versions before encrypted records. Partial failure or restart leaves
   `deleting: true`; retry DELETE to finish. Replacement and new configuration
-  references return 409 `secret_deleting` until cleanup completes. A missing
+  references return 409 `secret_deleting` until cleanup completes. A missing or repeated
   `X-Expected-Generation` returns 400 `secret_generation_required`, and a version
   conflict 409 `secret_generation_conflict` (`details.expected_generation`,
   `details.actual_generation`); missing or invalid key material returns 503 `secret_storage_unavailable`

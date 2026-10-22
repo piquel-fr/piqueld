@@ -342,6 +342,28 @@ async fn access_lists_keep_renamed_environments_and_drop_deleted_ones() {
     ));
 }
 
+/// The 101st secret of a store exceeds its quota, like too many versions.
+#[tokio::test]
+async fn a_store_holds_at_most_100_secrets() {
+    let (_temp, store, _, _) = fixture().await;
+    let application = template().id().clone();
+    let put = |name: String| {
+        let (store, application) = (&store, &application);
+        async move {
+            store
+                .put_stored_secret(Daemon, application, &name, 0, b"value".to_vec(), None)
+                .await
+        }
+    };
+    for index in 0..100 {
+        put(format!("secret-{index}")).await.unwrap();
+    }
+    assert!(matches!(
+        put("secret-100".into()).await,
+        Err(StoreError::SecretQuota)
+    ));
+}
+
 /// A secret being deleted keeps the access it had, like its value.
 #[tokio::test]
 async fn access_is_fixed_while_a_secret_is_deleted() {

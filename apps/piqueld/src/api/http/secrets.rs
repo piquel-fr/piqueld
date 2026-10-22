@@ -1,11 +1,12 @@
 //! Write-only values and metadata-only secret lifecycle endpoints: generated
 //! secrets per environment, and each application's store of manually set secrets.
+use super::extract::{body_timeout, single_header};
 use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse,
 };
 use axum::{
     body::Bytes,
-    extract::{State, rejection::BytesRejection},
+    extract::{FromRequest, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
@@ -43,21 +44,23 @@ pub(super) async fn list(
     Ok(ok(state.secrets(&EnvironmentId::parse(id)?).await?))
 }
 
-/// Reads the mandatory non-negative `X-Expected-Generation` header; `0` means
-/// the secret must not exist yet.
+/// Reads the mandatory non-negative `X-Expected-Generation` header, which must
+/// occur once; `0` means the secret must not exist yet.
 fn expected(headers: &HeaderMap) -> Result<i64, ApiError> {
-    headers
-        .get("x-expected-generation")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .filter(|v| *v >= 0)
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "secret_generation_required",
-                "Supply X-Expected-Generation (0 creates a new secret)",
-            )
-        })
+    let required = |message| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "secret_generation_required",
+            message,
+        )
+    };
+    single_header(headers, "x-expected-generation", || {
+        required("Supply X-Expected-Generation once")
+    })?
+    .and_then(|v| v.to_str().ok())
+    .and_then(|v| v.parse().ok())
+    .filter(|v| *v >= 0)
+    .ok_or_else(|| required("Supply X-Expected-Generation (0 creates a new secret)"))
 }
 
 /// Deletes a generated secret, so a later deployment generates a new value.
@@ -178,26 +181,13 @@ pub(super) async fn put_stored(
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath((id, name)): ApiPath<(String, String)>,
     ApiQuery(query): ApiQuery<AccessQuery>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
+    request: Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let generation = expected(&headers)?;
+    let generation = expected(request.headers())?;
     let access = query.access()?;
-    let body = body.map_err(|e| {
-        ApiError::new(
-            e.status(),
-            "secret_body_invalid",
-            "Secret body could not be read within the request limit",
-        )
-    })?;
-    if body.is_empty() || body.len() > MAX_SECRET_VALUE_BYTES {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "secret_value_invalid",
-            format!("Secret values must contain 1–{MAX_SECRET_VALUE_BYTES} bytes"),
-        ));
-    }
-    if headers
+    // Checked before the body is read, which then need not be.
+    if request
+        .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_none_or(|v| v != "application/octet-stream")
@@ -206,6 +196,22 @@ pub(super) async fn put_stored(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "secret_content_type",
             "Secret values use application/octet-stream",
+        ));
+    }
+    let body = Bytes::from_request(request, &state).await.map_err(|e| {
+        body_timeout(&e).unwrap_or_else(|| {
+            ApiError::new(
+                e.status(),
+                "secret_body_invalid",
+                "Secret body could not be read within the request limit",
+            )
+        })
+    })?;
+    if body.is_empty() || body.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "secret_value_invalid",
+            format!("Secret values must contain 1–{MAX_SECRET_VALUE_BYTES} bytes"),
         ));
     }
     Ok(ok(state

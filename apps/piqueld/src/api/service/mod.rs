@@ -1,5 +1,6 @@
 //! Shared daemon operations, independent of transport adapters.
 
+mod admission;
 mod exec;
 mod history;
 mod notification_worker;
@@ -19,6 +20,7 @@ use crate::{
     application::{BoundaryError, RuntimeBoundary},
     store::{Store, StoreError},
 };
+pub use admission::Expensive;
 pub use exec::ExecSession;
 pub use history::ManifestExport;
 use piqueld_core::{
@@ -66,6 +68,9 @@ pub enum ApplicationError {
     /// An uploaded local snapshot was refused.
     #[error(transparent)]
     Snapshot(#[from] crate::git::snapshot::SnapshotError),
+    /// As much of this kind of expensive work already runs as it may.
+    #[error("too much {0:?} work is running")]
+    Busy(Expensive),
 }
 
 pub use crate::store::Actor;
@@ -559,6 +564,8 @@ pub struct ApplicationService {
     shutdown: tokio_util::sync::CancellationToken,
     /// Branch listings shared by concurrent preview reads.
     listings: Arc<crate::git::Listings>,
+    /// Budgets of expensive work (see [`Self::admit`]).
+    admission: Arc<admission::Admission>,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -584,6 +591,7 @@ impl ApplicationService {
             webhook_hostname: None,
             shutdown: tokio_util::sync::CancellationToken::new(),
             listings: Arc::default(),
+            admission: Arc::default(),
         }
     }
 

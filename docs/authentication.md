@@ -286,7 +286,10 @@ are also Secure and use the `__Host-` name prefix, so applications on sibling
 subdomains cannot set or shadow them. Browsers share cookies between the ports of
 a host, so an origin with an explicit port, such as `https://host:8443`, adds it
 to the cookie names, keeping daemons served on different ports signed in
-separately. Cookie-authenticated mutations require the configured Origin.
+separately. A mutation or WebSocket upgrade with any other Origin is refused.
+Cookie-authenticated mutations must send the configured Origin, and so must
+registration and login requests, unless they send no Origin and carry a bearer
+credential that authenticates.
 API/CLI credentials use `Authorization: Bearer …`. No tokens are automatically
 renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity; only the
@@ -335,7 +338,8 @@ The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for na
 builds; the Nix packages and development shell provide them.
 
 Public registration, login, and device-start requests are limited to 30 starts
-per TCP peer per minute, across all listeners. IPv6 peers are grouped by /64
+per TCP peer per minute, across all listeners. Requests refused for their Host,
+Fetch Metadata, or Origin do not count. IPv6 peers are grouped by /64
 prefix, and Unix socket callers share one peer bucket. Excess requests receive
 HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work are
 unaffected. There is no daemon-wide limit, so one caller cannot block sign-in for

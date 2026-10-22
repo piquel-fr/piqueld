@@ -3,7 +3,7 @@
 //! caller's access while they last, and ends them when the daemon shuts down.
 use super::{
     ApiError, ApiState,
-    auth::{FreshTailnet, TailnetSource, binding_mismatch},
+    auth::{FreshTailnet, TailnetSource},
 };
 use crate::auth::Identity;
 use std::time::Duration;
@@ -73,10 +73,8 @@ impl Lease {
         // Changes committed before this are seen by the check below.
         self.changes.borrow_and_update();
         self.next = Instant::now() + RECHECK;
-        if let Some(fresh) = FreshTailnet::check(&self.identity, self.source.as_ref()).await
-            && !fresh.matches(&self.identity)
-        {
-            return Err(Ended::Refused(binding_mismatch()));
+        if let Some(fresh) = FreshTailnet::check(&self.identity, self.source.as_ref()).await {
+            fresh.verify(&self.identity).map_err(Ended::Refused)?;
         }
         check(self.state.clone(), self.identity.clone())
             .await

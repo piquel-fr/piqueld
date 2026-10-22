@@ -10,6 +10,8 @@ use std::collections::HashMap;
 
 /// Seconds a host operator sign-in link stays redeemable.
 const OPERATOR_LINK_LIFETIME: i64 = 600;
+/// Seconds between refreshes of a credential's last-used time.
+const TOUCH_INTERVAL: i64 = 60;
 /// Seconds a host operator browser session lasts.
 pub(crate) const OPERATOR_SESSION_LIFETIME: i64 = 12 * 3600;
 
@@ -184,12 +186,30 @@ impl Auth {
         // Keep ordinary requests read-only. A refresh queues with reconciliation
         // writers and rechecks validity after waiting, so revocation still wins.
         if let Credential::Account { id, .. } = &identity.credential
-            && last_used_at <= now_secs() - 60
+            && last_used_at <= now_secs() - TOUCH_INTERVAL
+            && self.claim_touch(id)
             && !self.0.store.touch_credential(id).await?
         {
             return Err(AuthError::Unauthorized);
         }
         Ok(identity)
+    }
+    /// Claims the refresh of credential `id`'s last-used time for the next
+    /// [`TOUCH_INTERVAL`]. Concurrent requests that all read a stale time
+    /// then leave the write to the first, rather than each queueing for the
+    /// writer; `identify` has checked their credential either way. A claim
+    /// whose refresh failed or was cancelled still holds for the interval,
+    /// which is harmless: the next request after it refreshes, long before
+    /// the 24-hour idle limit could end a browser session.
+    fn claim_touch(&self, id: &str) -> bool {
+        let now = now_secs();
+        let mut touched = self.0.touched.lock();
+        touched.retain(|_, at| *at > now - TOUCH_INTERVAL);
+        if touched.contains_key(id) {
+            return false;
+        }
+        touched.insert(id.to_owned(), now);
+        true
     }
     /// Resolves a live credential's secret to its caller and when it was last
     /// used (now for host operator sessions, which have no idle timeout),

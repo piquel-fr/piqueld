@@ -115,7 +115,7 @@ impl ApplicationService {
             }),
             WebhookKind::Discord => {
                 let summary = event.message.as_deref().unwrap_or(&event.kind);
-                let application = event
+                let environment = event
                     .environment_id
                     .as_ref()
                     .map_or_else(|| "daemon".to_owned(), ToString::to_string);
@@ -123,7 +123,7 @@ impl ApplicationService {
                     format!("\nDiagnostic: {}\n{}", d.id, d.next_action)
                 });
                 let content = format!(
-                    "piqueld · {}\n{summary}\nApplication: {application}\nEvent: {} · Delivery: {}{diagnostic}",
+                    "piqueld · {}\n{summary}\nEnvironment: {environment}\nEvent: {} · Delivery: {}{diagnostic}",
                     delivery.category, event.id, delivery.id,
                 );
                 serde_json::json!({

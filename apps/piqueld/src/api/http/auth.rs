@@ -1,11 +1,11 @@
 //! Authentication HTTP boundary shared by both daemon transports.
-use super::ApiError;
+use super::{ApiError, ApiJson};
 use crate::auth::{Auth, AuthCookie, AuthError, Identity};
 use crate::store::StoreError;
-use crate::tailnet::TailnetLookup;
+use crate::tailnet::{LookupTimedOut, TailnetLookup};
 use axum::{
     Extension, Json, Router,
-    extract::{ConnectInfo, Request},
+    extract::{ConnectInfo, DefaultBodyLimit, Request},
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -17,6 +17,7 @@ use piqueld_core::auth::{
 };
 use piqueld_core::tailnet::TailnetPeer;
 use std::{net::SocketAddr, sync::Arc};
+use utoipa_axum::router::UtoipaMethodRouter;
 
 /// Authentication boundary that every API router requires and applies itself.
 /// Daemon listeners use the passkey [`Auth`] service; tests may supply a fake.
@@ -103,61 +104,43 @@ fn cookie<'a>(auth: &Auth, headers: &'a HeaderMap, cookie: AuthCookie) -> Option
             (key == name).then_some(value)
         })
 }
-/// Authentication middleware for API paths; other paths pass through. Every API
-/// response, including rejections, is marked `Cache-Control: no-store`.
-///
-/// On the tailnet node's listener, the peer's tailnet identity is looked up
-/// first and attached to the request (for token bindings) and the response
-/// (for the audit trail).
+/// Authentication middleware for API paths; other paths pass through.
 async fn authenticate(
     axum::extract::State(auth): axum::extract::State<Auth>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
     if !super::ui::is_api_path(request.uri().path()) {
         return next.run(request).await;
     }
-    let tailnet = match TailnetSource::of(request.extensions()) {
-        Some(source) => source.whois(false).await,
-        None => None,
-    };
-    if let Some(tailnet) = &tailnet {
-        request.extensions_mut().insert(tailnet.clone());
-    }
-    let mut response = authorize(&auth, request, next).await;
-    // A fresh lookup made while authorizing replaces the cached identity,
-    // even when it failed: the trail must not name a peer authorization
-    // could not establish.
-    let tailnet = match response.extensions_mut().remove::<FreshTailnet>() {
-        Some(FreshTailnet(fresh)) => fresh,
-        None => tailnet,
-    };
-    if let Some(tailnet) = tailnet {
-        response.extensions_mut().insert(tailnet);
-    }
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        header::HeaderValue::from_static("no-store"),
-    );
-    response
+    authorize(&auth, request, next).await
 }
-/// Authenticates one API request before running the handler:
+/// Authenticates one API request before running the handler. On TCP, the
+/// browser trust policy has already refused untrusted hosts and cross-site
+/// fetches (see `browser`). Refusals come before anything is spent on the
+/// request:
 ///
 /// 1. Takes the credential from `Authorization: Bearer`, else the session cookie.
-/// 2. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`).
-/// 3. Blocks cross-site mutations and upgrades: any mismatched `Origin` is
-///    rejected, and cookie-authenticated or bearer-less ceremony mutations must
-///    send the configured origin.
-/// 4. Refuses tokens bound to a tailnet identity unless the request came
-///    from a matching tailnet peer (401 `tailnet_binding_mismatch`).
-/// 5. Without any `Authorization` or `Cookie` header, a Unix socket request
+/// 2. Blocks cross-site mutations and upgrades: any mismatched `Origin` is
+///    rejected, and cookie-authenticated mutations, and ceremony mutations
+///    without a bearer token that authenticates, must send the configured
+///    origin.
+/// 3. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`),
+///    counting only requests that passed the checks before.
+/// 4. Without any `Authorization` or `Cookie` header, a Unix socket request
 ///    from root or the daemon's own user acts as the host operator (see
 ///    `UnixPeer`), also in refusals before this. Any such header, even one
 ///    that is unusable or cannot be parsed, rules it out.
-/// 6. Inserts the resolved `Identity` as an extension, on the request for
-///    handlers and on the response for outer layers. Missing or invalid
-///    credentials leave it out; the route's access requirement then decides
-///    whether the request needs one (see `access::enforce`).
+/// 5. On the tailnet node's listener, looks the peer up once: afresh for a
+///    token bound to a tailnet identity, which is refused unless the peer
+///    matches it (see [`FreshTailnet::verify`]), and from the cache otherwise,
+///    only to describe the request. Bound tokens are refused on other
+///    listeners, too.
+/// 6. Inserts the resolved `Identity` and tailnet peer as extensions, on the
+///    request for handlers and on the response for outer layers, like the
+///    audit trail. Missing or invalid credentials leave the identity out; the
+///    route's access requirement then decides whether the request needs one
+///    (see `access::enforce`).
 async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     let authorization = request.headers().get(header::AUTHORIZATION);
     // The scheme is case-insensitive (RFC 9110).
@@ -171,6 +154,16 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     let operator = (authorization.is_none() && !request.headers().contains_key(header::COOKIE))
         .then(|| super::UnixPeer::host_operator(request.extensions()))
         .flatten();
+    let target = (request.method(), request.headers(), request.uri().path());
+    if cross_site(auth, target, bearer, session).await {
+        let response = ApiError::new(
+            StatusCode::FORBIDDEN,
+            "origin_mismatch",
+            "Request origin does not match the configured website",
+        )
+        .into_response();
+        return refused(auth, secret, operator, response).await;
+    }
     if request.method() == Method::POST
         && matches!(
             request.uri().path(),
@@ -191,31 +184,6 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             return refused(auth, secret, operator, response).await;
         }
     }
-    let uses_cookie = bearer.is_none() && session.is_some();
-    let origin = request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    // A WebSocket opens with GET, but browsers send cookies on cross-site
-    // handshakes, so it is checked like a mutation.
-    let mutation = !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    ) || request.headers().contains_key(header::UPGRADE);
-    let ceremony = request.uri().path().contains("/auth/register/")
-        || request.uri().path().contains("/auth/login/");
-    // Any foreign origin is refused; cookie-authenticated and bearer-less
-    // ceremony requests must also name the configured one.
-    let origin_required = origin.is_some() || uses_cookie || (ceremony && bearer.is_none());
-    if mutation && origin_required && origin != Some(auth.origin()) {
-        let response = ApiError::new(
-            StatusCode::FORBIDDEN,
-            "origin_mismatch",
-            "Request origin does not match the configured website",
-        )
-        .into_response();
-        return refused(auth, secret, operator, response).await;
-    }
     let mut identity = operator.map(|operator| Identity::operator(operator, None));
     if let Some(secret) = secret {
         match auth.authenticate(secret).await {
@@ -225,23 +193,31 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
         }
     }
     // A bound token works only from a matching tailnet peer, checked with a
-    // fresh lookup rather than the cached one used to describe the request.
-    // The audit trail then describes the peer as authorization saw it.
-    let mut fresh = None;
-    if let Some(resolved) = &identity {
-        let source = TailnetSource::of(request.extensions());
-        fresh = FreshTailnet::check(resolved, source.as_ref()).await;
-        if let Some(lookup) = &fresh
-            && !lookup.matches(resolved)
-        {
-            let mut response = binding_mismatch().into_response();
-            response.extensions_mut().insert(resolved.clone());
-            response.extensions_mut().insert(lookup.clone());
-            return response;
+    // fresh lookup, which then also describes the request. Others are only
+    // described, from the cache.
+    let source = TailnetSource::of(request.extensions());
+    let fresh = match &identity {
+        Some(resolved) => FreshTailnet::check(resolved, source.as_ref()).await,
+        None => None,
+    };
+    let tailnet = match (&fresh, &source) {
+        (Some(fresh), _) => fresh.peer().cloned(),
+        // The cached identity only describes the request, so a lookup that
+        // timed out leaves it undescribed.
+        (None, Some(source)) => source.whois(false).await.ok().flatten(),
+        (None, None) => None,
+    };
+    if let (Some(fresh), Some(resolved)) = (&fresh, &identity)
+        && let Err(error) = fresh.verify(resolved)
+    {
+        let mut response = error.into_response();
+        response.extensions_mut().insert(resolved.clone());
+        if let Some(peer) = tailnet {
+            response.extensions_mut().insert(peer);
         }
+        return response;
     }
-    // Handlers see the peer authorization established, too.
-    if let Some(FreshTailnet(Some(peer))) = &fresh {
+    if let Some(peer) = &tailnet {
         request.extensions_mut().insert(peer.clone());
     }
     if let Some(identity) = &identity {
@@ -252,45 +228,86 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
     if let Some(identity) = identity {
         response.extensions_mut().insert(identity);
     }
-    if let Some(fresh) = fresh {
-        response.extensions_mut().insert(fresh);
+    if let Some(peer) = tailnet {
+        response.extensions_mut().insert(peer);
     }
     response
 }
-/// The outcome of the fresh tailnet lookup made to check a bound token,
-/// `None` inside when it failed. `authenticate` describes the request's peer
-/// with it instead of the cached identity.
-#[derive(Clone)]
-pub(super) struct FreshTailnet(pub(super) Option<TailnetPeer>);
+/// Whether a `method` request to `path` with `headers`, carrying `bearer` or
+/// `session`, is a mutation or upgrade that may come from another site. Any
+/// foreign `Origin` is, and cookies must come with the configured one. So
+/// must ceremonies, unless a bearer token that authenticates shows the
+/// caller is no browser. A token that could not be checked, e.g. while
+/// storage fails, is left for authentication to report.
+async fn cross_site(
+    auth: &Auth,
+    (method, headers, path): (&Method, &HeaderMap, &str),
+    bearer: Option<&str>,
+    session: Option<&str>,
+) -> bool {
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    // A WebSocket opens with GET, but browsers send cookies on cross-site
+    // handshakes, so it is checked like a mutation.
+    let mutation = !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+        || headers.contains_key(header::UPGRADE);
+    if !mutation || origin == Some(auth.origin()) {
+        return false;
+    }
+    let ceremony = path.contains("/auth/register/") || path.contains("/auth/login/");
+    origin.is_some()
+        || (bearer.is_none() && session.is_some())
+        || (ceremony
+            && match bearer {
+                Some(token) => matches!(auth.identify(token).await, Err(AuthError::Unauthorized)),
+                None => true,
+            })
+}
+/// A fresh lookup of a request's tailnet peer, made to check a token bound
+/// to a tailnet identity.
+pub(super) struct FreshTailnet(Result<Option<TailnetPeer>, LookupTimedOut>);
 
 impl FreshTailnet {
     /// Looks the request's peer up afresh when `identity` is bound to a
-    /// tailnet identity; `None` for unbound identities.
+    /// tailnet identity; `None` for unbound identities. Requests from outside
+    /// the tailnet node have no peer.
     pub(super) async fn check(identity: &Identity, source: Option<&TailnetSource>) -> Option<Self> {
         identity.tailnet.as_ref()?;
         Some(Self(match source {
             Some(source) => source.whois(true).await,
-            None => None,
+            None => Ok(None),
         }))
     }
 
-    /// Whether the peer satisfies `identity`'s binding.
-    pub(super) fn matches(&self, identity: &Identity) -> bool {
-        identity
+    /// The peer, when the lookup identified one.
+    pub(super) fn peer(&self) -> Option<&TailnetPeer> {
+        self.0.as_ref().ok()?.as_ref()
+    }
+
+    /// Refuses `identity` unless the peer satisfies its binding: 503
+    /// `tailnet_unavailable` when the lookup timed out, and 401
+    /// `tailnet_binding_mismatch` from anywhere but a matching tailnet peer.
+    pub(super) fn verify(&self, identity: &Identity) -> Result<(), ApiError> {
+        let peer = self.0.as_ref().map_err(|LookupTimedOut| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tailnet_unavailable",
+                "The tailnet peer could not be identified in time; try again",
+            )
+        })?;
+        let matches = identity
             .tailnet
             .as_ref()
-            .zip(self.0.as_ref())
-            .is_some_and(|(binding, peer)| binding.matches(peer))
+            .zip(peer.as_ref())
+            .is_some_and(|(binding, peer)| binding.matches(peer));
+        if !matches {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "tailnet_binding_mismatch",
+                "This token is bound to a tailnet identity; use it through the daemon's tailnet node from a matching device",
+            ));
+        }
+        Ok(())
     }
-}
-
-/// Refusal of a bound token used from anywhere but a matching tailnet peer.
-pub(super) fn binding_mismatch() -> ApiError {
-    ApiError::new(
-        StatusCode::UNAUTHORIZED,
-        "tailnet_binding_mismatch",
-        "This token is bound to a tailnet identity; use it through the daemon's tailnet node from a matching device",
-    )
 }
 
 /// Where a request came from on the tailnet node's listener: the lookup and
@@ -309,7 +326,7 @@ impl TailnetSource {
     }
 
     /// The peer's tailnet identity, from the cache unless `fresh`.
-    async fn whois(&self, fresh: bool) -> Option<TailnetPeer> {
+    async fn whois(&self, fresh: bool) -> Result<Option<TailnetPeer>, LookupTimedOut> {
         self.lookup.whois(self.peer, fresh).await
     }
 }
@@ -480,7 +497,7 @@ pub(super) async fn sign_in_link(
 #[utoipa::path(post,path="/api/v1/auth/login/operator",operation_id="authOperatorSignIn",request_body=OperatorSignIn,responses((status=200,body=Session),(status=401,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn operator_sign_in(
     Extension(auth): Extension<Auth>,
-    Json(input): Json<OperatorSignIn>,
+    ApiJson(input): ApiJson<OperatorSignIn>,
 ) -> Result<Response, ApiError> {
     let (operator, token) = auth.operator_sign_in(&input.secret).await?;
     let session = Identity::operator(operator, None).session();
@@ -511,7 +528,7 @@ pub(super) async fn me(Extension(identity): Extension<Identity>) -> Json<Session
 pub(super) async fn register_start(
     Extension(auth): Extension<Auth>,
     identity: Option<Extension<Identity>>,
-    Json(input): Json<RegistrationStart>,
+    ApiJson(input): ApiJson<RegistrationStart>,
 ) -> Result<Response, ApiError> {
     let binding = Auth::secret()?;
     let ceremony = auth
@@ -534,7 +551,7 @@ pub(super) async fn register_finish(
     Extension(auth): Extension<Auth>,
     identity: Option<Extension<Identity>>,
     headers: HeaderMap,
-    Json(input): Json<CeremonyFinish>,
+    ApiJson(input): ApiJson<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
     let (user, token) = auth
         .registration_finish(
@@ -563,7 +580,7 @@ pub(super) async fn login_start(Extension(auth): Extension<Auth>) -> Result<Resp
 pub(super) async fn login_finish(
     Extension(auth): Extension<Auth>,
     headers: HeaderMap,
-    Json(input): Json<CeremonyFinish>,
+    ApiJson(input): ApiJson<CeremonyFinish>,
 ) -> Result<Response, ApiError> {
     let (user, token) = auth.login_finish(input, binding(&auth, &headers)?).await?;
     Ok(session_response(&auth, user, Some(token)))
@@ -601,7 +618,7 @@ pub(super) async fn directory(
 pub(super) async fn manage(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
-    Json(input): Json<Manage>,
+    ApiJson(input): ApiJson<Manage>,
 ) -> Result<Json<Managed>, ApiError> {
     Ok(Json(auth.manage(&identity, input).await?))
 }
@@ -627,18 +644,33 @@ pub(super) async fn device_start(
     };
     Ok(Json(auth.device_start(requester, request.grants).await?))
 }
-/// Bodies [`device_start`] accepts; larger ones answer 413 while they are
-/// read, before anything is buffered beyond it.
+/// Bodies [`device_start`] accepts: pending logins are kept in memory.
 const DEVICE_START_LIMIT_BYTES: usize = 16 * 1024;
+/// Bodies the other public sign-in endpoints accept: anyone may send them
+/// before signing in, and their JSON, passkey responses included, is small.
+const SIGN_IN_LIMIT_BYTES: usize = 64 * 1024;
+/// Caps the bodies `routes` accept at `bytes`; larger ones answer 413 while
+/// they are read, before anything is buffered beyond it.
+fn limit_body<S: Clone + Send + Sync + 'static>(
+    (schemas, paths, router): UtoipaMethodRouter<S>,
+    bytes: usize,
+) -> UtoipaMethodRouter<S> {
+    (schemas, paths, router.layer(DefaultBodyLimit::max(bytes)))
+}
+/// Registers public sign-in `routes` with the [`SIGN_IN_LIMIT_BYTES`] body
+/// limit.
+pub(super) fn sign_in_route<S: Clone + Send + Sync + 'static>(
+    routes: UtoipaMethodRouter<S>,
+) -> UtoipaMethodRouter<S> {
+    limit_body(routes, SIGN_IN_LIMIT_BYTES)
+}
 /// Registers [`device_start`] with its [`DEVICE_START_LIMIT_BYTES`] body
 /// limit, marking the body optional in the `OpenAPI` document: older clients
 /// send none.
 pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
-    (schemas, mut paths, router): utoipa_axum::router::UtoipaMethodRouter<S>,
-) -> utoipa_axum::router::UtoipaMethodRouter<S> {
-    let router = router.layer(axum::extract::DefaultBodyLimit::max(
-        DEVICE_START_LIMIT_BYTES,
-    ));
+    routes: UtoipaMethodRouter<S>,
+) -> UtoipaMethodRouter<S> {
+    let (schemas, mut paths, limited) = limit_body(routes, DEVICE_START_LIMIT_BYTES);
     for item in paths.paths.values_mut() {
         if let Some(body) = item
             .post
@@ -648,7 +680,7 @@ pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
             body.required = Some(utoipa::openapi::Required::False);
         }
     }
-    (schemas, paths, router)
+    (schemas, paths, limited)
 }
 /// Polls a device sign-in.
 ///
@@ -659,7 +691,7 @@ pub(super) fn device_start_route<S: Clone + Send + Sync + 'static>(
 #[utoipa::path(post,path="/api/v1/auth/device/poll",operation_id="authDevicePoll",request_body=DevicePoll,responses((status=200,body=DeviceToken)))]
 pub(super) async fn device_poll(
     Extension(auth): Extension<Auth>,
-    Json(input): Json<DevicePoll>,
+    ApiJson(input): ApiJson<DevicePoll>,
 ) -> Result<Response, ApiError> {
     let token = auth.device_poll(&input.device_code).await?;
     let signed_in = token
@@ -679,7 +711,7 @@ pub(super) async fn device_poll(
 #[utoipa::path(post,path="/api/v1/auth/device/inspect",operation_id="authDeviceInspect",request_body=DeviceApprove,responses((status=200,body=DeviceRequest)))]
 pub(super) async fn device_inspect(
     Extension(auth): Extension<Auth>,
-    Json(input): Json<DeviceApprove>,
+    ApiJson(input): ApiJson<DeviceApprove>,
 ) -> Result<Json<DeviceRequest>, ApiError> {
     Ok(Json(auth.device_inspect(&input.user_code).await?))
 }
@@ -690,7 +722,7 @@ pub(super) async fn device_inspect(
 pub(super) async fn device_approve(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
-    Json(input): Json<DeviceApprove>,
+    ApiJson(input): ApiJson<DeviceApprove>,
 ) -> Result<Json<Managed>, ApiError> {
     auth.device_approve(&input.user_code, &identity).await?;
     Ok(Json(Managed::default()))

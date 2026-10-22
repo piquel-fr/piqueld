@@ -1,11 +1,10 @@
 //! The published `OpenAPI` 3.0 contract, generated from the routes' Utoipa
 //! metadata and served at `/api/v1/openapi.json`.
-use axum::{Extension, response::IntoResponse};
+use axum::{Extension, body::Bytes, response::IntoResponse};
 use http::header;
 use piqueld_core::api::{Envelope, ErrorBody, SecretMetadata};
 use piqueld_core::{edit::RoutesValue, manifest::Route};
 use serde_json::{Map, Value};
-use std::sync::Arc;
 use utoipa::{OpenApi, ToResponse};
 
 // Base document: API metadata plus explicitly registered component schemas.
@@ -83,14 +82,28 @@ pub(super) struct ApiErrorResponse(ErrorBody);
         (status = 200, description = "OpenAPI 3.0 document", body = Object, content_type = "application/vnd.oai.openapi+json")
     )
 )]
-pub(super) async fn openapi(Extension(document): Extension<Arc<Value>>) -> impl IntoResponse {
+pub(super) async fn openapi(
+    Extension(PublishedDocument(document)): Extension<PublishedDocument>,
+) -> impl IntoResponse {
     (
         [(
             header::CONTENT_TYPE,
             "application/vnd.oai.openapi+json;version=3.0",
         )],
-        document.to_string(),
+        document,
     )
+}
+
+/// The published `OpenAPI` 3.0 document, serialized once when the router is
+/// built rather than on every request.
+#[derive(Clone)]
+pub(super) struct PublishedDocument(Bytes);
+
+impl PublishedDocument {
+    /// Publishes `document` (see [`openapi_30_document`]).
+    pub(super) fn new(document: &utoipa::openapi::OpenApi) -> Self {
+        Self(openapi_30_document(document).to_string().into())
+    }
 }
 
 /// Generates the `OpenAPI` contract from Utoipa endpoint metadata.
@@ -108,8 +121,9 @@ pub fn openapi_document() -> Value {
 /// Besides schema downgrading, it drops the license `identifier` (3.1 only),
 /// declares bearer-token and session-cookie security as the default (public
 /// endpoints clear it, see `access::Access::declare`), strips
-/// `nullable` from optional parameters, and documents the TCP 403 response.
-pub(super) fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
+/// `nullable` from optional parameters, and documents the TCP 403 and body
+/// timeout 408 responses.
+fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
     let mut document = serde_json::to_value(document).expect("OpenAPI serialization cannot fail");
     convert_to_openapi_30(&mut document);
     document["openapi"] = Value::String("3.0.3".into());
@@ -208,17 +222,30 @@ fn convert_to_openapi_30(value: &mut Value) {
 }
 
 /// Adds the 403 returned by the TCP browser trust middleware
-/// (`browser::BrowserPolicy`) to every documented operation.
+/// (`browser::BrowserPolicy`) to every documented operation, and the 408 of
+/// a request body that stopped arriving to those that take one.
 fn complete_http_contract(document: &mut Value) {
+    let error = |description: &str| {
+        serde_json::json!({
+            "description": description,
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
+        })
+    };
     for operation in operations_mut(document) {
+        let has_body = operation.contains_key("requestBody");
         if let Some(responses) = operation
             .get_mut("responses")
             .and_then(Value::as_object_mut)
         {
-            responses.insert("403".into(), serde_json::json!({
-                "description": "TCP authority or browser origin is not trusted",
-                "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}
-            }));
+            responses.insert(
+                "403".into(),
+                error("TCP authority or browser origin is not trusted"),
+            );
+            if has_body {
+                responses
+                    .entry("408")
+                    .or_insert_with(|| error("The request body stopped arriving"));
+            }
         }
     }
 }
