@@ -26,9 +26,9 @@ added later: requests about an environment are checked on its application.
 | `admin` | all or listed applications | On every application: everything, including installation-wide permissions. On listed applications: every application permission there |
 | `apps:read` | all or listed applications | Configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, and secret names and which environments may mount them |
 | `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding, renaming or changing the source of environments, opting them into or out of sync, and generating webhook secrets |
-| `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
+| `apps:deploy` | all or listed applications | Deploy, promote releases into, restore deployments of, and reconcile environments, create, deploy and restore previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
-| `previews:deploy` | all or listed applications | Create and deploy [previews](#preview-permissions), including from a local worktree, and read their logs; included in `apps:deploy` |
+| `previews:deploy` | all or listed applications | Create, deploy and restore [previews](#preview-permissions), including from a local worktree, and read their logs; included in `apps:deploy` |
 | `previews:delete` | all or listed applications | Delete and prune previews; included in `apps:delete` |
 | `apps:exec` | all or listed applications | Run commands in running containers (`piquelctl app exec` and `preview exec`), which reaches everything those containers can, including secret values |
 | `secrets:write` | all or listed applications | Store, regenerate, and delete secret values, and choose which environments may mount a stored secret |

@@ -401,7 +401,7 @@ impl Store {
     /// Checks again that `promotion`'s origin applies to `target`, which
     /// promotes from `from`: a reviewed deployment must still be the current,
     /// succeeded one of that same source, and running the release itself
-    /// needs no source. Builds are never promoted.
+    /// needs no source. Builds and restores are never promoted.
     async fn check_origin_on(
         tx: &mut Transaction<'_, Sqlite>,
         target: &StoredEnvironment,
@@ -437,7 +437,9 @@ impl Store {
                 }
             }
             DeploymentOrigin::Release => {}
-            DeploymentOrigin::Build | DeploymentOrigin::Local(_) => {
+            DeploymentOrigin::Build
+            | DeploymentOrigin::Local(_)
+            | DeploymentOrigin::Restore { .. } => {
                 return Err(StoreError::InvalidInput);
             }
         }

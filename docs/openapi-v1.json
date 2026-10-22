@@ -2159,6 +2159,26 @@
             "type": "object"
           },
           {
+            "description": "An earlier deployment of the same environment, restored exactly: its\nrendered manifest, images and pinned secret versions. It never runs\njobs.",
+            "properties": {
+              "deployment": {
+                "description": "The deployment it restored.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "restore"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "allOf": [
               {
                 "$ref": "#/components/schemas/LocalSnapshot",
@@ -9361,7 +9381,7 @@
         "type": "object"
       },
       "ReleasePromotion": {
-        "description": "A deployment that received a release: promoted, or deployed again by ID.",
+        "description": "A deployment that received a release: promoted, deployed again by ID, or\nrestored.",
         "properties": {
           "created_at_ms": {
             "description": "When it was accepted, in Unix milliseconds.",
@@ -9775,6 +9795,20 @@
         },
         "required": [
           "value"
+        ],
+        "type": "object"
+      },
+      "RestoreRequest": {
+        "additionalProperties": false,
+        "description": "Restores an earlier deployment of an environment or preview exactly. No\napplication revision is needed: the deployment pins everything deployed.",
+        "properties": {
+          "deployment": {
+            "description": "The deployment to restore; it must have succeeded.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment"
         ],
         "type": "object"
       },
@@ -27691,6 +27725,144 @@
         "x-piqueld-access": "apps:write"
       }
     },
+    "/api/v1/environments/{id}/restore": {
+      "post": {
+        "description": "Deploys `deployment` again as it ran: its rendered manifest, its images\nand the secret versions it pinned, recorded as a new deployment whose\norigin names it, which becomes the maintained target. Nothing is rendered,\nfetched or built, and jobs never run. Volume contents and migrations are\nnot reverted. Refused unless it succeeded (`deployment_not_restorable`),\nits images are present or can be pulled again by digest\n(`image_unavailable`), and the secret versions it pinned still exist\n(`restore_secrets_unavailable`, listing them). Needs no application\nrevision. Previews restore through `restorePreviewDeployment`. Repeating a\nrequest with the same `Idempotency-Key` returns the original response.",
+        "operationId": "restoreDeployment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Restore accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Restores an earlier deployment of an environment exactly.",
+        "x-piqueld-access": "apps:deploy"
+      }
+    },
     "/api/v1/environments/{id}/secrets": {
       "get": {
         "description": "Returns metadata only; secret values are write-only and never returned.",
@@ -29321,6 +29493,144 @@
           }
         },
         "summary": "Deploys the head of a preview's branch.",
+        "x-piqueld-access": "previews:deploy"
+      }
+    },
+    "/api/v1/previews/{id}/restore": {
+      "post": {
+        "description": "Deploys `deployment` again as it ran, as `restoreDeployment` does for an\nenvironment: its rendered manifest, its images and the secret versions it\npinned, without fetching, building, or running jobs. Refused unless it\nsucceeded (`deployment_not_restorable`), its images are present or can be\npulled again by digest (`image_unavailable`), and the secret versions it\npinned still exist (`restore_secrets_unavailable`).",
+        "operationId": "restorePreviewDeployment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Restore accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Restores an earlier deployment of a preview exactly.",
         "x-piqueld-access": "previews:deploy"
       }
     },

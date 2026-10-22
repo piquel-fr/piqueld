@@ -475,7 +475,8 @@ impl<D: DockerApi> Controller<D> {
     /// Resolves the operation's deployable target, reusing a previously saved one.
     ///
     /// Verifies the swarm topology, then returns the saved target, as every
-    /// release, promoted or deployed again, has from acceptance. A build's
+    /// release, promoted or deployed again, and every restore has from
+    /// acceptance. A build's
     /// saved target needs the environment still tracking
     /// (`environment_promoted` once it was made promoted), since a promoted
     /// environment only runs releases, unless it is already the active
@@ -504,7 +505,7 @@ impl<D: DockerApi> Controller<D> {
             }
             return Ok(target);
         }
-        // Releases save their target on acceptance.
+        // Releases and restores save their target on acceptance.
         if !builds {
             return Err(StoreError::Corrupt.into());
         }

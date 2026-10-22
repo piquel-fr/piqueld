@@ -440,19 +440,83 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         }
-        let rows=sqlx::query!(r#"SELECT p.name AS "name!",v.swarm_name AS "swarm_name!",v.available AS "available!" FROM deployment_secret_pins p JOIN secret_versions v USING(environment_id,name,generation) WHERE p.operation_id=?1
-            UNION ALL SELECT p.name,c.swarm_name,v.available FROM deployment_stored_secret_pins p JOIN application_secret_copies c USING(environment_id,name,generation) JOIN application_secret_versions v ON v.application_id=c.application_id AND v.name=c.name AND v.generation=c.generation WHERE p.operation_id=?1"#,operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
-        let unavailable = rows
+        let pinned = Self::pinned_secrets_on(tx, operation).await?;
+        let unavailable = pinned
             .iter()
-            .filter(|r| r.available == 0)
-            .map(|r| r.name.as_str())
+            .filter(|(_, (_, available))| !available)
+            .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>();
         if !unavailable.is_empty() {
             return Err(StoreError::SecretUnavailable {
                 names: unavailable.join(", "),
             });
         }
-        Ok(rows.into_iter().map(|r| (r.name, r.swarm_name)).collect())
+        Ok(pinned
+            .into_iter()
+            .map(|(name, (swarm_name, _))| (name, swarm_name))
+            .collect())
+    }
+
+    /// The secret versions deployment `operation` pinned, by logical name:
+    /// each one's Swarm secret name, and whether its value is still available.
+    async fn pinned_secrets_on(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        operation: &str,
+    ) -> Result<BTreeMap<String, (String, bool)>, StoreError> {
+        let rows=sqlx::query!(r#"SELECT p.name AS "name!",v.swarm_name AS "swarm_name!",v.available AS "available!" FROM deployment_secret_pins p JOIN secret_versions v USING(environment_id,name,generation) WHERE p.operation_id=?1
+            UNION ALL SELECT p.name,c.swarm_name,v.available FROM deployment_stored_secret_pins p JOIN application_secret_copies c USING(environment_id,name,generation) JOIN application_secret_versions v ON v.application_id=c.application_id AND v.name=c.name AND v.generation=c.generation WHERE p.operation_id=?1"#,operation).fetch_all(&mut **tx).await.map_err(StoreError::database)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.name, (r.swarm_name, r.available != 0)))
+            .collect())
+    }
+
+    /// Pins for `operation`, restoring deployment `restored`, the secret
+    /// versions `restored` pinned, which its target mounts as `names`
+    /// (logical to Swarm secret names). Never pins a newer version: fails
+    /// with `restore_secrets_unavailable`, naming them, when versions were
+    /// deleted since or their values discarded by key recovery, and with
+    /// `secret_deleting` while one is being deleted.
+    pub(super) async fn restore_secret_pins_on(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        operation: &Operation,
+        restored: &str,
+        names: &BTreeMap<String, String>,
+    ) -> Result<(), StoreError> {
+        Self::check_secret_references(
+            tx,
+            &names.keys().map(String::as_str).collect(),
+            SecretScope::Environment(&operation.environment_id),
+        )
+        .await?;
+        let id = operation.id.as_str();
+        sqlx::query!("INSERT INTO deployment_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,environment_id,name,generation FROM deployment_secret_pins WHERE operation_id=?2",id,restored)
+            .execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO deployment_stored_secret_pins(operation_id,environment_id,name,generation) SELECT ?1,environment_id,name,generation FROM deployment_stored_secret_pins WHERE operation_id=?2",id,restored)
+            .execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!(
+            "INSERT INTO deployment_secrets_prepared(operation_id) VALUES(?1)",
+            id
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        let pinned = Self::pinned_secrets_on(tx, id).await?;
+        let gone = names
+            .iter()
+            .filter(|(name, swarm_name)| {
+                !matches!(pinned.get(*name), Some((pinned, true)) if pinned == *swarm_name)
+            })
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        if !gone.is_empty() {
+            return Err(super::RestoreError::SecretsGone {
+                deployment: restored.to_owned(),
+                secrets: gone,
+            }
+            .into());
+        }
+        Ok(())
     }
     /// Decrypts one version by the Swarm secret name `environment` created it
     /// under, for creating the runtime secret.

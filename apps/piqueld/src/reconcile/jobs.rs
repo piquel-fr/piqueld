@@ -15,7 +15,7 @@ use crate::{
 };
 use piqueld_core::{
     DesiredJobRun, ResolvedApplication,
-    api::{BuildState, LogStream},
+    api::{BuildState, DeploymentOrigin, LogStream},
     manifest::JobRun,
 };
 use std::{
@@ -32,7 +32,8 @@ const JOB_POLL_INTERVAL: Duration = Duration::from_secs(1);
 impl<D: DockerApi> Controller<D> {
     /// Removes runs of earlier operations, then runs before-rollout jobs in
     /// declared order. Promoted operations already passed this point, so their
-    /// retries and repairs never rerun jobs.
+    /// retries and repairs never rerun jobs. Restores run none: an earlier
+    /// deployment's migrations must never run against newer data.
     pub(super) async fn run_jobs(
         &self,
         operation: &Operation,
@@ -42,12 +43,18 @@ impl<D: DockerApi> Controller<D> {
         if self.store.is_promoted(&operation.id).await? {
             return Ok(());
         }
+        let restore = matches!(
+            self.store.deployment_origin(&operation.id).await?,
+            DeploymentOrigin::Restore { .. }
+        );
         let succeeded = self.store.succeeded_jobs(&operation.id).await?;
         let jobs = target
             .jobs
             .iter()
             .filter(|job| {
-                job.run == JobRun::BeforeRollout && !succeeded.contains(job.logical_name.as_str())
+                !restore
+                    && job.run == JobRun::BeforeRollout
+                    && !succeeded.contains(job.logical_name.as_str())
             })
             .map(|job| job.for_operation(&operation.id))
             .collect::<Vec<_>>();

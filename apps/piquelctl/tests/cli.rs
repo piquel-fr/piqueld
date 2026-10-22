@@ -2880,6 +2880,60 @@ fn promotion_commands_name_environments_and_report_the_pinned_release() {
     let _ = server.finish();
 }
 
+/// `env history` lists deployments with where each came from, and
+/// `env restore` restores the one it names, reporting the new deployment.
+#[test]
+fn history_lists_restores_and_restore_names_the_deployment() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/app-notes-01/deployments" => {
+            let mut restored = deployment("succeeded");
+            restored["operation"]["id"] = json!("operation-02");
+            restored["origin"] = json!({"type": "restore", "deployment": "operation-01"});
+            Reply::json(json!({"items": [restored], "next_cursor": null}))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run_human(&server, &["env", "history", "app-notes-01", "production"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("operation-02  succeeded"), "{stdout}");
+    assert!(stdout.contains("(current)"), "{stdout}");
+    assert!(
+        stdout.contains("restored from deployment operation-01"),
+        "{stdout}"
+    );
+    let _ = server.finish();
+
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/app-notes-01/restore" => {
+            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
+            assert_eq!(body, json!({"deployment": "operation-01"}));
+            Reply::accepted(json!({
+                "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1
+            }))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "env",
+            "restore",
+            "app-notes-01",
+            "production",
+            "operation-01",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    let report = assert_json_success(&output);
+    assert_eq!(report["deployment_id"], "operation-02");
+    assert_eq!(report["environment_id"], "app-notes-01");
+    let _ = server.finish();
+}
+
 /// `operation-01` as a deployment of `app-notes-01` read from `main`.
 fn deployment(state: &str) -> Value {
     json!({
@@ -2976,6 +3030,36 @@ fn wait_follows_one_deployment_until_its_routes_are_ready() {
     for line in String::from_utf8_lossy(&output.stderr).lines() {
         assert!(serde_json::from_str::<Value>(line).unwrap()["progress"].is_object());
     }
+}
+
+/// `env wait` reports the local snapshot a restore runs, through restores.
+#[test]
+fn wait_reports_the_local_snapshot_a_restore_runs() {
+    let mut restored = deployment("succeeded");
+    restored["origin"] = json!({"type": "restore", "deployment": "operation-00"});
+    let mut snapshot = deployment("succeeded");
+    snapshot["operation"]["id"] = json!("operation-00");
+    snapshot["current_target"] = json!(false);
+    snapshot["origin"] = json!({"type": "local", "commit": "c".repeat(40), "base": "b".repeat(40)});
+    let server = start_server(false, usize::MAX, move |request| {
+        match request.path.split('?').next().unwrap() {
+            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+            "/api/v1/environments/app-notes-01/deployments" => {
+                Reply::json(page(vec![restored.clone(), snapshot.clone()], None))
+            }
+            "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
+            "/api/v1/environments/app-notes-01/detail" => {
+                Reply::json(detail("operation-01", true, "ready"))
+            }
+            path => panic!("unexpected path {path}"),
+        }
+    });
+    let output = run_with_timeout(&server, &["env", "wait", "app-notes-01"], "10s");
+    let result = assert_json_success(&output);
+    server.stop();
+    assert_eq!(result["deployment_id"], "operation-01");
+    assert_eq!(result["local"], true);
+    assert_eq!(result["base"], "b".repeat(40));
 }
 
 #[test]

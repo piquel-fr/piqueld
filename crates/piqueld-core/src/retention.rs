@@ -20,7 +20,7 @@ pub enum RetentionRoot {
     /// replaces it.
     Latest,
     /// One of an environment's last `keep_deployments` successful
-    /// deployments, which restoring a deployment (#172) deploys again.
+    /// deployments, which restoring a deployment deploys again.
     /// Previews keep none.
     Recent,
     /// What an environment that a promoted environment promotes from

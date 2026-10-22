@@ -7,13 +7,13 @@ use crate::{
     error::{CliCode, CliError, ErrorKind, Result},
     output::{
         Console,
-        reports::{AcceptedDeploymentReport, OperationOutcomeReport},
+        reports::{AcceptedDeploymentReport, Named, OperationOutcomeReport},
     },
-    support::join_or,
+    support::{join_or, retry_transport},
 };
 use clap::{Args, ValueEnum};
 use piqueld_client::{
-    AcceptedOperation, ApplicationId, Client, DeploymentOrigin, DeploymentView,
+    AcceptedOperation, ApplicationId, ApplicationView, Client, DeploymentOrigin, DeploymentView,
     EnvironmentDetailView, EnvironmentId, EnvironmentName, EnvironmentView, LocalSnapshot,
     Operation, OperationKind, OperationState, ReleaseId, RouteUrl, SystemVariable, UrlState,
 };
@@ -82,21 +82,29 @@ impl Deployed {
         }
     }
 
-    /// A finished deployment: its release and revision, and, when `detail`
-    /// shows it runs, its URLs.
-    fn finished(
+    /// A finished deployment: its release and revision, the local snapshot
+    /// it runs, restored or not, and, when `detail` shows it runs, its URLs.
+    async fn finished(
+        client: &Client,
         environment: &EnvironmentView,
         deployment: &DeploymentView,
         detail: &EnvironmentDetailView,
-    ) -> Self {
+    ) -> Result<Self> {
         let id = &deployment.operation.id;
-        let snapshot = match &deployment.origin {
+        let mut origin = deployment.origin.clone();
+        // Restores run what they restored, which may be a restore too.
+        while let DeploymentOrigin::Restore { deployment } = &origin {
+            origin = find_deployment(client, environment, deployment)
+                .await?
+                .origin;
+        }
+        let snapshot = match origin {
             DeploymentOrigin::Local(snapshot) => Some(snapshot),
             _ => None,
         };
-        Self {
+        Ok(Self {
             local: snapshot.is_some(),
-            base: snapshot.and_then(|snapshot| snapshot.base.clone()),
+            base: snapshot.and_then(|snapshot| snapshot.base),
             release_id: deployment.release.clone(),
             branch: deployment
                 .system_value(SystemVariable::GitBranch)
@@ -109,7 +117,7 @@ impl Deployed {
                 .then(|| detail.urls.clone())
                 .flatten(),
             ..Self::accepted(environment, id)
-        }
+        })
     }
 
     /// Reads the deployment that ended as `operation`, which decided the
@@ -122,7 +130,7 @@ impl Deployed {
         let mut deployment = find_deployment(client, environment, &operation.id).await?;
         deployment.operation = operation;
         let detail = client.environment_detail(environment.id.as_str()).await?;
-        Ok(Self::finished(environment, &deployment, &detail))
+        Self::finished(client, environment, &deployment, &detail).await
     }
 }
 
@@ -229,7 +237,13 @@ impl Readiness {
 
 /// Selects the environment or preview a command acts on.
 pub(crate) trait Target {
-    async fn environment(&self, client: &Client) -> Result<EnvironmentView>;
+    /// Loads the application and selects the environment or preview.
+    async fn resolve(&self, client: &Client) -> Result<(ApplicationView, EnvironmentView)>;
+
+    /// The selected environment or preview.
+    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
+        Ok(self.resolve(client).await?.1)
+    }
 }
 
 // `wait` arguments shared by `env wait` and `preview wait`.
@@ -287,7 +301,7 @@ impl<T: Args + Target> WaitArgs<T> {
                 })
             })
             .await?;
-        console.emit(&Deployed::finished(environment, &deployment, &detail))
+        console.emit(&Deployed::finished(client, environment, &deployment, &detail).await?)
     }
 
     /// The deployment to wait for: `--deployment`, checked to be one of
@@ -315,6 +329,62 @@ impl<T: Args + Target> WaitArgs<T> {
             ));
         }
         Ok(id.clone())
+    }
+}
+
+// `history` arguments shared by `env history` and `preview history`.
+#[derive(Debug, Args)]
+pub(crate) struct HistoryArgs<T: Args> {
+    #[command(flatten)]
+    target: T,
+    /// Cursor from the previous page.
+    #[arg(long)]
+    cursor: Option<String>,
+}
+
+impl<T: Args + Target> HistoryArgs<T> {
+    /// Emits one page of the target's deployments, newest first.
+    pub(crate) async fn run(&self, console: &mut Console, client: &Client) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
+        let page = client
+            .deployments(environment.id.as_str(), self.cursor.as_deref())
+            .await?;
+        console.emit(&Named::new(&page, &application))
+    }
+}
+
+// `restore` arguments shared by `env restore` and `preview restore`.
+#[derive(Debug, Args)]
+pub(crate) struct RestoreArgs<T: Args> {
+    #[command(flatten)]
+    target: T,
+    /// The deployment to restore, as `history` lists it; it must have succeeded.
+    deployment: String,
+    /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    yes: bool,
+    /// Return after the daemon accepts the restore.
+    #[arg(long)]
+    no_wait: bool,
+}
+
+impl<T: Args + Target> RestoreArgs<T> {
+    /// Confirms and restores the deployment exactly as it ran, as a new
+    /// deployment, then waits for it unless `--no-wait`.
+    pub(crate) async fn run(&self, console: &mut Console, client: &Client) -> Result<()> {
+        let environment = self.target.environment(client).await?;
+        console
+            .confirm(
+                self.yes,
+                &format!(
+                    "Restore deployment {} of {}? Its jobs don't run again, and volumes and migrations stay as they are.",
+                    self.deployment, environment.name
+                ),
+            )
+            .await?;
+        let accepted =
+            retry_transport(|| client.restore_deployment(&environment, &self.deployment)).await?;
+        wait_for_accepted(console, client, &environment, self.no_wait, &accepted).await
     }
 }
 

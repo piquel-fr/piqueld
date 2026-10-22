@@ -97,7 +97,8 @@ pub trait RuntimeBoundary: Send + Sync + 'static {
     /// Keeps image cleanup from removing anything until the returned guard
     /// drops, and makes sure every image of `sources` is present, pulling
     /// registry images again by digest (see `ImagesInUse::ensure`). Promoting
-    /// a release holds the guard until it saved the target that runs them.
+    /// a release or restoring a deployment holds the guard until it saved the
+    /// target that runs them.
     async fn reuse_images(
         &self,
         sources: &BTreeMap<ServiceName, ResolvedSource>,

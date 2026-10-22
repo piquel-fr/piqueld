@@ -7,7 +7,7 @@ use super::super::ui::{
     operation_badge, when,
 };
 use super::super::{
-    Alive, ClientErrorExt, document_hidden, live_row, operation_events, release_link,
+    Alive, ClientErrorExt, confirm, document_hidden, live_row, operation_events, release_link,
 };
 use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
@@ -877,8 +877,36 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                     tab.get() != "Details"
                 }}>
                     {move || {
-                        let DeploymentView { operation: op, release, origin, .. } = deployment
-                            .get();
+                        let DeploymentView {
+                            operation: op,
+                            release,
+                            origin,
+                            succeeded_at_ms,
+                            current_target,
+                            ..
+                        } = deployment.get();
+                        let restore = (succeeded_at_ms.is_some() && !current_target)
+                            .then(|| {
+                                let id = op.id.clone();
+                                view! {
+                                    <div class="toolbar">
+                                        <p class="hint">
+                                            "Restoring deploys this deployment again exactly as it ran: its manifest, images and secret versions. Its jobs don't run again, and volume contents and migrations stay as they are."
+                                        </p>
+                                        <div class="toolbar-end">
+                                            <button
+                                                type="button"
+                                                class="btn btn-sm"
+                                                disabled={move || context.action_blocked()}
+                                                on:click={move |_| context.restore(id.clone())}
+                                            >
+                                                {icon(Icon::Restore)}
+                                                "Restore"
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+                            });
                         let release = release
                             .map_or_else(
                                 || "Not recorded".into_any(),
@@ -886,6 +914,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                             );
                         view! {
                             <div class="stack-sm">
+                                {restore}
                                 <dl class="kv">
                                     <dt>"Operation ID"</dt>
                                     <dd>
@@ -953,6 +982,32 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                 </div>
             </div>
         </article>
+    }
+}
+
+impl EditorContext {
+    /// Confirms, then restores `deployment` of the shown environment or
+    /// preview exactly as it ran.
+    fn restore(self, deployment: String) {
+        if !confirm(&format!(
+            "Restore deployment {deployment}? Its jobs don't run again, and volume contents and migrations stay as they are."
+        )) {
+            return;
+        }
+        let Some(environment) = self.selected_environment() else {
+            return;
+        };
+        self.mutate(
+            move |client| {
+                let (environment, deployment) = (environment.clone(), deployment.clone());
+                async move { client.restore_deployment(&environment, &deployment).await }
+            },
+            move |_| {
+                self.notice
+                    .set("Restore accepted. Follow its progress below.".into());
+                self.refresh_dashboard();
+            },
+        );
     }
 }
 

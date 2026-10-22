@@ -757,8 +757,8 @@ environment's current deployment. `--deployment ID` names the deployment you
 reviewed: the promotion is refused with `promotion_source_changed` once it is no
 longer the source's current one, so what you reviewed is what is deployed.
 `--release ID` deploys an earlier release of the application, rendered with the
-environment's current secrets, without checking any source; exactly restoring a
-previous deployment is a separate feature. The release is pinned when the
+environment's current secrets, without checking any source; `env restore`
+deploys a previous deployment again exactly, with the secret versions it pinned. The release is pinned when the
 promotion is accepted, so later deployments of the source cannot retarget it.
 Promotion never happens automatically when the source deploys.
 
@@ -1154,7 +1154,11 @@ retried deployment skips jobs that already succeeded, and after a daemon
 restart, or when Docker could not report a job's status, a still-running job is
 resumed rather than started again. Its timeout counts from when it started, so
 resuming never extends it.
-Retrying a promoted deployment or repairing drift never runs jobs. A deployment
+Retrying a promoted deployment or repairing drift never runs jobs, and
+neither does [restoring](piquelctl.md) an earlier deployment with `env
+restore`: running its old migrations against newer data is exactly the risk a
+restore avoids. A restore does not revert data either, so write migrations in
+expand/contract steps that the previous version still runs against. A deployment
 that is superseded or cancelled stops its running job, and the next deployment
 stops any job an earlier one left behind. Each run, its bounded output, and
 Docker's explanation of a failed task are kept in the application's build

@@ -309,6 +309,7 @@ impl Store {
                 | PreviewMutation::Delete { id }
                 | PreviewMutation::Prune { id, .. },
             ) => Self::environment_owner_on(tx, id).await?,
+            Mutation::Restore(restore) => Self::environment_owner_on(tx, restore.parts().0).await?,
         };
         let target = match (&owner, mutation) {
             (None, Mutation::Save { .. }) => Target::New,
@@ -499,6 +500,7 @@ impl Store {
                 };
                 Ok(Self::operation_accepted(&operation))
             }
+            Mutation::Restore(restore) => Box::pin(Self::restore_on(tx, restore)).await,
             Mutation::Promotion(mutation) => self.promotion_on(tx, mutation, expected, now).await,
             // Boxed: preview changes would otherwise grow every acceptance future.
             Mutation::Preview(mutation) => {
@@ -749,7 +751,7 @@ impl Store {
     }
 
     /// Responds with an accepted environment operation.
-    fn operation_accepted(operation: &Operation) -> Accepted {
+    pub(super) fn operation_accepted(operation: &Operation) -> Accepted {
         Accepted {
             response: MutationResponse::Operation(AcceptedOperation::from(operation)),
             wake: true,

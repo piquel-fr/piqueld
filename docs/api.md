@@ -69,7 +69,7 @@ is `{ "type": "preview", "branch": "feat/login", "slot": "agent-2", "slug":
 A preview's `name` is its slug and its `source` is its branch. Application
 views list previews separately in `previews`, never in `environments`, and the
 environment mutation endpoints (deploy, rename, branch, source, sync, telemetry,
-promote, delete, reconcile) return 404 for a preview's ID, as the preview endpoints do for an
+promote, restore, delete, reconcile) return 404 for a preview's ID, as the preview endpoints do for an
 environment's. The environment read endpoints (`GET /environments/{id}`,
 `detail`, `status`, `deployments` and their attempts, `logs`, `secrets`) accept
 a preview's ID. Preview creation,
@@ -136,12 +136,14 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
 | POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
+| POST | `/api/v1/environments/{id}/restore` | [Restore](#restoring-a-deployment) an earlier, succeeded deployment exactly: `{ "deployment": "operation-..." }`; 202 with `AcceptedOperation` |
 | GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of what they run and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote`, shared by the reads of a repository that arrive while it runs; at most four repositories are listed at once |
 | POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository, `preview_limit_reached` over a `[previews]` limit |
 | POST | `/api/v1/applications/{id}/previews/local?branch=…&slot=…` | Deploy a [local snapshot](#local-snapshots): the body is a Git bundle (`application/octet-stream`); 202 with `CreatedPreview`. 408 `snapshot_timed_out`, 413 `snapshot_too_large`, 422 `snapshot_invalid` or `snapshot_base_unavailable` |
 | POST | `/api/v1/applications/{id}/previews/prune` | Delete each listed preview whose branch is confirmed gone: `{ "previews": [preview IDs] }`; returns the `DeletedPreview`s and keeps the rest. 502 `repository_unavailable`, deleting nothing, when the repository cannot be read |
 | GET | `/api/v1/previews/{id}` | One `PreviewView` |
 | POST | `/api/v1/previews/{id}/deploy` | Deploy the head of the preview's branch, replacing a local snapshot it runs; 202 with `AcceptedOperation` |
+| POST | `/api/v1/previews/{id}/restore` | Restore an earlier, succeeded deployment of the preview exactly, as for an [environment](#restoring-a-deployment); 202 with `AcceptedOperation` |
 | DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
@@ -344,6 +346,36 @@ response distinguishes `current_target`, `last_successful`, and mutable operatio
 progress; last successful does not imply automatic rollback after a failed rollout.
 History endpoints accept `cursor` for subsequent pages.
 
+### Restoring a deployment
+
+`POST /api/v1/environments/{id}/restore` with `{ "deployment": "operation-..." }`
+deploys an earlier deployment of the environment again exactly as it ran: its
+rendered manifest and values, its release, its prepared target with the same
+images, and the secret versions it pinned. The new deployment's origin is
+`{ "type": "restore", "deployment": "operation-..." }` and its target is
+saved on acceptance, so the controller only rolls it out and then maintains
+it like any other. Nothing is rendered, fetched or built, and no newer input
+is substituted. Jobs never run, on the restore or on its retries: an earlier
+deployment's before-rollout migrations must not run against newer data. Volume
+contents and migrations are not reverted.
+
+It needs `apps:deploy`, no `expected_generation`, and supersedes pending
+work. Before anything is accepted it fails with 404 for a deployment of another
+environment, 409 `deployment_not_restorable` (`details.deployment`) for one
+that never succeeded, and 409 `image_unavailable` naming the service and image
+when an image is gone and can't be pulled again by digest; a missing registry
+image is pulled again first. Acceptance fails with 409
+`restore_secrets_unavailable`, listing in `details.secrets` every secret whose
+pinned version was deleted or discarded by key recovery since, with
+`secret_access_denied` for a stored secret whose access list no longer allows
+the environment (access narrowed since applies; only versions are kept), and
+with `secret_deleting` while one is being deleted. Links stay bound to the
+applications the deployment bound while they exist, so an application that
+took a bound one's name since gains nothing. A request repeating an accepted
+one's `Idempotency-Key` returns its response before any check. Previews
+restore through `POST /api/v1/previews/{id}/restore`, which needs
+`previews:deploy`.
+
 Each successful preparation in an environment that builds its own source (one
 deploying the saved manifest or following a branch) records an immutable
 release, and the deployment's `release` names it; a promotion's deployment
@@ -424,8 +456,10 @@ is an `AcceptedOperation` with the pinned `release_id` and its `origin`.
 `DeploymentView.origin` records where every deployment came from:
 `{ "type": "build" }`, `{ "type": "promotion", "environment": "env-...",
 "deployment": "operation-..." }`, `{ "type": "release" }` for a release
-deployed by ID, or `{ "type": "local", "commit": "...", "base": "..." }` for a
-[local snapshot](#local-snapshots) deployed to a preview. `ReleaseView.promotions` lists, newest first, the deployments
+deployed by ID, `{ "type": "restore", "deployment": "operation-..." }` for a
+[restored](#restoring-a-deployment) deployment, or `{ "type": "local",
+"commit": "...", "base": "..." }` for a [local snapshot](#local-snapshots)
+deployed to a preview. `ReleaseView.promotions` lists, newest first, the deployments
 that received the release (`environment_id`, `deployment_id`, `origin`,
 `created_at_ms`).
 
