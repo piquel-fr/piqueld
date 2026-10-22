@@ -267,7 +267,12 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
             <Modal title="Notification destination" opened={opened} wide=true>
                 {form.view()}
                 <div class="form-actions">
-                    <button type="button" class="btn btn-primary" on:click={move |_| save()}>
+                    <button
+                        type="button"
+                        class="btn btn-primary"
+                        disabled={move || outcome.busy.get()}
+                        on:click={move |_| save()}
+                    >
                         "Save destination"
                     </button>
                 </div>

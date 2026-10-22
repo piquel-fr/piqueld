@@ -2623,7 +2623,7 @@
       },
       "DestinationRequest": {
         "additionalProperties": false,
-        "description": "Creates or replaces a destination.",
+        "description": "Creates or replaces a destination. Its `Debug` hides the URL, a credential.",
         "properties": {
           "settings": {
             "$ref": "#/components/schemas/DestinationSettings",

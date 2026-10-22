@@ -347,7 +347,9 @@ carries `Idempotency-Key: <delivery_id>`; delivery is at least once, so receiver
 should deduplicate. Retries preserve that ID through restart and manual retry.
 
 Destinations require HTTPS; HTTP is allowed only for localhost or loopback IP
-addresses. Requests time out after ten seconds and do not follow redirects. Transport
+addresses. Private and tailnet hosts are allowed, so receivers can stay internal;
+anyone with `notifications:manage` can therefore make the daemon send requests
+to them. Requests time out after ten seconds and do not follow redirects. Transport
 failures, HTTP 408/429 and 5xx retry with exponential backoff, capped at one hour,
 for 24 hours. Integer `Retry-After` values
 are honored up to one hour. Other non-2xx responses fail permanently. Manual retry

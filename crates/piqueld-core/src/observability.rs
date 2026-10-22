@@ -257,8 +257,8 @@ pub struct NotificationDestination {
     pub updated_at_ms: i64,
 }
 
-/// Creates or replaces a destination.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+/// Creates or replaces a destination. Its `Debug` hides the URL, a credential.
+#[derive(Clone, Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DestinationRequest {
     /// What it receives and how.
@@ -269,6 +269,15 @@ pub struct DestinationRequest {
     /// recoveries of failures sent before are never sent to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+impl std::fmt::Debug for DestinationRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DestinationRequest")
+            .field("settings", &self.settings)
+            .field("url", &self.url.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Outcome of a test notification.
