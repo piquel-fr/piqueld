@@ -357,7 +357,7 @@
             "uid": "tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.service.name = \"piqueld\" && status = error && span.piqueld.application =~ \"$application\" }",
+          "query": "{ resource.service.name = \"piqueld\" && name =~ \"operation.*\" && status = error && span.piqueld.application =~ \"$application\" }",
           "limit": 20,
           "tableType": "traces",
           "refId": "A"

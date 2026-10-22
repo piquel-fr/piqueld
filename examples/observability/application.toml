@@ -214,7 +214,8 @@ visibility = "private"
 #   application = "observability"
 #   service = "collector"
 #
-# and sets OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317".
+# and sets OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
+# with OTEL_EXPORTER_OTLP_PROTOCOL = "grpc".
 [[spec.exports]]
 service = "collector"
 applications = ["my-app"]

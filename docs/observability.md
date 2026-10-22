@@ -638,6 +638,7 @@ adjust each `path`. Then:
    name = "web"
    [spec.services.environment]
    OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
+   OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
    ```
 
    The collector also accepts OTLP/HTTP on port 4318. Importing applications
