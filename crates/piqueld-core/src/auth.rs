@@ -1,7 +1,47 @@
 //! Authentication contracts shared by the daemon, browser, and CLI.
 use crate::access::Grants;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use utoipa::ToSchema;
+
+/// Stands in for a secret in `Debug` output.
+struct Redacted;
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// Implements `Debug` for a type carrying secrets, printing its `secret`
+/// fields as `<redacted>` so they never reach logs or panic messages. Every
+/// field must be listed, either `shown` or `secret`:
+///
+/// ```text
+/// redacted_debug!(OperatorLink { expires_at } secret { url });
+/// ```
+macro_rules! redacted_debug {
+    ($type:ident { $($shown:ident),* } secret { $($secret:ident),+ }) => {
+        impl fmt::Debug for $type {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let Self { $($shown,)* $($secret: _,)+ } = self;
+                f.debug_struct(stringify!($type))
+                    $(.field(stringify!($shown), $shown))*
+                    $(.field(stringify!($secret), &Redacted))+
+                    .finish()
+            }
+        }
+    };
+}
+
+redacted_debug!(SetupLink {} secret { url });
+redacted_debug!(OperatorLink { expires_at } secret { url });
+redacted_debug!(OperatorSignIn {} secret { secret });
+redacted_debug!(RegistrationStart { user_id, username, display_name, passkey_name } secret { invitation });
+redacted_debug!(Managed {} secret { token, invitation_url });
+redacted_debug!(DeviceStart { user_code, verification_uri, expires_in, interval, requester, grants } secret { device_code });
+redacted_debug!(DevicePoll {} secret { device_code });
+redacted_debug!(DeviceToken { status, user } secret { token });
 
 /// Public account information.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -94,7 +134,7 @@ pub struct AuthStatus {
 }
 
 /// First-account setup link, served only over the daemon's Unix socket.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct SetupLink {
     /// Dashboard URL carrying the single-use setup secret.
     pub url: String,
@@ -102,7 +142,7 @@ pub struct SetupLink {
 
 /// One-time link issued only over the daemon's Unix socket to the host
 /// operator: an admin recovery link or a host operator sign-in link.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct OperatorLink {
     /// Dashboard URL carrying the link's secret.
     pub url: String,
@@ -111,7 +151,7 @@ pub struct OperatorLink {
 }
 
 /// Redeems a host operator sign-in link.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct OperatorSignIn {
     /// Secret from the link's `#operator=` fragment.
     pub secret: String,
@@ -120,7 +160,7 @@ pub struct OperatorSignIn {
 /// Passkey registration: a new account redeeming an invitation or setup
 /// secret, an existing account redeeming an enrollment link, or a signed-in
 /// account adding a passkey to itself.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct RegistrationStart {
     /// Invitation, enrollment, or initial setup secret; absent when a signed-in
     /// account adds a passkey to itself.
@@ -318,7 +358,7 @@ pub enum Manage {
 }
 
 /// Management result. Secrets are disclosed only once.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct Managed {
     /// Newly created automation token.
     pub token: Option<String>,
@@ -336,7 +376,7 @@ pub struct DeviceStartRequest {
 }
 
 /// Device login challenge for an interactive CLI.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeviceStart {
     /// Secret used only by the initiating CLI to poll.
     pub device_code: String,
@@ -358,7 +398,7 @@ pub struct DeviceStart {
 }
 
 /// CLI polling request.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct DevicePoll {
     /// Secret from device initiation.
     pub device_code: String,
@@ -388,7 +428,7 @@ pub struct DeviceRequest {
 }
 
 /// Poll result; the token is returned exactly once after explicit approval.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeviceToken {
     /// `authorization_pending`, `slow_down`, or `complete`.
     pub status: String,
@@ -396,4 +436,23 @@ pub struct DeviceToken {
     pub token: Option<String>,
     /// Account associated with the credential.
     pub user: Option<User>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Secrets never appear in `Debug` output; the other fields do.
+    #[test]
+    fn debug_output_redacts_secrets() {
+        let token = DeviceToken {
+            status: "complete".into(),
+            token: Some("pqd_secret".into()),
+            user: None,
+        };
+        assert_eq!(
+            format!("{token:?}"),
+            r#"DeviceToken { status: "complete", user: None, token: <redacted> }"#
+        );
+    }
 }

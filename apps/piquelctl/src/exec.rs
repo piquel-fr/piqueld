@@ -6,6 +6,7 @@
 use crate::{
     deployments::Target,
     error::{CliError, ErrorKind, Result},
+    support::TerminalMode,
 };
 use clap::Args;
 use http::StatusCode;
@@ -13,7 +14,7 @@ use piqueld_client::{
     Client, ClientError, EnvironmentView, ServiceName,
     exec::{ExecCommand, ExecInput, ExecOutput, ExecReader, ExecRequest, ExecWriter, TerminalSize},
 };
-use rustix::termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr};
+use rustix::termios::{Termios, tcgetwinsize};
 use std::{
     io::{IsTerminal, Read},
     process::ExitCode,
@@ -191,18 +192,14 @@ fn read_stdin() -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
     receiver
 }
 
-/// The terminal on standard input in raw mode; dropping it restores the original mode.
-struct RawTerminal(Termios);
+/// The terminal on standard input, used in raw mode.
+struct RawTerminal;
 
 impl RawTerminal {
-    fn enable() -> Result<Self> {
-        let original = tcgetattr(std::io::stdin())
-            .map_err(|error| local_error("read terminal mode", &error))?;
-        let mut raw = original.clone();
-        raw.make_raw();
-        tcsetattr(std::io::stdin(), OptionalActions::Now, &raw)
-            .map_err(|error| local_error("enable raw terminal mode", &error))?;
-        Ok(Self(original))
+    /// Switches to raw mode until the returned guard drops.
+    fn enable() -> Result<TerminalMode> {
+        TerminalMode::enable(Termios::make_raw)
+            .map_err(|error| local_error("enable raw terminal mode", &error))
     }
 
     fn size() -> Result<TerminalSize> {
@@ -212,12 +209,6 @@ impl RawTerminal {
             width: size.ws_col,
             height: size.ws_row,
         })
-    }
-}
-
-impl Drop for RawTerminal {
-    fn drop(&mut self) {
-        let _ = tcsetattr(std::io::stdin(), OptionalActions::Now, &self.0);
     }
 }
 

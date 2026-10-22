@@ -1037,7 +1037,9 @@ Deploying, or `app plan --env`, for an environment or preview that mounts a
 secret it may not use fails with `secret_access_denied`.
 
 Prefer protected files or a secure stdin producer over literal shell values in
-real use. `--expected-generation` pins a write to inspected metadata; otherwise
+real use. `--file` stores the file verbatim. `--stdin` drops one trailing
+newline, so `echo value |` stores `value`; from a terminal, it asks for one
+line without echoing it. `--expected-generation` pins a write to inspected metadata; otherwise
 the CLI reads the current generation before confirming. `--json` returns only
 metadata. Replacement creates a new version for a later Deploy and does not
 change running deployments. Deletion refuses secrets that any environment's
