@@ -5494,6 +5494,10 @@
                 },
                 "type": "array"
               },
+              "runtime_coverage": {
+                "$ref": "#/components/schemas/RuntimeCoverage",
+                "description": "How much of the runtime change `plan` lists."
+              },
               "variables": {
                 "additionalProperties": {
                   "$ref": "#/components/schemas/VariableValue"
@@ -9064,6 +9068,10 @@
             },
             "type": "array"
           },
+          "runtime_coverage": {
+            "$ref": "#/components/schemas/RuntimeCoverage",
+            "description": "How much of the runtime change `plan` lists."
+          },
           "variables": {
             "additionalProperties": {
               "$ref": "#/components/schemas/VariableValue"
@@ -10483,6 +10491,15 @@
           "value"
         ],
         "type": "object"
+      },
+      "RuntimeCoverage": {
+        "description": "How much of the runtime change a plan lists.",
+        "enum": [
+          "complete",
+          "resolution",
+          "omitted"
+        ],
+        "type": "string"
       },
       "SavedApplication": {
         "description": "Saved application configuration, optionally accompanied by a deployment.",

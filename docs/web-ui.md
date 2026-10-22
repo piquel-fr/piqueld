@@ -7,7 +7,8 @@ dependencies, rollout order and monitor window, and resource limits. Each settin
 the database without changing running containers.
 
 **Preview** opens a dialog with the planned changes, the variable values it
-renders, the planned actions, each service's
+renders, the planned actions (saying so when network, volume and service changes
+wait for image resolution and builds, which the deployment plans), each service's
 effective rollout order (derived or explicit) and monitor window, and plan warnings. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
 to be saved or discarded. Every deployment supersedes pending work and

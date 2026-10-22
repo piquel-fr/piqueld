@@ -741,7 +741,10 @@ on a service with a writable volume.
 show rendered values, and it lists the value of every variable in scope, such as
 `vars.domain` and `env.name`. A reference without a value fails the plan with
 `variable_value_missing`. Without `--env`, the application's only environment is
-used; with several, the plan compares the saved manifest as written. Plans list,
+used; with several, the plan compares the saved manifest as written and says
+that runtime actions are not planned. Likewise, a plan that must first resolve or
+build sources says that network, volume and service changes are left to the
+deployment; it still lists source resolution and declared jobs. Plans list,
 under `Environments:`, how saving the manifest would change the environments it
 [declares](application-manifest.md#declared-environments).
 

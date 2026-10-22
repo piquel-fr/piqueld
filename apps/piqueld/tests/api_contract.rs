@@ -6353,6 +6353,7 @@ async fn application_history_spans_its_environments() {
 async fn previews_compare_with_the_selected_environment() {
     use piqueld::api::{ApplicationError, Mutation};
     use piqueld::store::StoreError;
+    use piqueld_core::api::RuntimeCoverage;
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
@@ -6385,6 +6386,7 @@ async fn previews_compare_with_the_selected_environment() {
     // Without a selection, several environments leave no runtime baseline.
     let unselected = plan(None).await.unwrap();
     assert!(unselected.operation.is_none() && unselected.plan.actions.is_empty());
+    assert_eq!(unselected.runtime_coverage, RuntimeCoverage::Omitted);
 
     let deployed = plan(Some(staging.id.clone())).await.unwrap();
     assert!(deployed.identical);
@@ -6396,6 +6398,8 @@ async fn previews_compare_with_the_selected_environment() {
             .any(|action| matches!(action.kind, ActionKind::ResolveImage { .. }))
     };
     assert!(resolves_image(&deployed));
+    // The image tag must be resolved before the rest can be planned.
+    assert_eq!(deployed.runtime_coverage, RuntimeCoverage::Resolution);
 
     let undeployed = plan(Some(production)).await.unwrap();
     assert!(!undeployed.identical && undeployed.operation.is_none());

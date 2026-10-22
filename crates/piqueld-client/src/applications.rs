@@ -3,7 +3,7 @@ pub use piqueld_core::api::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest,
     DeletedApplication, DeploymentView, DiagnosticView, ObservedApplicationView,
     ObservedServiceView, PlanView, ReleaseView, RenameApplicationRequest, RenamedApplication,
-    SavedApplication,
+    RuntimeCoverage, SavedApplication,
 };
 
 use crate::{
