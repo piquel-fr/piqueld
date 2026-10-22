@@ -5096,6 +5096,62 @@ async fn blocked_deployment_runs_no_jobs() {
     assert_eq!(harness.started_jobs().await, [] as [String; 0]);
 }
 
+/// Restoring an earlier deployment rolls out its image again, pulled again
+/// by digest once removed, without running its jobs again.
+#[tokio::test]
+async fn restoring_a_deployment_runs_its_image_again_without_jobs() {
+    let harness = ControllerHarness::new().await;
+    let first = harness
+        .apply(manifest_with_jobs(&["migrate"], 300), None)
+        .await;
+    harness.finish(&first).await;
+    let environment = first.environment_id.clone();
+    let image = async || {
+        harness.target(&environment).await.services[0]
+            .image
+            .to_string()
+    };
+    let original = image().await;
+    // The tag now resolves to another image.
+    harness
+        .docker
+        .registry
+        .lock()
+        .await
+        .digests
+        .insert("ghcr.io/example/notes:1.4.0".into(), "b".repeat(64));
+    let second = harness
+        .applications()
+        .deploy(&environment, None)
+        .await
+        .unwrap();
+    harness.finish(&second).await;
+    assert_ne!(image().await, original);
+    assert_eq!(harness.started_jobs().await, ["migrate", "migrate"]);
+
+    // Cleanup or an operator removed the image meanwhile.
+    harness.docker.local_images.lock().await.clear();
+    let pulls = harness.pulls().await;
+    let accepted = harness
+        .applications()
+        .restore(
+            Daemon,
+            piqueld::api::Restore::Environment {
+                id: environment.clone(),
+                deployment: first.id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(harness.pulls().await, pulls + 1);
+    harness
+        .finish(&harness.operation(&accepted.operation_id).await)
+        .await;
+    assert_eq!(image().await, original);
+    assert_eq!(harness.started_jobs().await, ["migrate", "migrate"]);
+}
+
 /// Image retention: cleanup removes only this installation's unretained
 /// builds, never while a preparation may record one, and deployments that
 /// use a retained image again find it or fail naming it.

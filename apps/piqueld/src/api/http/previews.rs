@@ -1,5 +1,5 @@
-//! Previews: disposable deployments of a branch. Creating, deploying, and
-//! deleting one need no application revision. A preview's status, logs,
+//! Previews: disposable deployments of a branch. Creating, deploying,
+//! restoring, and deleting one need no application revision. A preview's status, logs,
 //! deployments, and secrets use the environment endpoints with its ID.
 use super::applications::accept_mutation;
 use super::extract::{IDEMPOTENCY_KEY, content_type, optional_header};
@@ -7,7 +7,7 @@ use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, accepted, ok,
     openapi::ApiErrorResponse,
 };
-use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::api::{Mutation, MutationResponse, PreviewMutation, Restore};
 use crate::auth::Identity;
 use axum::{
     Extension,
@@ -18,7 +18,7 @@ use axum::{
 };
 use piqueld_core::api::{
     AcceptedOperation, CreatePreviewRequest, CreatedPreview, DeletedPreview, Envelope, PreviewView,
-    PrunePreviewsRequest,
+    PrunePreviewsRequest, RestoreRequest,
 };
 use piqueld_core::{ApplicationId, EnvironmentId, GitBranch, PreviewSlot};
 
@@ -186,6 +186,41 @@ pub(super) async fn deploy(
         id: EnvironmentId::parse(id)?,
     });
     accept_mutation(&state, &identity, mutation, None, false, &headers).await
+}
+
+/// Restores an earlier deployment of a preview exactly.
+///
+/// Deploys `deployment` again as it ran, as `restoreDeployment` does for an
+/// environment: its rendered manifest, its images and the secret versions it
+/// pinned, without fetching, building, or running jobs. Refused unless it
+/// succeeded (`deployment_not_restorable`), its images are present or can be
+/// pulled again by digest (`image_unavailable`), and the secret versions it
+/// pinned still exist (`restore_secrets_unavailable`).
+#[utoipa::path(post,path="/api/v1/previews/{id}/restore",operation_id="restorePreviewDeployment",
+    params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
+    request_body=RestoreRequest,
+    responses((status=202,description="Restore accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
+    (status=500,response=inline(ApiErrorResponse)),(status=502,response=inline(ApiErrorResponse)),
+    (status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn restore(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(id): ApiPath<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<RestoreRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = optional_header(&headers, IDEMPOTENCY_KEY)?;
+    let restore = Restore::Preview {
+        id: EnvironmentId::parse(id)?,
+        deployment: request.deployment,
+    };
+    Ok(accepted(
+        state
+            .restore(identity.actor(), restore, request_id.as_deref())
+            .await?,
+    ))
 }
 
 /// Deletes a preview with its services, network, secrets, and every volume

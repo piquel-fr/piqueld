@@ -29,6 +29,8 @@ prevent stale saves and deployments. Idempotency receipts survive restarts for
 One async controller overlaps image pulls, observations, and timers while allowing
 one resource mutation request at a time. The active deployment remains maintained
 while a candidate prepares; once prepared, it starts rollout without automatic rollback.
+`piquelctl env restore` deploys an earlier deployment again exactly as it ran, as
+a new deployment, without running its jobs or reverting data.
 Retries reuse prepared digests. Rename changes metadata without
 redeployment. Durable
 operations, attempt outcomes, and informational events remain in SQLite. Deletion

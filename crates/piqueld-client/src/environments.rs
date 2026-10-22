@@ -3,7 +3,7 @@ pub use piqueld_core::api::{
     AcceptedPromotion, CreateEnvironmentRequest, DeploymentOrigin, EnvironmentBranchRequest,
     EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView,
     EnvironmentTelemetryRequest, EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion,
-    RouteUrl, SecretProblem, TelemetryReport, UrlCondition, UrlState,
+    RestoreRequest, RouteUrl, SecretProblem, TelemetryReport, UrlCondition, UrlState,
 };
 pub use piqueld_core::{EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch};
 
@@ -141,6 +141,39 @@ impl Client {
         request: &PromoteRequest,
     ) -> Result<PlanView, ClientError> {
         self.generated.plan_promotion(id, request).data().await
+    }
+
+    /// Restores an earlier, succeeded deployment of `environment` exactly as
+    /// it ran, without running its jobs, through the preview endpoint when it
+    /// is a preview.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn restore_deployment(
+        &self,
+        environment: &EnvironmentView,
+        deployment: &str,
+    ) -> Result<AcceptedOperation, ClientError> {
+        let (id, request) = (
+            environment.id.as_str(),
+            RestoreRequest {
+                deployment: deployment.to_owned(),
+            },
+        );
+        let generated = &self.generated;
+        match environment.preview() {
+            Some(_) => {
+                generated
+                    .restore_preview_deployment(id, None, &request)
+                    .data()
+                    .await
+            }
+            None => {
+                generated
+                    .restore_deployment(id, None, &request)
+                    .data()
+                    .await
+            }
+        }
     }
 
     /// Deletes an environment's services and networks, retaining its volumes,

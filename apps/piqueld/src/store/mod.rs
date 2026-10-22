@@ -30,6 +30,8 @@ pub use preview::PreviewOrigins;
 pub use promotion::{Promotion, PromotionCandidate, PromotionError};
 mod release;
 mod repository;
+mod restore;
+pub use restore::RestoreError;
 mod secret;
 mod status;
 mod sync;
@@ -254,6 +256,9 @@ pub enum StoreError {
     /// A promotion, or a promoted environment's source, was refused.
     #[error(transparent)]
     Promotion(#[from] PromotionError),
+    /// Restoring a deployment was refused.
+    #[error(transparent)]
+    Restore(#[from] RestoreError),
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,

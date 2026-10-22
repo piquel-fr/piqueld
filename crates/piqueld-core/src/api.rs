@@ -1056,7 +1056,8 @@ pub struct ReleaseView {
     pub promotions: Vec<ReleasePromotion>,
 }
 
-/// A deployment that received a release: promoted, or deployed again by ID.
+/// A deployment that received a release: promoted, deployed again by ID, or
+/// restored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct ReleasePromotion {
     /// The environment it was deployed to.
@@ -1086,6 +1087,13 @@ pub enum DeploymentOrigin {
     },
     /// An earlier release, deployed again by ID.
     Release,
+    /// An earlier deployment of the same environment, restored exactly: its
+    /// rendered manifest, images and pinned secret versions. It never runs
+    /// jobs.
+    Restore {
+        /// The deployment it restored.
+        deployment: String,
+    },
     /// A snapshot of a local worktree, uploaded to a preview with
     /// `preview deploy --local`, and built like its branch would be.
     Local(LocalSnapshot),
@@ -1139,6 +1147,15 @@ pub struct PromoteRequest {
     /// Current application revision, required unless explicitly forced; ignored by plans.
     #[serde(default)]
     pub expected_generation: Option<u64>,
+}
+
+/// Restores an earlier deployment of an environment or preview exactly. No
+/// application revision is needed: the deployment pins everything deployed.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreRequest {
+    /// The deployment to restore; it must have succeeded.
+    pub deployment: String,
 }
 
 /// An accepted promotion and the release it pinned.

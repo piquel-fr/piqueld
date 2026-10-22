@@ -109,6 +109,15 @@ exactly the source deployment that was planned: if the source deployed again
 meanwhile, the daemon refuses it (`promotion_source_changed`) and the dialog
 shows why.
 
+An environment's or preview's Deployments tab lists its deployments, newest
+first. Expanding an earlier deployment that succeeded offers **Restore**, which,
+once confirmed, deploys it again exactly as it ran, like `piquelctl env
+restore`: its manifest, images and secret versions, without running its jobs
+and without reverting volume contents or migrations. The restore is a new
+deployment whose origin reads "Restored from deployment <id>", and becomes the
+current target. A deployment whose images or secret versions are gone is
+refused with the reason.
+
 Values that differ between environments come from manifest variables. The
 Variables tab edits them: one row per variable, with its default, one column
 per environment, including environments the manifest configures before they
@@ -130,8 +139,8 @@ content hash, and for each service its image (a registry digest or local image
 ID), where it came from, and the build inputs it was prepared from. A badge
 says whether its images are still present, will be pulled again by digest
 when deployed, or were removed, so it can't be deployed again. **Deployed to**
-lists every environment it was promoted into, or deployed again by release ID,
-with that deployment. **Deploy to <environment>**, offered for each promoted
+lists every environment it was promoted into, deployed again by release ID, or
+restored in, with that deployment. **Deploy to <environment>**, offered for each promoted
 environment, plans deploying the release there with that environment's current
 secrets, like `piquelctl env promote --release`, and deploys it once confirmed. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
@@ -212,7 +221,7 @@ local form values. **Reload saved configuration**, offered after a failure or a
 change made elsewhere, reloads it in place: forms without edits show the latest
 version, and edited ones keep their edits until saved or discarded, discarding
 back to the latest version. Navigation warns about unsaved edits. Host settings are
-read-only. There is no raw manifest editor or deployment restoration workflow.
+read-only. There is no raw manifest editor.
 
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
