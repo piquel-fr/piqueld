@@ -2969,7 +2969,7 @@
         "type": "object"
       },
       "Directory": {
-        "description": "Account management directory. Callers with `accounts:manage` see every\naccount and invitation; everyone else sees only their own account.",
+        "description": "Account management directory. Callers with `accounts:manage` see every\naccount and invitation; everyone else sees only their own account, and a\nscoped credential only itself, its account carrying its own grants.",
         "properties": {
           "credentials": {
             "description": "Sessions and tokens, without secrets.",
@@ -25810,7 +25810,7 @@
     },
     "/api/v1/auth/directory": {
       "get": {
-        "description": "With `accounts:manage`, lists every account and invitation; otherwise only\nthe caller's own account.",
+        "description": "With `accounts:manage`, lists every account and invitation; otherwise only\nthe caller's own account. A scoped credential sees only itself there, and\nits account with its own grants.",
         "operationId": "authDirectory",
         "responses": {
           "200": {

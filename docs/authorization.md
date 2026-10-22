@@ -166,7 +166,9 @@ account: it holds `admin` on every application without counting as one, and
 these account rules apply to the accounts it changes.
 
 Without `accounts:manage`, the account directory lists only the caller's own
-account.
+account. A credential with limited access sees even less there: only itself,
+and its account with its own grants, not the account's passkeys or other
+credentials.
 
 ## Invitations and presets
 

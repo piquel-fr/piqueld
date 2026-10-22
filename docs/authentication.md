@@ -328,7 +328,9 @@ return `503 storage_unavailable` with a log-correlated `details.diagnostic_id`;
 they do not attempt to persist a diagnostic in the failing database. See
 [observability](observability.md#history-and-diagnostics).
 
-Authentication metadata shares the existing SQLite database. WebAuthn challenges
+Authentication metadata shares the existing SQLite database. Expired sessions,
+tokens, invitations, and links are deleted on the reconciler's periodic full
+scan, so it does not grow with every sign-in. WebAuthn challenges
 and device requests are short-lived, bounded, server-side state; a daemon restart
 cancels pending ceremonies without invalidating durable credentials. All
 registration/login challenges are browser-bound and single-use. Registration

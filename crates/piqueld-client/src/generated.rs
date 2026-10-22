@@ -7379,7 +7379,8 @@ impl Client {
     /*Lists accounts, passkeys, credentials, and open invitations
 
     With `accounts:manage`, lists every account and invitation; otherwise only
-    the caller's own account.
+    the caller's own account. A scoped credential sees only itself there, and
+    its account with its own grants.
 
     Sends a `GET` request to `/api/v1/auth/directory`
 
