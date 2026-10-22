@@ -7469,7 +7469,8 @@ impl Client {
     /*Redeems a host operator sign-in link
 
     Public. Signs the browser in as the host operator with a 12-hour session
-    cookie. Used, expired, and unknown links fail with 401.
+    cookie. Used, expired, and unknown links fail with 401. Rate limited per
+    client address (429 with `Retry-After`).
 
     Sends a `POST` request to `/api/v1/auth/login/operator`
 
@@ -7698,10 +7699,11 @@ impl Client {
     /*Issues a one-time admin recovery link
 
     Public, but only over the Unix socket and only to the host operator: root
-    or the daemon's own user, identified by the kernel (`SO_PEERCRED`); anyone
-    else gets 404. The link is valid for 24 hours, replaces any earlier one,
-    and registers a new account with `admin` on every application. Issuing it
-    raises a `security` notification.
+    or the daemon's own user, identified by the kernel (`SO_PEERCRED`), sending
+    no credential, which keeps its meaning; anyone else gets 404. The link is
+    valid for 24 hours, replaces any earlier one, and registers a new account
+    with `admin` on every application. Issuing it raises a `security`
+    notification.
 
     Sends a `POST` request to `/api/v1/auth/recovery`
 
@@ -7897,11 +7899,11 @@ impl Client {
     }
     /*Issues a one-time host operator sign-in link
 
-    Public, but only over the Unix socket and only to the host operator, like
-    `authRecoverAdmin`, and only without a credential, which keeps its
-    meaning; anyone else gets 404. The link works once within ten minutes and
-    signs a browser in as the host operator, with `admin` on every
-    application, for 12 hours. Issuing it raises a `security` notification.
+    Public, but only over the Unix socket and only to the host operator
+    sending no credential, like `authRecoverAdmin`; anyone else gets 404. The
+    link works once within ten minutes and signs a browser in as the host
+    operator, with `admin` on every application, for 12 hours. Issuing it
+    raises a `security` notification.
 
     Sends a `POST` request to `/api/v1/auth/sign-in-link`
 

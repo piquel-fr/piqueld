@@ -140,7 +140,9 @@ host operator (uid 0)
 ```
 
 A token keeps its meaning: a `piquelctl` with a saved login, or with
-`PIQUELD_TOKEN` set, acts as that account even when run by root.
+`PIQUELD_TOKEN` set, acts as that account even when run by root. The recovery
+and sign-in links below are served only to requests without one, so
+`recover-admin` and `sign-in-link` (and `setup-link`) never send a credential.
 
 **Signing a browser in.** `piquelctl sign-in-link`, run the same way, prints a
 link that signs one browser in as the host operator:
@@ -212,7 +214,8 @@ someone with root on the host is acting; treat it as a host compromise.
 **Troubleshooting.**
 
 - *404 Not found*: the command did not reach the Unix socket as root or the
-  daemon's user. Run it with `sudo` on the daemon host and without `--url`. If
+  daemon's user without a credential. Run it with `sudo` on the daemon host
+  and without `--url`. If
   the daemon runs in a container or user namespace, the user must match from
   the daemon's point of view.
 - *`--url` is refused*: recovery is never served over the network.
@@ -346,8 +349,9 @@ is created.
 The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for native
 builds; the Nix packages and development shell provide them.
 
-Public registration, login, and device-start requests are limited to 30 starts
-per TCP peer per minute, across all listeners. Requests refused for their Host,
+Public registration, login, and device-start requests, and redemptions of host
+operator sign-in links, are limited to 30 starts per TCP peer per minute,
+across all listeners. Requests refused for their Host,
 Fetch Metadata, or Origin do not count. IPv6 peers are grouped by /64
 prefix, and Unix socket callers share one peer bucket. Excess requests receive
 HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work are

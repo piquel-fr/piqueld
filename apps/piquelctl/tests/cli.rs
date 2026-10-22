@@ -1464,6 +1464,24 @@ fn secret_values_from_stdin_drop_one_trailing_newline() {
     }
 }
 
+/// The host operator's socket commands never send a credential, which the
+/// daemon would honour instead of the operator, even with `PIQUELD_TOKEN`.
+#[test]
+fn recover_admin_sends_no_credential() {
+    let link = json!({"url": "https://piqueld.example/dashboard/auth#invite=x", "expires_at": 1});
+    let server = start_server(true, 1, move |_| Reply::bare(&link));
+    let output = server
+        .command()
+        .arg("recover-admin")
+        .env("PIQUELD_TOKEN", "pqd_saved")
+        .output()
+        .expect("piquelctl output");
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests[0].path, "/api/v1/auth/recovery");
+    assert!(!requests[0].headers.contains_key("authorization"));
+}
+
 #[test]
 fn unknown_names_exit_with_input_error_and_no_mutation() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {

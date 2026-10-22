@@ -5146,6 +5146,10 @@ async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
     ] {
         assert_eq!(recover(router, uid).await.0, 404, "{uid:?}");
     }
+    // A credential keeps its meaning, even an unusable one.
+    let request = Request::post("/api/v1/auth/recovery")
+        .header(axum::http::header::AUTHORIZATION, "Bearer pqd_unknown");
+    assert_eq!(as_peer(&unix, request, Some(operator), None).await.0, 404);
     let (status, body) = recover(&unix, Some(operator)).await;
     assert_eq!(status, 200, "{body}");
     assert!(

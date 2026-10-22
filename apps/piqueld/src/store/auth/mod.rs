@@ -326,13 +326,26 @@ impl Store {
     /// Redeems the live sign-in link `link_hash` as a host operator browser
     /// session with secret hash `session_hash`, valid until `expires_at`.
     /// Returns the session's ID and operator, or `None` when the link was
-    /// already used, has expired, or never existed.
+    /// already used, has expired, or never existed. Such links are turned
+    /// away by a read, so guessing them never waits for the writer.
     pub(crate) async fn redeem_operator_link(
         &self,
         link_hash: &str,
         session_hash: &str,
         expires_at: i64,
     ) -> Result<Option<(String, HostOperator)>, StoreError> {
+        let now = now_secs();
+        let live = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_operator_sessions WHERE secret_hash=?1 AND redeemed=0 AND expires_at>?2) AS "live!: bool""#,
+            link_hash,
+            now
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        if !live {
+            return Ok(None);
+        }
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_secs();
         let row = sqlx::query!(

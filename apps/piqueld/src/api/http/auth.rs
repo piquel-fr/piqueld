@@ -125,8 +125,9 @@ async fn authenticate(
 ///    rejected, and cookie-authenticated mutations, and ceremony mutations
 ///    without a bearer token that authenticates, must send the configured
 ///    origin.
-/// 3. Throttles ceremony start endpoints per peer IP (429 with `Retry-After`),
-///    counting only requests that passed the checks before.
+/// 3. Throttles ceremony start endpoints and host operator sign-in link
+///    redemption per peer IP (429 with `Retry-After`), counting only
+///    requests that passed the checks before.
 /// 4. Without any `Authorization` or `Cookie` header, a Unix socket request
 ///    from root or the daemon's own user acts as the host operator (see
 ///    `UnixPeer`), also in refusals before this. Any such header, even one
@@ -170,6 +171,7 @@ async fn authorize(auth: &Auth, mut request: Request, next: Next) -> Response {
             "/api/v1/auth/login/start"
                 | "/api/v1/auth/register/start"
                 | "/api/v1/auth/device/start"
+                | "/api/v1/auth/login/operator"
         )
     {
         let peer = request
@@ -398,8 +400,9 @@ fn set_cookie(response: &mut Response, auth: &Auth, cookie: AuthCookie, value: &
             .expect("generated cookie is valid"),
     );
 }
-/// The host operator making a Unix socket request (see `UnixPeer`). Anyone
-/// else is answered as if the route did not exist.
+/// The host operator making a Unix socket request without any credential
+/// (see [`Identity::socket_operator`]): a credential keeps its meaning, even
+/// an unusable one. Anyone else is answered as if the route did not exist.
 pub(super) struct OperatorPeer(HostOperator);
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OperatorPeer {
@@ -410,7 +413,10 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OperatorPeer {
         _: &S,
     ) -> impl Future<Output = Result<Self, ApiError>> + Send {
         std::future::ready(
-            super::UnixPeer::host_operator(&parts.extensions)
+            parts
+                .extensions
+                .get::<Identity>()
+                .and_then(Identity::socket_operator)
                 .map(Self)
                 .ok_or_else(hidden),
         )
@@ -462,10 +468,11 @@ pub(super) async fn setup_link(
 /// Issues a one-time admin recovery link.
 ///
 /// Public, but only over the Unix socket and only to the host operator: root
-/// or the daemon's own user, identified by the kernel (`SO_PEERCRED`); anyone
-/// else gets 404. The link is valid for 24 hours, replaces any earlier one,
-/// and registers a new account with `admin` on every application. Issuing it
-/// raises a `security` notification.
+/// or the daemon's own user, identified by the kernel (`SO_PEERCRED`), sending
+/// no credential, which keeps its meaning; anyone else gets 404. The link is
+/// valid for 24 hours, replaces any earlier one, and registers a new account
+/// with `admin` on every application. Issuing it raises a `security`
+/// notification.
 #[utoipa::path(post,path="/api/v1/auth/recovery",operation_id="authRecoverAdmin",responses((status=200,body=OperatorLink),(status=404,response=inline(super::openapi::ApiErrorResponse)),
     (status=409,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn recover_admin(
@@ -476,25 +483,23 @@ pub(super) async fn recover_admin(
 }
 /// Issues a one-time host operator sign-in link.
 ///
-/// Public, but only over the Unix socket and only to the host operator, like
-/// `authRecoverAdmin`, and only without a credential, which keeps its
-/// meaning; anyone else gets 404. The link works once within ten minutes and
-/// signs a browser in as the host operator, with `admin` on every
-/// application, for 12 hours. Issuing it raises a `security` notification.
+/// Public, but only over the Unix socket and only to the host operator
+/// sending no credential, like `authRecoverAdmin`; anyone else gets 404. The
+/// link works once within ten minutes and signs a browser in as the host
+/// operator, with `admin` on every application, for 12 hours. Issuing it
+/// raises a `security` notification.
 #[utoipa::path(post,path="/api/v1/auth/sign-in-link",operation_id="authSignInLink",responses((status=200,body=OperatorLink),(status=404,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn sign_in_link(
     Extension(auth): Extension<Auth>,
-    identity: Option<Extension<Identity>>,
+    OperatorPeer(operator): OperatorPeer,
 ) -> Result<Json<OperatorLink>, ApiError> {
-    let operator = identity
-        .and_then(|Extension(identity)| identity.socket_operator())
-        .ok_or_else(hidden)?;
     Ok(Json(auth.sign_in_link(operator).await?))
 }
 /// Redeems a host operator sign-in link.
 ///
 /// Public. Signs the browser in as the host operator with a 12-hour session
-/// cookie. Used, expired, and unknown links fail with 401.
+/// cookie. Used, expired, and unknown links fail with 401. Rate limited per
+/// client address (429 with `Retry-After`).
 #[utoipa::path(post,path="/api/v1/auth/login/operator",operation_id="authOperatorSignIn",request_body=OperatorSignIn,responses((status=200,body=Session),(status=401,response=inline(super::openapi::ApiErrorResponse))))]
 pub(super) async fn operator_sign_in(
     Extension(auth): Extension<Auth>,
