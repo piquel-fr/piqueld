@@ -336,6 +336,13 @@ cancels pending ceremonies without invalidating durable credentials. All
 registration/login challenges are browser-bound and single-use. Registration
 requires resident credentials and verified users; assertions are checked against
 the exact configured origin, RP ID, credential, and immutable user handle.
+A challenge that expired, was already used, or was started in another browser,
+and a setup, invitation, or enrollment link that can no longer be redeemed,
+answer 400 `authentication_invalid`; 401 means the passkey or the signed-in
+session was refused. (Host operator sign-in links, which sign in without a
+passkey, answer 401 when unusable.) A taken username is
+refused with 409 `account_conflict` when registration starts, before a passkey
+is created.
 The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for native
 builds; the Nix packages and development shell provide them.
 

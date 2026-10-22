@@ -424,9 +424,10 @@ fn hidden() -> ApiError {
     error
 }
 /// Reads the ceremony binding cookie that ties a passkey finish request to the
-/// browser that started it; missing cookies are unauthorized.
+/// browser that started it. Without it, e.g. once it expired, the ceremony
+/// cannot finish.
 fn binding<'a>(auth: &Auth, headers: &'a HeaderMap) -> Result<&'a str, ApiError> {
-    cookie(auth, headers, AuthCookie::Ceremony).ok_or_else(|| AuthError::Unauthorized.into())
+    cookie(auth, headers, AuthCookie::Ceremony).ok_or_else(|| AuthError::stale_ceremony().into())
 }
 /// Returns a passkey challenge and sets its five-minute ceremony binding cookie.
 fn challenge_response(auth: &Auth, ceremony: Ceremony, binding: &str) -> Response {

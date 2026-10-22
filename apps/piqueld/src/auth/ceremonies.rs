@@ -6,6 +6,7 @@ use super::{
 };
 use crate::store::{Invitation, NewPasskey, PasskeyOwner};
 use base64::Engine;
+use piqueld_core::access::Denied;
 use piqueld_core::auth::{Ceremony, CeremonyFinish, RegistrationStart, User};
 use webauthn_rs_core::proto::{
     AuthenticationState, Credential, PublicKeyCredential, RegistrationState, UserVerificationPolicy,
@@ -33,6 +34,9 @@ enum Kind {
     },
     Login(AuthenticationState),
 }
+
+/// Why a link cannot be redeemed.
+const STALE_LINK: &str = "this link is invalid, expired, or already used";
 
 impl Auth {
     /// Stores a pending ceremony under a fresh random ID and returns the options
@@ -64,11 +68,12 @@ impl Auth {
     /// caller's cookie. Mismatched or expired attempts leave the entry in place.
     async fn consume(&self, id: &str, binding: &str) -> Result<Kind> {
         let mut pending = self.0.ceremonies.lock().await;
-        let item = pending.get(id).ok_or(AuthError::Unauthorized)?;
+        let stale = AuthError::stale_ceremony;
+        let item = pending.get(id).ok_or_else(stale)?;
         if item.expires <= now_secs() || item.binding != Self::hash(binding) {
-            return Err(AuthError::Unauthorized);
+            return Err(stale());
         }
-        Ok(pending.remove(id).ok_or(AuthError::Unauthorized)?.kind)
+        Ok(pending.remove(id).ok_or_else(stale)?.kind)
     }
     /// Starts passkey registration for one of:
     ///
@@ -78,6 +83,8 @@ impl Auth {
     ///
     /// Existing passkeys of the user are excluded so an authenticator cannot be
     /// registered twice. Resident keys and user verification are required.
+    /// Scoped credentials cannot add passkeys, and a new account's username
+    /// must be free, so neither fails only after the passkey was created.
     pub(crate) async fn registration_start(
         &self,
         input: RegistrationStart,
@@ -87,17 +94,25 @@ impl Auth {
         Self::validate_passkey_name(&input.passkey_name)?;
         let (user, invitation) = if let Some(id) = input.user_id {
             let caller = caller.ok_or(AuthError::Unauthorized)?;
+            if caller.scoped {
+                return Err(Denied::Scoped.into());
+            }
             let own = caller.user().filter(|user| user.id == id).ok_or(AuthError::Invalid(
                 "passkeys can only be added to your own account; create an enrollment link for others",
             ))?;
             (own.clone(), None)
         } else {
-            let secret = input.invitation.ok_or(AuthError::Unauthorized)?;
+            let secret = input.invitation.ok_or(AuthError::Invalid(
+                "registration needs an invitation, setup, or enrollment link, or a signed-in account",
+            ))?;
             let user = match self.invitation(&secret).await? {
-                None => return Err(AuthError::Unauthorized),
+                None => return Err(AuthError::Invalid(STALE_LINK)),
                 Some(Invitation::Enrollment(user)) => user,
                 Some(Invitation::Account) => {
                     Self::validate_profile(&input.username, &input.display_name)?;
+                    if self.0.store.username_taken(&input.username).await? {
+                        return Err(crate::store::StoreError::AlreadyExists.into());
+                    }
                     User {
                         id: Self::id(),
                         username: input.username,
@@ -144,8 +159,9 @@ impl Auth {
     ///
     /// Redeeming a secret consumes it atomically with storing the passkey (and
     /// creating the account), and returns a browser session token. A signed-in
-    /// account adding a passkey to itself gets no token. A store refusal (e.g.
-    /// an invitation used concurrently) is reported as unauthorized.
+    /// account adding a passkey to itself gets no token. A link that can no
+    /// longer be redeemed, e.g. used concurrently, is invalid; a caller signed
+    /// out since the start is unauthorized.
     pub(crate) async fn registration_finish(
         &self,
         input: CeremonyFinish,
@@ -159,7 +175,7 @@ impl Auth {
             name,
         } = self.consume(&input.id, binding).await?
         else {
-            return Err(AuthError::Unauthorized);
+            return Err(AuthError::stale_ceremony());
         };
         let own = caller.and_then(Identity::user);
         if invitation.is_none() && own.is_none_or(|own| own.id != user.id) {
@@ -190,7 +206,11 @@ impl Auth {
             (PasskeyOwner::Existing(caller, &user.id), None)
         };
         if !self.0.store.add_passkey(owner, passkey).await? {
-            return Err(AuthError::Unauthorized);
+            return Err(if redeemed {
+                AuthError::Invalid(STALE_LINK)
+            } else {
+                AuthError::Unauthorized
+            });
         }
         tracing::info!(
             user_id = %user.id,
@@ -228,7 +248,7 @@ impl Auth {
         binding: &str,
     ) -> Result<(User, String)> {
         let Kind::Login(mut state) = self.consume(&input.id, binding).await? else {
-            return Err(AuthError::Unauthorized);
+            return Err(AuthError::stale_ceremony());
         };
         let response: PublicKeyCredential = serde_json::from_value(input.credential)
             .map_err(|_| AuthError::Invalid("invalid passkey response"))?;

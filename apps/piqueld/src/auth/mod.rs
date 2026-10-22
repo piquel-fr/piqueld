@@ -65,6 +65,15 @@ pub enum AuthError {
 }
 type Result<T> = std::result::Result<T, AuthError>;
 
+impl AuthError {
+    /// A passkey ceremony that cannot finish: unknown, expired, already
+    /// finished, of the other kind, or started in another browser. None of
+    /// these means the caller's own sign-in is invalid, so it is no 401.
+    pub(crate) const fn stale_ceremony() -> Self {
+        Self::Invalid("the passkey request expired or was started in another browser; start again")
+    }
+}
+
 /// The cookies the daemon sets, named per origin by [`Auth::cookie_name`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum AuthCookie {

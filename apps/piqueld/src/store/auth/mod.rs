@@ -426,6 +426,17 @@ impl Store {
         }))
     }
 
+    /// Whether an account already uses `username`, regardless of case.
+    pub(crate) async fn username_taken(&self, username: &str) -> Result<bool, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_users WHERE username=?1) AS "taken!: bool""#,
+            username
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)
+    }
+
     /// Serialized `WebAuthn` credentials registered to one account.
     pub(crate) async fn passkey_credentials(
         &self,
