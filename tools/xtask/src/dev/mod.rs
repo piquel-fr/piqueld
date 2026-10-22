@@ -32,14 +32,19 @@ const CONFIG_FILE: &str = "piqueld.local.toml";
 /// Holds every instance's sockets and logs. It is in /tmp because every
 /// session sees it, unlike /run/user.
 const RUNTIME_ROOT: &str = "/tmp/piqueld-dev";
-/// Changes to these rebuild and restart the daemon. It embeds the dashboard at
-/// compile time, so the UI crate is watched too.
-const SOURCES: [&str; 5] = [
+/// Changes to these rebuild and restart the daemon. It embeds the dashboard and
+/// the migrations at compile time, so they are watched too, as are the build
+/// settings, and it reads its configuration at startup.
+const SOURCES: [&str; 9] = [
     "apps/piqueld",
     "apps/piqueld-ui",
     "crates",
+    "migrations",
     "Cargo.toml",
     "Cargo.lock",
+    ".cargo/config.toml",
+    "rust-toolchain.toml",
+    CONFIG_FILE,
 ];
 /// Labels on each instance's engine, which let `prune` find what to delete.
 const WORKTREE_LABEL: &str = "io.piqueld.dev.worktree";
@@ -223,6 +228,9 @@ impl Instance {
         let name = Self::name_for(workspace)?;
         let data = Self::state_root()?.join(&name);
         let runtime = Path::new(RUNTIME_ROOT).join(&name);
+        // Held until the configuration is written, so a concurrent setup of
+        // another worktree cannot pick the same port.
+        let _lock = Self::lock_ports()?;
         let port = Self::free_port(workspace)?;
         let quote = |path: &Path| toml::Value::from(path.display().to_string()).to_string();
         let tailnet = Tailnet::new()?;
@@ -325,6 +333,23 @@ auto_initialize_swarm = true
                 !claimed.contains(port) && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
             })
             .context("no free port")
+    }
+
+    /// Locks the choice of ports across worktrees until the returned file is
+    /// dropped, waiting for any other worktree's setup to finish.
+    fn lock_ports() -> Result<fs::File> {
+        let root = Self::state_root()?;
+        Self::create_private_dir(&root)?;
+        let path = root.join("ports.lock");
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("lock {}", path.display()))?;
+        Ok(file)
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -490,21 +515,14 @@ auto_initialize_swarm = true
     async fn clean(&self) -> Result<()> {
         let engine = Engine::host().await?;
         let container = self.container();
-        // A configuration copied from another worktree names its instance.
         match engine
             .inspect_container(&container, None::<InspectContainerOptions>)
             .await
         {
-            Ok(inspected) => {
-                let labels = inspected.config.and_then(|config| config.labels);
-                if let Some(owner) = labels
-                    .as_ref()
-                    .and_then(|labels| labels.get(WORKTREE_LABEL))
-                    && Path::new(owner) != self.workspace.root()
-                {
-                    bail!("{container} belongs to {owner}; run `just dev config --force` here");
-                }
-            }
+            Ok(inspected) => self.check_owner(
+                &container,
+                inspected.config.and_then(|config| config.labels),
+            )?,
             Err(error) if Engine::is_not_found(&error) => {}
             Err(error) => return Err(error).context("inspect the instance's engine"),
         }
@@ -516,6 +534,20 @@ auto_initialize_swarm = true
         engine.remove_dev_instance(&container, &dirs).await?;
         eprintln!("removed instance {}", self.name());
         Ok(())
+    }
+
+    /// Fails unless `container`, with these labels, is this worktree's engine:
+    /// a configuration copied from another worktree names that worktree's
+    /// engine, and a container that `just dev` did not create is not ours to
+    /// delete.
+    fn check_owner(&self, container: &str, labels: Option<HashMap<String, String>>) -> Result<()> {
+        match labels.unwrap_or_default().get(WORKTREE_LABEL) {
+            Some(owner) if Path::new(owner) == self.workspace.root() => Ok(()),
+            Some(owner) => {
+                bail!("{container} belongs to {owner}; run `just dev config --force` here")
+            }
+            None => bail!("{container} was not created by `just dev`; kept it"),
+        }
     }
 
     /// Replaces xtask with this worktree's piquelctl; returns only on failure.
@@ -608,5 +640,52 @@ impl Engine {
             eprintln!("removed the instance of {worktree}");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(root: &Path) -> Instance {
+        let config = "[server]\ndata_dir = \"/data\"\nruntime_dir = \"/runtime\"";
+        Instance {
+            workspace: Workspace {
+                root: root.to_owned(),
+            },
+            config: toml::from_str(config).unwrap(),
+        }
+    }
+
+    #[test]
+    fn clean_only_removes_this_worktrees_engine() {
+        let instance = instance(Path::new("/worktrees/a"));
+        let owned = |labels| instance.check_owner("engine", labels).is_ok();
+        let labelled = |worktree: &str| {
+            Some(HashMap::from([(
+                WORKTREE_LABEL.to_owned(),
+                worktree.to_owned(),
+            )]))
+        };
+        assert!(owned(labelled("/worktrees/a")));
+        assert!(!owned(labelled("/worktrees/b")));
+        assert!(!owned(Some(HashMap::new())));
+        assert!(!owned(None));
+    }
+
+    #[test]
+    fn migrations_and_configuration_are_sources() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("migrations")).unwrap();
+        let instance = instance(root.path());
+        let built = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!instance.sources_changed_since(built));
+        fs::write(root.path().join("migrations/0001_new.sql"), "").unwrap();
+        assert!(instance.sources_changed_since(built));
+        let built = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(root.path().join(CONFIG_FILE), "").unwrap();
+        assert!(instance.sources_changed_since(built));
     }
 }
