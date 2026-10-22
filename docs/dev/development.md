@@ -27,16 +27,30 @@ does), and `just dev config --force` regenerates it:
 | Setting | Value |
 | --- | --- |
 | `server.data_dir` | `~/.local/state/piqueld-dev/<instance>` (under `$XDG_STATE_HOME` when set), outside `/tmp`, which systemd ages out |
-| `server.runtime_dir` | `/tmp/piqueld-dev/<instance>`, holding the sockets and logs |
+| `server.runtime_dir` | `/tmp/piqueld-dev-<uid>/<instance>`, holding the sockets and logs |
 | `server.listen_mode`, `server.port` | `localhost` on the lowest free port from 7846 that no other worktree uses |
+| `server.allowed_hosts` | `<instance>.localhost`, the instance's own [browser](#browser) host |
 | `[tailscale]` | while the [tailnet node](#tailnet) is logged in, `https://piqueld-dev.<tailnet>.ts.net:<port>` |
-| `auth.public_url` | the tailnet URL, or else `http://localhost:<port>`: the only origin where passkeys work |
+| `auth.public_url` | the tailnet URL, or else `http://<instance>.localhost:<port>`: the only origin where passkeys work |
 | `docker.socket` | the instance's own engine (below) |
 
 The instance is named after the worktree directory, or `main` for the main
 checkout, followed by a hash of its path, so separate clones never share an
 instance. Edit the file freely: `just dev` reads the directories, port, and
 Docker socket from it.
+
+`/tmp/piqueld-dev-<uid>` holds every instance's runtime directory and the
+tailnet node's. Before any `just dev` command touches a file in the
+instance's runtime directory, it creates the directory and its parent if
+needed and checks that only you can access them. It refuses to run
+otherwise, such as when another user created the directory first.
+
+`just dev` warns about a `runtime_dir` in the shared `/tmp/piqueld-dev`. To
+move it, run `just dev stop`, then `just dev config --force`; `config --force`
+refuses to replace the configuration of a running instance. The next
+`just dev` recreates the instance's engine for the new directories and keeps
+its images, Swarm, and services. Starting the tailnet node also stops a node
+still running from `/tmp/piqueld-dev/tailnet`, since both use the same state.
 
 ## Browser
 
@@ -45,10 +59,13 @@ Open `<public_url>/dashboard/`, as printed by `just dev start` and
 
 On the tailnet, that is `https://piqueld-dev.<tailnet>.ts.net:<port>`, which
 any device on the tailnet reaches, including T3 Code's browser preview.
-Otherwise it is `http://localhost:<port>`: the preview runs on the machine
-running the instance, so it reaches the port directly; elsewhere, forward the
-port, for example with `ssh -L`. Use `localhost`, not `127.0.0.1`: browsers
-allow passkeys on `localhost` over HTTP.
+Otherwise it is `http://<instance>.localhost:<port>`: the preview runs on the
+machine running the instance, so it reaches the port directly; elsewhere,
+forward the port, for example with `ssh -L`. Browsers resolve every
+`*.localhost` name to the local machine and allow passkeys on it over HTTP.
+Use the instance's host, not `localhost` or `127.0.0.1`: browsers send a
+host's cookies to all its ports, so on a shared host every instance would
+receive the others' session cookies.
 
 The daemon runs as your user, so `just ctl` acts as the
 [host operator](../user/accounts/recovery.md#the-host-operator) without signing in
@@ -73,9 +90,9 @@ This starts a `tailscaled` of its own, separate from the host's, in userspace
 networking, and runs `tailscale up --hostname=piqueld-dev` against it; extra
 arguments, such as `--auth-key=file:<path>` or `--advertise-tags=tag:dev`, are
 passed on. Its state is in `~/.local/state/piqueld-dev/tailnet` and its socket
-and log in `/tmp/piqueld-dev/tailnet`. The tailnet needs MagicDNS and HTTPS
-certificates, and `tailscale` and `tailscaled` must be on `PATH`. Use tailnet
-policy to limit who reaches the node.
+and log in `/tmp/piqueld-dev-<uid>/tailnet`. The tailnet needs MagicDNS and
+HTTPS certificates, and `tailscale` and `tailscaled` must be on `PATH`. Use
+tailnet policy to limit who reaches the node.
 
 From then on, `just dev config` sets `[tailscale]` in new configurations, and
 `just dev config --force` moves an existing one to the node. The daemon only
@@ -83,8 +100,9 @@ adds its port to the node's Serve configuration (see
 [sharing a tailscaled](../user/reference/configuration.md#sharing-a-tailscaled)), so the
 dashboard, the API through `piquelctl --url`, and tailnet identities work as
 in production. Session cookies are named after the port, so instances never
-sign each other out, but passkeys are bound to the node's name: a browser
-offers every instance's passkeys, and only the instance's own work.
+sign each other out, but the browser sends all of them to every instance on
+the node, and passkeys are bound to the node's name: a browser offers every
+instance's passkeys, and only the instance's own work.
 
 The node runs in the background and outlives the instances. `just dev tailnet
 stop` stops it, and the next instance that uses it, such as after a reboot,
@@ -98,7 +116,7 @@ container `piqueld-dev-<instance>`, listening on
 a volume of the same name across restarts. Inspect it with:
 
 ```console
-DOCKER_HOST=unix:///tmp/piqueld-dev/<instance>/docker/docker.sock docker service ls
+DOCKER_HOST=unix:///tmp/piqueld-dev-<uid>/<instance>/docker/docker.sock docker service ls
 ```
 
 Set `docker.socket = "/var/run/docker.sock"` to use the host engine instead;
@@ -139,7 +157,7 @@ The runtime directory keeps:
   `grep '"level":"ERROR"'`. It keeps every run; `just dev clean` removes it.
 - `dev.log`: the terminal output of an instance started with `just dev start`.
 
-The tailnet node logs to `/tmp/piqueld-dev/tailnet/tailscaled.log`.
+The tailnet node logs to `/tmp/piqueld-dev-<uid>/tailnet/tailscaled.log`.
 
 The terminal keeps the daemon's usual human-readable output.
 

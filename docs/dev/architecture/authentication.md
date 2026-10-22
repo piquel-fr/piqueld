@@ -39,7 +39,9 @@ builds; the Nix packages and development shell provide them.
 `auth.public_url` is the single browser origin: WebAuthn, the links piqueld
 prints, and the Origin checks below all use it. `Auth::validate_origin`
 accepts a bare origin with a DNS hostname, over HTTPS or as
-`http://localhost`; IP addresses, paths, queries and fragments are refused.
+`http://localhost` or a subdomain of it, such as `http://dev.localhost`, which
+browsers resolve to loopback and treat as a secure context. IP addresses,
+paths, queries and fragments are refused.
 No forwarded-header trust configuration exists: behind a reverse proxy, the
 configured origin is what WebAuthn and CSRF checks compare against; restrict
 access to the proxy's unencrypted upstream. Tailscale
@@ -220,11 +222,14 @@ first remaining account, in ID order, becomes the default.
 
 The client refuses remote HTTP authentication unless opted in with
 `--allow-insecure-http` or, for library callers,
-`Client::with_insecure_http()`: an `http` URL whose host isn't `localhost`,
-`127.0.0.0/8` or `::1`, for a request that carries a bearer token or targets
-`/api/v1/auth/…`. The Unix socket uses an internal `http://localhost` base
-URL and needs no opt-in. `setup-link`, `sign-in-link` and `recover-admin`
-refuse any URL endpoint, including one from `PIQUELD_URL` or a profile.
+`Client::with_insecure_http()`: an `http` URL whose host isn't `localhost` or
+a subdomain of it, `127.0.0.0/8` or `::1`, for a request that carries a bearer
+token or targets `/api/v1/auth/…`. `Client::tcp` resolves `localhost` and its
+subdomains to `::1` and `127.0.0.1` itself, whatever the system resolver says,
+so those names always stay on the machine. The Unix socket uses an internal
+`http://localhost` base URL and needs no opt-in. `setup-link`, `sign-in-link`
+and `recover-admin` refuse any URL endpoint, including one from `PIQUELD_URL`
+or a profile.
 
 ## Logging
 

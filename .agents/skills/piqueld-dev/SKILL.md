@@ -46,7 +46,7 @@ not.
   only origin where passkeys and sign-in work: either
   `https://piqueld-dev.<tailnet>.ts.net:<port>` when the instance serves on the
   shared tailnet node, which the user can also open from their own devices,
-  or `http://localhost:<port>` (never `127.0.0.1`).
+  or `http://<instance>.localhost:<port>` (never `localhost` or `127.0.0.1`).
 - **CLI:** `just ctl <args>` runs this worktree's `piquelctl` against the
   instance's socket.
 - **Signing in:** `just ctl` needs no login: it acts as the host operator,

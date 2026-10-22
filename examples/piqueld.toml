@@ -36,7 +36,7 @@ hostname = "piqueld-dev"
 # https_port = 443
 # Share a logged-in tailscaled, running as the daemon's user, instead of
 # starting one; piqueld then only adds https_port to its Serve configuration.
-# socket = "/tmp/piqueld-dev/tailnet/tailscaled.sock"
+# socket = "/tmp/piqueld-dev-<uid>/tailnet/tailscaled.sock"
 
 [docker]
 socket = "/var/run/docker.sock"

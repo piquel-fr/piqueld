@@ -297,7 +297,8 @@ Remote HTTP authentication, including `login`, requires `--allow-insecure-http`
 when using separate transport encryption such as Tailscale. The client does not
 verify tailnet membership or add encryption with this flag. Prefer HTTPS, such as
 a daemon's [tailnet node](configuration.md#tailnet-node) at
-`https://piqueld.<tailnet>.ts.net`; loopback HTTP and Unix sockets need no opt-in.
+`https://piqueld.<tailnet>.ts.net`. Loopback HTTP, including `localhost` and
+its subdomains, and Unix sockets need no opt-in.
 When the daemon runs a tailnet node, `status` also reports its login state,
 certificate expiry, and whether `auth.public_url` matches the node. It also lists
 each [DNS provider](configuration.md#dns-providers) with its zones, health and
