@@ -1027,6 +1027,24 @@ async fn concurrent_passkey_and_account_deletions_keep_one_admin() {
     }
 }
 
+/// Revoking a credential or invitation that does not exist is reported,
+/// rather than succeeding without revoking anything.
+#[tokio::test]
+async fn revoking_unknown_ids_is_not_found() {
+    let f = Fixture::new().await;
+    let root = f.identity("root", &Grants::admin()).await;
+    for command in [
+        Manage::RevokeCredential { id: Auth::id() },
+        Manage::RevokeInvitation { id: Auth::id() },
+    ] {
+        let result = f.auth.manage(&root, command).await;
+        assert!(matches!(
+            result,
+            Err(AuthError::Store(StoreError::NotFound))
+        ));
+    }
+}
+
 /// Issuing an approved CLI login does not hold up other logins while it
 /// waits for storage, and answers one session once: a concurrent poll
 /// waits, and a poll cancelled after storing its session leaves it for the

@@ -725,7 +725,7 @@ impl Store {
     /// Deletes one credential if `actor` may change its owner, or one host
     /// operator session if `actor` could manage an administrator, as that
     /// session acts with `admin`. A credential may always revoke itself, even
-    /// a scoped one. Unknown IDs are ignored.
+    /// a scoped one. Unknown IDs are `NotFound`.
     pub(crate) async fn revoke_credential(
         &self,
         actor: Actor<'_>,
@@ -756,6 +756,8 @@ impl Store {
                 .execute(&mut *tx)
                 .await
                 .map_err(StoreError::database)?;
+        } else {
+            return Err(StoreError::NotFound);
         }
         self.commit_access_change(tx).await
     }
@@ -1036,6 +1038,7 @@ impl Store {
 
     /// Deletes an unused invitation if `actor` could have created it: it may
     /// change the enrollment target, or hand out the invitation's grants.
+    /// Unknown IDs are `NotFound`.
     pub(crate) async fn revoke_invitation(
         &self,
         actor: Actor<'_>,
@@ -1047,7 +1050,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         match target {
-            None => return Ok(()),
+            None => return Err(StoreError::NotFound),
             Some(Some(user_id)) => {
                 Self::check_account_on(&mut tx, actor, &user_id).await?;
             }
