@@ -601,7 +601,8 @@ pub(super) async fn logout(
 /// Lists accounts, passkeys, credentials, and open invitations.
 ///
 /// With `accounts:manage`, lists every account and invitation; otherwise only
-/// the caller's own account.
+/// the caller's own account. A scoped credential sees only itself there, and
+/// its account with its own grants.
 #[utoipa::path(get,path="/api/v1/auth/directory",operation_id="authDirectory",responses((status=200,body=Directory)))]
 pub(super) async fn directory(
     Extension(auth): Extension<Auth>,

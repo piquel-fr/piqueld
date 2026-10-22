@@ -170,6 +170,11 @@ They can't give anyone access, and they can't change their own account. They
 can revoke themselves. So a leaked token never outlives or exceeds its own
 limits.
 
+Without `accounts:manage`, a token only sees itself.
+`piquelctl account list` shows its account with the token's own access, and
+`piquelctl token list` shows the token alone. Your passkeys and your other
+sessions and tokens stay hidden from it.
+
 A token with `accounts:manage` can still edit other accounts' profiles and
 passkeys, revoke their sessions and tokens, and delete them, within its
 access. It can't change their grants.

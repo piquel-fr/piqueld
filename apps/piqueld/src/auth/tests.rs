@@ -699,6 +699,36 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
     assert!(f.auth.authenticate(&secret).await.is_err());
 }
 
+/// Without `accounts:manage`, a token sees only itself in the account
+/// directory: its account with the token's grants, and neither the account's
+/// passkeys nor its other credentials.
+#[tokio::test]
+async fn tokens_see_only_themselves_in_the_directory() {
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &developer()).await;
+    f.passkey(&alice).await;
+    let deploy = Preset::Deploy.grants(&Scope::All);
+    let create = Manage::CreateToken {
+        grants: deploy.clone(),
+        name: "ci".into(),
+        days: Some(30),
+        tailnet: None,
+    };
+    let secret = f.auth.manage(&alice, create).await.unwrap().token.unwrap();
+    let ci = f.auth.authenticate(&secret).await.unwrap();
+
+    let seen = f.auth.directory(&ci).await.unwrap();
+    assert_eq!(seen.users.len(), 1);
+    assert_eq!(seen.users[0].grants, deploy);
+    assert!(seen.passkeys.is_empty());
+    let credentials: Vec<_> = seen.credentials.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(credentials, [ci.credential_id().unwrap()]);
+    // Her own CLI session still sees her whole account.
+    let own = f.auth.directory(&alice).await.unwrap();
+    assert_eq!(own.users[0].grants, developer());
+    assert_eq!((own.passkeys.len(), own.credentials.len()), (1, 2));
+}
+
 /// A token keeps no access its owner lost after it authenticated: writes
 /// re-read the owner's grants, and a scoped credential without grants can do
 /// nothing.

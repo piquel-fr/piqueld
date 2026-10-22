@@ -18,7 +18,8 @@ pub(crate) use audit::NewAuditEvent;
 pub use auth::access::{Actor, Attribution, Caller, EnvironmentOwner, Visibility};
 pub use auth::{CredentialKind, Lockout};
 pub(crate) use auth::{
-    Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner, SecurityEvent,
+    DirectoryView, Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner,
+    SecurityEvent,
 };
 pub(crate) use journal::JournalAction;
 pub(crate) use observability::DESTINATION_CHANGED;

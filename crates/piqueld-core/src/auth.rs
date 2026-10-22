@@ -262,7 +262,8 @@ pub struct InvitationView {
 }
 
 /// Account management directory. Callers with `accounts:manage` see every
-/// account and invitation; everyone else sees only their own account.
+/// account and invitation; everyone else sees only their own account, and a
+/// scoped credential only itself, its account carrying its own grants.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Directory {
     /// Accounts with their grants.

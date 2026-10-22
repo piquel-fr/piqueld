@@ -6,24 +6,28 @@
 //! The store re-reads both the caller's and the target's grants inside each
 //! change's transaction.
 use super::{Auth, AuthError, CredentialKind, DAY, Identity, Result, now_secs};
-use crate::store::NewInvitation;
+use crate::store::{DirectoryView, NewInvitation};
 use piqueld_core::access::GlobalPermission;
 use piqueld_core::auth::{Directory, HostOperator, Manage, Managed, OperatorLink};
 impl Auth {
     /// Lists the accounts `viewer` may see: every account, invitation, and
     /// host operator session with `accounts:manage`, otherwise only its own
-    /// account.
+    /// account. A credential limited to its own grants sees only itself
+    /// there, and its account with those grants, not the account's passkeys,
+    /// other credentials, or wider grants.
     pub(crate) async fn directory(&self, viewer: &Identity) -> Result<Directory> {
-        let mut directory = self.0.store.auth_directory().await?;
-        if !viewer.grants.has_global(GlobalPermission::AccountsManage) {
-            let own = |user_id: &String| viewer.user().is_some_and(|user| user.id == *user_id);
-            directory.users.retain(|account| own(&account.user.id));
-            directory.passkeys.retain(|passkey| own(&passkey.user_id));
-            directory
-                .credentials
-                .retain(|credential| own(&credential.user_id));
-            directory.invitations.clear();
-            directory.operator_sessions.clear();
+        let view = if viewer.grants.has_global(GlobalPermission::AccountsManage) {
+            DirectoryView::All
+        } else if viewer.scoped {
+            DirectoryView::Credential(viewer.caller()?)
+        } else {
+            DirectoryView::Account(viewer.caller()?.user_id)
+        };
+        let mut directory = self.0.store.auth_directory(view).await?;
+        if let DirectoryView::Credential(_) = view {
+            for account in &mut directory.users {
+                account.grants.clone_from(&viewer.grants);
+            }
         }
         Ok(directory)
     }
