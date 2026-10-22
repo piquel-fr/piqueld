@@ -1,6 +1,7 @@
 //! One-shot job editing. Jobs run in list order before each rollout.
 use super::super::ui::{add_button, empty, limited_add_button, remove_button};
 use super::{Draft, Rows, editor};
+use crate::editor::ServiceForm;
 use leptos::prelude::*;
 use piqueld_client::{
     ApplicationManifest, Job, JobRun, JobVolumeAccess, SecretMount, edit::ApplicationEdit,
@@ -13,9 +14,9 @@ struct JobDraft {
     service: String,
     command: Vec<String>,
     /// Environment variables the job adds, as key/value rows.
-    environment: Vec<[String; 2]>,
+    environment: Vec<(String, String)>,
     /// Secrets the job adds, as name/container path rows.
-    secrets: Vec<[String; 2]>,
+    secrets: Vec<(String, String)>,
     timeout: String,
     volume_access: JobVolumeAccess,
 }
@@ -40,8 +41,9 @@ impl JobDraft {
         manifest.spec.jobs.iter().cloned().map(Self::from).collect()
     }
 
-    /// The job input, or a message when the timeout does not parse.
-    fn job(self) -> Result<Job, &'static str> {
+    /// The job input, or a message when an environment key repeats or the
+    /// timeout does not parse.
+    fn job(self) -> Result<Job, String> {
         Ok(Job {
             name: self.name,
             service: self.service,
@@ -50,15 +52,11 @@ impl JobDraft {
                 .iter()
                 .map(|value| value.as_str().into())
                 .collect(),
-            environment: self
-                .environment
-                .into_iter()
-                .map(|[key, value]| (key, value.into()))
-                .collect(),
+            environment: ServiceForm::unique_keys("Environment", &self.environment)?,
             secrets: self
                 .secrets
                 .into_iter()
-                .map(|[name, target]| SecretMount {
+                .map(|(name, target)| SecretMount {
                     name: name.into(),
                     target,
                 })
@@ -67,7 +65,7 @@ impl JobDraft {
             timeout_seconds: self
                 .timeout
                 .parse()
-                .map_err(|_| "Job timeout must be a whole number of seconds")?,
+                .map_err(|_| "Job timeout must be a whole number of seconds".to_owned())?,
             volume_access: self.volume_access,
         })
     }
@@ -82,12 +80,12 @@ impl From<Job> for JobDraft {
             environment: job
                 .environment
                 .into_iter()
-                .map(|(key, value)| [key, value.to_string()])
+                .map(|(key, value)| (key, value.to_string()))
                 .collect(),
             secrets: job
                 .secrets
                 .into_iter()
-                .map(|secret| [secret.name.to_string(), secret.target])
+                .map(|secret| (secret.name.to_string(), secret.target))
                 .collect(),
             timeout: job.timeout_seconds.to_string(),
             volume_access: job.volume_access,
@@ -158,8 +156,8 @@ struct PairRows {
     add: &'static str,
     /// Values of a newly added row.
     new: [&'static str; 2],
-    read: fn(&JobDraft) -> &Vec<[String; 2]>,
-    write: fn(&mut JobDraft) -> &mut Vec<[String; 2]>,
+    read: fn(&JobDraft) -> &Vec<(String, String)>,
+    write: fn(&mut JobDraft) -> &mut Vec<(String, String)>,
 }
 
 impl PairRows {
@@ -180,23 +178,30 @@ impl PairRows {
         write: |j| &mut j.secrets,
     };
 
-    /// Column `column` of `row`, as an input editing it.
+    /// The `column` of `row`, as an input labelled `label` editing it.
     fn input(
         self,
         jobs: RwSignal<Vec<JobDraft>>,
         index: usize,
         row: usize,
-        column: usize,
+        label: &'static str,
+        column: fn(&mut (String, String)) -> &mut String,
     ) -> AnyView {
         view! {
             <label class="field">
-                <span>{self.labels[column]}</span>
+                <span>{label}</span>
                 <input
                     type="text"
                     prop:value={move || {
                         jobs.field(
                             index,
-                            |j| (self.read)(j).get(row).map(|pair| pair[column].clone()).unwrap_or_default(),
+                            |j| {
+                                (self.read)(j)
+                                    .get(row)
+                                    .cloned()
+                                    .map(|mut pair| std::mem::take(column(&mut pair)))
+                                    .unwrap_or_default()
+                            },
                         )
                     }}
                     on:input={move |event| {
@@ -204,7 +209,7 @@ impl PairRows {
                             index,
                             |j| {
                                 if let Some(pair) = (self.write)(j).get_mut(row) {
-                                    pair[column] = event_target_value(&event);
+                                    *column(pair) = event_target_value(&event);
                                 }
                             },
                         );
@@ -231,8 +236,8 @@ impl PairRows {
                         children={move |row| {
                             view! {
                                 <div class="form-row">
-                                    {self.input(jobs, index, row, 0)}
-                                    {self.input(jobs, index, row, 1)}
+                                    {self.input(jobs, index, row, self.labels[0], |pair| &mut pair.0)}
+                                    {self.input(jobs, index, row, self.labels[1], |pair| &mut pair.1)}
                                     {remove_button(move || {
                                         jobs.edit(
                                             index,
@@ -251,7 +256,7 @@ impl PairRows {
                     move || {
                         jobs.edit(
                             index,
-                            |j| (self.write)(j).push(self.new.map(String::from)),
+                            |j| (self.write)(j).push(self.new.map(String::from).into()),
                         );
                     },
                 )}
@@ -277,7 +282,7 @@ pub(super) fn JobSettings() -> impl IntoView {
         .collect()
     {
         Ok(saved) => draft.save(ApplicationEdit::Jobs(saved), JobDraft::rows),
-        Err(message) => context.error.set(Some(message.into())),
+        Err(message) => context.error.set(Some(message)),
     };
     let swap = move |first: usize| {
         jobs.update(|jobs| {
