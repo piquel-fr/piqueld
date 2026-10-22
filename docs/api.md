@@ -259,7 +259,10 @@ wait for all jobs to succeed. If a dependency has its own jobs, they must appear
 earlier in the job list (`job_dependency_order_invalid`). `volume_access` is
 `read-only` (the default) or `exclusive`; exclusive access needs the service
 to mount a writable volume, and no startup dependency may mount any of those
-volumes (`job_volume_access_invalid`).
+volumes (`job_volume_access_invalid`). A job's optional `environment` and
+`secrets`, shaped like a service's, are added to its service's for the job's
+container only; a variable or secret target the service already sets is
+rejected with `job_setting_conflict`.
 Routes remain saved while ingress is disabled and become active only after deployment
 with ingress enabled in the daemon's read-only TOML configuration.
 

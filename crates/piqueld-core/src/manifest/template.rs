@@ -274,9 +274,7 @@ impl ApplicationTemplate {
     #[must_use]
     pub fn mounted_secrets(&self, target: &RenderTarget) -> BTreeMap<String, SecretSource> {
         let spec = self.saved(target);
-        spec.services
-            .iter()
-            .flat_map(|service| &service.secrets)
+        spec.secret_mounts()
             .map(|secret| {
                 let name = secret
                     .name

@@ -150,6 +150,8 @@ pub const JOB_DEPENDENCY_ORDER_INVALID: &str = "job_dependency_order_invalid";
 pub const JOB_TIMEOUT_INVALID: &str = "job_timeout_invalid";
 /// An exclusive job has no writable volume, or a startup dependency mounts one.
 pub const JOB_VOLUME_ACCESS_INVALID: &str = "job_volume_access_invalid";
+/// A job sets an environment variable or mounts at a target its service already does.
+pub const JOB_SETTING_CONFLICT: &str = "job_setting_conflict";
 /// An exclusive job stops the services sharing its volumes until rollout.
 pub const JOB_STOPS_SERVICES: &str = "job_stops_services";
 

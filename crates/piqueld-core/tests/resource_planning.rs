@@ -9,7 +9,9 @@ use piqueld_core::resource::{
     ObservedTask, ObservedVolume, ResolutionRequirement, ResolutionSet, ResolvedApplication,
     ResolvedSource, TaskState, compile_application, image_repository, preview_resolution,
 };
-use piqueld_core::{ApplicationId, DockerNetworkName, EnvironmentId, InstanceId, Plan, parse_toml};
+use piqueld_core::{
+    ApplicationId, DockerNetworkName, EnvironmentId, InstanceId, Plan, codes, parse_toml,
+};
 
 fn application() -> piqueld_core::NormalizedApplication {
     parse_toml(include_str!("fixtures/manifests/prebuilt.toml"))
@@ -1158,6 +1160,54 @@ fn jobs_reuse_their_service_container_under_a_distinct_identity() {
         Some("operation-1")
     );
     assert!(run.has_valid_identity());
+}
+
+#[test]
+fn jobs_add_their_environment_and_secrets_to_their_container_only() {
+    let app = parse_toml(&format!(
+        "{}\n[spec.services.environment]\nRUST_LOG = \"info\"\n\
+         [[spec.jobs]]\nname = \"migrate\"\nservice = \"web\"\n\
+         command = [\"notes\", \"migrate\"]\nrun = \"before-rollout\"\n\
+         [spec.jobs.environment]\nOWNER_PASSWORD_FILE = \"/run/secrets/owner\"\n\
+         [[spec.jobs.secrets]]\nname = \"owner-password\"\ntarget = \"/run/secrets/owner\"\n",
+        include_str!("fixtures/manifests/prebuilt.toml")
+    ))
+    .unwrap()
+    .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    let errors = compile_application(&app, &environment(), instance(), &resolutions()).unwrap_err();
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| (error.code.as_str(), error.resource.as_str()))
+            .collect::<Vec<_>>(),
+        [(codes::SECRET_UNRESOLVED, "migrate")]
+    );
+
+    let mut pinned = resolutions();
+    pinned
+        .secret_names
+        .insert("owner-password".into(), "owner-password-v1".into());
+    let desired = compile_application(&app, &environment(), instance(), &pinned).unwrap();
+    let (service, job) = (&desired.services[0], &desired.jobs[0]);
+    assert_eq!(
+        service.environment,
+        BTreeMap::from([("RUST_LOG".into(), "info".into())])
+    );
+    assert_eq!(service.secrets, []);
+    assert_eq!(
+        job.container.environment,
+        BTreeMap::from([
+            ("OWNER_PASSWORD_FILE".into(), "/run/secrets/owner".into()),
+            ("RUST_LOG".into(), "info".into()),
+        ])
+    );
+    assert_eq!(
+        job.container.secrets,
+        [piqueld_core::resource::SecretFile {
+            secret_name: "owner-password-v1".into(),
+            target: "/run/secrets/owner".into(),
+        }]
+    );
 }
 
 /// The fixture with an exclusive migration of `web`, which waits for `db`.

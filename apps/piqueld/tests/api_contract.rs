@@ -3409,6 +3409,8 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         name: name.into(),
         service: service.into(),
         command: vec!["notes".into(), name.into()],
+        environment: std::collections::BTreeMap::new(),
+        secrets: Vec::new(),
         run: JobRun::BeforeRollout,
         timeout_seconds: 60,
         volume_access: JobVolumeAccess::ReadOnly,

@@ -392,8 +392,12 @@ impl ServiceForm {
     }
 
     /// Collects key/value rows into a map, rejecting keys that appear twice.
-    /// `noun` names the rows in the error.
-    fn unique_keys(
+    /// `noun` names the rows in the error. Job editing reuses it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the first key that appears twice.
+    pub fn unique_keys(
         noun: &str,
         rows: &[(String, String)],
     ) -> Result<std::collections::BTreeMap<String, Template>, String> {

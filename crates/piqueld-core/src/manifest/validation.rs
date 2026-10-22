@@ -5,7 +5,7 @@ use super::variables::{Template, Typed};
 use super::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationManifest, ApplicationSpec, Build,
     FileSource, GitRepository, HealthCheck, Job, JobVolumeAccess, ManifestRevision,
-    RepositoryManifest, ResourceLimits, SecretGenerator, Service, ServiceFile, Source,
+    RepositoryManifest, ResourceLimits, SecretGenerator, SecretMount, Service, ServiceFile, Source,
     SourceRepository, ValidatedApplication, ValidatedRollout, ValidatedTemplate,
 };
 use crate::{codes, names::is_lowercase_label, resource::valid_logical_name};
@@ -33,7 +33,8 @@ const MAX_BUILD_ARG_TOTAL_BYTES: usize = 262_144;
 const MAX_PROCESS_ELEMENTS: usize = 128;
 const MAX_PROCESS_ELEMENT_BYTES: usize = 4_096;
 const MAX_MOUNTS_PER_SERVICE: usize = 32;
-const MAX_SECRET_MOUNTS_PER_SERVICE: usize = 64;
+/// Secret mounts a service, or a job in addition to its service, may declare.
+const MAX_SECRET_MOUNTS: usize = 64;
 const MAX_HEALTHCHECK_INTERVAL_SECONDS: u32 = 3_600;
 const MAX_HEALTHCHECK_START_PERIOD_SECONDS: u32 = 3_600;
 /// Accepted consecutive failures before a container is unhealthy.
@@ -903,8 +904,8 @@ impl ApplicationSpec {
     }
 
     /// Checks every job: a unique valid name, a declared service, an order after
-    /// the jobs of its service's startup dependencies, a command, its volume
-    /// access, and its timeout.
+    /// the jobs of its service's startup dependencies, a command, the
+    /// environment and secrets it adds, its volume access, and its timeout.
     fn validate_jobs(&self, errors: &mut Vec<ValidationError>) {
         let (jobs, services) = (&self.jobs, &self.services);
         unique_names(
@@ -954,6 +955,9 @@ impl ApplicationSpec {
                 codes::PROCESS_COMMAND_EXCESSIVE,
                 errors,
             );
+            if let Some(service) = services.iter().find(|service| service.name == job.service) {
+                job.validate_additions(service, &base, errors);
+            }
             if job.volume_access == JobVolumeAccess::Exclusive {
                 job.validate_exclusive_access(services, &dependencies, &base, errors);
             }
@@ -1082,28 +1086,7 @@ impl Service {
             .iter()
             .map(|m| m.target.as_str())
             .collect::<BTreeSet<_>>();
-        for (index, secret) in self.secrets.iter().enumerate() {
-            let path = format!("{base}.secrets[{index}]");
-            // Names that reference variables are validated once rendered.
-            if let Some(name) = secret.name.as_literal() {
-                validate_name(&name, &format!("{path}.name"), errors);
-            }
-            validate_absolute_path(&secret.target, &format!("{path}.target"), errors);
-            if !secret.target.starts_with("/run/secrets/") || !targets.insert(&secret.target) {
-                errors.push(ValidationError::new(
-                    codes::SECRET_TARGET_INVALID,
-                    &path,
-                    "secret targets must be unique file paths under /run/secrets",
-                ));
-            }
-        }
-        if self.secrets.len() > MAX_SECRET_MOUNTS_PER_SERVICE {
-            errors.push(ValidationError::new(
-                codes::SECRETS_EXCESSIVE,
-                base,
-                format!("at most {MAX_SECRET_MOUNTS_PER_SERVICE} secret file mounts per service"),
-            ));
-        }
+        SecretMount::validate_all(&self.secrets, base, &mut targets, errors);
         self.validate_files(base, manifest_backed, &mut targets, errors);
         VariableMap::ENVIRONMENT.validate(&self.environment, base, errors);
         self.validate_mounts(base, volume_names, errors);
@@ -1308,7 +1291,7 @@ struct VariableMap {
 }
 
 impl VariableMap {
-    /// Service environment, validated at `<service>.environment`.
+    /// Service or job environment, validated at `<base>.environment`.
     const ENVIRONMENT: Self = Self {
         noun: "environment",
         field: "environment",
@@ -1344,7 +1327,7 @@ impl VariableMap {
             errors.push(ValidationError::new(
                 self.count_excessive,
                 format!("{base}.{field}"),
-                format!("a service must declare at most {MAX_VARIABLE_ENTRIES} {noun} entries"),
+                format!("at most {MAX_VARIABLE_ENTRIES} {noun} entries are allowed"),
             ));
         }
         for (key, value) in values {
@@ -1411,6 +1394,41 @@ fn safe_key_echo(key: &str) -> String {
     format!("'{sanitized}'")
 }
 
+impl SecretMount {
+    /// Checks the secret mounts of the service or job at `base`: literal names,
+    /// their count, and targets that are unique file paths under
+    /// `/run/secrets/`, also among `targets`, which collects them.
+    fn validate_all<'a>(
+        secrets: &'a [Self],
+        base: &str,
+        targets: &mut BTreeSet<&'a str>,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        for (index, secret) in secrets.iter().enumerate() {
+            let path = format!("{base}.secrets[{index}]");
+            // Names that reference variables are validated once rendered.
+            if let Some(name) = secret.name.as_literal() {
+                validate_name(&name, &format!("{path}.name"), errors);
+            }
+            validate_absolute_path(&secret.target, &format!("{path}.target"), errors);
+            if !secret.target.starts_with("/run/secrets/") || !targets.insert(&secret.target) {
+                errors.push(ValidationError::new(
+                    codes::SECRET_TARGET_INVALID,
+                    &path,
+                    "secret targets must be unique file paths under /run/secrets",
+                ));
+            }
+        }
+        if secrets.len() > MAX_SECRET_MOUNTS {
+            errors.push(ValidationError::new(
+                codes::SECRETS_EXCESSIVE,
+                base,
+                format!("at most {MAX_SECRET_MOUNTS} secret file mounts per service or job"),
+            ));
+        }
+    }
+}
+
 impl ResourceLimits {
     /// Checks optional limits: at least one limit set, CPU in `1..=MAX_CPU_MILLIS`,
     /// and memory nonzero and representable as Docker's `i64`.
@@ -1451,6 +1469,45 @@ impl ResourceLimits {
 }
 
 impl Job {
+    /// Checks the environment variables and secrets the job adds to its
+    /// `service`'s container, none of which may override the service's own.
+    fn validate_additions(&self, service: &Service, base: &str, errors: &mut Vec<ValidationError>) {
+        VariableMap::ENVIRONMENT.validate(&self.environment, base, errors);
+        for key in self.environment.keys() {
+            if service.environment.contains_key(key) {
+                errors.push(ValidationError::new(
+                    codes::JOB_SETTING_CONFLICT,
+                    format!("{base}.environment.name"),
+                    format!(
+                        "environment key {} is already set by service {}",
+                        safe_key_echo(key),
+                        service.name
+                    ),
+                ));
+            }
+        }
+        SecretMount::validate_all(&self.secrets, base, &mut BTreeSet::new(), errors);
+        let service_targets = service
+            .mounts
+            .iter()
+            .map(|mount| &mount.target)
+            .chain(service.secrets.iter().map(|secret| &secret.target))
+            .chain(service.files.iter().map(|file| &file.target))
+            .collect::<BTreeSet<_>>();
+        for (index, secret) in self.secrets.iter().enumerate() {
+            if service_targets.contains(&secret.target) {
+                errors.push(ValidationError::new(
+                    codes::JOB_SETTING_CONFLICT,
+                    format!("{base}.secrets[{index}].target"),
+                    format!(
+                        "{} is already mounted by service {}",
+                        secret.target, service.name
+                    ),
+                ));
+            }
+        }
+    }
+
     /// An exclusive job needs a writable volume of its service, and none of its
     /// startup dependencies may mount one: they keep running while it holds them.
     fn validate_exclusive_access(

@@ -619,6 +619,28 @@ fn texts<'a>(
     }
 }
 
+/// Visits the environment values and secret names of the service or job at
+/// `base`.
+fn visit_container(
+    base: &str,
+    environment: &mut BTreeMap<String, Template>,
+    secrets: &mut [super::SecretMount],
+    visit: &mut impl FnMut(&str, Slot<'_>),
+) {
+    for (key, value) in environment {
+        visit(
+            &format!("{base}.environment.{}", path_key(key)),
+            Slot::Text(value),
+        );
+    }
+    for (index, secret) in secrets.iter_mut().enumerate() {
+        visit(
+            &format!("{base}.secrets[{index}].name"),
+            Slot::Text(&mut secret.name),
+        );
+    }
+}
+
 impl super::HealthCheck {
     /// Visits the check's values; `base` is its field path.
     fn visit_values(&mut self, base: &str, visit: &mut impl FnMut(&str, Slot<'_>)) {
@@ -697,20 +719,9 @@ impl ApplicationSpec {
                 &format!("{base}.replicas"),
                 Slot::Typed(&mut service.replicas),
             );
-            for (key, value) in &mut service.environment {
-                visit(
-                    &format!("{base}.environment.{}", path_key(key)),
-                    Slot::Text(value),
-                );
-            }
+            visit_container(&base, &mut service.environment, &mut service.secrets, visit);
             texts(&format!("{base}.command"), &mut service.command, visit);
             texts(&format!("{base}.arguments"), &mut service.arguments, visit);
-            for (secret_index, secret) in service.secrets.iter_mut().enumerate() {
-                visit(
-                    &format!("{base}.secrets[{secret_index}].name"),
-                    Slot::Text(&mut secret.name),
-                );
-            }
             if let Some(healthcheck) = &mut service.healthcheck {
                 healthcheck.visit_values(&format!("{base}.healthcheck"), visit);
             }
@@ -748,11 +759,9 @@ impl ApplicationSpec {
             }
         }
         for (index, job) in self.jobs.iter_mut().enumerate() {
-            texts(
-                &format!("spec.jobs[{index}].command"),
-                &mut job.command,
-                visit,
-            );
+            let base = format!("spec.jobs[{index}]");
+            texts(&format!("{base}.command"), &mut job.command, visit);
+            visit_container(&base, &mut job.environment, &mut job.secrets, visit);
         }
         for (index, import) in self.imports.iter_mut().enumerate() {
             if let Some(environment) = &mut import.environment {

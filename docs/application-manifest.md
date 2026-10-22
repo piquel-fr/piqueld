@@ -635,7 +635,7 @@ show whether each one follows pushes and the branch head of its last
 deployment. Sync deployments are attributed to `sync:poll` or `sync:webhook`
 in events, which also record the commit in a `branch_synced` event.
 
-Services mount secrets as files:
+Services, and [jobs](#jobs), mount secrets as files:
 
 ```toml
 [[spec.services.secrets]]
@@ -697,9 +697,9 @@ Random secrets use 16–512 bytes from the operating system, encoded as lowercas
 `hex` (the default) or unpadded `base64url`. RSA secrets are 2048-, 3072-, or
 4096-bit private keys in PKCS#8 PEM.
 
-A value is generated when a deployment prepares its inputs, a service mounts
-the secret, and it has no stored value. Declarations that no service mounts are
-not generated, so they never count against secret quotas. A value is never
+A value is generated when a deployment prepares its inputs, a service or job
+mounts the secret, and it has no stored value. Declarations that no service or
+job mounts are not generated, so they never count against secret quotas. A value is never
 changed afterwards: later applies, deploys, and edits to the declaration keep
 it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate NAME`
 generates a new version for the next deployment. A value discarded by key
@@ -1098,11 +1098,24 @@ command = ["auth-service", "migrate"]
 run = "before-rollout"
 timeout_seconds = 300        # default
 volume_access = "read-only"  # default, or "exclusive"
+
+[spec.jobs.environment]      # added to auth's, for the job only
+AUTH_DATABASE_OWNER_PASSWORD = "file:///run/secrets/database-password"
+
+[[spec.jobs.secrets]]        # added to auth's, for the job only
+name = "database-password"
+target = "/run/secrets/database-password"
 ```
 
 A job reuses the prepared image, environment, secret files, volume mounts,
 resource limits, and private network of the referenced service in the same
-deployment. Its `command` replaces the service's command and arguments. Health
+deployment. Its `command` replaces the service's command and arguments.
+Its own `environment` and `secrets`, declared like a service's, are added to the service's for the job's container
+only: the service's replicas never get them, so a secret only a migration
+needs, such as a database owner's password, stays out of the running service.
+A job can't override its service: setting a variable the service sets, or
+mounting a secret at a target the service already uses for a volume, secret,
+or file, fails validation with `job_setting_conflict`. Health
 checks do not apply, including an image's `HEALTHCHECK`, and a job does not
 answer for the service's network name. `before-rollout` is currently the only
 run point: jobs run in declared order after every source is prepared and before

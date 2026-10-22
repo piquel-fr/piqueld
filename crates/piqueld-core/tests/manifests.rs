@@ -1192,6 +1192,67 @@ run = "before-rollout"
 }
 
 #[test]
+fn jobs_add_environment_and_secrets_their_service_does_not_set() {
+    let job = r#"
+[spec.services.environment]
+RUST_LOG = "info"
+[[spec.services.secrets]]
+name = "app-key"
+target = "/run/secrets/app-key"
+[[spec.jobs]]
+name = "migrate"
+service = "web"
+command = ["notes", "migrate"]
+run = "before-rollout"
+[spec.jobs.environment]
+OWNER_PASSWORD_FILE = "/run/secrets/owner"
+[[spec.jobs.secrets]]
+name = "owner-password"
+target = "/run/secrets/owner"
+"#;
+    let app = parse_toml(&(valid_manifest("notes") + job))
+        .unwrap()
+        .normalize(ApplicationId::parse("app-notes-01").unwrap());
+    assert_eq!(
+        app.spec().mounted_secret_names(),
+        ["app-key", "owner-password"].into()
+    );
+    let reparsed = parse_toml(&app.export_toml().unwrap())
+        .unwrap()
+        .normalize(app.id().clone());
+    assert_eq!(reparsed, app);
+
+    // A job can't override what its service sets.
+    let mut conflicting = app.to_manifest();
+    let job = &mut conflicting.spec.jobs[0];
+    job.environment.insert("RUST_LOG".into(), "debug".into());
+    job.secrets.push(piqueld_core::manifest::SecretMount {
+        name: "other".into(),
+        target: "/run/secrets/app-key".into(),
+    });
+    let found = conflicting
+        .validate()
+        .unwrap_err()
+        .0
+        .into_iter()
+        .map(|error| (error.code, error.path))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        [
+            (
+                codes::JOB_SETTING_CONFLICT.to_owned(),
+                "spec.jobs[0].environment.name".to_owned()
+            ),
+            (
+                codes::JOB_SETTING_CONFLICT.to_owned(),
+                "spec.jobs[0].secrets[1].target".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
 fn dependency_jobs_must_precede_jobs_that_start_their_services() {
     let mut manifest = parse_toml(&format!(
         "{}\n[[spec.services]]\nname = \"db\"\ndepends_on = [\"storage\"]\n\
@@ -1216,6 +1277,8 @@ fn dependency_jobs_must_precede_jobs_that_start_their_services() {
             name: format!("initialize-{service}"),
             service: service.into(),
             command: vec!["initialize".into()],
+            environment: std::collections::BTreeMap::new(),
+            secrets: Vec::new(),
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds: 300,
             volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
