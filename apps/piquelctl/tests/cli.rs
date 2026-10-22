@@ -3032,6 +3032,36 @@ fn wait_follows_one_deployment_until_its_routes_are_ready() {
     }
 }
 
+/// `env wait` reports the local snapshot a restore runs, through restores.
+#[test]
+fn wait_reports_the_local_snapshot_a_restore_runs() {
+    let mut restored = deployment("succeeded");
+    restored["origin"] = json!({"type": "restore", "deployment": "operation-00"});
+    let mut snapshot = deployment("succeeded");
+    snapshot["operation"]["id"] = json!("operation-00");
+    snapshot["current_target"] = json!(false);
+    snapshot["origin"] = json!({"type": "local", "commit": "c".repeat(40), "base": "b".repeat(40)});
+    let server = start_server(false, usize::MAX, move |request| {
+        match request.path.split('?').next().unwrap() {
+            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+            "/api/v1/environments/app-notes-01/deployments" => {
+                Reply::json(page(vec![restored.clone(), snapshot.clone()], None))
+            }
+            "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
+            "/api/v1/environments/app-notes-01/detail" => {
+                Reply::json(detail("operation-01", true, "ready"))
+            }
+            path => panic!("unexpected path {path}"),
+        }
+    });
+    let output = run_with_timeout(&server, &["env", "wait", "app-notes-01"], "10s");
+    let result = assert_json_success(&output);
+    server.stop();
+    assert_eq!(result["deployment_id"], "operation-01");
+    assert_eq!(result["local"], true);
+    assert_eq!(result["base"], "b".repeat(40));
+}
+
 #[test]
 fn wait_never_follows_a_newer_deployment_and_fails_or_times_out_with_its_code() {
     let pending = || detail("operation-01", true, "pending");

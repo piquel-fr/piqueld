@@ -102,7 +102,8 @@ impl Store {
 
     /// Accepts restoring `deployment` into `environment` in `tx`, where
     /// nothing can change underneath: it starts a deployment recorded as a
-    /// restore of it, with its rendered manifest, values and release, pins the
+    /// restore of it, with its rendered manifest, values, warnings, fetched
+    /// revision and release, pins the
     /// secret versions it pinned (failing, naming them, for those gone since,
     /// and with `secret_access_denied` for stored secrets the environment may
     /// no longer mount), and saves its prepared target under the
@@ -149,7 +150,10 @@ impl Store {
             deployment: deployment.to_owned(),
         })
         .map_err(StoreError::corrupt)?;
-        sqlx::query!("INSERT INTO deployments(id,environment_id,manifest_json,template_json,variables_json,generation,created_at_ms,release_id,origin_json) SELECT o.id,o.environment_id,d.manifest_json,d.template_json,d.variables_json,o.generation,o.created_at_ms,d.release_id,?3 FROM operations o JOIN deployments d ON d.id=?2 WHERE o.id=?1",operation.id,deployment,origin)
+        sqlx::query!("INSERT INTO deployments(id,environment_id,manifest_json,template_json,variables_json,warnings_json,generation,created_at_ms,release_id,origin_json) SELECT o.id,o.environment_id,d.manifest_json,d.template_json,d.variables_json,d.warnings_json,o.generation,o.created_at_ms,d.release_id,?3 FROM operations o JOIN deployments d ON d.id=?2 WHERE o.id=?1",operation.id,deployment,origin)
+            .execute(&mut **tx).await.map_err(StoreError::database)?;
+        // The revision its manifest was fetched at, for branch state.
+        sqlx::query!("INSERT INTO deployment_inputs(operation_id,application_json,repository_commit,fetched,tracked_branch) SELECT ?1,application_json,repository_commit,fetched,tracked_branch FROM deployment_inputs WHERE operation_id=?2",operation.id,deployment)
             .execute(&mut **tx).await.map_err(StoreError::database)?;
         let target = serde_json::to_string(&target).map_err(StoreError::corrupt)?;
         sqlx::query!(

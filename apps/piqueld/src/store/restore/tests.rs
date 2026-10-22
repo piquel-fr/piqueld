@@ -132,11 +132,32 @@ async fn restores_exactly_what_the_deployment_ran() {
     );
     assert_ne!(first_target.secret_names, second_target.secret_names);
 
+    // As fetching a repository-backed manifest, and a preview's bounds,
+    // leave them.
+    for statement in [
+        "UPDATE deployments SET warnings_json='[{\"code\":\"preview_replicas_capped\",\"message\":\"capped\"}]' WHERE id=?1",
+        "INSERT INTO deployment_inputs(operation_id,application_json,repository_commit,fetched) VALUES(?1,'{}','0123456789abcdef0123456789abcdef01234567',1)",
+    ] {
+        sqlx::query(statement)
+            .bind(&first.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    }
     let restored = restore(&store, &environment, &first.id).await.unwrap();
     assert_eq!(
         store.prepared_target(&restored.id).await.unwrap(),
         Some(first_target)
     );
+    // It was fetched at the same revision.
+    let input = async |id: &str| -> (String, Option<String>, i64) {
+        sqlx::query_as("SELECT application_json,repository_commit,fetched FROM deployment_inputs WHERE operation_id=?1")
+            .bind(id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(input(&restored.id).await, input(&first.id).await);
     let history = store.deployments(&environment, None, 3).await.unwrap();
     let [restored_view, _, first_view] = history.items.as_slice() else {
         panic!("three deployments expected, got {history:?}")
@@ -149,6 +170,14 @@ async fn restores_exactly_what_the_deployment_ran() {
         }
     );
     assert_eq!(restored_view.application, first_view.application);
+    let codes = |view: &piqueld_core::api::DeploymentView| {
+        view.warnings
+            .iter()
+            .map(|warning| warning.code.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(codes(restored_view), ["preview_replicas_capped"]);
+    assert_eq!(codes(restored_view), codes(first_view));
     assert_eq!(restored_view.release, first_view.release);
     assert!(restored_view.release.is_some());
     assert_eq!(

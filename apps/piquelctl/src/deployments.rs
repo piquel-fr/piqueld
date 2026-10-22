@@ -82,21 +82,29 @@ impl Deployed {
         }
     }
 
-    /// A finished deployment: its release and revision, and, when `detail`
-    /// shows it runs, its URLs.
-    fn finished(
+    /// A finished deployment: its release and revision, the local snapshot
+    /// it runs, restored or not, and, when `detail` shows it runs, its URLs.
+    async fn finished(
+        client: &Client,
         environment: &EnvironmentView,
         deployment: &DeploymentView,
         detail: &EnvironmentDetailView,
-    ) -> Self {
+    ) -> Result<Self> {
         let id = &deployment.operation.id;
-        let snapshot = match &deployment.origin {
+        let mut origin = deployment.origin.clone();
+        // Restores run what they restored, which may be a restore too.
+        while let DeploymentOrigin::Restore { deployment } = &origin {
+            origin = find_deployment(client, environment, deployment)
+                .await?
+                .origin;
+        }
+        let snapshot = match origin {
             DeploymentOrigin::Local(snapshot) => Some(snapshot),
             _ => None,
         };
-        Self {
+        Ok(Self {
             local: snapshot.is_some(),
-            base: snapshot.and_then(|snapshot| snapshot.base.clone()),
+            base: snapshot.and_then(|snapshot| snapshot.base),
             release_id: deployment.release.clone(),
             branch: deployment
                 .system_value(SystemVariable::GitBranch)
@@ -109,7 +117,7 @@ impl Deployed {
                 .then(|| detail.urls.clone())
                 .flatten(),
             ..Self::accepted(environment, id)
-        }
+        })
     }
 
     /// Reads the deployment that ended as `operation`, which decided the
@@ -122,7 +130,7 @@ impl Deployed {
         let mut deployment = find_deployment(client, environment, &operation.id).await?;
         deployment.operation = operation;
         let detail = client.environment_detail(environment.id.as_str()).await?;
-        Ok(Self::finished(environment, &deployment, &detail))
+        Self::finished(client, environment, &deployment, &detail).await
     }
 }
 
@@ -293,7 +301,7 @@ impl<T: Args + Target> WaitArgs<T> {
                 })
             })
             .await?;
-        console.emit(&Deployed::finished(environment, &deployment, &detail))
+        console.emit(&Deployed::finished(client, environment, &deployment, &detail).await?)
     }
 
     /// The deployment to wait for: `--deployment`, checked to be one of
