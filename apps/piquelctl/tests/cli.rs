@@ -1458,6 +1458,57 @@ fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
     assert_eq!(server.finish().len(), 2, "no secret value was sent");
 }
 
+/// A value piped to `--stdin` loses one trailing newline, like `echo` adds,
+/// and what remains must still fit: input is never cut short to fit.
+#[test]
+fn secret_values_from_stdin_drop_one_trailing_newline() {
+    const MAX: usize = 512_000;
+    let longest = vec![b'a'; MAX];
+    let cases: [(Vec<u8>, Option<&[u8]>); 3] = [
+        (b"line\nvalue\r\n\n".to_vec(), Some(b"line\nvalue\r\n")),
+        ([&longest[..], b"\r\n"].concat(), Some(&longest)),
+        ([&longest[..], b"\nTAIL"].concat(), None),
+    ];
+    for (input, stored) in cases {
+        let refusal =
+            json!({"code": "conflict", "message": "stop here", "request_id": "request-01"});
+        let expected = 2 + usize::from(stored.is_some());
+        let server = start_server(false, expected, move |request| {
+            match request.path.split('?').next().unwrap() {
+                "/api/v1/applications/app-notes-01" => {
+                    Reply::json(app_view("app-notes-01", "notes"))
+                }
+                "/api/v1/applications/app-notes-01/secrets" => Reply::json(json!([])),
+                "/api/v1/applications/app-notes-01/secrets/database-password" => {
+                    Reply::status("409 Conflict", &refusal)
+                }
+                path => panic!("unexpected path {path}"),
+            }
+        });
+        let mut child = server
+            .command()
+            .args(["app", "secret", "app-notes-01"])
+            .args(["set", "database-password", "--stdin", "--yes"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("piquelctl child");
+        let mut stdin = child.stdin.take().expect("child stdin");
+        // The CLI may refuse before reading everything.
+        let _ = stdin.write_all(&input);
+        drop(stdin);
+        let output = child.wait_with_output().expect("piquelctl output");
+        let requests = server.finish();
+        if let Some(stored) = stored {
+            assert_eq!(requests[2].body, stored);
+        } else {
+            assert_eq!(output.status.code(), Some(2));
+            assert_eq!(requests.len(), 2, "no secret value was sent");
+        }
+    }
+}
+
 #[test]
 fn unknown_names_exit_with_input_error_and_no_mutation() {
     let server = start_server(false, 1, move |request| match request.path.as_str() {

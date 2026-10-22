@@ -2785,7 +2785,7 @@ Arguments:
 Options:
 
 - `--file <PATH>`: Read the value from this file.
-- `--stdin`: Read the value from standard input.
+- `--stdin`: Read the value from standard input, dropping one trailing newline. A terminal asks for it without echo.
 - `--environments <ENVIRONMENTS>`: Let only these environments mount the secret: comma-separated names or IDs, or `''` for none.
 - `--all-environments`: Let every environment mount the secret, including ones created later.
 

@@ -6,15 +6,16 @@ use crate::{
         Console,
         reports::{NameDeletionReport, StoredSecretReport, StoredSecretsReport},
     },
-    support::read_input,
+    support::{TerminalMode, read_input},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Client, EnvironmentAccess, MAX_SECRET_VALUE_BYTES, SecretAccess,
 };
+use rustix::termios::{LocalModes, Termios};
 use std::{
-    io::{self, Read},
-    path::{Path, PathBuf},
+    io::{self, BufRead, IsTerminal, Read},
+    path::PathBuf,
 };
 
 // `app secret` subcommands; `///` on variants and fields is user-facing help.
@@ -41,7 +42,8 @@ pub(crate) enum SecretAction {
             required_unless_present = "stdin"
         )]
         file: Option<PathBuf>,
-        /// Read the value from standard input.
+        /// Read the value from standard input, dropping one trailing newline. A
+        /// terminal asks for it without echo.
         #[arg(long, conflicts_with = "file")]
         stdin: bool,
         #[command(flatten)]
@@ -214,9 +216,7 @@ impl SecretAction {
                         ),
                     )
                     .await?;
-                let file = file.clone();
-                // Stdin can block indefinitely; read off the runtime so Ctrl-C stays responsive.
-                let value = read_input("secret", move || Self::read_value(file.as_deref())).await?;
+                let value = Self::read_value(console, file.clone()).await?;
                 if value.is_empty() || value.len() > MAX_SECRET_VALUE_BYTES {
                     return Err(CliError::new(
                         ErrorKind::Input,
@@ -265,18 +265,51 @@ impl SecretAction {
         }
         Ok(())
     }
-    /// Reads at most one byte past the limit, so oversized input is detected.
-    fn read_value(file: Option<&Path>) -> io::Result<Vec<u8>> {
-        let input: Box<dyn Read> = if let Some(path) = file {
-            Box::new(std::fs::File::open(path)?)
+    /// Reads the value from `file` verbatim, or from stdin without one
+    /// trailing newline, so `echo value |` stores `value`. A terminal is
+    /// asked for one line, without echoing it. Reads at most the limit plus a
+    /// CRLF and one byte, so input still too long once the newline is
+    /// dropped is detected rather than cut short. Reads run off the runtime,
+    /// since stdin can block indefinitely and Ctrl-C must stay responsive.
+    async fn read_value(console: &mut Console, file: Option<PathBuf>) -> Result<Vec<u8>> {
+        let stdin = file.is_none();
+        let terminal = stdin && io::stdin().is_terminal();
+        // Dropped with this future, so echo also returns when Ctrl-C
+        // interrupts the read.
+        let _hidden = if terminal {
+            console.prompt("Secret value (hidden): ")?;
+            let hide = |mode: &mut Termios| {
+                mode.local_modes.remove(LocalModes::ECHO);
+                mode.local_modes.insert(LocalModes::ECHONL);
+            };
+            Some(TerminalMode::enable(hide).map_err(|error| {
+                CliError::new(
+                    ErrorKind::General,
+                    format!("could not hide terminal input: {error}"),
+                )
+            })?)
         } else {
-            Box::new(io::stdin())
+            None
         };
-        let mut bytes = Vec::new();
-        input
-            .take(MAX_SECRET_VALUE_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        Ok(bytes)
+        let mut value = read_input("secret", move || {
+            let input: Box<dyn Read> = match file {
+                Some(path) => Box::new(std::fs::File::open(path)?),
+                None => Box::new(io::stdin()),
+            };
+            let mut input = io::BufReader::new(input.take(MAX_SECRET_VALUE_BYTES as u64 + 3));
+            let mut bytes = Vec::new();
+            if terminal {
+                input.read_until(b'\n', &mut bytes)?;
+            } else {
+                input.read_to_end(&mut bytes)?;
+            }
+            Ok(bytes)
+        })
+        .await?;
+        if stdin && value.pop_if(|byte| *byte == b'\n').is_some() {
+            value.pop_if(|byte| *byte == b'\r');
+        }
+        Ok(value)
     }
 }
 
