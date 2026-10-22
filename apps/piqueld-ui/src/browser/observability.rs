@@ -1,5 +1,5 @@
 //! Event history, diagnostics, daemon statistics and settings, analytics,
-//! notification deliveries, and the audit trail.
+//! and the audit trail.
 use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, metric, notice, when,
@@ -13,20 +13,17 @@ use piqueld_client::{
     Client, DEFAULT_PAGE_SIZE, Event, EventActor,
     access::{GlobalPermission, Permission},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome},
-    observability::{
-        DaemonStats, DeliveryState, DeploymentAnalytics, EventFilter, EventScope,
-        NotificationDelivery,
-    },
+    observability::{DaemonStats, DeploymentAnalytics, EventFilter, EventScope},
 };
 
 /// Revision counter that observability resources track to refetch.
 /// Bumped every 5 seconds while the tab is visible, or on demand.
 #[derive(Clone, Copy)]
-struct Refresh(RwSignal<u64>);
+pub(super) struct Refresh(RwSignal<u64>);
 
 impl Refresh {
     /// Starts the 5-second interval, cleared when the owning view unmounts.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let revision = RwSignal::new(0_u64);
         if let Ok(handle) = set_interval_with_handle(
             move || {
@@ -42,12 +39,12 @@ impl Refresh {
     }
 
     /// Subscribes the running resource to every refresh.
-    fn track(self) {
+    pub(super) fn track(self) {
         self.0.track();
     }
 
     /// Triggers an immediate refetch.
-    fn request(self) {
+    pub(super) fn request(self) {
         self.0.update(|r| *r = r.wrapping_add(1));
     }
 }
@@ -99,7 +96,7 @@ impl Period {
 }
 
 /// Button opening the `next` page of a paginated list in `cursor`.
-fn older_page(
+pub(super) fn older_page(
     cursor: RwSignal<Option<String>>,
     next: Option<String>,
     label: &'static str,
@@ -747,153 +744,6 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                 }}
             </section>
         </div>
-    }
-    .into_any()
-}
-
-/// `/notifications` page: paginated notification deliveries, with a retry
-/// button on failed ones.
-#[component]
-pub(super) fn NotificationsPage() -> impl IntoView {
-    let refresh = Refresh::new();
-    let cursor = RwSignal::new(None::<String>);
-    let error = RwSignal::new(None::<String>);
-    let data = LocalResource::new(move || {
-        refresh.track();
-        let cursor = cursor.get();
-        async move {
-            Client::browser()
-                .notification_deliveries(cursor.as_deref())
-                .await
-                .user_error()
-        }
-    });
-    let retrying = RwSignal::new(false);
-    let retry = Retry {
-        allowed: can(Permission::Global(GlobalPermission::SystemOperate)),
-        busy: retrying,
-        run: Callback::new(move |id: String| {
-            if retrying.get_untracked() {
-                return;
-            }
-            retrying.set(true);
-            spawn_local(async move {
-                match Client::browser().retry_notification(&id).await {
-                    Ok(()) => {
-                        error.set(None);
-                        refresh.request();
-                    }
-                    Err(e) => error.set(Some(e.user_message())),
-                }
-                retrying.set(false);
-            });
-        }),
-    };
-    view! {
-        <PageHeader
-            title="Notifications"
-            description="Webhook deliveries. Destinations and categories are configured in the daemon TOML; delivery may repeat after a lost acknowledgement."
-        >
-            <button
-                type="button"
-                class="btn"
-                on:click={move |_| {
-                    cursor.set(None);
-                    refresh.request();
-                }}
-            >
-                {icon(Icon::Refresh)}
-                "Newest"
-            </button>
-        </PageHeader>
-        <div class="stack">
-            {move || error.get().map(|e| notice(Tone::Bad, e))}
-            {loaded(
-                data,
-                "Loading deliveries…",
-                move |page| {
-                    view! {
-                        <div class="table-wrap">
-                            {if page.items.is_empty() {
-                                empty("No notification deliveries.")
-                            } else {
-                                view! {
-                                    <table class="table">
-                                        <thead>
-                                            <tr>
-                                                <th>"Destination"</th>
-                                                <th>"Category"</th>
-                                                <th>"State"</th>
-                                                <th class="num">"Attempts"</th>
-                                                <th>"Updated"</th>
-                                                <th>"Last error"</th>
-                                                <th></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {page
-                                                .items
-                                                .into_iter()
-                                                .map(|delivery| delivery_row(delivery, retry))
-                                                .collect_view()}
-                                        </tbody>
-                                    </table>
-                                }
-                                    .into_any()
-                            }}
-                        </div>
-                        {older_page(cursor, page.next_cursor, "Older deliveries", None)}
-                    }
-                        .into_any()
-                },
-            )}
-        </div>
-    }
-}
-
-/// Retrying failed notification deliveries: `allowed` with `system:operate`,
-/// and one at a time, `busy` while one is sent.
-#[derive(Clone, Copy)]
-struct Retry {
-    allowed: Signal<bool>,
-    busy: RwSignal<bool>,
-    run: Callback<String>,
-}
-
-/// Table row for one delivery, with a button that runs `retry` on a failed
-/// one when allowed.
-fn delivery_row(delivery: NotificationDelivery, retry: Retry) -> AnyView {
-    let id = delivery.id.clone();
-    let tone = match delivery.state {
-        DeliveryState::Delivered => Tone::Ok,
-        DeliveryState::Failed => Tone::Bad,
-        DeliveryState::Pending => Tone::Pending,
-        DeliveryState::Cancelled => Tone::Neutral,
-    };
-    view! {
-        <tr>
-            <td title={delivery.id.clone()}>{delivery.destination}</td>
-            <td>{delivery.category.to_string()}</td>
-            <td>{badge(tone, delivery.state.to_string())}</td>
-            <td class="num">{delivery.attempts}</td>
-            <td class="muted">{when(delivery.updated_at_ms)}</td>
-            <td class="muted">{delivery.last_error.unwrap_or_default()}</td>
-            <td class="actions">
-                {(delivery.state == DeliveryState::Failed && retry.allowed.get())
-                    .then(|| {
-                        view! {
-                            <button
-                                type="button"
-                                class="btn btn-sm"
-                                disabled={move || retry.busy.get()}
-                                on:click={move |_| retry.run.run(id.clone())}
-                            >
-                                "Retry"
-                            </button>
-                        }
-                    })}
-            </td>
-        </tr>
     }
     .into_any()
 }

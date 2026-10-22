@@ -1,6 +1,8 @@
 //! Diagnostics, daemon resources, deployment analytics, notification
-//! deliveries, and the audit trail.
-use super::{ApiError, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse};
+//! destinations and deliveries, and the audit trail.
+use super::{
+    ApiError, ApiJson, ApiPath, ApiQuery, ApiState, QueryParams, ok, openapi::ApiErrorResponse,
+};
 use crate::auth::Identity;
 use axum::{Extension, extract::State, response::IntoResponse};
 use piqueld_core::{
@@ -8,7 +10,10 @@ use piqueld_core::{
     access::{AppPermission, Denied, GlobalPermission, Permission},
     api::{Envelope, Page},
     audit::{AuditEvent, AuditFilter, AuditOutcome, AuditVerification},
-    observability::{DaemonStats, DeploymentAnalytics, NotificationDelivery},
+    observability::{
+        DaemonStats, DeploymentAnalytics, DestinationName, DestinationRequest, DestinationTest,
+        NotificationDelivery, NotificationDestination,
+    },
 };
 
 /// Gets a recorded diagnostic.
@@ -113,6 +118,74 @@ pub(super) async fn retry_delivery(
 ) -> Result<impl IntoResponse, ApiError> {
     state.retry_notification(identity.actor(), &id).await?;
     Ok(ok(true))
+}
+/// Lists notification destinations by name.
+///
+/// Needs `system:read` or `notifications:manage`. URLs are write-only and
+/// never returned.
+#[utoipa::path(get,path="/api/v1/notifications/destinations",operation_id="notificationDestinations",responses((status=200,body=Envelope<Vec<NotificationDestination>>),(status=403,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn destinations(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Managers read destinations to change them, without other daemon state.
+    if !identity
+        .grants
+        .has_global(GlobalPermission::NotificationsManage)
+    {
+        identity
+            .grants
+            .require(Permission::Global(GlobalPermission::SystemRead))?;
+    }
+    Ok(ok(state.notification_destinations().await?))
+}
+/// Creates or replaces a notification destination.
+///
+/// Creating one requires `url`; omitted, an existing destination keeps its
+/// URL. A new URL or kind makes it a new receiver: its pending deliveries are
+/// cancelled, and recoveries of failures it was sent before are not sent.
+/// Disabling it or removing a category cancels the pending deliveries
+/// affected; enabling it or adding a category never replays earlier events.
+/// Invalid URLs fail with 400 `destination_url_invalid`, a missing one with
+/// `destination_url_required`, and unknown applications with
+/// `destination_application_unknown`.
+#[utoipa::path(put,path="/api/v1/notifications/destinations/{name}",operation_id="putNotificationDestination",params(("name"=String,Path)),request_body=DestinationRequest,responses((status=200,body=Envelope<NotificationDestination>),(status=400,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn put_destination(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(name): ApiPath<String>,
+    ApiJson(request): ApiJson<DestinationRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(ok(state
+        .put_notification_destination(identity.actor(), &DestinationName::parse(name)?, request)
+        .await?))
+}
+/// Deletes a notification destination.
+///
+/// Cancels its pending deliveries; delivery history keeps its name.
+#[utoipa::path(delete,path="/api/v1/notifications/destinations/{name}",operation_id="deleteNotificationDestination",params(("name"=String,Path)),responses((status=200,body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn delete_destination(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(name): ApiPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    state
+        .delete_notification_destination(identity.actor(), &DestinationName::parse(name)?)
+        .await?;
+    Ok(ok(true))
+}
+/// Sends a test notification to a destination.
+///
+/// Sends it at once, outside the delivery queue and history, and reports
+/// whether the receiver acknowledged it.
+#[utoipa::path(post,path="/api/v1/notifications/destinations/{name}/test",operation_id="testNotificationDestination",params(("name"=String,Path)),responses((status=200,body=Envelope<DestinationTest>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn test_destination(
+    State(state): State<ApiState>,
+    ApiPath(name): ApiPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(ok(state
+        .test_notification_destination(&DestinationName::parse(name)?)
+        .await?))
 }
 #[derive(Default, serde::Deserialize, utoipa::IntoParams)]
 #[serde(default, deny_unknown_fields)]

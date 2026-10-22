@@ -35,11 +35,12 @@ added later: requests about an environment are checked on its application.
 | `logs:read` | all or listed applications | Runtime, build and job logs, which may contain sensitive output |
 | `events:read` | all or listed applications | Application history, diagnostics, and deployment analytics |
 | `apps:create` | installation | Create applications |
-| `system:read` | installation | Daemon configuration, resources, daemon history, notification deliveries, and DNS providers and certificates |
+| `system:read` | installation | Daemon configuration, resources, daemon history, notification destinations and deliveries, and DNS providers and certificates |
 | `system:operate` | installation | Secret key recovery, notification retries, and DNS provider checks |
 | `accounts:manage` | installation | Other accounts and invitations, within the limits below |
 | `audit:read` | installation | Every account's [audit trail](observability.md#audit-trail); everyone reads their own |
 | `telemetry:grant` | installation | Grant or revoke an environment's [telemetry](#telemetry-receivers), which its receiving service gets from every application |
+| `notifications:manage` | installation | Create, change, test and delete [notification destinations](observability.md#notifications), which receive notifications about every application they select |
 
 Every application permission also allows reading that application, so a
 deploy-only token can follow its own deployment. The daemon status, readiness,
@@ -263,7 +264,8 @@ upgrade create accounts without access; grant it after they register.
 
 Grants are evaluated on every request, so changes take effect immediately for
 the account's sessions and tokens. Every write (account changes, passkeys,
-tokens, application mutations, secrets, key recovery, and notification retries)
+tokens, application mutations, secrets, key recovery, notification destinations
+and retries)
 re-reads the caller's credential and grants inside its transaction, so a request
 that authenticated just before a demotion, revocation, or expiry cannot use the
 access it lost. Connections that outlive their request, event streams and

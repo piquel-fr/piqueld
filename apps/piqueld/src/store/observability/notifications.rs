@@ -1,5 +1,5 @@
 //! Durable notification conditions and delivery outbox, driven by committed events.
-use crate::config::{NotificationConfig, WebhookDestination};
+use super::DestinationRow;
 use crate::store::{Paging, Store, StoreError, new_id, now_ms, seconds_ms};
 use piqueld_core::{
     Event,
@@ -9,42 +9,13 @@ use piqueld_core::{
         NotificationDelivery,
     },
 };
-use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
 
-impl WebhookDestination {
-    /// Hex SHA-256 of the destination's kind and URL. Stored with deliveries and
-    /// routes so a destination whose name is kept but URL or kind changes is
-    /// treated as a different receiver and never gets the old one's queue.
-    pub(crate) fn fingerprint(&self) -> String {
-        format!(
-            "{:x}",
-            Sha256::digest(format!("{:?}:{}", self.kind, self.url.expose()))
-        )
-    }
-}
-
-impl NotificationConfig {
-    /// The enabled destination still configured as `name` with `fingerprint`,
-    /// which a delivery or route stored when it was made.
-    fn destination(&self, name: &str, fingerprint: &str) -> Option<&WebhookDestination> {
-        self.destinations.iter().find(|destination| {
-            destination.enabled
-                && destination.name == name
-                && destination.fingerprint() == fingerprint
-        })
-    }
-
-    /// Whether `category` notifications still go to the destination stored
-    /// as `name` with `fingerprint` (see [`Self::destination`]).
-    fn delivers(&self, category: NotificationCategory, name: &str, fingerprint: &str) -> bool {
-        self.category_enabled(category) && self.destination(name, fingerprint).is_some()
-    }
-}
-
-/// Error recorded on a delivery cancelled because its category or
-/// destination is no longer configured.
-const CHANGED_BY_CONFIGURATION: &str = "Disabled or changed by configuration";
+/// How long a dependency or service failure must be observed continuously
+/// before it notifies.
+const FAILURE_THRESHOLD_MS: i64 = 120_000;
+/// How long a delivery is retried automatically.
+const RETRY_WINDOW_MS: i64 = 86_400_000;
 
 impl Store {
     /// Reads delivery history without destination credentials or response
@@ -100,7 +71,9 @@ impl Store {
             next_cursor,
         })
     }
-    /// Retries a failed delivery only while its destination/category remain enabled.
+    /// Retries a failed delivery only while its destination still exists,
+    /// unchanged, enabled, receiving its category and, unless it is a
+    /// recovery, the event.
     /// Also refuses (as `StoreError::InvalidInput`) failures already followed by a
     /// delivered recovery, recoveries whose incident has reopened, and failures
     /// whose incident has since closed. Security events and daemon starts open
@@ -121,7 +94,13 @@ impl Store {
         );
         actor.require_on(&mut tx, operate, None).await?;
         let row = sqlx::query!(
-            "SELECT destination,category,destination_fingerprint,event_id FROM notification_deliveries WHERE id=?1 AND state='failed'",
+            "SELECT d.category,d.event_id,c.category IS NOT NULL
+                AND (d.category='recovery' OR EXISTS (SELECT 1 FROM notification_audience au
+                    WHERE au.destination_id=n.id AND au.event_id=d.event_id)) AS \"delivers!: bool\"
+            FROM notification_deliveries d
+            LEFT JOIN notification_destinations n ON n.id=d.destination_id AND n.enabled=1
+            LEFT JOIN notification_destination_categories c ON c.destination_id=n.id AND c.category=d.category
+            WHERE d.id=?1 AND d.state='failed'",
             id,
         )
         .fetch_optional(&mut *tx)
@@ -130,13 +109,7 @@ impl Store {
         .ok_or(StoreError::NotFound)?;
         // A category this version does not know cannot be delivered.
         let category = NotificationCategory::parse(&row.category)
-            .filter(|category| {
-                self.notifications.delivers(
-                    *category,
-                    &row.destination,
-                    &row.destination_fingerprint,
-                )
-            })
+            .filter(|_| row.delivers)
             .ok_or(StoreError::InvalidInput)?;
         // Never replay an old failure after its destination acknowledged recovery.
         let recovered = sqlx::query_scalar!(
@@ -197,91 +170,17 @@ impl Store {
         .map_err(StoreError::database)?;
         tx.commit().await.map_err(StoreError::database)
     }
-    /// Reconciles the outbox with the current notification configuration at startup:
-    /// 1. cancels pending deliveries whose category or destination is disabled or changed;
-    /// 2. drops routes for disabled or changed category/destination pairs;
-    /// 3. adds routes for newly enabled pairs, starting after the latest event so
-    ///    a new destination is not backfilled with history;
-    /// 4. restarts the sustained-failure window of conditions not yet notified.
-    pub(crate) async fn configure_deliveries(&self) -> Result<(), StoreError> {
-        let (_writer, mut tx) = self.begin_immediate().await?;
-        let rows = sqlx::query!(
-            "SELECT id AS \"id!\",destination,destination_fingerprint,category FROM notification_deliveries WHERE state='pending'"
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
+    /// Restarts the sustained-failure window of conditions not yet notified,
+    /// at startup: process downtime does not count as continuous observation.
+    pub(crate) async fn restart_failure_windows(&self) -> Result<(), StoreError> {
         let now = now_ms();
-        for row in rows {
-            // `claim_delivery` fails a delivery of an unknown category.
-            let Some(category) = NotificationCategory::parse(&row.category) else {
-                continue;
-            };
-            if !self.notifications.delivers(
-                category,
-                &row.destination,
-                &row.destination_fingerprint,
-            ) {
-                Self::settle_undeliverable(
-                    &mut tx,
-                    &row.id,
-                    DeliveryState::Cancelled,
-                    CHANGED_BY_CONFIGURATION,
-                    now,
-                )
-                .await?;
-            }
-        }
-        let routes =
-            sqlx::query!("SELECT category,destination,fingerprint FROM notification_routes")
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(StoreError::database)?;
-        for route in routes {
-            // A category this version does not know, such as one added by a
-            // newer version before a downgrade, is not delivered either.
-            if NotificationCategory::parse(&route.category).is_none_or(|category| {
-                !self
-                    .notifications
-                    .delivers(category, &route.destination, &route.fingerprint)
-            }) {
-                sqlx::query!(
-                    "DELETE FROM notification_routes WHERE category=?1 AND destination=?2",
-                    route.category,
-                    route.destination,
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::database)?;
-            }
-        }
-        for category in self.notifications.enabled_categories() {
-            let category = category.as_str();
-            for destination in self.notifications.destinations.iter().filter(|d| d.enabled) {
-                let fingerprint = destination.fingerprint();
-                sqlx::query!(
-                    "INSERT INTO notification_routes(category,destination,fingerprint,after_event_id)
-                    VALUES(?1,?2,?3,COALESCE((SELECT MAX(id)
-                    FROM events),0))
-                    ON CONFLICT(category,destination) DO NOTHING",
-                    category,
-                    destination.name,
-                    fingerprint,
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(StoreError::database)?;
-            }
-        }
-        // A process restart interrupts continuous observation; retain open incident deduplication.
-        sqlx::query!(
+        self.write(sqlx::query!(
             "UPDATE notification_conditions SET first_seen_ms=?1,last_seen_ms=?1 WHERE notified=0",
             now,
-        )
-        .execute(&mut *tx)
+        ))
         .await
         .map_err(StoreError::database)?;
-        tx.commit().await.map_err(StoreError::database)
+        Ok(())
     }
     /// Advances the notification cursor over the next batch (up to a page) of
     /// committed events, opening/closing conditions and enqueueing deliveries.
@@ -363,7 +262,6 @@ impl Store {
             ] {
                 Self::close_condition(
                     tx,
-                    &self.notifications,
                     &format!("{}:{category}", app.as_deref().unwrap_or("daemon")),
                     event.id,
                 )
@@ -374,11 +272,11 @@ impl Store {
         // condition that recovers.
         if crate::store::SecurityEvent::parse(&event.kind).is_some() {
             let security = NotificationCategory::Security;
-            return Self::enqueue(tx, &self.notifications, event.id, security).await;
+            return Self::enqueue(tx, event.id, security).await;
         }
         if event.kind == "daemon_started" {
             let started = NotificationCategory::DaemonStarted;
-            return Self::enqueue(tx, &self.notifications, event.id, started).await;
+            return Self::enqueue(tx, event.id, started).await;
         }
         let category = match (
             event.kind.as_str(),
@@ -433,59 +331,58 @@ impl Store {
             .execute(&mut **tx)
             .await
             .map_err(StoreError::database)?;
-            Self::enqueue(tx, &self.notifications, event.id, category).await?;
+            Self::enqueue(tx, event.id, category).await?;
         }
         Ok(())
     }
-    /// Queues a delivery of `event` to every enabled destination, if `category` is enabled.
+    /// Queues a delivery of `event` to every enabled destination in its
+    /// `notification_audience` receiving `category` since before it.
     async fn enqueue(
         tx: &mut Transaction<'_, Sqlite>,
-        config: &NotificationConfig,
         event: i64,
         category: NotificationCategory,
     ) -> Result<(), StoreError> {
-        if config.category_enabled(category) {
-            for destination in config.destinations.iter().filter(|d| d.enabled) {
-                Self::enqueue_destination(tx, event, category, destination).await?;
-            }
+        let category = category.as_str();
+        let destinations = sqlx::query!(
+            "SELECT d.id AS \"id!\",d.name FROM notification_audience au
+            JOIN notification_destination_categories c ON c.destination_id=au.destination_id
+                AND c.category=?2 AND c.after_event_id<au.event_id
+            JOIN notification_destinations d ON d.id=au.destination_id AND d.enabled=1
+            WHERE au.event_id=?1",
+            event,
+            category,
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        for destination in destinations {
+            Self::enqueue_destination(tx, event, category, &destination.id, &destination.name)
+                .await?;
         }
         Ok(())
     }
 
-    /// Queues one delivery idempotently and returns its id (new or existing).
-    /// Returns `None` without queueing when the destination has no route for the
-    /// category or the event predates the route's `after_event_id`.
+    /// Queues one delivery of `event` to a destination idempotently and
+    /// returns its ID, new or existing.
     async fn enqueue_destination(
         tx: &mut Transaction<'_, Sqlite>,
         event: i64,
-        category: NotificationCategory,
-        destination: &WebhookDestination,
-    ) -> Result<Option<String>, StoreError> {
-        let category = category.as_str();
-        let after = sqlx::query_scalar!(
-            "SELECT after_event_id FROM notification_routes WHERE category=?1 AND destination=?2",
-            category,
-            destination.name,
-        )
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(StoreError::database)?;
-        if after.is_none_or(|after| event <= after) {
-            return Ok(None);
-        }
+        category: &str,
+        destination: &str,
+        name: &str,
+    ) -> Result<String, StoreError> {
         let now = now_ms();
         let id = new_id("delivery");
-        let fingerprint = destination.fingerprint();
         sqlx::query!(
             "INSERT INTO notification_deliveries(
-            id,event_id,destination,destination_fingerprint,category,state,
+            id,event_id,destination,destination_id,category,state,
             created_at_ms,retry_started_at_ms,next_attempt_ms,updated_at_ms
             ) VALUES(?1,?2,?3,?4,?5,'pending',?6,?6,?6,?6)
             ON CONFLICT(event_id,destination,category) DO NOTHING",
             id,
             event,
-            destination.name,
-            fingerprint,
+            name,
+            destination,
             category,
             now,
         )
@@ -497,20 +394,20 @@ impl Store {
             "SELECT id AS \"id!\" FROM notification_deliveries
             WHERE event_id=?1 AND destination=?2 AND category=?3",
             event,
-            destination.name,
+            name,
             category,
         )
-        .fetch_optional(&mut **tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(StoreError::database)
     }
-    /// Clears an open condition. If it was notified and recoveries are enabled,
-    /// queues a recovery for each destination that received (or is still
-    /// receiving) the failure, linking them in `notification_recovery_sources`
-    /// so the recovery is sent only after the failure is acknowledged.
+    /// Clears an open condition. If it was notified, queues a recovery for
+    /// each destination that received (or is still receiving) the failure and
+    /// still receives both its category and recoveries, linking them in
+    /// `notification_recovery_sources` so the recovery is sent only after the
+    /// failure is acknowledged.
     async fn close_condition(
         tx: &mut Transaction<'_, Sqlite>,
-        config: &NotificationConfig,
         key: &str,
         event: i64,
     ) -> Result<(), StoreError> {
@@ -521,49 +418,43 @@ impl Store {
         .fetch_optional(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        if let Some(condition) = condition {
-            let category =
-                NotificationCategory::parse(&condition.category).ok_or(StoreError::Corrupt)?;
-            if condition.notified != 0
-                && config.category_enabled(category)
-                && config.category_enabled(NotificationCategory::Recovery)
-            {
-                let failures = sqlx::query!(
-                    "SELECT id AS \"id!\",destination,destination_fingerprint
-                    FROM notification_deliveries WHERE event_id=?1 AND category=?2
-                    AND state IN ('pending','delivered')",
-                    condition.event_id,
-                    condition.category,
+        if let Some(condition) = condition.filter(|condition| condition.notified != 0) {
+            let recovery = NotificationCategory::Recovery.as_str();
+            let failures = sqlx::query!(
+                "SELECT f.id AS \"id!\",d.id AS \"destination_id!\",d.name
+                FROM notification_deliveries f
+                JOIN notification_destinations d ON d.id=f.destination_id AND d.enabled=1
+                JOIN notification_destination_categories c ON c.destination_id=d.id AND c.category=f.category
+                JOIN notification_destination_categories r ON r.destination_id=d.id AND r.category=?3
+                    AND r.after_event_id<?4
+                WHERE f.event_id=?1 AND f.category=?2 AND f.state IN ('pending','delivered')",
+                condition.event_id,
+                condition.category,
+                recovery,
+                event,
+            )
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(StoreError::database)?;
+            for failure in failures {
+                let recovery = Self::enqueue_destination(
+                    tx,
+                    event,
+                    recovery,
+                    &failure.destination_id,
+                    &failure.name,
                 )
-                .fetch_all(&mut **tx)
+                .await?;
+                sqlx::query!(
+                    "INSERT INTO notification_recovery_sources(recovery_id,failure_id,condition_key)
+                    VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
+                    recovery,
+                    failure.id,
+                    key,
+                )
+                .execute(&mut **tx)
                 .await
                 .map_err(StoreError::database)?;
-                for failure in failures {
-                    let Some(destination) =
-                        config.destination(&failure.destination, &failure.destination_fingerprint)
-                    else {
-                        continue;
-                    };
-                    if let Some(recovery) = Self::enqueue_destination(
-                        tx,
-                        event,
-                        NotificationCategory::Recovery,
-                        destination,
-                    )
-                    .await?
-                    {
-                        sqlx::query!(
-                            "INSERT INTO notification_recovery_sources(recovery_id,failure_id,condition_key)
-                            VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",
-                            recovery,
-                            failure.id,
-                            key,
-                        )
-                        .execute(&mut **tx)
-                        .await
-                        .map_err(StoreError::database)?;
-                    }
-                }
             }
         }
         sqlx::query!("DELETE FROM notification_conditions WHERE key=?1", key,)
@@ -710,11 +601,11 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
             } else {
-                Self::close_condition(&mut tx, &self.notifications, &condition_key, event).await?;
+                Self::close_condition(&mut tx, &condition_key, event).await?;
             }
         }
         if failed {
-            self.notify_sustained_failure(&mut tx, &condition_key, category, gap, observed)
+            Self::notify_sustained_failure(&mut tx, &condition_key, category, gap, observed)
                 .await?;
         }
         sqlx::query!(
@@ -733,9 +624,8 @@ impl Store {
     }
     /// Extends an unnotified failure condition to `observed`, restarting its
     /// window after an observation gap, and notifies once it has failed
-    /// continuously for `failure_threshold_seconds`.
+    /// continuously for [`FAILURE_THRESHOLD_MS`].
     async fn notify_sustained_failure(
-        &self,
         tx: &mut Transaction<'_, Sqlite>,
         condition_key: &str,
         category: NotificationCategory,
@@ -753,16 +643,15 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        let threshold = seconds_ms(self.notifications.failure_threshold_seconds);
         if let Some(condition) = sqlx::query!(
             "SELECT event_id FROM notification_conditions WHERE key=?1 AND notified=0 AND last_seen_ms-first_seen_ms>=?2",
             condition_key,
-            threshold,
+            FAILURE_THRESHOLD_MS,
         )
         .fetch_optional(&mut **tx)
         .await
         .map_err(StoreError::database)? {
-            Self::enqueue(tx, &self.notifications, condition.event_id, category).await?;
+            Self::enqueue(tx, condition.event_id, category).await?;
             sqlx::query!(
                 "UPDATE notification_conditions SET notified=1 WHERE key=?1",
                 condition_key,
@@ -812,21 +701,28 @@ impl Store {
     /// 4. leases it for 30 seconds by pushing `next_attempt_ms` and counting the attempt.
     ///
     /// A delivery that can no longer be sent (an unknown category, or a
-    /// destination or category since removed from the configuration) is
-    /// settled with an error instead, so it cannot block the ones behind it.
+    /// destination or category since removed, whose changes cancel pending
+    /// deliveries anyway) is settled with an error instead, so it cannot
+    /// block the ones behind it.
     pub(crate) async fn claim_delivery(
         &self,
-    ) -> Result<Option<(NotificationDelivery, WebhookDestination)>, StoreError> {
+    ) -> Result<Option<(NotificationDelivery, DestinationRow)>, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_ms();
-        self.settle_expired_deliveries(&mut tx, now).await?;
+        Self::settle_expired_deliveries(&mut tx, now).await?;
         let (row, category, destination) = loop {
             let row = sqlx::query!(
-                "SELECT id AS \"id!\",destination,destination_fingerprint,event_id,category,attempts,
-                created_at_ms,updated_at_ms,last_error
+                "SELECT d.id AS \"id!\",d.destination,d.event_id,d.category,d.attempts,
+                d.created_at_ms,d.updated_at_ms,d.last_error,
+                n.id AS \"destination_id?\",n.kind AS \"kind?\",n.nonce AS \"nonce?\",
+                n.ciphertext AS \"ciphertext?\",c.message,
+                c.category IS NOT NULL AS \"receives!: bool\"
                 FROM notification_deliveries d
-                WHERE state='pending' AND next_attempt_ms<=?1
-                AND (category!='recovery' OR (
+                LEFT JOIN notification_destinations n ON n.id=d.destination_id AND n.enabled=1
+                LEFT JOIN notification_destination_categories c ON c.destination_id=n.id
+                    AND c.category=d.category
+                WHERE d.state='pending' AND d.next_attempt_ms<=?1
+                AND (d.category!='recovery' OR (
                 EXISTS (SELECT 1 FROM notification_recovery_sources s
                 JOIN notification_deliveries f ON f.id=s.failure_id
                 WHERE s.recovery_id=d.id AND f.state='delivered')
@@ -834,7 +730,7 @@ impl Store {
                 JOIN notification_deliveries f ON f.id=s.failure_id
                 WHERE s.recovery_id=d.id AND f.state='pending')
                 ))
-                ORDER BY next_attempt_ms,id LIMIT 1",
+                ORDER BY d.next_attempt_ms,d.id LIMIT 1",
                 now,
             )
             .fetch_optional(&mut *tx)
@@ -856,22 +752,27 @@ impl Store {
                 .await?;
                 continue;
             };
-            let Some(destination) = self
-                .notifications
-                .destination(&row.destination, &row.destination_fingerprint)
-                .filter(|_| self.notifications.category_enabled(category))
-                .cloned()
-            else {
+            // A destination detached, deleted, disabled or no longer
+            // receiving the category cannot be sent to.
+            let (Some(id), Some(kind), Some(nonce), Some(ciphertext), true) = (
+                row.destination_id.clone(),
+                row.kind.as_deref(),
+                row.nonce.clone(),
+                row.ciphertext.clone(),
+                row.receives,
+            ) else {
                 Self::settle_undeliverable(
                     &mut tx,
                     &row.id,
                     DeliveryState::Cancelled,
-                    CHANGED_BY_CONFIGURATION,
+                    super::DESTINATION_CHANGED,
                     now,
                 )
                 .await?;
                 continue;
             };
+            let destination =
+                DestinationRow::new(id, kind, row.message.clone(), nonce, ciphertext)?;
             break (row, category, destination);
         };
         let lease = now.saturating_add(30_000);
@@ -907,11 +808,10 @@ impl Store {
     /// Steps 1 and 2 of `claim_delivery`: settles the pending deliveries that
     /// can no longer be sent at `now`.
     async fn settle_expired_deliveries(
-        &self,
         tx: &mut Transaction<'_, Sqlite>,
         now: i64,
     ) -> Result<(), StoreError> {
-        let expired = now.saturating_sub(seconds_ms(self.notifications.retry_window_seconds));
+        let expired = now.saturating_sub(RETRY_WINDOW_MS);
         // A recovery's retry window starts when it can first be sent, not while
         // it is waiting for acknowledgement of the original failure.
         sqlx::query!(

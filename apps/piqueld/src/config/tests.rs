@@ -88,7 +88,7 @@ fn removed_data_directory_is_not_accepted_as_configuration() {
 #[test]
 fn parse_failures_keep_the_diagnostic_but_not_the_source_line() {
     let error = DaemonConfig::from_toml(
-        "[server]\nport = 7845\n\n[[notifications.destinations]]\nname = 'ops'\nurl = 'https://hooks.example/secret-token'\nunknown_key = true",
+        "[server]\nport = 7845\n\n[auth]\nmax_token_days = 90\npublic_url = 'https://secret-token.example.com'\nunknown_key = true",
     )
     .unwrap_err();
     let ConfigError::Parse(diagnostic) = &error else {
@@ -239,23 +239,23 @@ fn the_dashboard_hostname_needs_private_ingress_and_becomes_the_public_url() {
 #[test]
 fn credential_files_are_read_and_never_shown() {
     let directory = tempfile::tempdir().unwrap();
-    let webhook = directory.path().join("webhook");
+    let headers = directory.path().join("otlp-headers");
     let auth_key = directory.path().join("ts-auth-key");
-    std::fs::write(&webhook, "https://hooks.example.com/secret\n").unwrap();
+    std::fs::write(&headers, "authorization: Bearer secret\n").unwrap();
     let source = format!(
         "[tailscale]\nauth_key_file = '{}'\n\
-         [[notifications.destinations]]\nname = 'discord'\nurl_file = '{}'",
+         [telemetry]\nendpoint = 'unix:///run/otel/otlp.sock'\nheaders_file = '{}'",
         auth_key.display(),
-        webhook.display()
+        headers.display()
     );
     let config = DaemonConfig::from_toml(&source).unwrap();
     assert_eq!(
-        config.notifications.destinations[0].url.expose(),
-        "https://hooks.example.com/secret"
+        config.telemetry.headers.as_ref().unwrap().expose(),
+        "authorization: Bearer secret"
     );
     let view = format!("{:?} {config:?}", config.view());
     assert!(
-        view.contains(&format!("from {}", webhook.display())),
+        view.contains(&format!("from {}", headers.display())),
         "{view}"
     );
     assert!(
@@ -263,9 +263,6 @@ fn credential_files_are_read_and_never_shown() {
         "{view}"
     );
     assert!(!view.contains("secret"), "{view}");
-
-    let both = format!("{source}\nurl = 'https://hooks.example.com/inline'");
-    assert!(DaemonConfig::from_toml(&both).is_err(), "accepted {both}");
 }
 
 #[test]
@@ -341,7 +338,7 @@ fn checks_locate_credential_files_without_reading_them() {
     };
     // Relative names resolve against systemd's $CREDENTIALS_DIRECTORY only
     // at startup, and absent files are not read.
-    let credentials = "[[notifications.destinations]]\nname = 'discord'\nurl_file = 'webhook'\n\
+    let credentials = "[telemetry]\nendpoint = 'unix:///run/otel/otlp.sock'\nheaders_file = 'otlp-headers'\n\
          [ingress.private]\nauth_key_file = 'ts-apps-auth-key'\n\
          [ingress.tunnel]\nenabled = true\ncredentials_file = 'cloudflared-tunnel'\n\
          [[dns.providers]]\nkind = 'cloudflare'\napi_token_file = '/missing/token'";
@@ -351,8 +348,7 @@ fn checks_locate_credential_files_without_reading_them() {
     for invalid in [
         "[server]\nport = 0",
         "[ingress.tunnel]\nenabled = true",
-        "[[notifications.destinations]]\nname = 'discord'",
-        "[[notifications.destinations]]\nname = 'discord'\nurl = 'http://hooks.example.com'",
+        "[telemetry]\nheaders_file = 'otlp-headers'",
         "[tailscale]\nsocket = '/run/ts.sock'\nauth_key_file = 'ts-auth-key'",
     ] {
         assert!(check(invalid).is_err(), "accepted {invalid}");

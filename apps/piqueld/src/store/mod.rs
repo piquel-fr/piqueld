@@ -21,6 +21,8 @@ pub(crate) use auth::{
     Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner, SecurityEvent,
 };
 pub(crate) use journal::JournalAction;
+pub(crate) use observability::DESTINATION_CHANGED;
+pub use observability::DestinationError;
 pub(crate) use secret::SecretDeletion;
 mod operation;
 mod preview;
@@ -254,6 +256,9 @@ pub enum StoreError {
     /// A promotion, or a promoted environment's source, was refused.
     #[error(transparent)]
     Promotion(#[from] PromotionError),
+    /// A notification destination change was refused.
+    #[error(transparent)]
+    Destination(#[from] DestinationError),
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
@@ -549,8 +554,6 @@ pub struct Store {
     /// Recently sampled daemon statistics, reused for a few seconds.
     stats_cache:
         std::sync::Arc<tokio::sync::Mutex<Option<piqueld_core::observability::DaemonStats>>>,
-    /// Global webhook notification settings.
-    notifications: crate::config::NotificationConfig,
     /// Daemon-scoped event retention in days; zero keeps history forever.
     daemon_event_days: u64,
     /// Audit trail retention in days; zero keeps it forever.
@@ -663,7 +666,6 @@ impl Store {
             database_path: path.to_path_buf(),
             started: std::time::Instant::now(),
             stats_cache: std::sync::Arc::default(),
-            notifications: crate::config::NotificationConfig::default(),
             daemon_event_days: 0,
             audit_days: 0,
             previews: piqueld_core::manifest::PreviewLimits::default(),

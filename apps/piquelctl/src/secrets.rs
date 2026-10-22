@@ -4,7 +4,7 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
-        reports::{SecretDeletionReport, StoredSecretReport, StoredSecretsReport},
+        reports::{NameDeletionReport, StoredSecretReport, StoredSecretsReport},
     },
     support::read_input,
 };
@@ -233,7 +233,7 @@ impl SecretAction {
                     )
                     .await?;
                 client.delete_stored_secret(id, name, generation).await?;
-                console.emit(&SecretDeletionReport { deleted: name })?;
+                console.emit(&NameDeletionReport { deleted: name })?;
             }
         }
         Ok(())
@@ -300,7 +300,7 @@ impl GeneratedSecretAction {
             console.emit(&client.regenerate_secret(id, name, generation).await?)
         } else {
             client.delete_secret(id, name, generation).await?;
-            console.emit(&SecretDeletionReport { deleted: name })
+            console.emit(&NameDeletionReport { deleted: name })
         }
     }
 }

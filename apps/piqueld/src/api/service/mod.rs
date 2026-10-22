@@ -566,6 +566,8 @@ pub struct ApplicationService {
     listings: Arc<crate::git::Listings>,
     /// Budgets of expensive work (see [`Self::admit`]).
     admission: Arc<admission::Admission>,
+    /// Sends notifications, queued or tests.
+    notifier: notification_worker::Notifier,
 }
 
 /// Audit records allowed to wait for the writer at once.
@@ -592,6 +594,7 @@ impl ApplicationService {
             shutdown: tokio_util::sync::CancellationToken::new(),
             listings: Arc::default(),
             admission: Arc::default(),
+            notifier: notification_worker::Notifier::default(),
         }
     }
 

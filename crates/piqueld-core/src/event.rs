@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// One immutable, sanitized fact about control-plane activity.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct Event {
     /// Monotonic event identity used for pagination.
     pub id: i64,

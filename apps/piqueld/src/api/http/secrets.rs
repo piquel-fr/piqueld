@@ -271,7 +271,8 @@ pub(super) async fn delete_stored(
 ///
 /// Discards every application's stored secret values, every environment's
 /// generated secret values, and the repository webhook secrets (applications
-/// generate new ones); metadata and running services are kept. Only a lost key
+/// generate new ones), and deletes the notification destinations, whose URLs
+/// it encrypts; metadata and running services are kept. Only a lost key
 /// is recovered: while something is encrypted (the key verifier, a value or a
 /// webhook secret), one that is missing, does not hold 32 bytes, or decrypts
 /// none of it. Fails with 409 while the key decrypts the verifier, when there

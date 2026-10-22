@@ -275,6 +275,10 @@ logical_name!(
     /// Logical one-shot job name.
     JobName, JobNameError, "job names"
 );
+logical_name!(
+    /// Unique name of a notification destination, such as `ops`.
+    DestinationName, DestinationNameError, "destination names"
+);
 
 #[cfg(test)]
 mod tests {

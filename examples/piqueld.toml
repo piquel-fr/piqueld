@@ -141,22 +141,3 @@ max_bytes = 4294967296
 [telemetry]
 # endpoint = "unix:///run/otel/otlp.sock" # or "https://otel.example.com:4317"
 # headers_file = "otlp-headers"           # `name: value` lines, e.g. a token
-
-[notifications]
-enabled = false
-build_failures = true
-deployment_failures = true
-service_degradation = true
-daemon_failures = true
-recovery = true
-security = true
-daemon_started = true
-failure_threshold_seconds = 120
-retry_window_seconds = 86400
-# URLs can contain credentials: use `url_file` instead of `url` to keep them
-# out of this file. Relative paths resolve against $CREDENTIALS_DIRECTORY.
-# [[notifications.destinations]]
-# name = "admins"
-# url_file = "/run/credentials/piqueld.service/admins-webhook"
-# kind = "json" # or "discord"
-# enabled = true

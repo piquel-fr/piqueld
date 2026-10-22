@@ -1,6 +1,8 @@
 //! Stable, sanitized observability contracts shared by daemon and clients.
-use crate::names::string_enum;
+pub use crate::names::{DestinationName, DestinationNameError};
+use crate::{ApplicationId, names::string_enum};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
 string_enum! {
@@ -102,7 +104,8 @@ pub struct DaemonStats {
 
 string_enum! {
     #[serde]
-    /// Global notification categories supported by daemon configuration.
+    /// What a notification reports. Each destination chooses the categories it receives.
+    #[derive(Hash, Ord, PartialOrd)]
     pub enum NotificationCategory {
         /// Source checkout or image build failures.
         BuildFailures => "build_failures",
@@ -123,6 +126,22 @@ string_enum! {
         DaemonStarted => "daemon_started",
     }
 }
+impl NotificationCategory {
+    /// What its notifications report, for people: `Build failures`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BuildFailures => "Build failures",
+            Self::DeploymentFailures => "Deployment failures",
+            Self::ServiceDegradation => "Service degradation",
+            Self::DaemonFailures => "Daemon failures",
+            Self::Recovery => "Recoveries",
+            Self::Security => "Security events",
+            Self::DaemonStarted => "Daemon starts",
+        }
+    }
+}
+
 string_enum! {
     #[serde]
     /// Lifecycle of a durable webhook delivery.
@@ -138,6 +157,138 @@ string_enum! {
     }
 }
 
+crate::names::validated_string!(
+    /// Text sent with every notification of one category, such as a Discord
+    /// role mention (`<@&ROLE_ID>`): 1–1000 characters.
+    NotificationMessage,
+    NotificationMessageError,
+    "notification messages must contain 1-1000 characters",
+    |value: &str| (1..=NotificationMessage::MAX_CHARS).contains(&value.chars().count())
+);
+
+impl NotificationMessage {
+    /// Longest message, leaving room for the notification in Discord's
+    /// 2000-character message content.
+    pub const MAX_CHARS: usize = 1000;
+}
+
+string_enum! {
+    #[serde]
+    /// Payload format a destination receives.
+    #[derive(Default)]
+    pub enum DestinationKind {
+        /// Versioned JSON containing the event.
+        #[default]
+        Json => "json",
+        /// A Discord webhook message.
+        Discord => "discord",
+    }
+}
+
+/// The applications a destination receives notifications about. Daemon-wide
+/// notifications, such as daemon failures, security events and daemon starts,
+/// reach every destination receiving their category.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplicationSelection {
+    /// Every application, including ones created later.
+    #[default]
+    All,
+    /// Only these applications, by ID: renaming one keeps it selected, and
+    /// deleting one removes it from the list.
+    Only(BTreeSet<ApplicationId>),
+}
+
+/// How one category is delivered to a destination.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CategoryRule {
+    /// Text sent with each notification of the category. Discord sends it as
+    /// the message content, so mentions in it notify.
+    pub message: Option<NotificationMessage>,
+}
+
+/// What a destination receives and how. Its URL is write-only, see
+/// [`DestinationRequest`].
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationSettings {
+    /// Payload format.
+    pub kind: DestinationKind,
+    /// Whether it receives notifications. Disabling cancels pending
+    /// deliveries; enabling again never replays what happened meanwhile.
+    pub enabled: bool,
+    /// Categories it receives. Adding one never replays earlier events.
+    pub categories: BTreeMap<NotificationCategory, CategoryRule>,
+    /// Applications it receives notifications about.
+    pub applications: ApplicationSelection,
+    /// Whether it receives notifications about previews.
+    pub previews: bool,
+}
+
+impl DestinationSettings {
+    /// Settings for a new destination: enabled, every application without
+    /// previews, and every category without a message.
+    #[must_use]
+    pub fn new(kind: DestinationKind) -> Self {
+        Self {
+            kind,
+            enabled: true,
+            categories: NotificationCategory::ALL
+                .into_iter()
+                .map(|category| (category, CategoryRule::default()))
+                .collect(),
+            applications: ApplicationSelection::All,
+            previews: false,
+        }
+    }
+}
+
+/// A notification destination; its URL is never returned.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct NotificationDestination {
+    /// Unique name.
+    pub name: DestinationName,
+    /// What it receives and how.
+    pub settings: DestinationSettings,
+    /// Creation timestamp.
+    pub created_at_ms: i64,
+    /// Last change timestamp.
+    pub updated_at_ms: i64,
+}
+
+/// Creates or replaces a destination. Its `Debug` hides the URL, a credential.
+#[derive(Clone, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationRequest {
+    /// What it receives and how.
+    pub settings: DestinationSettings,
+    /// Webhook URL: HTTPS, or HTTP to a loopback address. Required to create
+    /// a destination; omitted, an existing one keeps its URL. A new URL or
+    /// kind makes it a new receiver: pending deliveries are cancelled, and
+    /// recoveries of failures sent before are never sent to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl std::fmt::Debug for DestinationRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DestinationRequest")
+            .field("settings", &self.settings)
+            .field("url", &self.url.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Outcome of a test notification.
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub struct DestinationTest {
+    /// Whether the receiver acknowledged it with a 2xx status.
+    pub delivered: bool,
+    /// Safe failure summary, such as the receiver's HTTP status, when it was not.
+    pub error: Option<String>,
+}
+
 /// A retained notification delivery; credentials and receiver response bodies are excluded.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct NotificationDelivery {
@@ -145,7 +296,7 @@ pub struct NotificationDelivery {
     pub id: String,
     /// Source event.
     pub event_id: i64,
-    /// Configured destination name.
+    /// Name of the destination it was sent to, kept after the destination is deleted.
     pub destination: String,
     /// Notification category, including recovery.
     pub category: NotificationCategory,

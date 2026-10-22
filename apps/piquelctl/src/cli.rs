@@ -137,6 +137,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         action: crate::secrets::KeyAction,
     },
+    /// Manage notification destinations and inspect deliveries.
+    Notification {
+        #[command(subcommand)]
+        command: crate::notifications::NotificationCommand,
+    },
     /// Report daemon availability, version, and subsystem health.
     Status,
     /// Inspect the daemon's DNS providers.

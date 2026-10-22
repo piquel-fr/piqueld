@@ -1,12 +1,98 @@
-//! Background observation and webhook delivery. Neither executes infrastructure mutations.
-use super::ApplicationService;
-use crate::{
-    config::WebhookKind,
-    store::{StoreError, now_ms},
+//! Background observation and webhook delivery, and test notifications.
+//! Neither executes infrastructure mutations.
+use super::{ApplicationError, ApplicationService};
+use crate::store::{StoreError, now_ms};
+use piqueld_core::{
+    Event,
+    observability::{
+        DeliveryState, DestinationKind, DestinationName, DestinationTest, EventScope,
+        NotificationCategory,
+    },
 };
-use piqueld_core::observability::DeliveryState;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+/// Sends notifications. Requests time out after ten seconds and never follow
+/// redirects, so a receiver cannot bounce them elsewhere.
+#[derive(Clone)]
+pub(super) struct Notifier(reqwest::Client);
+
+impl Default for Notifier {
+    fn default() -> Self {
+        Self(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                // As for `reqwest::Client::new`, only a missing TLS backend fails.
+                .expect("webhook client initializes"),
+        )
+    }
+}
+
+/// The outcome of one notification request. Errors are safe summaries that
+/// never include the receiver's response body.
+enum Attempt {
+    /// The receiver acknowledged it with a 2xx status.
+    Delivered,
+    /// It may succeed later: after a transport failure, or HTTP 408, 429 or
+    /// 5xx, waiting `retry_after` seconds when the receiver says so.
+    Retry {
+        error: String,
+        retry_after: Option<u64>,
+    },
+    /// The receiver refused it with another status.
+    Rejected(String),
+}
+
+impl Notifier {
+    /// Posts `payload` to `url`, with `idempotency_key` as `Idempotency-Key`
+    /// so receivers can deduplicate retries. `Retry-After` is honoured as
+    /// 1–3600 seconds.
+    async fn post(&self, url: &str, idempotency_key: &str, payload: &serde_json::Value) -> Attempt {
+        let response = self
+            .0
+            .post(url)
+            .header("Idempotency-Key", idempotency_key)
+            .json(payload)
+            .send()
+            .await;
+        match response {
+            Ok(response) if response.status().is_success() => Attempt::Delivered,
+            Ok(response) => {
+                let status = response.status();
+                let error = format!("Receiver returned HTTP {status}");
+                if status.is_server_error()
+                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                {
+                    let retry_after = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .map(|value| value.clamp(1, 3600));
+                    Attempt::Retry { error, retry_after }
+                } else {
+                    Attempt::Rejected(error)
+                }
+            }
+            Err(error) => {
+                let error = if error.is_timeout() {
+                    "Webhook request timed out"
+                } else if error.is_connect() {
+                    "Could not connect to webhook receiver"
+                } else {
+                    "Webhook transport failed"
+                };
+                Attempt::Retry {
+                    error: error.to_owned(),
+                    retry_after: None,
+                }
+            }
+        }
+    }
+}
 
 impl ApplicationService {
     /// Samples dependency and service health every 15 seconds until cancelled.
@@ -61,11 +147,7 @@ impl ApplicationService {
     /// Attempts webhook deliveries one at a time until cancelled, claiming
     /// the next as soon as one is attempted, and checking again every second
     /// while none is due. Errors are logged and never stop the worker.
-    pub(super) async fn deliver_notifications(
-        &self,
-        client: reqwest::Client,
-        cancellation: CancellationToken,
-    ) {
+    pub(super) async fn deliver_notifications(&self, cancellation: CancellationToken) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut idle = true;
@@ -78,7 +160,7 @@ impl ApplicationService {
             }
             let result = tokio::select! {
                 () = cancellation.cancelled() => return,
-                result = self.deliver_next_notification(&client) => result,
+                result = self.deliver_next_notification() => result,
             };
             // A failure waits for the next tick, like an empty outbox.
             idle = !result.unwrap_or_else(|error| {
@@ -91,19 +173,10 @@ impl ApplicationService {
     /// Ingests new events into the outbox, then claims and sends one due
     /// delivery. Returns whether one was due.
     ///
-    /// The payload is either the versioned JSON envelope or a Discord message
-    /// (truncated to 1900 chars, mentions disabled). The delivery ID is sent as
-    /// `Idempotency-Key` so receivers can deduplicate retries. Outcomes:
-    /// - 2xx: delivered.
-    /// - 5xx, 429, 408, or transport error: stays pending and is retried after
-    ///   `Retry-After` (1–3600 s) or exponential backoff (5 s doubling, max 1 h).
-    /// - Any other status: failed permanently.
-    ///
-    /// Error messages stored for the delivery never include receiver response bodies.
-    async fn deliver_next_notification(
-        &self,
-        client: &reqwest::Client,
-    ) -> Result<bool, StoreError> {
+    /// A delivery that can be retried stays pending, and is retried after
+    /// the receiver's `Retry-After`, or with exponential backoff (5 s
+    /// doubling, at most an hour); one the receiver rejects fails for good.
+    async fn deliver_next_notification(&self) -> Result<bool, StoreError> {
         // Queued deliveries, retries and recoveries must not wait on new-event ingestion.
         if let Err(error) = self.store.process_notifications().await {
             tracing::error!(error=?error, "notification event processing failed");
@@ -116,91 +189,125 @@ impl ApplicationService {
             Err(StoreError::NotFound) => return Ok(true), // Application deletion removed the outbox row too.
             Err(error) => return Err(error),
         };
-        let payload = match destination.kind {
-            WebhookKind::Json => serde_json::json!({
-                "version": 1,
-                "instance_id": self.store.instance_id(),
-                "delivery_id": delivery.id,
-                "category": delivery.category,
-                "event": event,
-            }),
-            WebhookKind::Discord => {
-                let summary = event.message.as_deref().unwrap_or(&event.kind);
-                let environment = event
-                    .environment_id
-                    .as_ref()
-                    .map_or_else(|| "daemon".to_owned(), ToString::to_string);
-                let diagnostic = event.diagnostic.as_ref().map_or_else(String::new, |d| {
-                    format!("\nDiagnostic: {}\n{}", d.id, d.next_action)
-                });
-                let content = format!(
-                    "piqueld · {}\n{summary}\nEnvironment: {environment}\nEvent: {} · Delivery: {}{diagnostic}",
-                    delivery.category, event.id, delivery.id,
-                );
-                serde_json::json!({
-                    "content": content.chars().take(1900).collect::<String>(),
-                    "allowed_mentions": {"parse": []},
-                })
-            }
-        };
-        let result = client
-            .post(destination.url.expose())
-            .header("Idempotency-Key", &delivery.id)
-            .json(&payload)
-            .send()
-            .await;
         // Backoff: 5 s, 10 s, 20 s, ... capped at one hour.
         let exponent = u32::try_from(delivery.attempts.saturating_sub(1).min(10)).unwrap_or(10);
-        let delay = 5_u64.saturating_mul(1_u64 << exponent).min(3600);
-        let (state, message, delay) = match result {
-            Ok(response) if response.status().is_success() => (DeliveryState::Delivered, None, 0),
-            Ok(response) => {
-                let status = response.status();
-                let retry = status.is_server_error()
-                    || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    || status == reqwest::StatusCode::REQUEST_TIMEOUT;
-                let delay = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .map_or(delay, |value| value.clamp(1, 3600));
-                let state = if retry {
-                    DeliveryState::Pending
-                } else {
-                    DeliveryState::Failed
-                };
-                (
-                    state,
-                    Some(format!("Receiver returned HTTP {status}")),
-                    delay,
-                )
-            }
+        let backoff = 5_u64.saturating_mul(1_u64 << exponent).min(3600);
+        let url = match self.store.destination_url(&destination) {
+            Ok(url) => url,
             Err(error) => {
-                let message = if error.is_timeout() {
-                    "Webhook request timed out"
-                } else if error.is_connect() {
-                    "Could not connect to webhook receiver"
-                } else {
-                    "Webhook transport failed"
-                };
-                (DeliveryState::Pending, Some(message.to_owned()), delay)
+                let message = "The destination URL could not be decrypted";
+                self.store
+                    .complete_delivery(&delivery.id, DeliveryState::Pending, Some(message), backoff)
+                    .await?;
+                return Err(error);
             }
+        };
+        let payload = self.payload(
+            destination.kind,
+            &delivery.id,
+            Some(delivery.category),
+            &event,
+            destination.message.as_deref(),
+        );
+        let (state, message, delay) = match self.notifier.post(&url, &delivery.id, &payload).await {
+            Attempt::Delivered => (DeliveryState::Delivered, None, 0),
+            Attempt::Retry { error, retry_after } => (
+                DeliveryState::Pending,
+                Some(error),
+                retry_after.unwrap_or(backoff),
+            ),
+            Attempt::Rejected(error) => (DeliveryState::Failed, Some(error), backoff),
         };
         self.store
             .complete_delivery(&delivery.id, state, message.as_deref(), delay)
             .await?;
         Ok(true)
     }
+
+    /// Sends a test notification to the destination `name` right away,
+    /// outside the outbox, and reports whether its receiver acknowledged it.
+    ///
+    /// # Errors
+    /// Returns absence or secret storage errors.
+    pub async fn test_notification_destination(
+        &self,
+        name: &DestinationName,
+    ) -> Result<DestinationTest, ApplicationError> {
+        let destination = self.store.notification_destination(name).await?;
+        let url = self.store.destination_url(&destination)?;
+        let event = Event {
+            kind: "notification_test".into(),
+            scope: EventScope::Daemon,
+            message: Some(format!("Test notification for destination {name}")),
+            created_at_ms: now_ms(),
+            ..Event::default()
+        };
+        let id = format!("test-{}", uuid::Uuid::now_v7().simple());
+        let payload = self.payload(destination.kind, &id, None, &event, None);
+        Ok(match self.notifier.post(&url, &id, &payload).await {
+            Attempt::Delivered => DestinationTest {
+                delivered: true,
+                error: None,
+            },
+            Attempt::Retry { error, .. } | Attempt::Rejected(error) => DestinationTest {
+                delivered: false,
+                error: Some(error),
+            },
+        })
+    }
+
+    /// What a destination of `kind` receives for `event`, with its
+    /// category's `message`: the versioned JSON envelope, or a Discord message
+    /// whose content is `message` and whose embed describes the event. Test
+    /// notifications have no category.
+    fn payload(
+        &self,
+        kind: DestinationKind,
+        delivery: &str,
+        category: Option<NotificationCategory>,
+        event: &Event,
+        message: Option<&str>,
+    ) -> serde_json::Value {
+        match kind {
+            DestinationKind::Json => serde_json::json!({
+                "version": 1,
+                "instance_id": self.store.instance_id(),
+                "delivery_id": delivery,
+                "category": category,
+                "message": message,
+                "event": event,
+            }),
+            DestinationKind::Discord => {
+                let summary = event.message.as_deref().unwrap_or(&event.kind);
+                let application = event
+                    .environment_id
+                    .as_ref()
+                    .map_or_else(|| "daemon".to_owned(), ToString::to_string);
+                let diagnostic = event.diagnostic.as_ref().map_or_else(String::new, |d| {
+                    format!("\nDiagnostic: {}\n{}", d.id, d.next_action)
+                });
+                let category = category.map_or("test", NotificationCategory::as_str);
+                let text = format!(
+                    "piqueld · {category}\n{summary}\nApplication: {application}\nEvent: {} · Delivery: {delivery}{diagnostic}",
+                    event.id,
+                );
+                // Only the content pings: it is the category message alone,
+                // the operator's own text. Mentions in embeds never notify.
+                serde_json::json!({
+                    "content": message.unwrap_or_default(),
+                    "embeds": [{"description": text.chars().take(4000).collect::<String>()}],
+                    "allowed_mentions": {"parse": ["users", "roles", "everyone"]},
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::{DaemonConfig, WebhookDestination, WebhookKind},
-        store::Store,
-    };
+    use crate::store::Store;
+    use piqueld_core::observability::DestinationSettings;
     use std::{
         future::IntoFuture,
         sync::{
@@ -240,21 +347,15 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, receiver).into_future());
         let temp = tempfile::tempdir().unwrap();
-        let mut config = DaemonConfig::default();
-        config.notifications.enabled = true;
-        config.notifications.destinations.push(WebhookDestination {
-            name: "test".into(),
-            url: format!("http://{address}/secret").into(),
-            enabled: true,
-            kind: WebhookKind::Json,
-        });
-        let store = Arc::new(
-            Store::open(temp.path().join("db"))
-                .await
-                .unwrap()
-                .with_observability(&config),
-        );
-        store.configure_deliveries().await.unwrap();
+        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let url = format!("http://{address}/secret");
+        store
+            .add_destination(
+                "test",
+                &url,
+                DestinationSettings::new(DestinationKind::Json),
+            )
+            .await;
         store
             .record_diagnostic(
                 &piqueld_core::observability::Diagnostic::new(
@@ -272,9 +373,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let worker = tokio::spawn(async move {
-            service
-                .deliver_notifications(reqwest::Client::new(), worker_cancel)
-                .await;
+            service.deliver_notifications(worker_cancel).await;
         });
         tokio::time::timeout(Duration::from_secs(8), async {
             loop {

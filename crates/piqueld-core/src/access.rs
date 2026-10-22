@@ -122,6 +122,9 @@ permissions! {
         /// Grant an environment the daemon's telemetry, which its receiving
         /// service then gets from every application.
         TelemetryGrant => "telemetry:grant", "Grant environments every application's telemetry",
+        /// Create, change, test and delete notification destinations, which
+        /// receive notifications about every application.
+        NotificationsManage => "notifications:manage", "Manage notification destinations",
     }
 }
 

@@ -1,4 +1,5 @@
-//! Diagnostic history, daemon measurements and notification delivery controls.
+//! Diagnostic history, daemon measurements, notification destinations and
+//! delivery controls.
 use crate::{
     Client, ClientError, Event, Page,
     client::{EnvelopedCall, GeneratedCall, check_page_limit},
@@ -102,6 +103,49 @@ impl Client {
     ) -> Result<Page<NotificationDelivery>, ClientError> {
         self.generated
             .notification_deliveries(cursor, Some(i64::from(crate::DEFAULT_PAGE_SIZE)))
+            .data()
+            .await
+    }
+    /// Lists notification destinations, without their URLs.
+    /// # Errors
+    /// Returns transport, decoding or API errors.
+    pub async fn notification_destinations(
+        &self,
+    ) -> Result<Vec<NotificationDestination>, ClientError> {
+        self.generated.notification_destinations().data().await
+    }
+    /// Creates or replaces the destination `name`; see [`DestinationRequest`].
+    /// # Errors
+    /// Returns transport, invalid destination, decoding or API errors.
+    pub async fn put_notification_destination(
+        &self,
+        name: &str,
+        request: &DestinationRequest,
+    ) -> Result<NotificationDestination, ClientError> {
+        self.generated
+            .put_notification_destination(name, request)
+            .data()
+            .await
+    }
+    /// Deletes the destination `name`, cancelling its pending deliveries.
+    /// # Errors
+    /// Returns transport, absence, decoding or API errors.
+    pub async fn delete_notification_destination(&self, name: &str) -> Result<(), ClientError> {
+        self.generated
+            .delete_notification_destination(name)
+            .payload()
+            .await
+            .map(|_| ())
+    }
+    /// Sends a test notification to the destination `name` at once.
+    /// # Errors
+    /// Returns transport, absence, decoding or API errors.
+    pub async fn test_notification_destination(
+        &self,
+        name: &str,
+    ) -> Result<DestinationTest, ClientError> {
+        self.generated
+            .test_notification_destination(name)
             .data()
             .await
     }

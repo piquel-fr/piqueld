@@ -79,6 +79,7 @@ piquelctl preview url <app> <preview> [--slot <slot>] [--route <name>]
 piquelctl preview exec <app> <preview> <service> [--slot <slot>] [-i] [-t] -- <command>...
 piquelctl preview delete <app> <preview> [--slot <slot>]
 piquelctl preview prune <app> --branch-gone
+piquelctl notification list|set|test|delete|deliveries|retry
 piquelctl events --application <application-id> --limit 50
 ```
 
@@ -132,6 +133,33 @@ follows before its first deployment, and a one-off `--branch`/`--commit`
 deployment stays until the branch moves. `env sync … off` opts it out again;
 `env sync` needs no revision and asks no confirmation. Turning sync on, or
 opting in while it is on, needs `apps:deploy` too.
+
+`notification` manages [notification destinations](observability.md#notifications).
+`notification set NAME` creates a destination, or changes one; options it
+omits keep the current settings, and a new destination receives every category
+about every application, without previews. The URL is read from `--url-file`
+or `--url-stdin`, never an argument, and is required to create one. `--kind
+json|discord` picks the payload, `--enabled true|false` pauses it,
+`--categories a,b` replaces the categories it receives, and
+`--message CATEGORY=TEXT` (repeatable) sends text with a category's
+notifications, such as a Discord role mention `<@&ROLE_ID>`, which also adds
+the category; `--no-message CATEGORY` removes it. `--apps a,b` limits it to
+those applications, by name or ID, `--all-apps` selects every one, and
+`--previews true|false` chooses previews:
+
+```console
+piquelctl notification set ops --kind discord --url-file discord-url
+piquelctl notification set ops --message 'deployment_failures=<@&123456789012345678>'
+piquelctl notification set ops --apps shop,notes --previews true
+piquelctl notification test ops
+```
+
+`notification test` sends a test notification at once and fails unless the
+receiver acknowledges it; `list` shows destinations without URLs, `delete`
+removes one (`--yes` skips confirmation), `deliveries` lists deliveries newest
+first, and `retry ID` retries a failed one. Changing destinations needs
+`notifications:manage`, listing them `system:read` or `notifications:manage`,
+and retrying `system:operate`.
 
 `env telemetry APP ENV on` grants an environment the daemon's
 [telemetry](observability.md#receiving-telemetry-in-an-application): its
@@ -386,6 +414,11 @@ written to stderr, so stdout remains valid JSON.
 | `env secret regenerate` | `SecretMetadata` |
 | `app secret delete` / `env secret delete` | `{ "deleted": string }` |
 | `secrets recover-key` | `SecretKeyRecovery` |
+| `notification list` / `set` | `[NotificationDestination]` |
+| `notification test` | `DestinationTest` |
+| `notification delete` | `{ "deleted": string }` |
+| `notification deliveries` | `{ "items": [NotificationDelivery], "next_cursor": string or null }` |
+| `notification retry` | None |
 | `builds list` | `{ "items": [BuildRecord], "next_cursor": string or null }` |
 | `builds logs` | `BuildLogPage` |
 | `app create` / `app rename` / field edits | `SavedApplication`; `--deploy` uses the same output as `app apply --deploy` |

@@ -45,6 +45,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::SignInLink => crate::auth::sign_in_link(cli, client, console).await,
         Command::Profiles => unreachable!("profiles are listed before connecting"),
         Command::Secrets { action } => action.run(client, console).await,
+        Command::Notification { command } => command.run(client, console).await,
         Command::Status => status(cli, client, console).await,
         Command::Dns {
             command: DnsCommand::Refresh,
@@ -470,7 +471,7 @@ async fn all_applications(client: &Client) -> Result<Vec<ApplicationSummary>> {
 
 /// Walks every page of the application list, folding each summary into `value`.
 /// Fails if the daemon repeats a cursor, which would otherwise loop forever.
-async fn fold_applications<T>(
+pub(crate) async fn fold_applications<T>(
     client: &Client,
     mut value: T,
     mut fold: impl FnMut(&mut T, ApplicationSummary),

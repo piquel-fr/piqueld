@@ -34,6 +34,27 @@ pub(super) fn prebuilt(id: &str) -> NormalizedApplication {
 }
 
 impl Store {
+    /// Creates the destination `name` with `settings`.
+    pub(crate) async fn add_destination(
+        &self,
+        name: &str,
+        url: &str,
+        settings: piqueld_core::observability::DestinationSettings,
+    ) {
+        use piqueld_core::observability::{DestinationName, DestinationRequest};
+        let request = DestinationRequest {
+            settings,
+            url: Some(url.into()),
+        };
+        self.put_notification_destination(
+            Actor::Daemon,
+            &DestinationName::parse(name).unwrap(),
+            request,
+        )
+        .await
+        .unwrap();
+    }
+
     /// Opens a store in a new temporary directory, which must outlive it.
     pub(super) async fn temporary() -> (tempfile::TempDir, Self) {
         let directory = tempfile::tempdir().unwrap();

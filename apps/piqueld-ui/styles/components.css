@@ -304,6 +304,14 @@
         margin-bottom: 1px;
     }
 
+    /* A notification category's checkbox beside its message. */
+    .category-rule {
+        display: grid;
+        grid-template-columns: 12rem 1fr;
+        align-items: center;
+        gap: 10px;
+    }
+
     .form-actions {
         display: flex;
         flex-wrap: wrap;

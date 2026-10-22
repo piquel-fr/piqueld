@@ -2,13 +2,11 @@
 
 mod credential;
 mod listeners;
-mod observability;
 mod telemetry;
 mod tunnel;
 mod view;
 use credential::Resolution;
 pub use credential::{Credential, CredentialError, CredentialFile};
-pub use observability::{NotificationConfig, WebhookDestination, WebhookKind};
 pub use telemetry::{OtlpEndpoint, TelemetryConfig};
 pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
@@ -47,8 +45,6 @@ pub struct DaemonConfig {
     pub images: ImagesConfig,
     /// Export of the daemon's traces, metrics and logs over OTLP.
     pub telemetry: TelemetryConfig,
-    /// Global webhook notification settings.
-    pub notifications: NotificationConfig,
     /// How many previews may exist and what their services may use.
     pub previews: PreviewLimits,
     /// Snapshots of local worktrees, uploaded by `preview deploy --local`.
@@ -123,12 +119,11 @@ impl DaemonConfig {
     }
 
     /// Checks cross-field and range invariants that serde cannot express:
-    /// notification settings, non-zero ports, distinct absolute state directories,
+    /// non-zero ports, distinct absolute state directories,
     /// the public origin, the Docker socket path, `server.allowed_hosts` DNS
     /// hostname syntax, timeout and build-log bounds, and preview bounds a
     /// manifest could set itself.
     fn validate(&self) -> Result<(), ConfigError> {
-        self.notifications.validate()?;
         self.telemetry.validate()?;
         self.previews
             .validate()

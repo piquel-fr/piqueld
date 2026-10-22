@@ -1512,12 +1512,12 @@ report!(SecretMetadata, self, out, {
     ))
 });
 
-/// Name of a deleted secret.
+/// Name of a deleted secret or notification destination.
 #[derive(Serialize)]
-pub(crate) struct SecretDeletionReport<'a> {
+pub(crate) struct NameDeletionReport<'a> {
     pub(crate) deleted: &'a str,
 }
-report!(SecretDeletionReport<'_>, self, out, {
+report!(NameDeletionReport<'_>, self, out, {
     out.line(format_args!("Deleted {}.", self.deleted))
 });
 
@@ -1783,5 +1783,11 @@ report!(piqueld_client::SecretKeyRecovery, self, out, {
     out.line(
         "Running services keep their Docker secrets. Supply replacement values, then deploy.",
     )?;
+    if self.deleted_destinations > 0 {
+        out.line(format_args!(
+            "{} notification destinations were deleted with their URLs; create them again.",
+            self.deleted_destinations
+        ))?;
+    }
     out.line("The next stored value generates a new key; back it up with the database.")
 });

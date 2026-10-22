@@ -92,7 +92,8 @@ impl Store {
         let mut rows = sqlx::query!(
             r#"SELECT 'environment' AS "kind!: String",environment_id AS "owner!",name AS "name!",generation AS "generation!",nonce AS "nonce!",ciphertext AS "ciphertext!" FROM secret_versions WHERE available=1
             UNION ALL SELECT IIF(moved_from IS NULL,'application','environment'),COALESCE(moved_from,application_id),name,generation,nonce,ciphertext FROM application_secret_versions WHERE available=1
-            UNION ALL SELECT 'webhook',application_id,'webhook',1,nonce,ciphertext FROM webhook_secrets"#
+            UNION ALL SELECT 'webhook',application_id,'webhook',1,nonce,ciphertext FROM webhook_secrets
+            UNION ALL SELECT 'destination',id,'url',1,nonce,ciphertext FROM notification_destinations"#
         )
         .fetch(&mut **tx);
         let mut probed = Ciphertext::None;
@@ -110,6 +111,7 @@ impl Store {
                     let id = EnvironmentId::parse(row.owner).map_err(StoreError::corrupt)?;
                     decrypt(SecretOwner::Environment(&id)).is_ok()
                 }
+                "destination" => decrypt(SecretOwner::NotificationDestination(&row.owner)).is_ok(),
                 kind => {
                     let id = ApplicationId::parse(row.owner).map_err(StoreError::corrupt)?;
                     let owner = if kind == "webhook" {
@@ -225,13 +227,33 @@ impl Store {
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
+        // So are notification destinations' URLs; they are created again.
+        let destinations = sqlx::query_scalar!("SELECT COUNT(*) FROM notification_destinations")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        let deleted = crate::store::DESTINATION_CHANGED;
+        sqlx::query!(
+            "UPDATE notification_deliveries
+            SET state='cancelled',last_error=?2,updated_at_ms=?1
+            WHERE state='pending'",
+            now,
+            deleted,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM notification_destinations")
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
         sqlx::query!("DELETE FROM secret_key_verification")
             .execute(&mut *tx)
             .await
             .map_err(StoreError::database)?;
         let discarded = usage.versions + stored.versions;
         let message = format!(
-            "Recovered the secret master key; discarded {discarded} values across {} environments and {} applications",
+            "Recovered the secret master key; discarded {discarded} values across {} environments and {} applications, and {destinations} notification destinations",
             usage.environments, stored.applications
         );
         let recovered = crate::store::SecurityEvent::SecretKeyRecovered;
@@ -243,6 +265,7 @@ impl Store {
             affected_applications: stored.applications,
             affected_secrets: usage.secrets + stored.secrets,
             discarded_versions: discarded,
+            deleted_destinations: destinations,
         })
     }
 }

@@ -127,26 +127,13 @@ the five [`previews`](configuration.md#previews) limits,
 [`snapshots.max_upload_bytes`](configuration.md#local-snapshots),
 [`checkouts.max_bytes`](configuration.md#git-checkouts), both `images` settings,
 `telemetry.endpoint`, `telemetry.headers_file` (a systemd credential),
-`telemetry.containers`,
-`notifications.destinations`, and every `notifications` switch
-and timing, with the daemon's defaults. Reconciliation
+and `telemetry.containers`, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero
 disabling pruning. Unknown settings are rejected.
 
-```nix
-services.piqueld.settings.notifications = {
-  enabled = true;
-  destinations = [
-    {
-      name = "operations";
-      kind = "discord"; # or "json"
-      url_file = config.age.secrets.discord-webhook.path;
-    }
-  ];
-};
-```
-
-See [observability](observability.md) for delivery semantics.
+[Notification destinations](observability.md#notifications) are managed with
+`piquelctl notification` or the dashboard, not the module; the former
+`settings.notifications` options are removed.
 
 [Telemetry export](observability.md#telemetry-export) pushes traces, metrics
 and logs to an OTLP/gRPC collector, along with the
@@ -188,10 +175,10 @@ services.piqueld.settings = {
 };
 ```
 
-Settings enter the world-readable Nix store, so a destination's `url` has a
-`url_file` variant that takes a host path instead, such as an agenix or sops-nix
-secret; set exactly one of them. The Tailscale auth key is only accepted as
-`auth_key_file`, and DNS provider credentials only as their `_file` settings. The module passes every `_file` path to systemd
+Settings enter the world-readable Nix store, so credentials are only accepted
+as `_file` settings taking a host path, such as an agenix or sops-nix secret:
+the Tailscale auth key as `auth_key_file`, and DNS provider credentials as
+their `_file` settings. The module passes every `_file` path to systemd
 `LoadCredential=`: systemd reads the file as root and hands the service a
 private copy, so the secret can stay root-only. Restart piqueld after a secret
 changes.

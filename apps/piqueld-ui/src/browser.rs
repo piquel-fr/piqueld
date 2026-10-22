@@ -7,6 +7,7 @@ mod dashboard;
 mod format;
 mod logs;
 mod management;
+mod notifications;
 mod observability;
 mod runtime;
 mod ui;
@@ -439,7 +440,7 @@ fn App() -> impl IntoView {
                     <Route path={path!("errors/:id")} view={observability::DiagnosticPage} />
                     <Route path={path!("system")} view={observability::SystemPage} />
                     <Route path={path!("analytics")} view={observability::AnalyticsPage} />
-                    <Route path={path!("notifications")} view={observability::NotificationsPage} />
+                    <Route path={path!("notifications")} view={notifications::NotificationsPage} />
                     <Route path={path!("audit")} view={observability::AuditPage} />
                     <Route path={path!("applications/:id")} view={ApplicationDetailPage} />
                     <Route
