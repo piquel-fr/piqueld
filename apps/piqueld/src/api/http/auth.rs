@@ -626,8 +626,15 @@ pub(super) async fn manage(
     Extension(auth): Extension<Auth>,
     Extension(identity): Extension<Identity>,
     ApiJson(input): ApiJson<Manage>,
-) -> Result<Json<Managed>, ApiError> {
-    Ok(Json(auth.manage(&identity, input).await?))
+) -> Response {
+    // The audit trail records what the action changes, refused or not.
+    let detail = super::access::AuditDetail(input.describe());
+    let mut response = match auth.manage(&identity, input).await {
+        Ok(managed) => Json(managed).into_response(),
+        Err(error) => ApiError::from(error).into_response(),
+    };
+    response.extensions_mut().insert(detail);
+    response
 }
 /// Starts a device sign-in for a command-line client.
 ///

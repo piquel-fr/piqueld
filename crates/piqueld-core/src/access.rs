@@ -331,6 +331,39 @@ pub struct Grant {
     pub applications: Option<BTreeSet<ApplicationId>>,
 }
 
+/// Writes the grant as the documentation does, with application IDs:
+/// `apps:deploy on app-0123abcd app-4567efgh`, or `system:read`.
+impl std::fmt::Display for Grant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.permission.as_str())?;
+        if let Some(applications) = &self.applications {
+            f.write_str(" on")?;
+            for id in applications {
+                write!(f, " {}", id.as_str())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Writes the canonical grant list (see [`Grants::to_list`]) separated by
+/// commas, e.g. `admin on app-0123abcd, system:read`, or `none`.
+impl std::fmt::Display for Grants {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let list = self.to_list();
+        if list.is_empty() {
+            return f.write_str("none");
+        }
+        for (index, grant) in list.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{grant}")?;
+        }
+        Ok(())
+    }
+}
+
 /// A grant list that cannot become a [`Grants`] set.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum GrantError {

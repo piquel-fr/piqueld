@@ -893,7 +893,7 @@
         "description": "One audited API request. Accounts and credentials are copied when\nrecorded, so records outlive them. Request and response bodies are never\nrecorded.",
         "properties": {
           "action": {
-            "description": "Method and route template, e.g. `POST /api/v1/applications/{id}/deploy`.",
+            "description": "Method and route template, e.g. `POST /api/v1/applications/{id}/deploy`,\nfollowed for account management by what it changed, e.g.\n`POST /api/v1/auth/manage revoke_credential \"0190…\"`. A record without a\ncaller reading `audit records missing before this one: N` marks where\nN records could not be written.",
             "type": "string"
           },
           "application_id": {
@@ -4545,7 +4545,7 @@
                   "description": "One audited API request. Accounts and credentials are copied when\nrecorded, so records outlive them. Request and response bodies are never\nrecorded.",
                   "properties": {
                     "action": {
-                      "description": "Method and route template, e.g. `POST /api/v1/applications/{id}/deploy`.",
+                      "description": "Method and route template, e.g. `POST /api/v1/applications/{id}/deploy`,\nfollowed for account management by what it changed, e.g.\n`POST /api/v1/auth/manage revoke_credential \"0190…\"`. A record without a\ncaller reading `audit records missing before this one: N` marks where\nN records could not be written.",
                       "type": "string"
                     },
                     "application_id": {

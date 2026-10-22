@@ -319,6 +319,7 @@ pub(super) async fn audit(
         signed_in: extensions
             .get::<SignedIn>()
             .map(|SignedIn(who)| who.clone()),
+        detail: extensions.get::<AuditDetail>().cloned(),
     };
     if let Some(identity) = &answer.identity
         && let (Some(user), Some(credential), Some(peer)) =
@@ -336,6 +337,18 @@ pub(super) async fn audit(
 #[derive(Clone)]
 pub(super) struct SignedIn(pub(super) Principal);
 
+/// What a request changed beyond its route, attached to its response so the
+/// audit trail records it after the route, e.g. an account management
+/// action: `POST /api/v1/auth/manage revoke_credential "0190…"`. Recorded up to
+/// [`Self::LIMIT`] characters.
+#[derive(Clone)]
+pub(super) struct AuditDetail(pub(super) String);
+
+impl AuditDetail {
+    /// Characters of a detail the audit trail keeps.
+    const LIMIT: usize = 1024;
+}
+
 /// What the audit trail needs from a response.
 struct Answer {
     /// Tailnet identity of the peer, described.
@@ -347,6 +360,8 @@ struct Answer {
     identity: Option<Identity>,
     /// Who a sign-in request signed in.
     signed_in: Option<Principal>,
+    /// What the request changed beyond its route.
+    detail: Option<AuditDetail>,
 }
 
 /// One API request, as the audit trail will record it.
@@ -402,6 +417,7 @@ impl Audit {
             identity: Some(identity),
             signed_in: None,
             tailnet: tailnet.map(TailnetPeer::describe),
+            detail: None,
         };
         self.record(state, answer);
     }
@@ -418,6 +434,7 @@ impl Audit {
             denied,
             identity,
             signed_in,
+            detail,
         } = answer;
         let refused = denied.is_some()
             || matches!(
@@ -458,8 +475,13 @@ impl Audit {
         };
         let application_id = self.owner_id(PathOwner::Application);
         let environment_id = self.owner_id(PathOwner::Environment);
+        let mut action = format!("{} {}", self.method, self.route);
+        if let Some(AuditDetail(detail)) = detail {
+            action.push(' ');
+            action.extend(detail.chars().take(AuditDetail::LIMIT));
+        }
         state.record_audit(crate::store::NewAuditEvent {
-            action: format!("{} {}", self.method, self.route),
+            action,
             outcome,
             status: status.as_u16(),
             user_id: user.as_ref().map(|user| user.id.clone()),
