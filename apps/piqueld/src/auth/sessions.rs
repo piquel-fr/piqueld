@@ -1,17 +1,19 @@
 //! Durable opaque sessions, host operator sessions, and short-lived,
 //! explicitly approved device logins.
 use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
-use crate::store::{Actor, Caller};
+use crate::store::{Actor, Caller, NewCredential};
 use piqueld_core::access::{Denied, Grants};
 use piqueld_core::auth::{
     DeviceRequest, DeviceStart, DeviceToken, HostOperator, OperatorLink, Principal, Session, User,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 /// Seconds a host operator sign-in link stays redeemable.
 const OPERATOR_LINK_LIFETIME: i64 = 600;
 /// Seconds between refreshes of a credential's last-used time.
 const TOUCH_INTERVAL: i64 = 60;
+/// Name of the sessions CLI device logins issue.
+const CLI_SESSION: &str = "piquelctl";
 /// Seconds a host operator browser session lasts.
 pub(crate) const OPERATOR_SESSION_LIFETIME: i64 = 12 * 3600;
 
@@ -172,7 +174,71 @@ pub(super) struct Device {
     /// Grants the issued CLI session is limited to; `None` for the approver's
     /// full access.
     grants: Option<Grants>,
+    /// The session to issue, prepared by the first poll after approval,
+    /// which then tries to store it; set means that attempt began (see
+    /// [`Auth::device_poll`]).
+    pub(super) prepared: Option<Prepared>,
+    /// Whether a poll is issuing the session (see [`Issuing`]).
+    issuing: bool,
 }
+
+/// The CLI session an approved device login issues: its secret, credential
+/// ID, and expiry, kept so a later poll can answer the same session when the
+/// poll that stored it lost its answer.
+#[derive(Clone)]
+pub(super) struct Prepared {
+    /// Bearer secret answered to the CLI.
+    pub(super) token: String,
+    /// Credential ID the session is stored under.
+    id: String,
+    /// Absolute expiry in Unix seconds.
+    expires_at: i64,
+}
+
+impl Prepared {
+    /// The credential to store for the session, limited to `grants`.
+    pub(super) fn credential<'a>(&self, grants: Option<&'a Grants>) -> NewCredential<'a> {
+        NewCredential {
+            id: self.id.clone(),
+            secret_hash: Auth::hash(&self.token),
+            kind: CredentialKind::Cli,
+            name: CLI_SESSION,
+            expires_at: Some(self.expires_at),
+            grants,
+        }
+    }
+}
+
+/// An approved device login whose session a poll is issuing, marked so no
+/// concurrent poll issues or answers it too. Dropped unfinished, when the
+/// poll fails or is cancelled, it makes the login pollable again.
+struct Issuing<'a> {
+    devices: &'a parking_lot::Mutex<HashMap<String, Device>>,
+    /// The login's key; `None` once finished.
+    key: Option<String>,
+}
+
+impl Issuing<'_> {
+    /// Removes the login once its session was answered, so it is answered
+    /// once, or refused.
+    fn finish(mut self) {
+        if let Some(key) = self.key.take() {
+            self.devices.lock().remove(&key);
+        }
+    }
+}
+
+impl Drop for Issuing<'_> {
+    fn drop(&mut self) {
+        let Some(key) = &self.key else {
+            return;
+        };
+        if let Some(device) = self.devices.lock().get_mut(key) {
+            device.issuing = false;
+        }
+    }
+}
+
 impl Auth {
     /// Resolves a bearer or cookie secret to its live credential and owner,
     /// or to a host operator session.
@@ -291,12 +357,12 @@ impl Auth {
     /// unambiguous user code (no `I`, `O`, `0`, or `1`) for the user to approve in
     /// the dashboard. Only the device code's hash is kept. With `grants`, the
     /// issued session is limited to them.
-    pub(crate) async fn device_start(
+    pub(crate) fn device_start(
         &self,
         requester: Option<std::net::IpAddr>,
         grants: Option<Grants>,
     ) -> Result<DeviceStart> {
-        let mut devices = self.0.devices.lock().await;
+        let mut devices = self.0.devices.lock();
         devices.retain(|_, device| device.expires > now_secs());
         if devices.len() >= MAX_PENDING {
             return Err(AuthError::Busy);
@@ -325,6 +391,8 @@ impl Auth {
                 next_poll: 0,
                 approved_by: None,
                 grants: grants.clone(),
+                prepared: None,
+                issuing: false,
             },
         );
         Ok(DeviceStart {
@@ -353,8 +421,8 @@ impl Auth {
         Ok(device)
     }
     /// Describes a pending request so the approver can check where it came from.
-    pub(crate) async fn device_inspect(&self, code: &str) -> Result<DeviceRequest> {
-        let mut devices = self.0.devices.lock().await;
+    pub(crate) fn device_inspect(&self, code: &str) -> Result<DeviceRequest> {
+        let mut devices = self.0.devices.lock();
         let device = Self::pending_device(&mut devices, code)?;
         let now = now_secs();
         Ok(DeviceRequest {
@@ -368,12 +436,12 @@ impl Auth {
     /// Marks a pending device login as approved by the caller's credential,
     /// which must belong to an account, have its full access, and hold any
     /// requested grants. Both are checked again when the session is issued.
-    pub(crate) async fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
+    pub(crate) fn device_approve(&self, code: &str, identity: &Identity) -> Result<()> {
         let caller = identity.caller()?;
         if identity.scoped {
             return Err(Denied::Scoped.into());
         }
-        let mut devices = self.0.devices.lock().await;
+        let mut devices = self.0.devices.lock();
         let device = Self::pending_device(&mut devices, code)?;
         if let Some(grants) = &device.grants {
             identity.grants.may_grant(grants)?;
@@ -394,52 +462,93 @@ impl Auth {
     /// `authorization_pending` until approved, and `complete` with a 30-day CLI
     /// token once approved. Completion removes the request so it cannot be reused;
     /// expired or unknown codes are unauthorized.
+    ///
+    /// Issuing does not hold the pending logins while storage writes: the
+    /// login stays in place, marked as issuing, so a concurrent poll answers
+    /// `authorization_pending`, and only the issuing poll completes it.
+    ///
+    /// The first poll after approval prepares the session (see [`Prepared`])
+    /// and stores it. A poll that fails or is cancelled leaves the login to
+    /// the next one, which stores nothing: it answers the prepared session
+    /// if it is stored and live, e.g. committed just before the cancellation.
+    /// Otherwise it cannot tell a session never stored from one revoked since,
+    /// so it refuses the login (401) rather than resurrect a revoked one; the
+    /// CLI then signs in again.
     pub(crate) async fn device_poll(&self, code: &str) -> Result<DeviceToken> {
-        let mut devices = self.0.devices.lock().await;
+        let pending = |status: &str| DeviceToken {
+            status: status.into(),
+            token: None,
+            user: None,
+        };
         let key = Self::hash(code);
-        let device = devices.get_mut(&key).ok_or(AuthError::Unauthorized)?;
-        if device.expires <= now_secs() {
-            devices.remove(&key);
-            return Err(AuthError::Unauthorized);
-        }
-        let now = now_secs();
-        if device.next_poll > now {
-            return Ok(DeviceToken {
-                status: "slow_down".into(),
-                token: None,
-                user: None,
-            });
-        }
-        device.next_poll = now + 5;
-        let Some(approved_by) = device.approved_by.clone() else {
-            return Ok(DeviceToken {
-                status: "authorization_pending".into(),
-                token: None,
-                user: None,
-            });
+        let (approver, grants, prepared, retry) = {
+            let mut devices = self.0.devices.lock();
+            let Entry::Occupied(mut entry) = devices.entry(key.clone()) else {
+                return Err(AuthError::Unauthorized);
+            };
+            let now = now_secs();
+            let device = entry.get_mut();
+            if device.expires <= now {
+                entry.remove();
+                return Err(AuthError::Unauthorized);
+            }
+            if device.next_poll > now {
+                return Ok(pending("slow_down"));
+            }
+            device.next_poll = now + 5;
+            let Some(approver) = device.approved_by.clone().filter(|_| !device.issuing) else {
+                return Ok(pending("authorization_pending"));
+            };
+            let retry = device.prepared.is_some();
+            let prepared = match &device.prepared {
+                Some(prepared) => prepared.clone(),
+                None => device.prepared.insert(Self::prepare()?).clone(),
+            };
+            device.issuing = true;
+            (approver, device.grants.clone(), prepared, retry)
         };
-        let grants = device.grants.clone();
-        let (token, credential) = Self::new_credential(
-            CredentialKind::Cli,
-            "piquelctl",
-            Some(now + 30 * DAY),
-            grants.as_ref(),
-        )?;
-        let approver = crate::store::Caller {
-            credential_id: &approved_by.0,
-            user_id: &approved_by.1,
+        let issuing = Issuing {
+            devices: &self.0.devices,
+            key: Some(key),
         };
-        let user = self
-            .0
-            .store
-            .issue_for_credential_owner(approver, &credential)
-            .await?
-            .ok_or(AuthError::Unauthorized)?;
-        devices.remove(&key);
+        let user = if retry {
+            let hash = Self::hash(&prepared.token);
+            match self.0.store.credential_owner(&hash).await? {
+                Some(owner) if owner.credential_id == prepared.id => owner.user,
+                _ => {
+                    issuing.finish();
+                    return Err(AuthError::Unauthorized);
+                }
+            }
+        } else {
+            let (credential_id, user_id) = &approver;
+            let approver = Caller {
+                credential_id,
+                user_id,
+            };
+            let credential = prepared.credential(grants.as_ref());
+            let issued = self
+                .0
+                .store
+                .issue_for_credential_owner(approver, &credential);
+            issued.await?.ok_or(AuthError::Unauthorized)?
+        };
+        issuing.finish();
         Ok(DeviceToken {
             status: "complete".into(),
-            token: Some(token),
+            token: Some(prepared.token),
             user: Some(user),
+        })
+    }
+    /// Prepares the 30-day CLI session a device login issues.
+    fn prepare() -> Result<Prepared> {
+        let expires_at = now_secs() + 30 * DAY;
+        let (token, credential) =
+            Self::new_credential(CredentialKind::Cli, CLI_SESSION, Some(expires_at), None)?;
+        Ok(Prepared {
+            token,
+            id: credential.id,
+            expires_at,
         })
     }
 }

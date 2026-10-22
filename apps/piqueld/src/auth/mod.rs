@@ -101,7 +101,7 @@ struct Inner {
     /// Pending passkey ceremonies keyed by their random ceremony ID.
     ceremonies: Mutex<HashMap<String, ceremonies::Pending>>,
     /// Pending CLI device logins keyed by the hash of their device code.
-    devices: Mutex<HashMap<String, sessions::Device>>,
+    devices: parking_lot::Mutex<HashMap<String, sessions::Device>>,
     throttle: Mutex<throttle::Throttle>,
     /// When each credential's last-used time was last claimed for refresh,
     /// by credential ID (see `Auth::authenticate`).
@@ -197,7 +197,7 @@ impl Auth {
             secure: origin.scheme() == "https",
             port: origin.port(),
             ceremonies: Mutex::new(HashMap::new()),
-            devices: Mutex::new(HashMap::new()),
+            devices: parking_lot::Mutex::default(),
             throttle: Mutex::new(throttle::Throttle::default()),
             touched: parking_lot::Mutex::default(),
             setup_link: Mutex::new(None),

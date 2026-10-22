@@ -200,6 +200,13 @@ comparison cannot tell callers apart.
   the 30-day CLI session, named `piquelctl`. If the approver's session ends
   before the next poll, no credential is issued. Approval doesn't create an
   account.
+- One poll at a time issues the session, without holding the pending logins
+  while it writes; a concurrent poll gets `authorization_pending`. The first
+  poll after approval prepares the session's secret and ID and stores them.
+  If that poll fails or is cancelled, the next one answers the same session
+  when it is stored and live. Otherwise it can't tell a session never stored
+  from one revoked since, so it refuses the login with 401 rather than
+  resurrect a revoked credential.
 - `piquelctl` checks that the daemon honoured requested limits: it compares
   the grants the start response echoes with the ones it asked for, and stops
   with "the daemon ignored the requested access; it predates limited logins"

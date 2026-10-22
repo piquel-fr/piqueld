@@ -643,7 +643,7 @@ pub(super) async fn device_start(
     } else {
         super::extract::decode_json::<DeviceStartRequest>(&body)?
     };
-    Ok(Json(auth.device_start(requester, request.grants).await?))
+    Ok(Json(auth.device_start(requester, request.grants)?))
 }
 /// Bodies [`device_start`] accepts: pending logins are kept in memory.
 const DEVICE_START_LIMIT_BYTES: usize = 16 * 1024;
@@ -714,7 +714,7 @@ pub(super) async fn device_inspect(
     Extension(auth): Extension<Auth>,
     ApiJson(input): ApiJson<DeviceApprove>,
 ) -> Result<Json<DeviceRequest>, ApiError> {
-    Ok(Json(auth.device_inspect(&input.user_code).await?))
+    Ok(Json(auth.device_inspect(&input.user_code)?))
 }
 /// Approves a pending device sign-in.
 ///
@@ -725,6 +725,6 @@ pub(super) async fn device_approve(
     Extension(identity): Extension<Identity>,
     ApiJson(input): ApiJson<DeviceApprove>,
 ) -> Result<Json<Managed>, ApiError> {
-    auth.device_approve(&input.user_code, &identity).await?;
+    auth.device_approve(&input.user_code, &identity)?;
     Ok(Json(Managed::default()))
 }
