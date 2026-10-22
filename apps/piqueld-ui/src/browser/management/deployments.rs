@@ -19,7 +19,8 @@ use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
     EnvironmentView, HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView,
-    PromoteRequest, SecretProblem, Service, Source, Template, ValidatedRollout,
+    PromoteRequest, ReleaseAvailability, SecretProblem, Service, Source, Template,
+    ValidatedRollout,
 };
 use std::fmt::Display;
 
@@ -522,7 +523,12 @@ pub(super) fn PromoteAction(
         plan.with(|plan| {
             let plan = plan.as_ref()?;
             let release = plan.release.as_ref()?;
-            if !release.secrets.is_empty() {
+            if !release.secrets.is_empty()
+                || matches!(
+                    release.release.availability,
+                    Some(ReleaseAvailability::Unavailable { .. })
+                )
+            {
                 return None;
             }
             let mut request = selection.get_value();

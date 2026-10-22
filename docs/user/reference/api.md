@@ -440,7 +440,9 @@ rendered release with the environment's current deployment and whose `plan`
 compares it with the observed runtime. Its `release` is a `ReleasePlan`: the
 `ReleaseView` with `availability`, the `origin`, `new_volumes` that would be
 created empty, and every unusable secret in `secrets`, which do not fail the
-plan. Plans of an earlier `release` work for any environment.
+plan. An `unavailable` release adds a blocking `image_unavailable` diagnostic
+for each missing image, since promoting it would fail. Plans of an earlier
+`release` work for any environment.
 
 Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
 digits, `-`, `_`, `.`, or `:`; 400 `invalid_request` otherwise). The CLI generates one UUID per command and reuses

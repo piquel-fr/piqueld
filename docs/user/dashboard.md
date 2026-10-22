@@ -116,7 +116,8 @@ its source environment's current release and shows it: where the release comes
 from, the release itself (commit, each service's image, availability), the
 changes against the environment's current deployment, new (empty) volumes, the
 runtime actions, and every secret that is missing or that the environment may
-not use. **Promote release** is disabled while a secret is listed, and promotes
+not use. **Promote release** is disabled while a secret is listed or the
+release's images were removed, and promotes
 exactly the source deployment that was planned: if the source deployed again
 meanwhile, the daemon refuses it (`promotion_source_changed`) and the dialog
 shows why.

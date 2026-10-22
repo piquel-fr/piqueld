@@ -119,7 +119,9 @@ impl ApplicationService {
     /// anything: the release and its provenance and image availability, the
     /// rendered diff against the environment's current deployment, the
     /// runtime plan, new (empty) volumes, and every missing or inaccessible
-    /// secret. The source must be promotable, as for [`Self::promote`]; an
+    /// secret. Images that are missing and can't be pulled again block the
+    /// plan, as they fail the promotion. The source must be promotable, as
+    /// for [`Self::promote`]; an
     /// earlier release may be planned for any environment.
     ///
     /// # Errors
@@ -196,6 +198,9 @@ impl ApplicationService {
             .release(application, &candidate.promotion.release)
             .await?;
         self.mark_availability([&mut release]).await;
+        if let Some(availability) = &release.availability {
+            plan.warn(availability.diagnostics());
+        }
         let proposed = app.spec();
         Ok(PlanView {
             application_id: application.to_string(),
