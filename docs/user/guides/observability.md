@@ -313,7 +313,9 @@ Each destination has a unique name, such as `ops`, a kind (`json` or
 Listing destinations needs `system:read` or `notifications:manage`, and
 changing them `notifications:manage`. URLs are credentials: they are stored encrypted with
 the [secret master key](../reference/configuration.md#secret-storage) and never returned,
-and lost-key recovery deletes the destinations.
+and lost-key recovery deletes the destinations. Deliveries go straight to the
+destination. They never follow redirects or use a proxy set in the
+environment (`HTTPS_PROXY`), which would see the URL.
 
 Disabling a destination, removing a category, or narrowing its applications
 or previews cancels the pending deliveries affected; recoveries still follow
