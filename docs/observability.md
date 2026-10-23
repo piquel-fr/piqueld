@@ -230,7 +230,7 @@ caller holds `events:read` on, and daemon history requires `system:read`. See th
 | `DELETE /api/v1/notifications/destinations/{name}` | Delete a destination |
 | `POST /api/v1/notifications/destinations/{name}/test` | Send a test notification now |
 | `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
-| `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy |
+| `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy; `system:operate`. 409 `delivery_not_retryable` names why one cannot be |
 
 Event filters: `application_id` (application-wide events and those of all its
 environments), `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,

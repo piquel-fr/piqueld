@@ -7,6 +7,7 @@ mod event;
 mod notifications;
 
 pub use destinations::DestinationError;
+pub use notifications::RetryError;
 
 /// Error recorded on a delivery cancelled because its destination was
 /// disabled, changed or deleted.

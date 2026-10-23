@@ -9936,9 +9936,11 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Retries a webhook notification delivery
+    /*Retries a failed webhook notification delivery
 
     Schedules another attempt using the current destination configuration.
+    Needs `system:operate`. A delivery that exists but cannot be retried fails
+    with 409 `delivery_not_retryable`, whose message says why.
 
     Sends a `POST` request to `/api/v1/notifications/deliveries/{id}/retry`
 
@@ -9984,6 +9986,9 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             503u16 => Err(Error::ErrorResponse(

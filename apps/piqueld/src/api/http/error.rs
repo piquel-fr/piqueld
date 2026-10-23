@@ -345,6 +345,7 @@ impl From<StoreError> for ApiError {
                 Self::new(StatusCode::CONFLICT, "account_lockout", lockout.message())
             }
             StoreError::Destination(error) => error.into(),
+            StoreError::Retry(error) => error.into(),
             StoreError::Denied(denied) => denied.into(),
             StoreError::CredentialRevoked => crate::auth::AuthError::Unauthorized.into(),
             StoreError::AlreadyExists => Self::new(
@@ -393,6 +394,17 @@ impl From<crate::store::DestinationError> for ApiError {
             DestinationError::UnknownApplication(_) => "destination_application_unknown",
         };
         Self::new(StatusCode::BAD_REQUEST, code, error.to_string())
+    }
+}
+
+impl From<crate::store::RetryError> for ApiError {
+    /// Refuses a delivery that cannot be retried with 409, saying why.
+    fn from(error: crate::store::RetryError) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "delivery_not_retryable",
+            error.to_string(),
+        )
     }
 }
 

@@ -22,7 +22,7 @@ pub(crate) use auth::{
 };
 pub(crate) use journal::JournalAction;
 pub(crate) use observability::DESTINATION_CHANGED;
-pub use observability::DestinationError;
+pub use observability::{DestinationError, RetryError};
 pub(crate) use secret::SecretDeletion;
 mod operation;
 mod preview;
@@ -259,6 +259,9 @@ pub enum StoreError {
     /// A notification destination change was refused.
     #[error(transparent)]
     Destination(#[from] DestinationError),
+    /// A delivery retry was refused.
+    #[error(transparent)]
+    Retry(#[from] RetryError),
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,
