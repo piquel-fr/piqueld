@@ -23,6 +23,18 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// the runtime, and the daemon checks routes far less often.
 pub(crate) const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// `--cursor` and `--limit` of a command that reads one page of a list;
+/// `///` on fields is user-facing help.
+#[derive(Debug, clap::Args)]
+pub(crate) struct PageArgs {
+    /// Continue after a cursor returned by the previous page.
+    #[arg(long)]
+    pub(crate) cursor: Option<String>,
+    /// Maximum number of items in the page.
+    #[arg(long, default_value_t = piqueld_client::DEFAULT_PAGE_SIZE, value_parser = clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE)))]
+    pub(crate) limit: u16,
+}
+
 /// Set while a blocking operator read is in progress; see `read_input`.
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Wakes the timeout supervisor in `main` when `INTERACTION_ACTIVE` flips.

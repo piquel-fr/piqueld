@@ -177,12 +177,8 @@ pub(crate) enum Command {
         /// Filter by stable environment ID, including deleted environments.
         #[arg(long)]
         environment: Option<String>,
-        /// Continue after a cursor returned by the previous page.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Maximum number of events in the page.
-        #[arg(long,default_value_t=piqueld_client::DEFAULT_PAGE_SIZE,value_parser=clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE)))]
-        limit: u16,
+        #[command(flatten)]
+        page: crate::support::PageArgs,
     },
 }
 

@@ -79,7 +79,9 @@ piquelctl preview url <app> <preview> [--slot <slot>] [--route <name>]
 piquelctl preview exec <app> <preview> <service> [--slot <slot>] [-i] [-t] -- <command>...
 piquelctl preview delete <app> <preview> [--slot <slot>]
 piquelctl preview prune <app> --branch-gone
-piquelctl notification list|set|test|delete|deliveries|retry
+piquelctl notification list|set|test|delete
+piquelctl notification deliveries [--limit <n>] [--cursor <cursor>]
+piquelctl notification retry <delivery-id>
 piquelctl events --application <application-id> --limit 50
 ```
 
@@ -155,11 +157,20 @@ piquelctl notification test ops
 ```
 
 `notification test` sends a test notification at once and fails unless the
-receiver acknowledges it; `list` shows destinations without URLs, `delete`
-removes one (`--yes` skips confirmation), `deliveries` lists deliveries newest
-first, and `retry ID` retries a failed one. Changing destinations needs
-`notifications:manage`, listing them `system:read` or `notifications:manage`,
-and retrying `system:operate`.
+receiver acknowledges it; `list` shows destinations without URLs, and `delete`
+removes one (`--yes` skips confirmation). Changing destinations needs
+`notifications:manage`, and listing them `system:read` or `notifications:manage`.
+
+`notification deliveries` lists a page of deliveries, newest first: 50 unless
+`--limit` says otherwise (at most 100), with `--cursor` continuing from the
+previous page. Each line shows the delivery ID, destination, category, subject,
+state, attempts, when it last changed (or, while pending, is next attempted),
+and its last error. `notification retry ID` retries a failed delivery now, under
+its destination's current settings. Listing deliveries needs `system:read`, and
+retrying them `system:operate`. A retry the daemon refuses fails with
+`delivery_not_retryable` (exit 3), naming why: the delivery has not failed, its
+destination no longer receives it, or its incident has moved on (see
+[notifications](observability.md#notifications)).
 
 `env telemetry APP ENV on` grants an environment the daemon's
 [telemetry](observability.md#receiving-telemetry-in-an-application): its

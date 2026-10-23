@@ -17,6 +17,34 @@ const FAILURE_THRESHOLD_MS: i64 = 120_000;
 /// How long a delivery is retried automatically.
 const RETRY_WINDOW_MS: i64 = 86_400_000;
 
+/// Why a delivery that exists cannot be retried by hand.
+#[derive(Debug, thiserror::Error)]
+pub enum RetryError {
+    /// Only failed deliveries are retried.
+    #[error("the delivery is {0}; only failed deliveries can be retried")]
+    NotFailed(DeliveryState),
+    /// This version does not know the delivery's category.
+    #[error("this daemon version does not know the delivery's category, so it cannot be retried")]
+    UnknownCategory,
+    /// Its destination was deleted, replaced or disabled, or no longer
+    /// receives its category, application or previews.
+    #[error(
+        "the delivery's destination was deleted, replaced or disabled, or no longer receives it, so it cannot be retried"
+    )]
+    NotReceived,
+    /// Its destination acknowledged the recovery that followed this failure.
+    #[error(
+        "the delivery's destination already acknowledged the recovery that followed it, so it cannot be retried"
+    )]
+    Recovered,
+    /// A recovery whose incident has opened again would be stale.
+    #[error("the recovery's incident has opened again, so it cannot be retried")]
+    Reopened,
+    /// A closed incident is not announced again without its recovery.
+    #[error("the alert's incident has closed, so it cannot be retried")]
+    Closed,
+}
+
 impl Store {
     /// Reads delivery history without destination credentials or response
     /// bodies, leaving out deliveries of a category this version does not know.
@@ -86,15 +114,16 @@ impl Store {
     /// Retries a failed delivery only while its destination still exists,
     /// unchanged, enabled, receiving its category and, unless it is a
     /// recovery, the event.
-    /// Also refuses (as `StoreError::InvalidInput`) failures already followed by a
-    /// delivered recovery, recoveries whose incident has reopened, and failures
-    /// whose incident has since closed. Security events and daemon starts open
-    /// no incident, so their deliveries stay retryable. Resets the delivery to `pending` with a
+    /// Also refuses failures already followed by a delivered recovery,
+    /// recoveries whose incident has reopened, and failures whose incident has
+    /// since closed. Security events and daemon starts open no incident, so
+    /// their deliveries stay retryable. Resets the delivery to `pending` with a
     /// fresh retry window. `actor` needs `system:operate`, checked in the same
     /// transaction.
     ///
     /// # Errors
-    /// Returns absence, disabled delivery or storage errors.
+    /// Returns absence, a [`RetryError`] naming why it cannot be retried, or
+    /// storage errors.
     pub async fn retry_delivery(
         &self,
         actor: crate::store::Actor<'_>,
@@ -106,23 +135,29 @@ impl Store {
         );
         actor.require_on(&mut tx, operate, None).await?;
         let row = sqlx::query!(
-            "SELECT d.category,d.event_id,c.category IS NOT NULL
+            "SELECT d.state,d.category,d.event_id,c.category IS NOT NULL
                 AND (d.category='recovery' OR EXISTS (SELECT 1 FROM notification_audience au
                     WHERE au.destination_id=n.id AND au.event_id=d.event_id)) AS \"delivers!: bool\"
             FROM notification_deliveries d
             LEFT JOIN notification_destinations n ON n.id=d.destination_id AND n.enabled=1
             LEFT JOIN notification_destination_categories c ON c.destination_id=n.id AND c.category=d.category
-            WHERE d.id=?1 AND d.state='failed'",
+            WHERE d.id=?1",
             id,
         )
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?
         .ok_or(StoreError::NotFound)?;
+        let state = DeliveryState::parse(&row.state).ok_or(StoreError::Corrupt)?;
+        if state != DeliveryState::Failed {
+            return Err(RetryError::NotFailed(state).into());
+        }
         // A category this version does not know cannot be delivered.
-        let category = NotificationCategory::parse(&row.category)
-            .filter(|_| row.delivers)
-            .ok_or(StoreError::InvalidInput)?;
+        let category =
+            NotificationCategory::parse(&row.category).ok_or(RetryError::UnknownCategory)?;
+        if !row.delivers {
+            return Err(RetryError::NotReceived.into());
+        }
         // Never replay an old failure after its destination acknowledged recovery.
         let recovered = sqlx::query_scalar!(
             "SELECT COUNT(*) FROM notification_recovery_sources s
@@ -134,7 +169,7 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         if recovered > 0 {
-            return Err(StoreError::InvalidInput);
+            return Err(RetryError::Recovered.into());
         }
         match category {
             // A recovery is stale once its incident has opened again.
@@ -149,7 +184,7 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
                 if reopened > 0 {
-                    return Err(StoreError::InvalidInput);
+                    return Err(RetryError::Reopened.into());
                 }
             }
             // Security events, daemon starts and deployments report one
@@ -167,7 +202,7 @@ impl Store {
                 .await
                 .map_err(StoreError::database)?;
                 if open == 0 {
-                    return Err(StoreError::InvalidInput);
+                    return Err(RetryError::Closed.into());
                 }
             }
         }

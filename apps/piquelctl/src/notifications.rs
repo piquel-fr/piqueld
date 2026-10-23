@@ -5,13 +5,13 @@ use crate::{
     commands::{fold_applications, resolve_application},
     error::{CliError, ErrorKind, Result},
     output::{Console, reports::report},
-    support::read_input,
+    support::{PageArgs, read_input},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationId, Client, Page,
     observability::{
-        ApplicationSelection, CategoryRule, DestinationKind, DestinationRequest,
+        ApplicationSelection, CategoryRule, DeliveryState, DestinationKind, DestinationRequest,
         DestinationSettings, DestinationTest, NotificationCategory, NotificationDelivery,
         NotificationDestination, NotificationMessage,
     },
@@ -44,15 +44,13 @@ pub(crate) enum NotificationCommand {
         #[arg(long, short)]
         yes: bool,
     },
-    /// List deliveries, newest first.
-    Deliveries {
-        /// Continue after a cursor returned by the previous page.
-        #[arg(long)]
-        cursor: Option<String>,
-    },
-    /// Retry a failed delivery (requires system:operate).
+    /// List deliveries, newest first, with their state, attempts and last
+    /// error (requires system:read).
+    Deliveries(PageArgs),
+    /// Retry a failed delivery now, under its destination's current settings
+    /// (requires system:operate).
     Retry {
-        /// Delivery ID.
+        /// Delivery ID, from `notification deliveries`.
         id: String,
     },
 }
@@ -267,9 +265,11 @@ impl NotificationCommand {
                 client.delete_notification_destination(name).await?;
                 console.emit(&crate::output::reports::NameDeletionReport { deleted: name })
             }
-            Self::Deliveries { cursor } => {
-                console.emit(&client.notification_deliveries(cursor.as_deref()).await?)
-            }
+            Self::Deliveries(page) => console.emit(
+                &client
+                    .notification_deliveries(page.cursor.as_deref(), page.limit)
+                    .await?,
+            ),
             Self::Retry { id } => {
                 client.retry_notification(id).await?;
                 console.info(format_args!("Delivery {id} will be retried."))
@@ -339,13 +339,20 @@ report!(TestReport<'_> as DestinationTest = test, self, out, {
     out.line(format_args!("{} acknowledged the test notification.", self.name))
 });
 
+// One delivery per line: what it is about, where it went, its state and when
+// it changed (or, while pending, is next attempted), and its last error.
 report!(Page<NotificationDelivery>, self, out, {
     if self.items.is_empty() {
         out.line("No notification deliveries.")?;
     }
     for delivery in &self.items {
+        let when = if delivery.state == DeliveryState::Pending {
+            format!("next attempt {}", delivery.next_attempt_ms)
+        } else {
+            format!("updated {}", delivery.updated_at_ms)
+        };
         out.line(format_args!(
-            "{}  {}  {}  {}  {}  {} attempts{}",
+            "{}  {}  {}  {}  {}  {} attempt{}  {when}{}",
             delivery.id,
             delivery.destination,
             delivery.category,
@@ -355,6 +362,7 @@ report!(Page<NotificationDelivery>, self, out, {
                 .unwrap_or_else(|| "daemon".into()),
             delivery.state,
             delivery.attempts,
+            if delivery.attempts == 1 { "" } else { "s" },
             delivery
                 .last_error
                 .as_ref()
