@@ -393,8 +393,12 @@ pub(crate) struct EnvironmentRow {
 }
 
 impl EnvironmentRow {
-    /// Current state, or `unavailable` when the status could not be read.
+    /// Current state, `stopped` while it is, or `unavailable` when the
+    /// status could not be read.
     fn state(&self) -> String {
+        if self.environment.stopped() {
+            return "stopped".to_owned();
+        }
         self.status
             .as_ref()
             .map_or_else(|| "unavailable".to_owned(), |s| s.state.to_string())
@@ -1195,6 +1199,9 @@ report!(EnvironmentShowReport<'_>, self, out, {
     ))?;
     out.blank()?;
     out.label("Intent", status.state)?;
+    if environment.stopped() {
+        out.label("Stopped", "yes; `env start` or a deployment runs it again")?;
+    }
     out.label("Runtime", runtime_health(status))?;
     out.label(
         "Source",
@@ -1280,7 +1287,7 @@ report!(EnvironmentShowReport<'_>, self, out, {
 
 named!(EnvironmentView, environment, names, out, {
     out.line(format_args!(
-        "Environment {} ({}), deploys from {}{}{}.",
+        "Environment {} ({}), deploys from {}{}{}{}.",
         environment.name,
         environment.id,
         names.describe(&environment.source),
@@ -1291,6 +1298,11 @@ named!(EnvironmentView, environment, names, out, {
         },
         if environment.telemetry {
             ", granted telemetry"
+        } else {
+            ""
+        },
+        if environment.stopped() {
+            ", stopped"
         } else {
             ""
         }

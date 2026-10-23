@@ -7,7 +7,7 @@ use super::super::ui::{
     operation_badge, when,
 };
 use super::super::{
-    Alive, ClientErrorExt, document_hidden, live_row, operation_events, release_link,
+    Alive, ClientErrorExt, confirm, document_hidden, live_row, operation_events, release_link,
 };
 use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
@@ -143,6 +143,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 }
             }}
         >
+            <StopAction />
             <Show
                 when={move || !promoted.get()}
                 fallback={move || {
@@ -190,6 +191,57 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             </Show>
         </Show>
         <DeploymentPreview preview={preview} />
+    }
+}
+
+/// Stop, or Start once stopped, for the editor's target environment, once
+/// it has been deployed; not for previews. Stopping, after confirmation,
+/// withdraws its routes and scales its services to zero until it is started
+/// or deployed again.
+#[component]
+fn StopAction() -> impl IntoView {
+    let context = editor();
+    let stopped = move || {
+        context
+            .selected_environment()
+            .is_some_and(|environment| environment.stopped())
+    };
+    // Previews are deleted instead.
+    let deployed = move || {
+        context.selected_environment().is_some_and(|environment| {
+            environment.preview().is_none() && environment.resolved_generation.is_some()
+        })
+    };
+    let toggle = move |_| {
+        let stopping = !stopped();
+        if stopping
+            && !confirm(&format!(
+                "Stop environment {}? Its routes are withdrawn and its services stop, keeping their configuration and volumes, until it is started or deployed again.",
+                context.selected_name()
+            ))
+        {
+            return;
+        }
+        context.set_stopped(context.environment_id(), stopping);
+    };
+    view! {
+        <Show when={deployed}>
+            <button
+                type="button"
+                class="btn"
+                disabled={move || context.environment_action_blocked()}
+                title={move || {
+                    if stopped() {
+                        "Run this environment's services and serve its routes again"
+                    } else {
+                        "Stop this environment's services and withdraw its routes"
+                    }
+                }}
+                on:click={toggle}
+            >
+                {move || if stopped() { "Start" } else { "Stop" }}
+            </button>
+        </Show>
     }
 }
 

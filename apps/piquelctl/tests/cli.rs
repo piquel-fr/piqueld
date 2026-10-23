@@ -1499,8 +1499,8 @@ fn human_output_reports_a_closed_pipe_without_panicking() {
 }
 
 #[test]
-fn reconcile_and_deploy_retry_transport() {
-    for action in ["reconcile", "deploy"] {
+fn runtime_commands_retry_transport() {
+    for action in ["reconcile", "deploy", "stop", "start"] {
         let mut attempts = 0;
         let server = start_server(false, 3, move |request| {
             if request.method == "GET" {
@@ -2357,7 +2357,7 @@ fn two_environment_view() -> Value {
 
 #[test]
 fn runtime_app_commands_never_pick_one_of_several_environments() {
-    for action in ["deploy", "reconcile", "logs"] {
+    for action in ["deploy", "reconcile", "stop", "start", "logs"] {
         let server = start_server(false, 1, move |request| match request.path.as_str() {
             "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
             path => panic!("unexpected path {path}"),

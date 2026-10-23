@@ -81,7 +81,9 @@ impl Store {
 
     /// Records a meaningful observed health transition without overwriting intent progress.
     /// Health is `absent` with no services, `ready` when every expected
-    /// service is observed and all observed ones converged, else `degraded`.
+    /// service is observed and all observed ones converged, `stopped`
+    /// instead in a stopped environment, whose services converge to no
+    /// replicas, else `degraded`.
     /// Expected are the services of the operation's target while it is in
     /// progress, else of the environment's active target, and none while it
     /// is deleted. The observation time is refreshed on every call, while a
@@ -106,6 +108,14 @@ impl Store {
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        let stopped = sqlx::query_scalar!(
+            r#"SELECT e.stopped AS "stopped!: bool" FROM operations o JOIN environments e ON e.id=o.environment_id WHERE o.id=?1"#,
+            operation_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .unwrap_or_default();
         let health = if observed.services.is_empty() {
             "absent"
         } else if expected.iter().all(|name| {
@@ -118,7 +128,7 @@ impl Store {
             .iter()
             .all(|service| service.convergence == piqueld_core::Convergence::Converged)
         {
-            "ready"
+            if stopped { "stopped" } else { "ready" }
         } else {
             "degraded"
         };

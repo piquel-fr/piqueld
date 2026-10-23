@@ -22,8 +22,9 @@ impl Store {
         Ok(granted > 0)
     }
 
-    /// Every environment granted telemetry, not being deleted, whose active
-    /// target deploys a receiving service, with that service.
+    /// Every environment granted telemetry, neither stopped nor being
+    /// deleted, whose active target deploys a receiving service, with that
+    /// service.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -34,7 +35,7 @@ impl Store {
     }
 
     /// Environment `id`'s receiving service, while it is granted telemetry,
-    /// not being deleted, and its active target deploys one.
+    /// neither stopped nor being deleted, and its active target deploys one.
     ///
     /// # Errors
     /// Returns a storage error.
@@ -56,7 +57,7 @@ impl Store {
     ) -> Result<Vec<(EnvironmentId, ServiceName)>, StoreError> {
         let id = id.map(EnvironmentId::as_str);
         sqlx::query!(
-            r#"SELECT e.id AS "id!", json_extract(s.value,'$.logical_name') AS "service!: String" FROM environments e JOIN applications a ON a.id=e.application_id JOIN json_each(e.resolved_json,'$.services') s WHERE (?1 IS NULL OR e.id=?1) AND e.telemetry=1 AND e.delete_intent=0 AND a.delete_intent=0 AND e.resolved_json IS NOT NULL AND json_extract(s.value,'$.receives_telemetry')=1 ORDER BY e.id"#,
+            r#"SELECT e.id AS "id!", json_extract(s.value,'$.logical_name') AS "service!: String" FROM environments e JOIN applications a ON a.id=e.application_id JOIN json_each(e.resolved_json,'$.services') s WHERE (?1 IS NULL OR e.id=?1) AND e.telemetry=1 AND e.stopped=0 AND e.delete_intent=0 AND a.delete_intent=0 AND e.resolved_json IS NOT NULL AND json_extract(s.value,'$.receives_telemetry')=1 ORDER BY e.id"#,
             id
         )
         .fetch_all(&self.pool)

@@ -304,6 +304,7 @@ impl Store {
             | Mutation::Deploy { id, .. }
             | Mutation::Delete { id }
             | Mutation::Reconcile { id }
+            | Mutation::Stop { id }
             | Mutation::Preview(
                 PreviewMutation::Deploy { id }
                 | PreviewMutation::Delete { id }
@@ -487,18 +488,8 @@ impl Store {
                 };
                 Ok(Self::operation_accepted(&operation))
             }
-            Mutation::Reconcile { id } => {
-                Self::checked_environment_on(tx, &id, expected).await?;
-                let operation = Self::latest_operation_on(tx, &id)
-                    .await?
-                    .ok_or(StoreError::NotFound)?;
-                let operation = if operation.state.terminal() || operation.error_code.is_some() {
-                    Self::retry_operation_on(tx, &operation).await?
-                } else {
-                    operation
-                };
-                Ok(Self::operation_accepted(&operation))
-            }
+            Mutation::Reconcile { id } => Self::start_on(tx, &id, expected, now).await,
+            Mutation::Stop { id } => Self::stop_on(tx, &id, expected, now).await,
             Mutation::Promotion(mutation) => self.promotion_on(tx, mutation, expected, now).await,
             // Boxed: preview changes would otherwise grow every acceptance future.
             Mutation::Preview(mutation) => {
@@ -749,7 +740,7 @@ impl Store {
     }
 
     /// Responds with an accepted environment operation.
-    fn operation_accepted(operation: &Operation) -> Accepted {
+    pub(super) fn operation_accepted(operation: &Operation) -> Accepted {
         Accepted {
             response: MutationResponse::Operation(AcceptedOperation::from(operation)),
             wake: true,

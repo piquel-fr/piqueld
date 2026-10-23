@@ -288,12 +288,26 @@ impl Store {
         Self::commit_environment_changes(tx, [id]).await
     }
 
-    /// Routes the gateway should serve. Hostnames reserved by the installation
-    /// are withheld even if they were saved before the reservation.
+    /// Every environment's desired routes, stopped ones' included, so their
+    /// certificates and DNS records stay in place until they start again.
+    /// Hostnames reserved by the installation are withheld even if they were
+    /// saved before the reservation.
     pub(crate) async fn routing_table(&self) -> Result<RoutingTable, StoreError> {
+        self.table(false).await
+    }
+
+    /// Routes the gateway should serve: [`Self::routing_table`], with no
+    /// route of a stopped environment.
+    pub(crate) async fn served_table(&self) -> Result<RoutingTable, StoreError> {
+        self.table(true).await
+    }
+
+    /// [`Self::served_table`] when `served`, else [`Self::routing_table`].
+    async fn table(&self, served: bool) -> Result<RoutingTable, StoreError> {
         let installation = Self::installation_hostnames(&self.pool).await?;
         sqlx::query!(
-            "SELECT environment_id,desired_json FROM environment_routes ORDER BY environment_id"
+            r#"SELECT r.environment_id,CASE WHEN ?1 AND e.stopped=1 THEN '[]' ELSE r.desired_json END AS "desired_json!: String" FROM environment_routes r LEFT JOIN environments e ON e.id=r.environment_id ORDER BY r.environment_id"#,
+            served
         )
         .fetch_all(&self.pool)
         .await
@@ -755,6 +769,38 @@ mod tests {
             1,
             "failed reservation rolls back the entire save"
         );
+    }
+
+    /// A stopped environment's routes are withdrawn from the gateway, while
+    /// it keeps their hostnames, certificates and DNS records, which follow
+    /// the complete table. Deploying it serves them again.
+    #[tokio::test]
+    async fn stopped_environments_keep_their_routes_unserved() {
+        let (_directory, store) = Store::temporary().await;
+        let input = app("one", Some("site.example.com"));
+        let saved = save(&store, input.clone(), true).await.unwrap();
+        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let routes = &input.spec().routes;
+        store.stage_routes(&id, routes, true, None).await.unwrap();
+        let accept = async |mutation| {
+            let accepted = store.accept(crate::api::Actor::Daemon, mutation, None, true, None);
+            accepted.await.unwrap();
+        };
+
+        accept(Mutation::Stop { id: id.clone() }).await;
+        assert_eq!(store.served_table().await.unwrap()[&id], []);
+        assert_eq!(&store.routing_table().await.unwrap()[&id], routes);
+        store
+            .acknowledge_routes(&store.served_table().await.unwrap())
+            .await
+            .unwrap();
+        assert!(matches!(
+            save(&store, app("two", Some("site.example.com")), false).await,
+            Err(StoreError::HostnameConflict { .. })
+        ));
+
+        accept(Mutation::deploy(id.clone())).await;
+        assert_eq!(&store.served_table().await.unwrap()[&id], routes);
     }
 
     #[tokio::test]

@@ -107,6 +107,8 @@ pub enum SyncState {
     Pinned,
     /// This environment has not opted into its application's sync.
     NotOptedIn,
+    /// It is stopped; once started, sync deploys the head it missed.
+    Stopped,
     /// It follows its branch from its next deployment: it was never
     /// deployed, or its branch or repository changed since.
     AwaitingDeployment,
@@ -128,6 +130,7 @@ impl std::fmt::Display for SyncState {
             Self::Off => "off",
             Self::Pinned => "pinned",
             Self::NotOptedIn => "not opted in",
+            Self::Stopped => "stopped",
             Self::AwaitingDeployment => "waiting for a deployment",
         })
     }
@@ -144,6 +147,7 @@ impl EnvironmentView {
             (Some(connection), _) if connection.sync.is_off() => SyncState::Off,
             (_, Some(branch)) if branch.commit().is_some() => SyncState::Pinned,
             _ if self.preview().is_none() && !self.sync => SyncState::NotOptedIn,
+            _ if self.stopped() => SyncState::Stopped,
             _ if self.synced.is_none() => SyncState::AwaitingDeployment,
             _ => SyncState::Following,
         }
@@ -247,6 +251,7 @@ mod tests {
                 at_ms: 1,
             }),
             telemetry: false,
+            run_state: crate::api::RunState::Running,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 0,
@@ -255,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn only_deployed_opted_in_unpinned_branches_of_a_syncing_application_follow_pushes() {
+    fn only_deployed_opted_in_unpinned_running_branches_of_a_syncing_application_follow_pushes() {
         let mut connection = RepositoryManifest {
             repository: GitRepository {
                 url: "https://example.com/notes.git".into(),
@@ -277,6 +282,10 @@ mod tests {
         );
         assert_eq!(state(Some(pinned), true, true, syncing), SyncState::Pinned);
         assert_eq!(state(None, false, true, syncing), SyncState::NotOptedIn);
+        let mut stopped = view(None, true, true);
+        stopped.run_state = crate::api::RunState::Stopped;
+        assert_eq!(stopped.sync_state(syncing), SyncState::Stopped);
+        assert!(!SyncState::Stopped.listed(), "sync deploys nothing stopped");
         assert_eq!(state(None, true, true, None), SyncState::Off);
         connection.sync = RepositorySync::Off;
         assert_eq!(state(None, true, true, Some(&connection)), SyncState::Off);

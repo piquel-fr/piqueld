@@ -197,6 +197,10 @@ pub struct EnvironmentView {
     /// never are.
     #[serde(default)]
     pub telemetry: bool,
+    /// Whether it runs its services, or is stopped until it is started or
+    /// deployed again.
+    #[serde(default)]
+    pub run_state: RunState,
     /// Application revision of the last completely resolved target, not a
     /// convergence guarantee.
     pub resolved_generation: Option<u64>,
@@ -208,7 +212,39 @@ pub struct EnvironmentView {
     pub updated_at_ms: i64,
 }
 
+crate::names::string_enum! {
+    #[serde]
+    /// Whether an environment runs its services.
+    #[derive(Default)]
+    pub enum RunState {
+        /// Its services run their replicas and the gateway serves its routes.
+        #[default]
+        Running => "running",
+        /// Its services run no replicas, keeping their configuration and
+        /// volumes, and the gateway serves none of its routes.
+        Stopped => "stopped",
+    }
+}
+
+impl RunState {
+    /// `Stopped` when `stopped`, else `Running`.
+    #[must_use]
+    pub const fn new(stopped: bool) -> Self {
+        if stopped {
+            Self::Stopped
+        } else {
+            Self::Running
+        }
+    }
+}
+
 impl EnvironmentView {
+    /// Whether it is stopped (see [`RunState::Stopped`]).
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.run_state == RunState::Stopped
+    }
+
     /// What its manifest renders for: its own block, or `[spec.previews]`.
     #[must_use]
     pub fn target(&self) -> RenderTarget {
@@ -1858,6 +1894,7 @@ mod tests {
             sync: true,
             synced: None,
             telemetry: false,
+            run_state: crate::api::RunState::Running,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 1,

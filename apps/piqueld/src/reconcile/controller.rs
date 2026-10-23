@@ -440,7 +440,7 @@ impl<D: DockerApi> Controller<D> {
                     StoreError::IllegalTransition => OperationError::Superseded,
                     other => other.into(),
                 })?;
-            let table = self.store.routing_table().await?;
+            let table = self.store.served_table().await?;
             self.store.acknowledge_routes(&table).await?;
         }
         Ok(())

@@ -195,3 +195,41 @@ test('a service receives telemetry once its environment is granted it', async ({
   const environment = await call(page, 'GET', `environments/${app}`) as { telemetry: boolean };
   expect(environment.telemetry).toBe(true);
 });
+
+test('a deployed environment stops and starts from its page', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('stopping'), expected_generation: 0 });
+  const app = saved.application_id as string;
+  await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
+  // The stubbed runtime never resolves a target; Stop shows once one is.
+  const resolve = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(resolve);
+    if (typeof value !== 'object' || value === null) return;
+    const record = value as Record<string, unknown>;
+    if (record.id === app && 'resolved_generation' in record) record.resolved_generation = saved.generation;
+    Object.values(record).forEach(resolve);
+  };
+  await page.route(url => url.pathname.startsWith('/api/v1/applications'), async route => {
+    const response = await route.fetch();
+    const json = await response.json();
+    resolve(json);
+    await route.fulfill({ response, json });
+  });
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+
+  page.once('dialog', async dialog => {
+    expect(dialog.message()).toContain('routes are withdrawn');
+    await dialog.accept();
+  });
+  const stopped = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${app}/stop`));
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  expect((await stopped).status()).toBe(202);
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeEnabled();
+  expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('stopped');
+
+  const started = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${app}/start`));
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
+  expect((await started).status()).toBe(202);
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('running');
+});

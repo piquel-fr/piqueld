@@ -272,6 +272,10 @@ dropped. Destinations configured in
 cancelled; remove that table from the configuration, which now rejects it, and
 create the destinations again.
 
+`0030_stopped_environments.sql` records whether each environment is
+[stopped](api.md#stopped-environments). Every existing environment keeps
+running.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer
