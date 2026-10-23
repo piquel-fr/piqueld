@@ -35,7 +35,8 @@ impl fmt::Display for Elapsed {
         let milliseconds = self.0.as_millis();
         match milliseconds {
             0..=999 => write!(formatter, "{milliseconds} ms"),
-            // Tenths of a second, up to the 59.9 s that would round to a minute.
+            // Tenths of a second, rounded half up, below the 60.0 s that is
+            // shown as a minute.
             1_000..=59_949 => {
                 let tenths = (milliseconds + 50) / 100;
                 write!(formatter, "{}.{} s", tenths / 10, tenths % 10)

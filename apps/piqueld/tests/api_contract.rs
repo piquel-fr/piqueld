@@ -5673,6 +5673,18 @@ async fn expensive_requests_beyond_their_budget_are_refused() {
     assert_eq!(analytics().await.status, StatusCode::OK);
 }
 
+/// The default analytics window starts 30 days before its end, but never
+/// before the Unix epoch, which the daemon would refuse.
+#[tokio::test]
+async fn analytics_default_window_starts_no_earlier_than_the_epoch() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let path = "/api/v1/analytics/deployments?until_ms=1000";
+    let response = server.send(Method::GET, path, &[], Vec::new()).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()["data"]["since_ms"], 0);
+}
+
 /// Secret lifecycle history names secrets, never values. A stored secret no
 /// environment deployed has no Docker secrets to clean up.
 async fn assert_secret_history(client: &Client, application_id: &str) {
