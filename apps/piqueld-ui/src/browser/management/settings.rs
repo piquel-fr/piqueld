@@ -1,7 +1,7 @@
 //! Saved configuration forms and service editors.
 use super::super::ui::{
     Icon, Modal, Tone, add_button, copy_button, icon, notice, one_time_secret, remove_button,
-    text_field, text_input, when,
+    text_input, when,
 };
 use super::super::{UserError, confirm};
 use super::{Draft, editor};
@@ -447,45 +447,13 @@ pub(super) fn MetadataSettings() -> impl IntoView {
             editing.set(false);
         });
     };
-    view! {
-        <h1 hidden={move || editing.get()}>{move || context.name()}</h1>
-        <button
-            type="button"
-            class="btn btn-ghost btn-icon"
-            aria-label="Rename application"
-            title="Rename application"
-            hidden={move || editing.get()}
-            disabled={move || context.blocked()}
-            on:click={move |_| editing.set(true)}
-        >
-            {icon(Icon::Pencil)}
-        </button>
-        <form
-            class="form-row"
-            hidden={move || !editing.get()}
-            on:submit={move |event| {
-                event.prevent_default();
-                save();
-            }}
-        >
-            <fieldset class="form-row" disabled={move || context.blocked()}>
-                {text_field("Application name", name)}
-                <button type="submit" class="btn btn-primary" disabled={move || !draft.changed()}>
-                    "Save"
-                </button>
-                <button
-                    type="button"
-                    class="btn btn-ghost"
-                    on:click={move |_| {
-                        draft.discard();
-                        editing.set(false);
-                    }}
-                >
-                    "Cancel"
-                </button>
-            </fieldset>
-        </form>
-    }
+    draft.rename_title(
+        "Rename application",
+        "Application name",
+        editing,
+        move || context.blocked(),
+        save,
+    )
 }
 
 /// Names of the manifest's volumes.
