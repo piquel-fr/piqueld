@@ -1,14 +1,19 @@
 //! Service directory and individual service configuration pages.
 use super::super::confirm;
 use super::super::ui::{Icon, Tabs, Tone, empty, health_badge, icon, notice};
-use super::{EditorFeedback, back_link, editor, logs::ApplicationLogs, settings::ServiceGroup};
+use super::{
+    Draft, EditorFeedback, back_link, editor, logs::ApplicationLogs, settings::ServiceGroup,
+};
 use crate::editor::Section;
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
-use piqueld_client::{Source, edit::ApplicationEdit};
+use piqueld_client::{
+    Source,
+    edit::{ApplicationEdit, ServiceEdit},
+};
 
 const SERVICE_TABS: [&str; 11] = [
     Section::General.title(),
@@ -106,9 +111,13 @@ pub(super) fn ServiceList() -> impl IntoView {
     }
 }
 
-/// Service page: one tab per `Section` settings group plus a scoped log tab, and a
-/// remove button that saves the service's removal and returns to the service list.
-/// Editing is disabled when the application is managed from a Git manifest.
+/// Dirty group of the service page's rename form.
+const NAME_FORM: &str = "service-name";
+
+/// Service page: the service's renamable title, one tab per `Section` settings
+/// group plus a scoped log tab, and a remove button that saves the service's
+/// removal and returns to the service list. Editing is disabled when the
+/// application is managed from a Git manifest.
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
@@ -167,7 +176,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         </nav>
         <header class="detail-head">
             <div class="detail-title">
-                <h1>{name}</h1>
+                <ServiceTitle name={name} />
             </div>
             <div class="page-actions">
                 <button
@@ -197,6 +206,46 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         </div>
     }
     .into_any()
+}
+
+/// Service title with an inline rename form behind the pencil button. Saving
+/// the new name also repoints the routes, jobs, exports, and dependencies naming
+/// the service, then replaces the page with the renamed service's. Unsaved
+/// edits to other forms block renaming, as the page remounts.
+#[component]
+fn ServiceTitle(name: String) -> impl IntoView {
+    let context = editor();
+    let navigate = use_navigate();
+    let editing = RwSignal::new(false);
+    let draft = Draft::new(NAME_FORM.into(), name);
+    let save = move || {
+        let renamed = draft.value.get_untracked();
+        let href = format!(
+            "/dashboard/applications/{}/services/{renamed}",
+            context.id()
+        );
+        let navigate = navigate.clone();
+        context.save(
+            ApplicationEdit::Service {
+                name: draft.baseline.get_untracked(),
+                edit: ServiceEdit::Name(renamed),
+            },
+            move |_| {
+                let replace = NavigateOptions {
+                    replace: true,
+                    ..NavigateOptions::default()
+                };
+                navigate(&href, replace);
+            },
+        );
+    };
+    draft.rename_title(
+        "Rename service",
+        "Service name",
+        editing,
+        move || context.change_blocked(Some(NAME_FORM)) || context.managed(),
+        save,
+    )
 }
 
 /// Logs of one service in the application's only environment. With several

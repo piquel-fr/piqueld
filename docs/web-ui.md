@@ -194,7 +194,11 @@ from mounts, stop first, or start first) and an optional monitor window, blank
 for the 30-second default. Telemetry marks the service as the application's
 telemetry receiver. Service form drafts are retained when switching tabs.
 Selecting None for a health check hides its remaining fields.
-The pencil beside the application name opens its rename form.
+The pencil beside the application name opens its rename form; the pencil beside
+a service's name on its page renames the service, repointing the routes, jobs,
+exports, and startup dependencies that name it, and opens the renamed service's
+page. Unsaved edits to the service's other settings must be saved or discarded
+first.
 An environment's Deployments tab lists expandable deployment rows with Details, Snapshot,
 and Attempts sections. Attempts load when first opened; refresh and older-attempt
 controls appear below the list. Operation IDs appear only in deployment Details,

@@ -730,6 +730,61 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> Draft<T> {
     }
 }
 
+impl Draft<String> {
+    /// A page title showing the saved name, with an inline rename form
+    /// behind the pencil button labelled `rename`. The form is open while
+    /// `editing` holds; submitting it runs `save`, and `disabled` blocks
+    /// both opening and submitting it.
+    fn rename_title(
+        self,
+        rename: &'static str,
+        label: &'static str,
+        editing: RwSignal<bool>,
+        disabled: impl Fn() -> bool + Copy + Send + Sync + 'static,
+        save: impl Fn() + 'static,
+    ) -> impl IntoView {
+        view! {
+            <h1 hidden={move || editing.get()}>{move || self.baseline.get()}</h1>
+            <button
+                type="button"
+                class="btn btn-ghost btn-icon"
+                aria-label={rename}
+                title={rename}
+                hidden={move || editing.get()}
+                disabled={disabled}
+                on:click={move |_| editing.set(true)}
+            >
+                {icon(Icon::Pencil)}
+            </button>
+            <form
+                class="form-row"
+                hidden={move || !editing.get()}
+                on:submit={move |event| {
+                    event.prevent_default();
+                    save();
+                }}
+            >
+                <fieldset class="form-row" disabled={disabled}>
+                    {text_field(label, self.value)}
+                    <button type="submit" class="btn btn-primary" disabled={move || !self.changed()}>
+                        "Save"
+                    </button>
+                    <button
+                        type="button"
+                        class="btn btn-ghost"
+                        on:click={move |_| {
+                            self.discard();
+                            editing.set(false);
+                        }}
+                    >
+                        "Cancel"
+                    </button>
+                </fieldset>
+            </form>
+        }
+    }
+}
+
 /// Rows of a list form, edited in place by index. A row removed meanwhile
 /// reads as empty and ignores edits.
 trait Rows<T> {
