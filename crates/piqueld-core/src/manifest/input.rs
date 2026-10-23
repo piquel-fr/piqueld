@@ -128,6 +128,22 @@ pub struct ApplicationSpec {
 }
 
 impl ApplicationSpec {
+    /// Whether saving this spec over an application whose repository
+    /// connection is `current` lets sync deploy what no deployment chose:
+    /// it turns sync on, or declares environments opted in (`sync = true`)
+    /// while it syncs. That takes the permission to deploy.
+    #[must_use]
+    pub fn deploys_on_push(&self, current: Option<&RepositoryManifest>) -> bool {
+        self.manifest
+            .as_ref()
+            .is_some_and(RepositoryManifest::syncs)
+            && (!current.is_some_and(RepositoryManifest::syncs)
+                || self
+                    .environments
+                    .values()
+                    .any(|config| config.sync == Some(true)))
+    }
+
     /// Every secret mount of the services and jobs.
     pub fn secret_mounts(&self) -> impl Iterator<Item = &SecretMount> {
         self.services
@@ -389,6 +405,15 @@ pub struct RepositoryManifest {
     #[schema(default = crate::sync::RepositorySync::default)]
     #[serde(default, skip_serializing_if = "crate::sync::RepositorySync::is_off")]
     pub sync: crate::sync::RepositorySync,
+}
+
+impl RepositoryManifest {
+    /// Whether pushes deploy anything: the repository is polled or sends
+    /// webhooks.
+    #[must_use]
+    pub const fn syncs(&self) -> bool {
+        !self.sync.is_off()
+    }
 }
 
 /// A service: containers running one image, kept at their replica count.
@@ -1041,4 +1066,44 @@ fn default_redirect_status() -> u16 {
 
 fn default_preserve_path() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApplicationSpec, EnvironmentConfig, GitRepository, RepositoryManifest};
+    use crate::sync::RepositorySync;
+
+    #[test]
+    fn a_save_deploys_on_push_only_by_turning_sync_on_or_opting_environments_in() {
+        let connection = |sync| RepositoryManifest {
+            repository: GitRepository {
+                url: "https://example.com/app.git".into(),
+                branch: "main".into(),
+                commit: None,
+            },
+            path: "piqueld.toml".into(),
+            sync,
+        };
+        let (on, off) = (
+            connection(RepositorySync::Webhook),
+            connection(RepositorySync::Off),
+        );
+        let spec = |connection: &RepositoryManifest, opted_in: bool| ApplicationSpec {
+            manifest: Some(connection.clone()),
+            environments: [(
+                "production".to_owned(),
+                EnvironmentConfig {
+                    sync: opted_in.then_some(true),
+                    ..EnvironmentConfig::default()
+                },
+            )]
+            .into(),
+            ..ApplicationSpec::default()
+        };
+        assert!(spec(&on, false).deploys_on_push(None));
+        assert!(spec(&on, false).deploys_on_push(Some(&off)));
+        assert!(!spec(&on, false).deploys_on_push(Some(&on)));
+        assert!(spec(&on, true).deploys_on_push(Some(&on)));
+        assert!(!spec(&off, true).deploys_on_push(Some(&on)));
+    }
 }

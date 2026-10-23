@@ -62,7 +62,8 @@ impl RepositoryDraft {
 
 /// Toggle and fields for loading the application's configuration from a Git
 /// manifest on deploy, and for deploying it on push. Saving is refused while
-/// other form groups have unsaved edits, and read-only without `apps:write`.
+/// other form groups have unsaved edits, read-only without `apps:write`, and
+/// turning deploying on push on also needs `apps:deploy`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn RepositorySettings() -> impl IntoView {
@@ -84,6 +85,15 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                 .as_ref()
                 .map(|manifest| manifest.sync)
         })
+    };
+    // Whether saving would let pushes deploy without `apps:deploy`.
+    let undeployable = move || {
+        let edit =
+            ApplicationEdit::Repository(form.with(|v| v.enabled.then(|| v.manifest.clone())));
+        !context.can(AppPermission::Deploy)
+            && context
+                .saved
+                .with(|saved| edit.deploys_on_push(saved.application.spec().manifest.as_ref()))
     };
     let save = move || {
         if other_edits() {
@@ -120,6 +130,12 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                     {notice(
                         Tone::Warn,
                         "Save or discard edits in other settings before changing the repository connection.",
+                    )}
+                </Show>
+                <Show when={undeployable}>
+                    {notice(
+                        Tone::Warn,
+                        "Deploying on push also requires the apps:deploy permission.",
                     )}
                 </Show>
                 <fieldset
@@ -170,7 +186,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                     <p class="hint" hidden={move || !form.with(|v| v.enabled)}>
                         "When on, pushes deploy every preview, and every environment that opted in on its page and follows an unpinned branch, once it was deployed."
                     </p>
-                    {draft.actions(save, other_edits)}
+                    {draft.actions(save, move || other_edits() || undeployable())}
                 </fieldset>
                 <Show when={move || saved_sync().is_some_and(|sync| !sync.is_off())}>
                     <SyncCheck />
