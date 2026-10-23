@@ -1,4 +1,4 @@
-//! Human-readable time, duration, and size formatting for browser views.
+//! Human-readable time and duration formatting for browser views.
 // JavaScript numbers are doubles. Browser timestamps and durations stay far
 // below 2^53, so converting between them and integers is exact in practice.
 #![allow(
@@ -70,38 +70,4 @@ pub(super) fn duration(milliseconds: i64) -> String {
 /// Elapsed time from a fractional millisecond measurement.
 pub(super) fn duration_f64(milliseconds: f64) -> String {
     duration(milliseconds as i64)
-}
-
-/// Uptime-style durations such as "3 d 4 h" or "12 min".
-pub(super) fn duration_secs(seconds: u64) -> String {
-    let (days, hours, minutes) = (
-        seconds / 86_400,
-        (seconds % 86_400) / 3_600,
-        (seconds % 3_600) / 60,
-    );
-    if days > 0 {
-        format!("{days} d {hours} h")
-    } else if hours > 0 {
-        format!("{hours} h {minutes} min")
-    } else if minutes > 0 {
-        format!("{minutes} min")
-    } else {
-        format!("{seconds} s")
-    }
-}
-
-/// Binary-prefixed sizes with one decimal above a kibibyte.
-pub(super) fn bytes(value: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut size = value as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{value} B")
-    } else {
-        format!("{size:.1} {}", UNITS[unit])
-    }
 }
