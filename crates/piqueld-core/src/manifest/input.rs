@@ -844,17 +844,17 @@ pub enum SecretGenerator {
     },
 }
 
-/// Text encoding of generated random bytes.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema,
-)]
-#[serde(rename_all = "lowercase")]
-pub enum SecretEncoding {
-    /// Lowercase hexadecimal.
-    #[default]
-    Hex,
-    /// URL-safe base64 without padding.
-    Base64url,
+string_enum! {
+    #[serde]
+    /// Text encoding of generated random bytes.
+    #[derive(Default, Ord, PartialOrd)]
+    pub enum SecretEncoding {
+        /// Lowercase hexadecimal.
+        #[default]
+        Hex => "hex",
+        /// URL-safe base64 without padding.
+        Base64url => "base64url",
+    }
 }
 
 /// HTTP route input, validated independently of ingress enablement.

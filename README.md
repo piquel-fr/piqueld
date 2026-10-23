@@ -12,7 +12,8 @@ it with their own history, status, volumes, secrets, routes, and network;
 `piquelctl env` manages them. Services reach a service of another application
 only through an explicit, two-sided [link](docs/application-manifest.md#links).
 `piquelctl app service`, `app file`, `app volume`, `app route`, `app job`,
-`app export`, `app import`, `app variable`, and `app repository` edit
+`app export`, `app import`, `app generated-secret`, `app variable`, and
+`app repository` edit
 individual saved settings. Each edit
 validates and updates the internal manifest atomically; add `--deploy` to deploy
 with the change. The dashboard uses the same editing endpoints. Apply remains

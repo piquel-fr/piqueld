@@ -1,8 +1,8 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, Export, GitRepository, HealthCheck, Import, Job, Mount,
-    RepositoryManifest, ResourceLimits, Rollout, Route, SecretMount, Service, ServiceFile, Source,
-    SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    RepositoryManifest, ResourceLimits, Rollout, Route, SecretDeclaration, SecretMount, Service,
+    ServiceFile, Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -48,6 +48,7 @@ value_request! {
     VolumesValue: Vec<Volume>;
     RoutesValue: Vec<Route>;
     JobsValue: Vec<Job>;
+    GeneratedSecretsValue: Vec<SecretDeclaration>;
     ExportsValue: Vec<Export>;
     ImportsValue: Vec<Import>;
     RepositoryValue: Option<RepositoryManifest>;
@@ -108,6 +109,9 @@ pub enum ApplicationEdit {
     Routes(Vec<Route>),
     /// Replace the one-shot jobs; their order is their execution order.
     Jobs(Vec<Job>),
+    /// Replace the declarations of secrets piqueld generates, `spec.secrets`.
+    /// Values already generated are kept, even for removed declarations.
+    GeneratedSecrets(Vec<SecretDeclaration>),
     /// Replace the services other applications may reach.
     Exports(Vec<Export>),
     /// Replace the services of other applications this one reaches.
@@ -408,6 +412,7 @@ impl ApplicationEdit {
             Self::Volumes(volumes) => manifest.spec.volumes = volumes,
             Self::Routes(routes) => manifest.spec.routes = routes,
             Self::Jobs(jobs) => manifest.spec.jobs = jobs,
+            Self::GeneratedSecrets(secrets) => manifest.spec.secrets = secrets,
             Self::Exports(exports) => manifest.spec.exports = exports,
             Self::Imports(imports) => manifest.spec.imports = imports,
             Self::AddVolume(volume) => Keyed::add(&mut manifest.spec.volumes, volume)?,

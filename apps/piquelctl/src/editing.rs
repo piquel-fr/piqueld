@@ -13,8 +13,9 @@ use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
     ApplicationView, Build, Client, Export, FileMode, FileSource, GitRepository, HealthCheck,
     Import, Job, JobRun, JobVolumeAccess, Mount, Redirect, RedirectStatus, RepositoryManifest,
-    Rollout, RolloutOrder, Route, SavedApplication, SecretMount, Service, ServiceFile, Source,
-    SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    Rollout, RolloutOrder, Route, SavedApplication, SecretDeclaration, SecretEncoding,
+    SecretGenerator, SecretMount, Service, ServiceFile, Source, SourceRepository, Template, Typed,
+    Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
@@ -75,6 +76,12 @@ fn key_value(value: &str) -> std::result::Result<(String, String), String> {
         .split_once('=')
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .ok_or_else(|| "expected `=` between the two parts".to_owned())
+}
+
+/// Parses `hex` or `base64url`, listing both in help and completions.
+fn secret_encoding() -> impl TypedValueParser<Value = SecretEncoding> {
+    clap::builder::PossibleValuesParser::new(SecretEncoding::ALL.map(SecretEncoding::as_str))
+        .map(|value| SecretEncoding::parse(&value).expect("every listed value parses"))
 }
 
 fn volume_access() -> impl TypedValueParser<Value = JobVolumeAccess> {
@@ -761,6 +768,57 @@ pub(crate) enum ImportCommand {
     Remove(ImportTarget),
 }
 #[derive(Debug, Args)]
+pub(crate) struct GeneratedSecretTarget {
+    /// Application name or stable ID.
+    app: String,
+    /// Secret name, as services and jobs mount it.
+    name: String,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+#[derive(Debug, Args)]
+#[command(group(clap::ArgGroup::new("generator").required(true).args(["bytes", "rsa_bits"])))]
+pub(crate) struct SetGeneratedSecretArgs {
+    #[command(flatten)]
+    target: GeneratedSecretTarget,
+    /// Generate this many random bytes (16–512), encoded as text.
+    #[arg(long)]
+    bytes: Option<u16>,
+    /// Text encoding of the random bytes; `hex` by default.
+    #[arg(long, conflicts_with = "rsa_bits", value_parser = secret_encoding())]
+    encoding: Option<SecretEncoding>,
+    /// Generate an RSA private key of this many bits (2048, 3072, or 4096) in PKCS#8 PEM.
+    #[arg(long)]
+    rsa_bits: Option<u16>,
+}
+impl SetGeneratedSecretArgs {
+    /// The generator the flags select; clap requires exactly one of them.
+    fn generator(&self) -> SecretGenerator {
+        match (self.bytes, self.rsa_bits) {
+            (_, Some(bits)) => SecretGenerator::Rsa { bits },
+            (bytes, None) => SecretGenerator::Random {
+                bytes: bytes.expect("the generator group requires --bytes or --rsa-bits"),
+                encoding: self.encoding.unwrap_or_default(),
+            },
+        }
+    }
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum GeneratedSecretCommand {
+    /// List the secrets the application declares for piqueld to generate, as saved.
+    /// `env secret list` shows the values generated in each environment.
+    List {
+        /// Application name or stable ID.
+        app: String,
+    },
+    /// Declare a secret piqueld generates for each environment that mounts it, or
+    /// replace how it is generated. Values already generated are kept; `env secret
+    /// regenerate` rotates them.
+    Set(SetGeneratedSecretArgs),
+    /// Remove a declaration. Values already generated are kept.
+    Remove(GeneratedSecretTarget),
+}
+#[derive(Debug, Args)]
 pub(crate) struct RepositoryTarget {
     /// Application name or stable ID.
     app: String,
@@ -1343,6 +1401,50 @@ impl ImportCommand {
             (Self::List { .. }, Some(_)) => unreachable!("listing returned above"),
         }
         let edit = ApplicationEdit::Imports(imports);
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
+    }
+}
+impl GeneratedSecretCommand {
+    /// Lists saved declarations, or edits them client-side and saves the whole
+    /// list, like exports: setting a declared name replaces it in place.
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let target = match self {
+            Self::List { app } => {
+                let application = resolve_application(client, app).await?;
+                return console.emit(&application.application.to_manifest().spec.secrets);
+            }
+            Self::Set(args) => &args.target,
+            Self::Remove(target) => target,
+        };
+        let current = resolve_application(client, &target.app).await?;
+        let mut secrets = current.application.to_manifest().spec.secrets;
+        let existing = secrets.iter().position(|secret| secret.name == target.name);
+        match (self, existing) {
+            (Self::Set(args), existing) => {
+                let secret = SecretDeclaration {
+                    name: target.name.clone(),
+                    generate: args.generator(),
+                };
+                match existing {
+                    Some(index) => secrets[index] = secret,
+                    None => secrets.push(secret),
+                }
+            }
+            (Self::Remove(_), Some(index)) => {
+                secrets.remove(index);
+            }
+            (_, None) => {
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    format!("secret {:?} is not declared", target.name),
+                ));
+            }
+            (Self::List { .. }, Some(_)) => unreachable!("listing returned above"),
+        }
+        let edit = ApplicationEdit::GeneratedSecrets(secrets);
         target
             .flags
             .save_loaded(client, console, &current, &edit)

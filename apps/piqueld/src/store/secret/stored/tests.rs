@@ -257,6 +257,7 @@ async fn a_name_is_either_declared_and_generated_or_stored() {
     let mut manifest = template().to_manifest();
     manifest.spec.secrets[0].name = "api-key".into();
     manifest.spec.services[0].secrets[1].name = "api-key".into();
+    let edit = piqueld_core::edit::ApplicationEdit::GeneratedSecrets(manifest.spec.secrets.clone());
     let declared = manifest
         .validate_template()
         .unwrap()
@@ -268,6 +269,23 @@ async fn a_name_is_either_declared_and_generated_or_stored() {
                 Mutation::Save {
                     application: Box::new(declared),
                     expected_application_id: Some(application.to_string()),
+                    deploy: false,
+                },
+                None,
+                true,
+                None,
+            )
+            .await
+            .map(|_| ())
+    ));
+    // Editing only the declarations is checked the same way.
+    assert!(conflict(
+        store
+            .accept(
+                Daemon,
+                Mutation::Edit {
+                    id: application.clone(),
+                    edit: Box::new(edit),
                     deploy: false,
                 },
                 None,
