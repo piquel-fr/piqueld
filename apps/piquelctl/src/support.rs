@@ -2,6 +2,7 @@
 //! formatting utilities.
 use crate::error::{CliError, ErrorKind, Result};
 use piqueld_client::ClientError;
+use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 use serde_json::json;
 use std::{
     fmt,
@@ -64,6 +65,28 @@ pub(crate) async fn read_input<T: Send + 'static>(
             format!("could not read {what}: {error}"),
         )
     })
+}
+
+/// Standard input's terminal in a changed mode, e.g. raw or without echo;
+/// dropping it restores the original mode.
+pub(crate) struct TerminalMode(Termios);
+
+impl TerminalMode {
+    /// Applies `change` to standard input's terminal mode until the guard
+    /// drops.
+    pub(crate) fn enable(change: impl FnOnce(&mut Termios)) -> io::Result<Self> {
+        let original = tcgetattr(io::stdin())?;
+        let mut changed = original.clone();
+        change(&mut changed);
+        tcsetattr(io::stdin(), OptionalActions::Now, &changed)?;
+        Ok(Self(original))
+    }
+}
+
+impl Drop for TerminalMode {
+    fn drop(&mut self) {
+        let _ = tcsetattr(io::stdin(), OptionalActions::Now, &self.0);
+    }
 }
 
 /// Reads a UTF-8 manifest no larger than the daemon accepts in a request

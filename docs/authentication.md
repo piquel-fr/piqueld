@@ -140,7 +140,9 @@ host operator (uid 0)
 ```
 
 A token keeps its meaning: a `piquelctl` with a saved login, or with
-`PIQUELD_TOKEN` set, acts as that account even when run by root.
+`PIQUELD_TOKEN` set, acts as that account even when run by root. The recovery
+and sign-in links below are served only to requests without one, so
+`recover-admin` and `sign-in-link` (and `setup-link`) never send a credential.
 
 **Signing a browser in.** `piquelctl sign-in-link`, run the same way, prints a
 link that signs one browser in as the host operator:
@@ -212,7 +214,8 @@ someone with root on the host is acting; treat it as a host compromise.
 **Troubleshooting.**
 
 - *404 Not found*: the command did not reach the Unix socket as root or the
-  daemon's user. Run it with `sudo` on the daemon host and without `--url`. If
+  daemon's user without a credential. Run it with `sudo` on the daemon host
+  and without `--url`. If
   the daemon runs in a container or user namespace, the user must match from
   the daemon's point of view.
 - *`--url` is refused*: recovery is never served over the network.
@@ -328,17 +331,27 @@ return `503 storage_unavailable` with a log-correlated `details.diagnostic_id`;
 they do not attempt to persist a diagnostic in the failing database. See
 [observability](observability.md#history-and-diagnostics).
 
-Authentication metadata shares the existing SQLite database. WebAuthn challenges
+Authentication metadata shares the existing SQLite database. Expired sessions,
+tokens, invitations, and links are deleted on the reconciler's periodic full
+scan, so it does not grow with every sign-in. WebAuthn challenges
 and device requests are short-lived, bounded, server-side state; a daemon restart
 cancels pending ceremonies without invalidating durable credentials. All
 registration/login challenges are browser-bound and single-use. Registration
 requires resident credentials and verified users; assertions are checked against
 the exact configured origin, RP ID, credential, and immutable user handle.
+A challenge that expired, was already used, or was started in another browser,
+and a setup, invitation, or enrollment link that can no longer be redeemed,
+answer 400 `authentication_invalid`; 401 means the passkey or the signed-in
+session was refused. (Host operator sign-in links, which sign in without a
+passkey, answer 401 when unusable.) A taken username is
+refused with 409 `account_conflict` when registration starts, before a passkey
+is created.
 The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for native
 builds; the Nix packages and development shell provide them.
 
-Public registration, login, and device-start requests are limited to 30 starts
-per TCP peer per minute, across all listeners. Requests refused for their Host,
+Public registration, login, and device-start requests, and redemptions of host
+operator sign-in links, are limited to 30 starts per TCP peer per minute,
+across all listeners. Requests refused for their Host,
 Fetch Metadata, or Origin do not count. IPv6 peers are grouped by /64
 prefix, and Unix socket callers share one peer bucket. Excess requests receive
 HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work are

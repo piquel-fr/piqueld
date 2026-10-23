@@ -65,6 +65,15 @@ pub enum AuthError {
 }
 type Result<T> = std::result::Result<T, AuthError>;
 
+impl AuthError {
+    /// A passkey ceremony that cannot finish: unknown, expired, already
+    /// finished, of the other kind, or started in another browser. None of
+    /// these means the caller's own sign-in is invalid, so it is no 401.
+    pub(crate) const fn stale_ceremony() -> Self {
+        Self::Invalid("the passkey request expired or was started in another browser; start again")
+    }
+}
+
 /// The cookies the daemon sets, named per origin by [`Auth::cookie_name`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum AuthCookie {
@@ -101,7 +110,7 @@ struct Inner {
     /// Pending passkey ceremonies keyed by their random ceremony ID.
     ceremonies: Mutex<HashMap<String, ceremonies::Pending>>,
     /// Pending CLI device logins keyed by the hash of their device code.
-    devices: Mutex<HashMap<String, sessions::Device>>,
+    devices: parking_lot::Mutex<HashMap<String, sessions::Device>>,
     throttle: Mutex<throttle::Throttle>,
     /// When each credential's last-used time was last claimed for refresh,
     /// by credential ID (see `Auth::authenticate`).
@@ -197,7 +206,7 @@ impl Auth {
             secure: origin.scheme() == "https",
             port: origin.port(),
             ceremonies: Mutex::new(HashMap::new()),
-            devices: Mutex::new(HashMap::new()),
+            devices: parking_lot::Mutex::default(),
             throttle: Mutex::new(throttle::Throttle::default()),
             touched: parking_lot::Mutex::default(),
             setup_link: Mutex::new(None),

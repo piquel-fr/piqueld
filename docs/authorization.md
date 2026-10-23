@@ -166,7 +166,9 @@ account: it holds `admin` on every application without counting as one, and
 these account rules apply to the accounts it changes.
 
 Without `accounts:manage`, the account directory lists only the caller's own
-account.
+account. A credential with limited access sees even less there: only itself,
+and its account with its own grants, not the account's passkeys or other
+credentials.
 
 ## Invitations and presets
 
@@ -212,7 +214,8 @@ piquelctl token revoke <id>
 
 `auth.max_token_days` limits the lifetime of new tokens; see
 [configuration](configuration.md#authentication-origin). Deleting an
-application removes grants on it; tokens left without any grant are revoked.
+application removes grants on it; tokens left without any grant expire a
+minute later, which lets a deletion made with one finish waiting for it.
 
 A CLI login can ask for less than your access with the same options;
 `--app` takes application IDs there, since names cannot be looked up before
@@ -272,8 +275,8 @@ access it lost. Connections that outlive their request, event streams and
 commands started with `apps:exec`, recheck the caller's access within a second
 of an account change, a revoked credential, or a grant change. They also
 recheck it every 30 seconds, plus the time the check takes, which catches an
-expired credential, a token revoked because its application was deleted, or a
-tailnet peer that no longer matches a token's binding. A stream stops sending
+expired credential, a token left without grants by its application's
+deletion, or a tailnet peer that no longer matches a token's binding. A stream stops sending
 history its caller may no longer read, and one that lost access entirely ends
 with an `access_ended` message. A command session that lost access ends with
 the refusal (401 or 403); like a disconnect, the command itself may keep

@@ -13,7 +13,9 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 /// Sends notifications. Requests time out after ten seconds and never follow
-/// redirects, so a receiver cannot bounce them elsewhere.
+/// redirects, so a receiver cannot bounce them elsewhere, nor go through an
+/// environment proxy (`HTTPS_PROXY`), which would see the secrets their URLs
+/// carry, like the DNS clients.
 #[derive(Clone)]
 pub(super) struct Notifier(reqwest::Client);
 
@@ -23,6 +25,7 @@ impl Default for Notifier {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 .build()
                 // As for `reqwest::Client::new`, only a missing TLS backend fails.
                 .expect("webhook client initializes"),

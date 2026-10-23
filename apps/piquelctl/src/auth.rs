@@ -187,9 +187,19 @@ impl Credentials {
         Ok(account)
     }
     /// Adds a bearer token to `client`: `PIQUELD_TOKEN` wins over the saved login.
-    /// `login` skips this, and without any token the client is returned unchanged.
+    /// `login` skips this, and so do the host operator's socket commands
+    /// (`setup-link`, `recover-admin`, `sign-in-link`), which the daemon
+    /// serves only to requests without a credential: a saved login, even a
+    /// revoked one, must not lock root out of recovery. Without any token the
+    /// client is returned unchanged.
     pub(crate) fn attach(cli: &Cli, client: Client) -> Result<Client> {
-        if matches!(cli.command, Command::Login { .. }) {
+        if matches!(
+            cli.command,
+            Command::Login { .. }
+                | Command::SetupLink { .. }
+                | Command::RecoverAdmin
+                | Command::SignInLink
+        ) {
             return Ok(client);
         }
         let token = match std::env::var("PIQUELD_TOKEN") {

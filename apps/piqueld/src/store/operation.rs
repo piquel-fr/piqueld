@@ -245,7 +245,9 @@ impl Store {
     /// Removes an application being deleted once none of its environments
     /// remain, together with its application-owned events and replay receipts.
     /// Its grants cascade with it; scoped credentials that held grants only
-    /// there would be left with no access, so they are revoked.
+    /// there would be left with no access, so they expire a minute later:
+    /// meanwhile, a caller waiting on the deletion with one sees it finish
+    /// (404) rather than being signed out (401).
     pub(super) async fn finish_application_delete_on(
         tx: &mut Transaction<'_, Sqlite>,
         id: &str,
@@ -260,12 +262,14 @@ impl Store {
         if !removable {
             return Ok(());
         }
+        let expires_at = super::now_secs() + 60;
         sqlx::query!(
-            "DELETE FROM auth_credentials WHERE scoped=1
+            "UPDATE auth_credentials SET expires_at=MIN(COALESCE(expires_at,?2),?2) WHERE scoped=1
              AND id IN (SELECT credential_id FROM auth_grants WHERE application_id=?1)
              AND NOT EXISTS (SELECT 1 FROM auth_grants g WHERE g.credential_id=auth_credentials.id
                  AND (g.application_id IS NULL OR g.application_id<>?1))",
-            id
+            id,
+            expires_at
         )
         .execute(&mut **tx)
         .await

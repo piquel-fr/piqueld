@@ -555,6 +555,9 @@ pub struct ApplicationService {
     audit_backlog: Arc<tokio::sync::Semaphore>,
     /// The share of `audit_backlog` anonymous records may hold.
     anonymous_backlog: Arc<tokio::sync::Semaphore>,
+    /// Audit records dropped or not written since the last one written (see
+    /// [`Self::record_audit`]).
+    audit_lost: Arc<std::sync::atomic::AtomicU64>,
     /// Credential and network pairs already noted (see `observe_address`).
     known_addresses: Arc<observability::KnownAddresses>,
     /// Applications a webhook said moved, waiting for the sync worker.
@@ -591,6 +594,7 @@ impl ApplicationService {
             telemetry: crate::telemetry::Telemetry::default(),
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
             anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
+            audit_lost: Arc::default(),
             known_addresses: Arc::default(),
             hints: Arc::default(),
             webhook_hostname: None,

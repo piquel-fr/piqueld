@@ -232,7 +232,7 @@ impl Console {
     /// Interactive questions on stderr, always flushed and never quieted;
     /// a `prompt` event with `--json`. [`Self::confirm`] enforces the
     /// `--yes`/`--noninteractive` policy before invoking this.
-    fn prompt(&mut self, message: &str) -> Result<()> {
+    pub(crate) fn prompt(&mut self, message: &str) -> Result<()> {
         if self.json {
             let message = message.trim_end().to_owned();
             return self.write_stderr(|writer| Event::Prompt { message }.write(writer));

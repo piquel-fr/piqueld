@@ -12,7 +12,7 @@ test('setup gates anonymous access, closes permanently, and supports username-le
   expect((await api(page, 'register/start', {
     invitation: daemon.setup.split('#invite=')[1], user_id: null,
     username: 'intruder', display_name: '', passkey_name: 'Test',
-  })).status).toBe(401);
+  })).status).toBe(400);
   const cookie = (await page.context().cookies()).find(cookie => cookie.name.startsWith('piqueld_session_'));
   expect(cookie?.httpOnly).toBe(true);
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -28,7 +28,8 @@ test('rejects assertion replay, substituted user handles, and downgraded user ve
   void account;
   const signed = await proof(page, await auth<Ceremony>(page, 'login/start', {}));
   expect((await api(page, 'login/finish', signed)).status).toBe(200);
-  expect((await api(page, 'login/finish', signed)).status).toBe(401);
+  // A replayed assertion finds its challenge already used.
+  expect((await api(page, 'login/finish', signed)).status).toBe(400);
   const wrong = await proof(page, await auth<Ceremony>(page, 'login/start', {}));
   wrong.credential.response.userHandle = Buffer.from('not-an-account').toString('base64url');
   expect((await api(page, 'login/finish', wrong)).status).toBe(401);
@@ -57,7 +58,7 @@ test('invitations carry grants and limit what the new account may see and change
   expect((await api(page, 'register/start', {
     invitation: link.split('#invite=')[1], user_id: null,
     username: 'late', display_name: '', passkey_name: 'Test',
-  })).status).toBe(401);
+  })).status).toBe(400);
   const permissions = (await auth<Session>(page, 'me')).grants.map(grant => grant.permission);
   expect(permissions).toContain('apps:deploy');
   expect(permissions).not.toContain('accounts:manage');
@@ -113,7 +114,7 @@ test('enrollment links add a passkey only to their account', async ({ page, acco
       expect((await auth<Session>(recipient, 'me')).user.id).toBe(bob.id);
       expect((await api(recipient, 'register/start', {
         invitation: link.split('#enroll=')[1], user_id: null, username: '', display_name: '', passkey_name: 'Again',
-      })).status).toBe(401);
+      })).status).toBe(400);
     } finally { await device.close(); }
   } finally { await context.close(); }
 });
@@ -135,7 +136,7 @@ test('a transferable invitation can be redeemed successfully only once under a r
         return proof(recipient, challenge, true);
       }));
       const results = await Promise.all(recipients.map((recipient, index) => api(recipient, 'register/finish', proofs[index])));
-      expect(results.map(result => result.status).sort()).toEqual([200, 401]);
+      expect(results.map(result => result.status).sort()).toEqual([200, 400]);
     } finally { await Promise.all(devices.map(device => device.close())); }
   } finally { await Promise.all(contexts.map(context => context.close())); }
 });
