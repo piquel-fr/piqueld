@@ -1,9 +1,10 @@
 # Creating your account
 
-You sign in to piqueld with a passkey instead of a password. Your phone,
-laptop, password manager or security key keeps it, so there's no password to
-choose, remember or leak. This page creates the first account, which
-administers piqueld, and signs `piquelctl` in with it.
+Create the first administrator account, then sign `piquelctl` in with it.
+
+You sign in with a passkey instead of a password. Your phone, laptop, password
+manager or security key keeps it, so there's nothing to choose, remember or
+leak.
 
 ## Before you start
 
@@ -43,31 +44,43 @@ You don't need to type your username.
 
 ## Sign piquelctl in
 
-On the piqueld host, members of the `piqueld` group sign in with:
+On the host, `piquelctl` connects to the daemon's socket. Root doesn't need to
+sign in there: `sudo piquelctl` acts as the
+[host operator](../accounts/authentication.md#the-host-operator). Members of
+the `piqueld` group sign in as themselves.
+
+On another machine, first tell `piquelctl` the dashboard's address, in the
+shell you'll run the following commands in:
 
 ```console
-piquelctl login
+export PIQUELD_URL=https://piqueld.<tailnet>.ts.net
 ```
 
-From another machine, give `piquelctl` the dashboard's address:
+With the [localhost option](install.md#localhost), keep the SSH tunnel open and
+use `http://localhost:7845`. To keep the address for good, save it as a
+[connection profile](../reference/cli.md#connection-profiles).
 
-```console
-piquelctl --url https://piqueld.<tailnet>.ts.net login
-```
+1. Start the login:
 
-`login` prints a link, a code, and the network address the daemon sees your
-request coming from. Open the link, sign in, and enter the code. Before you
-approve, check that the address the dashboard shows is the one your terminal
-printed.
+   ```console
+   piquelctl login
+   ```
 
-Then check who you're signed in as:
+   It prints a link, a code, and where the daemon sees the request coming
+   from: your machine's network address, or the daemon's local Unix socket on
+   the host.
+
+2. Open the link, sign in, enter the code under **CLI code**, and select
+   **Review request**.
+
+3. Check that **Requested from** matches what your terminal printed, then
+   select **Approve CLI login**.
+
+Check who you're signed in as:
 
 ```console
 piquelctl whoami
 ```
-
-On the host, root doesn't need to sign in: `sudo piquelctl` acts as the
-[host operator](../accounts/authentication.md#the-host-operator).
 
 Next, [deploy your first application](first-app.md).
 
@@ -77,9 +90,9 @@ Next, [deploy your first application](first-app.md).
   exists already. If nobody can sign in with it any more, see
   [recovering administrator access](../accounts/authentication.md#recovering-administrator-access).
 - **The browser won't create or use the passkey.** Passkeys need HTTPS, or
-  `localhost`, and only work at the address they were created on. Open the
-  dashboard at exactly the address piqueld uses: `piquelctl setup-link` prints
-  it.
+  `localhost`, and only work at the address they were created on: the one you
+  [chose when installing piqueld](install.md#choose-how-to-reach-the-dashboard).
+  Open the dashboard at exactly that address.
 - **You can't run `piquelctl` on the host.** The daemon also writes the setup
   link to the file `setup-link` in its data directory, `/var/lib/piqueld` by
   default. Only root and the daemon's user can read it.

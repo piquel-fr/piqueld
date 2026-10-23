@@ -6,7 +6,9 @@ watch it run in the dashboard.
 
 ## Before you start
 
-- You have [an account](first-account.md), and `piquelctl` is signed in.
+- You have [an account](first-account.md), and `piquelctl` is signed in. On
+  another machine than the host, keep `PIQUELD_URL` set, as when you
+  [signed it in](first-account.md#sign-piquelctl-in).
 - The host can pull images from Docker Hub.
 
 ## Write the manifest
@@ -115,17 +117,20 @@ Saving changes the application's manifest but not what's running: select
 - Build images from a Git repository with
   [Git build sources](../reference/manifest.md#git-build-sources).
 
-When you're done, delete the application:
+When you're done, delete the application. This removes its containers and
+history, and deletes its previews with their volumes. Its environments' named
+volumes are kept, so that their data isn't lost by accident:
 
 ```console
 piquelctl app delete hello
 ```
 
-This removes its containers and history. Named volumes are kept, so that
-deleting an application never deletes its data by accident.
-
 ## Troubleshooting
 
+- **`piquelctl` times out.** It waits 30 seconds by default, which pulling a
+  large image can take longer than. The deployment carries on: follow it in
+  the dashboard, or give `piquelctl` longer, such as
+  `piquelctl --timeout 5m app apply --file hello.toml --deploy`.
 - **The deployment fails.** `piquelctl` prints the error. The environment's
   **Deployments** tab shows each step, and **Diagnostics** on its **Overview**
   says what went wrong.

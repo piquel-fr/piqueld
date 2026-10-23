@@ -22,11 +22,11 @@ You manage it from:
 - **Service**: one container image, run as one or more replicas. Its image is
   pulled from a registry, or built from a Git repository.
 - **Environment**: a running copy of an application, with its own
-  deployments, secrets, volumes and routes. Each application starts with a
-  `production` environment, and you can add others, such as `staging`.
-- **Deployment**: one run of the saved manifest in an environment. Saving a
-  change never touches what's running; deploying does. piqueld keeps the
-  history of every deployment.
+  deployments, secrets, volumes and routes. By default, an application starts
+  with a `production` environment, and you can add others, such as `staging`.
+- **Deployment**: one version of an application, deployed to an environment.
+  Saving a change never touches what's running; deploying does. piqueld keeps
+  the history of every deployment.
 - **Release**: what a deployment ran, down to the exact images. You can
   promote a release to another environment, which then runs the same images
   without building them again.
@@ -40,7 +40,9 @@ You manage it from:
 ## Limits
 
 - piqueld manages a single host. It doesn't run clusters of several machines.
-- Services are reached over HTTP and HTTPS only, not other TCP or UDP ports.
+- Routes expose services over HTTP and HTTPS. piqueld doesn't publish other
+  TCP or UDP ports, though an application's services reach each other on any
+  port.
 - It doesn't manage registry credentials.
 
 ## Get started

@@ -133,39 +133,81 @@ the only tested setup. To run it elsewhere, build it from source with
 `target/release/piqueld` and `target/release/piquelctl` to `/usr/local/bin`.
 Then set it up the way the NixOS module does:
 
-- Create a `piqueld` system user and group, and add the user to the `docker`
-  group.
-- Write the daemon's configuration to `/etc/piqueld/config.toml`, with the
-  settings from [the previous section](#choose-how-to-reach-the-dashboard). The
-  [configuration reference](../reference/configuration.md) lists them all.
-- Run `piqueld` as a service, with `git`, `ssh` and `docker` on its `PATH`. With
-  systemd:
+1. Create a `piqueld` system user and group, and add the user to the `docker`
+   group:
 
-  ```ini
-  [Unit]
-  Description=piqueld application control plane
-  After=docker.service
-  Wants=docker.service
+   ```console
+   sudo useradd --system --user-group --groups docker \
+     --home-dir /var/lib/piqueld --no-create-home piqueld
+   ```
 
-  [Service]
-  ExecStart=/usr/local/bin/piqueld --config /etc/piqueld/config.toml
-  User=piqueld
-  Group=piqueld
-  SupplementaryGroups=docker
-  StateDirectory=piqueld
-  StateDirectoryMode=0700
-  RuntimeDirectory=piqueld
-  RuntimeDirectoryMode=0750
-  UMask=0077
-  Restart=on-failure
+2. Write the daemon's configuration to `/etc/piqueld/config.toml`, with the
+   settings from [the previous section](#choose-how-to-reach-the-dashboard).
+   Each `services.piqueld.settings` option is the same setting in the file:
+   `settings.server.listen_mode = "localhost"` becomes
 
-  [Install]
-  WantedBy=multi-user.target
-  ```
+   ```toml
+   [server]
+   listen_mode = "localhost"
+   ```
 
-  systemd then creates the data directory, `/var/lib/piqueld`, and the runtime
-  directory holding the API socket, `/run/piqueld`.
-- Add the users who should run `piquelctl` on the host to the `piqueld` group.
+   The [configuration reference](../reference/configuration.md) lists every
+   setting.
+
+3. Save this unit as `/etc/systemd/system/piqueld.service`:
+
+   ```ini
+   [Unit]
+   Description=piqueld application control plane
+   After=docker.service
+   Wants=docker.service
+
+   [Service]
+   ExecStart=/usr/local/bin/piqueld --config /etc/piqueld/config.toml
+   User=piqueld
+   Group=piqueld
+   SupplementaryGroups=docker
+   StateDirectory=piqueld
+   StateDirectoryMode=0700
+   RuntimeDirectory=piqueld
+   RuntimeDirectoryMode=0750
+   UMask=0077
+   Restart=on-failure
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   systemd creates the data directory, `/var/lib/piqueld`, and the runtime
+   directory holding the API socket, `/run/piqueld`. The daemon also needs
+   `git`, `ssh` and `docker` on its `PATH`, which includes `/usr/bin`.
+
+4. If piqueld joins your tailnet as [its own node](#piquelds-own-tailnet-node),
+   it also needs `tailscale` and `tailscaled` on its `PATH`. Store the auth key
+   in a file only root can read, such as `/etc/piqueld/ts-auth-key`, and pass
+   it to the service by adding to the unit's `[Service]` section:
+
+   ```ini
+   LoadCredential=ts-auth-key:/etc/piqueld/ts-auth-key
+   ```
+
+   Then refer to it by that name in `config.toml`:
+
+   ```toml
+   [tailscale]
+   enabled = true
+   auth_key_file = "ts-auth-key"
+   ```
+
+5. Start the daemon, and have it start at boot:
+
+   ```console
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now piqueld
+   ```
+
+6. Add the users who should run `piquelctl` on the host to the `piqueld`
+   group.
 
 ## Check that it works
 

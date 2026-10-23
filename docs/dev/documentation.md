@@ -44,6 +44,10 @@ Write so that someone new to piqueld can follow the page from top to bottom.
 - **Show, then explain.** Put the command or manifest first, then say what it
   does and what the reader should see.
 - **Number the steps of a procedure.** Give each step one action.
+- **Say where each command runs**, on the host or on the reader's machine,
+  and keep the connection the same across a page's examples.
+- **Warn before a command that deletes data** or can't be undone, not after
+  it.
 - **Cover the main path first.** Limits, edge cases and failure modes go at
   the end of the page, under *Troubleshooting*, or in the reference.
 - **Leave internals out of the user guide.** Explain what the reader can see
