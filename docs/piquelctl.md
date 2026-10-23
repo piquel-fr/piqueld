@@ -379,11 +379,13 @@ written to stderr, so stdout remains valid JSON.
 | `dns refresh` | `DnsStatus` |
 | `login` | `User` |
 | `whoami` | `Session` |
-| `account list` / `account access` | `{ "accounts": [Account], "operator_sessions": [OperatorSessionView] }` |
+| `account list` / `account access` / `account update` | `{ "accounts": [Account], "operator_sessions": [OperatorSessionView] }` |
 | `account invite` / `account enroll` | `{ "url": string }` |
+| `account passkey list` | `[PasskeyView]` |
+| `account invitation list` | `[InvitationView]` |
 | `token create` | `{ "token": string }` |
 | `token list` | `[CredentialView]` |
-| `logout` / `token revoke` | None |
+| `logout` / `token revoke` / `account delete` / `account passkey rename\|remove` / `account invitation revoke` | None |
 | `audit` | `{ "items": [AuditEvent], "next_cursor": string or null }` |
 | `audit verify` | `AuditVerification` |
 | `setup-link` | `SetupLink` |
@@ -878,10 +880,14 @@ that way, `piquelctl sign-in-link` prints a one-time link (valid for 10
 minutes) that signs a browser in as the host operator for 12 hours; it raises a
 security notification. `piquelctl account`
 lists accounts (and live host operator browser sessions), replaces their grants
-(`access`), and creates invitation (`invite`)
-and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
+(`access`), edits (`update`, which also renames your saved login) and deletes
+(`delete`) them, and creates invitation
+(`invite`) and passkey enrollment (`enroll`) links; `account passkey
+list|rename|remove` manages passkeys, and `account invitation list|revoke`
+pending links. `piquelctl token create|list|revoke`
 manages API tokens for your account (`--tailnet` binds one to a tailnet user
-or tag), and `login` accepts the same grant options
+or tag); `token list --user` and `token revoke --all [--user]` list and revoke
+every session and token of an account. `login` accepts the same grant options
 to ask for a limited session; see [authorization](authorization.md).
 `piquelctl audit` reads the [audit trail](observability.md#audit-trail), one line
 per request with the application or environment it addressed, filtered

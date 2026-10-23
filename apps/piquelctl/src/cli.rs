@@ -101,12 +101,12 @@ pub(crate) enum Command {
     Logout,
     /// Show the authenticated account and what the current credential may do.
     Whoami,
-    /// List accounts, change their grants, and create invitation or enrollment links.
+    /// Manage accounts, their grants and passkeys, and invitation or enrollment links.
     Account {
         #[command(subcommand)]
         command: crate::accounts::AccountCommand,
     },
-    /// Create, list, and revoke API tokens for your account.
+    /// Create API tokens for your account; list and revoke sessions and tokens.
     Token {
         #[command(subcommand)]
         command: crate::accounts::TokenCommand,

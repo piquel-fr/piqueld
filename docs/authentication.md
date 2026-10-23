@@ -96,7 +96,8 @@ dashes, or underscores. Internal account IDs never change.
 Accounts with `accounts:manage` create invitations, choosing the grants of the
 account each one creates. Copy and share its link; no recipient or email address
 is attached. The first person to complete registration chooses their own account
-details. Links expire after 24 hours and can be revoked by managers. Opening a
+details. Links expire after 24 hours and can be revoked by managers
+(`piquelctl account invitation list|revoke`). Opening a
 link does not consume it, but the dashboard removes the secret from the address
 bar and browser history; reopen the original link to retry an abandoned
 registration. Deleting its issuer revokes pending links.
@@ -109,6 +110,8 @@ and signs it in.
 Removing a passkey prevents future logins with that credential and leaves existing
 sessions/tokens intact. **Revoke all sessions and tokens** is a separate action.
 Deleting an account revokes everything belonging to it. Self-deletion is supported.
+`piquelctl account passkey list|rename|remove`, `account update`, `account delete`,
+and `token revoke --all` do the same from the CLI.
 Removing a passkey, deleting an account, or changing grants is rejected if no
 account would keep `admin` on every application together with a passkey. This
 protects stored credentials, not access to the authenticators themselves: if every
