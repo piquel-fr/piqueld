@@ -2,10 +2,15 @@
 
 [piqueld](README.md)
 
-# User guide
+# Getting started
 
 - [Introduction](user/introduction.md)
-- [Installing on NixOS](user/getting-started/nixos.md)
+- [Installing piqueld](user/getting-started/install.md)
+- [Creating your account](user/getting-started/first-account.md)
+- [Deploying your first application](user/getting-started/first-app.md)
+
+# User guide
+
 - [Accounts and sign-in](user/accounts/authentication.md)
 - [Permissions](user/accounts/authorization.md)
 - [Dashboard](user/dashboard.md)
@@ -17,6 +22,7 @@
 
 - [Application manifest](user/reference/manifest.md)
 - [Daemon configuration](user/reference/configuration.md)
+- [NixOS module](user/reference/nixos.md)
 - [piquelctl](user/reference/cli.md)
 - [HTTP API](user/reference/api.md)
 

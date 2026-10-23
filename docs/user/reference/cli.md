@@ -13,7 +13,7 @@ only. `nix develop` provides the CLI development tools, and `just validate-cli`
 lints and tests the CLI and its shared client/core crates. `just build-cli`
 builds the release binary. CI runs `just validate-cli` on `macos-latest` when
 the CLI or its shared crates change. nix-darwin users can import
-`darwinModules.piquelctl` to install it with profiles; see [NixOS](../getting-started/nixos.md).
+`darwinModules.piquelctl` to install it with profiles; see the [NixOS module](nixos.md).
 
 The daemon runs on Linux. With its listen mode set to `tailscale` or `both`,
 connect from a tailnet peer using its IP address or MagicDNS name:
