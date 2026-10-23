@@ -42,9 +42,9 @@ gets exactly those when it is saved or fetched from the branch `spec.manifest`
 names; otherwise applications have an environment named `production` from
 creation (existing applications were migrated to one that kept their ID). `env` commands select an environment by name
 or stable ID; `ENV` may be omitted only when the application has exactly one.
-`app deploy`, `app reconcile`, and `app logs` act on the application's only
-environment and fail with an "environment required" input error naming the
-environments when it has several; they never pick one. With several
+`app deploy`, `app reconcile`, `app stop`, `app start`, and `app logs` act on
+the application's only environment and fail with an "environment required"
+input error naming the environments when it has several; they never pick one. With several
 environments, `app delete` requires `--environments a,b` naming every one.
 `env delete` keeps the application and retains the environment's named volumes.
 Environment creation, renames and deletions are conditioned on the inspected
@@ -135,6 +135,18 @@ refuses a failure after its destination received the recovery that followed it.
 The command then fails with `delivery_not_retryable` and exit code 3, and its
 message says why. See [notifications](../guides/observability.md#notifications).
 
+`env stop APP [ENV]` confirms, then stops an environment: the gateway
+withdraws its routes at once and its services scale to zero replicas, keeping
+their configuration, volumes and secrets. It waits until its runtime reports
+`stopped`, unless `--no-wait`. A stopped environment stays stopped until `env
+start`, `env reconcile`, a deployment, or a promotion into it; pushes don't
+deploy it meanwhile, and sync deploys the head it missed once it starts. `env
+start APP [ENV]` confirms, then starts it again, retrying its latest operation
+like `env reconcile` and waiting for it. Stopping a deployment in progress lets
+it finish with no replicas. Both need `apps:deploy`; `--expected-generation`
+is optional, as for reconcile. `env list` shows a stopped environment's state
+as `stopped`, and `env show` says so. Previews are deleted instead.
+
 `env telemetry APP ENV on` grants an environment the daemon's
 [telemetry](../guides/observability.md#receiving-telemetry-in-an-application): its
 receiving service, marked with `app service telemetry APP SERVICE on`, gets
@@ -149,7 +161,7 @@ next to the `[telemetry]` endpoint.
 `app show` reports the setting and the last check of the repository, with its
 error; `env show`, `preview show`, and `preview list` report whether each one
 follows pushes (`following`, `off`, `off (pinned)`, `off (not opted in)`,
-`off (waiting for a deployment)`) and the branch head of its last deployment. `app repository webhook show APP` prints the payload URL to
+`off (stopped)`, `off (waiting for a deployment)`) and the branch head of its last deployment. `app repository webhook show APP` prints the payload URL to
 configure in GitHub, once the daemon sets `ingress.webhook_hostname`, and
 whether a secret exists; `app repository webhook rotate APP` confirms, then
 generates a new secret, replacing the previous one, and prints it: it is never
@@ -394,7 +406,7 @@ written to stderr, so stdout remains valid JSON.
 | `env url` / `preview url` | `[RouteUrl]` |
 | `env url --route` / `preview url --route` | `RouteUrl` |
 | `env wait` / `preview wait` | `Deployment` |
-| `env create` / `env rename` / `env branch` / `env sync` / `env telemetry` / `env source` | `EnvironmentView` |
+| `env create` / `env rename` / `env branch` / `env sync` / `env telemetry` / `env source` / `env stop` | `EnvironmentView` |
 | `app repository webhook show` | `WebhookView` |
 | `app repository webhook rotate` | `WebhookSecret` |
 | `env promote --no-wait` | `{ "application_id": string, "environment_id": string, "deployment_id": string, "operation_id": string, "release_id": string, "origin": DeploymentOrigin }`; the deployment and operation IDs are equal |
@@ -445,8 +457,8 @@ written to stderr, so stdout remains valid JSON.
 | `preview prune` | `[DeletedPreview]` |
 | `operation --no-wait` | `Operation` |
 | `operation` | `Operation` |
-| `app`/`env` `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "operation": Operation }` and the fields of `Deployment`, with `outcome` and `urls` |
-| `app`/`env` `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` (`operation_id`, `environment_id`, `generation`) and the fields of `Deployment` |
+| `app`/`env` `reconcile` / `start` / `deploy` | `{ "accepted": AcceptedOperation, "operation": Operation }` and the fields of `Deployment`, with `outcome` and `urls` |
+| `app`/`env` `reconcile --no-wait` / `stop --no-wait` / `start --no-wait` / `deploy --no-wait` | `AcceptedOperation` (`operation_id`, `environment_id`, `generation`) and the fields of `Deployment` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
 | `analytics` | `DeploymentAnalytics` |
 

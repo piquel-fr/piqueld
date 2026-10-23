@@ -637,6 +637,16 @@ follows the network: piqueld updates services if the network is recreated, and
 treats a modified value as drift. Requests reaching Caddy through Docker's userland proxy
 (for example IPv6 to an IPv4-only bridge) appear to come from the bridge gateway.
 
+## Stopped environments
+
+The gateway serves none of a [stopped](api.md#stopped-environments)
+environment's routes: stopping reconfigures it before the request returns,
+and acknowledging that withdrawal empties the environment's applied routes.
+Its hostnames stay reserved, and its DNS-01 certificates are still renewed and
+its managed DNS records kept, so starting it serves the routes again on the
+next gateway pass, within ten seconds, without waiting for DNS or a
+certificate. Its URLs are `pending` on `ingress` meanwhile.
+
 ## Status and recovery
 
 System status displays ingress alongside Docker health; effective Settings remain

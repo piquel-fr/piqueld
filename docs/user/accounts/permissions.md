@@ -102,7 +102,7 @@ its deployments.
 | `admin` | On the applications it lists: every permission in this table. On every application: everything, including the installation-wide permissions and permissions added in later versions |
 | `apps:read` | Reading configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, the push webhook's address, and the names of secrets and which environments may mount them |
 | `apps:write` | Editing configuration, applying and planning manifests, renaming the application, adding and renaming environments, changing an environment's branch or source, opting environments out of sync, and into it (with `apps:deploy` when the application deploys on push), and generating webhook secrets |
-| `apps:deploy` | Deploying, promoting releases into and reconciling environments, and everything `previews:deploy` allows. With `apps:write`, saving and deploying in one step, turning on [deploying on push](../reference/manifest.md#deploying-on-push), or opting an environment into it |
+| `apps:deploy` | Deploying, promoting releases into, reconciling, stopping and starting environments, and everything `previews:deploy` allows. With `apps:write`, saving and deploying in one step, turning on [deploying on push](../reference/manifest.md#deploying-on-push), or opting an environment into it |
 | `apps:delete` | Deleting the application, its environments and its previews |
 | `previews:deploy` | Creating and deploying [previews](#let-agents-and-ci-manage-previews), including from a local worktree, and reading their logs |
 | `previews:delete` | Deleting and pruning previews |
@@ -151,7 +151,7 @@ deployments.
 
 It can't:
 
-- deploy, promote into, reconcile or delete blog's long-lived environments,
+- deploy, promote into, reconcile, stop or delete blog's long-lived environments,
   or read their logs
 - change blog's configuration, environments or secrets
 - delete blog

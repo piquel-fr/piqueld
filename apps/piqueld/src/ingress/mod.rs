@@ -458,18 +458,13 @@ impl Ingress {
         }
     }
 
-    /// Every 10s, reconciles the gateway under the writer lock and relays Caddy
-    /// logs. Failures are logged and retried on the next tick.
+    /// Every 10s, reconciles the gateway (see [`Self::refresh`]) and relays
+    /// Caddy logs. Failures are logged and retried on the next tick.
     async fn run_gateway(&self, cancellation: &CancellationToken) {
         let mut ticks = Ticks::every(Duration::from_secs(10), cancellation);
         while ticks.next().await {
             let pass = async {
-                let result = {
-                    let _guard = self.update.lock().await;
-                    *self.requester.lock().await = None;
-                    self.synchronize().await
-                };
-                if let Err(error) = result {
+                if let Err(error) = self.refresh().await {
                     tracing::warn!(?error, "ingress reconciliation failed; will retry");
                 }
                 if let Err(error) = self.relay_logs().await {
@@ -492,6 +487,15 @@ impl Ingress {
                 return;
             }
         }
+    }
+
+    /// Reconciles the gateway for all applications under the writer lock,
+    /// as its periodic pass does, e.g. to withdraw a stopped environment's
+    /// routes before the stop is answered.
+    pub(crate) async fn refresh(&self) -> Result<()> {
+        let _guard = self.update.lock().await;
+        *self.requester.lock().await = None;
+        self.synchronize().await
     }
 
     /// Reconciles the gateway for all applications.
@@ -523,7 +527,7 @@ impl Ingress {
         // not: the private listener depends only on the gateway.
         let mut gateway = false;
         let result: Result<()> = async {
-            let table = self.store.routing_table().await?;
+            let table = self.store.served_table().await?;
             if self.enabled {
                 stage = "verify application ingress networks";
                 let (accepted, networks, rejected) = self.prepare_routes(&table).await?;
@@ -691,7 +695,7 @@ impl Ingress {
     /// the rest stay pending; when disabled, routes report disabled (or failed while
     /// shutdown is unconfirmed).
     async fn probe_routes(&self) {
-        let Ok(table) = self.store.routing_table().await else {
+        let Ok(table) = self.store.served_table().await else {
             return;
         };
         let exact = &self.exact_hostnames(&table);

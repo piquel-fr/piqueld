@@ -542,6 +542,7 @@ mod tests {
             sync,
             synced: None,
             telemetry: false,
+            run_state: crate::api::RunState::Running,
             resolved_generation: None,
             delete_intent: false,
             created_at_ms: 0,

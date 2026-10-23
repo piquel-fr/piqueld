@@ -392,6 +392,10 @@ pub(super) fn sync_badge(state: SyncState) -> (AnyView, &'static str) {
             Tone::Neutral,
             "It has not opted in: pushes to its branch do not deploy it.",
         ),
+        SyncState::Stopped => (
+            Tone::Neutral,
+            "It is stopped: pushes deploy it again once it is started.",
+        ),
         SyncState::AwaitingDeployment => (
             Tone::Warn,
             "It follows its branch from its next deployment, since it was never deployed or its branch or repository changed.",

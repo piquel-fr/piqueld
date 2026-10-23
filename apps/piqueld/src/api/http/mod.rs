@@ -341,6 +341,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Read) => environments::detail))
         .routes(granted!(App(Read) => environments::status))
         .routes(granted!(App(Deploy) => environments::reconcile))
+        .routes(granted!(App(Deploy) => environments::stop))
+        .routes(granted!(App(Deploy) => environments::start))
         .routes(granted!(App(Write) => environments::rename))
         .routes(granted!(App(Write) => environments::branch))
         .routes(granted!(App(Write) => environments::sync))

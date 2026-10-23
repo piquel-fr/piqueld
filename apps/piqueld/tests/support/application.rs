@@ -109,6 +109,11 @@ impl TestApplications {
             .await
     }
 
+    /// Stops environment `id`, returning its latest operation.
+    pub async fn stop(&self, id: &EnvironmentId) -> Result<Operation, ApplicationError> {
+        self.submit(Mutation::Stop { id: id.clone() }, None).await
+    }
+
     /// Accepts `mutation` and returns the operation it requested.
     async fn submit(
         &self,
