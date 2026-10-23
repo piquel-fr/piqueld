@@ -123,6 +123,8 @@ pub enum ApplicationEdit {
         /// The strictest visibility its routes get; `public` restricts nothing.
         visibility: Visibility,
     },
+    /// Set the visibility ceiling of every preview's routes, `[spec.previews]`.
+    PreviewVisibility(Visibility),
 }
 
 /// Every variable value of an application, replaced together.
@@ -407,6 +409,7 @@ impl ApplicationEdit {
             } => manifest
                 .spec
                 .set_environment_visibility(&environment, visibility),
+            Self::PreviewVisibility(visibility) => manifest.spec.previews.visibility = visibility,
         }
         Ok(())
     }

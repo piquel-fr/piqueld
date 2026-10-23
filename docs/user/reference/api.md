@@ -220,6 +220,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } }, "previews": { "domain": "preview.piquel.fr" } } }`; replaces every variable value, clearing those it omits |
 | PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of the environment with that name |
+| PUT | `/previews/visibility` | `{ "value": "public" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of every preview, `[spec.previews] visibility` |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |

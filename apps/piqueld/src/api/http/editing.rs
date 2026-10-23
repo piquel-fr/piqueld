@@ -106,6 +106,13 @@ edit_endpoint!(
     /// options, idempotency, and 200/202 responses as the other editing
     /// endpoints.
     set_environment_visibility, put, "/api/v1/applications/{id}/environments/{environment}/visibility", (id: String = "id", environment: String = "environment"), VisibilityValue, |(_, environment), body: VisibilityValue| ApplicationEdit::EnvironmentVisibility { environment, visibility: body.value });
+edit_endpoint!(
+    /// Sets the visibility ceiling of every preview, `[spec.previews] visibility`.
+    ///
+    /// Every route of a preview is at most this visible; `private`, the
+    /// default, keeps preview routes on the tailnet. Same query options,
+    /// idempotency, and 200/202 responses as the other editing endpoints.
+    set_preview_visibility, put, "/api/v1/applications/{id}/previews/visibility", (id: String = "id"), VisibilityValue, |_, body: VisibilityValue| ApplicationEdit::PreviewVisibility(body.value));
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 edit_endpoint!(
     /// Disconnects the manifest repository.
@@ -231,6 +238,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_application_name))
         .routes(granted!(App(Write) => set_application_variables))
         .routes(granted!(App(Write) => set_environment_visibility))
+        .routes(granted!(App(Write) => set_preview_visibility))
         .routes(granted!(App(Write) => set_manifest_repository))
         .routes(granted!(App(Write) => disconnect_manifest_repository))
         .routes(granted!(App(Write) => set_manifest_repository_url))
