@@ -7,8 +7,8 @@
 //! deployment of one branch, configured by `[spec.previews]`.
 
 use crate::manifest::{
-    GitRepository, PreviewLimits, RepositoryManifest, ValidationError, ValidationErrors,
-    valid_git_branch, valid_git_commit,
+    GitRepository, ManifestRevision, PreviewLimits, RepositoryManifest, ValidationError,
+    ValidationErrors, valid_git_branch, valid_git_commit,
 };
 use crate::{
     ApplicationName, EnvironmentId, EnvironmentName, GitBranch, NormalizedApplication,
@@ -273,6 +273,21 @@ impl TrackedBranch {
         Self::new(repository.branch.clone(), repository.commit.clone())
     }
 
+    /// This branch at a one-time deployment's `revision`: the head of another
+    /// branch, or this branch at a commit, like [`GitRepository::at`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::new`] for an invalid revision.
+    pub fn at(&self, revision: &ManifestRevision) -> Result<Self, ValidationErrors> {
+        match revision {
+            ManifestRevision::Branch(branch) => Self::new(branch.clone(), None),
+            ManifestRevision::Commit(commit) => {
+                Self::new(self.branch.clone(), Some(commit.clone()))
+            }
+        }
+    }
+
     /// The branch name.
     #[must_use]
     pub fn branch(&self) -> &str {
@@ -390,6 +405,27 @@ mod tests {
         for slug in &alike {
             assert!(slug.as_str().starts_with("notes-feat-login-"), "{slug}");
             assert!(EnvironmentName::parse(slug.as_str()).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_one_time_revision_replaces_the_branch_or_pins_a_commit() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let pinned = TrackedBranch::new("main".into(), Some(commit.into())).unwrap();
+        let other = pinned
+            .at(&ManifestRevision::Branch("feat/login".into()))
+            .unwrap();
+        assert_eq!((other.branch(), other.commit()), ("feat/login", None));
+        let at = TrackedBranch::new("main".into(), None)
+            .unwrap()
+            .at(&ManifestRevision::Commit(commit.into()))
+            .unwrap();
+        assert_eq!(at, pinned);
+        for invalid in [
+            ManifestRevision::Branch("-x".into()),
+            ManifestRevision::Commit("0123456".into()),
+        ] {
+            assert!(pinned.at(&invalid).is_err(), "{invalid:?}");
         }
     }
 }

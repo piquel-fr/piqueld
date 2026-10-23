@@ -100,7 +100,12 @@ environment deploys: the saved one for an environment following the branch
 `spec.manifest` names, once the application has read a manifest from it (it is
 deployed until a push changes the manifest there); for one that follows another
 branch, the one last fetched from it, so Preview is disabled until its first
-deployment. A service's Logs tab reads the only
+deployment. An environment following a branch also offers **Deploy revision**.
+It deploys the manifest on the head of another branch of the application's
+repository, or on a commit given by its full hash, once, like
+`piquelctl env deploy --branch` or `--commit`. Nothing is saved: the
+environment's next deployment, or a push to its branch when it deploys on push,
+returns to its own branch. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
 A promoted environment never builds, so its page and its Environments row offer
