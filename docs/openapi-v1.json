@@ -13025,7 +13025,7 @@
             }
           },
           {
-            "description": "Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.",
+            "description": "Inclusive Unix millisecond lower bound; defaults to 30 days before\n`until_ms`, and no earlier than zero.",
             "in": "query",
             "name": "since_ms",
             "required": false,

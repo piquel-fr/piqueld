@@ -77,6 +77,7 @@ Commands:
 - [`piquelctl preview`](#piquelctl-preview): Create, inspect, deploy and delete previews: disposable deployments of a branch.
 - [`piquelctl builds`](#piquelctl-builds): Inspect Git source builds and job runs, and read their output.
 - [`piquelctl operation`](#piquelctl-operation): Show an operation, waiting until it ends.
+- [`piquelctl analytics`](#piquelctl-analytics): Summarize deployment outcomes, retries, durations, and failure codes over a time window, for every readable application or one environment.
 - [`piquelctl events`](#piquelctl-events): Read one page of the event history, oldest first.
 
 ## `piquelctl login`
@@ -3753,6 +3754,21 @@ Arguments:
 Options:
 
 - `--no-wait`: Show the operation's current state instead of waiting for it to end.
+
+## `piquelctl analytics`
+
+Summarize deployment outcomes, retries, durations, and failure codes over a time window, for every readable application or one environment.
+
+```text
+piquelctl analytics [OPTIONS]
+```
+
+Options:
+
+- `--app <APP>`: Only deployments of this application's environment, by name or ID; every readable application's when omitted.
+- `--env <ENV>`: The environment of --app, by name or ID; required when it has several.
+- `--since <SINCE>`: Start this long ago, such as 24h or 7d; defaults to 30 days before the end.
+- `--until <UNTIL>`: End this long ago; defaults to now.
 
 ## `piquelctl events`
 
