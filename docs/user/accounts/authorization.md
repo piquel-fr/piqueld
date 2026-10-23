@@ -253,3 +253,23 @@ Tagged devices belong to no user, so a user binding never matches them; bind
 those tokens to a tag. Creating a bound token without the tailnet node or a
 dashboard hostname is refused, since it could never be used.
 
+
+## When access changes take effect
+
+The first account created during setup receives `admin` on every application.
+Grants are evaluated on every request, so changes take effect immediately for
+the account's sessions and tokens. Every write (account changes, passkeys,
+tokens, application mutations, secrets, key recovery, notification destinations
+and retries) re-reads the caller's credential and grants inside its
+transaction, so a request that authenticated just before a demotion,
+revocation, or expiry cannot use the access it lost. Connections that outlive
+their request, event streams and commands started with `apps:exec`, recheck the
+caller's access within a second of an account change, a revoked credential, or
+a grant change. They also recheck it every 30 seconds, plus the time the check
+takes, which catches an expired credential, a token revoked because its
+application was deleted, or a tailnet peer that no longer matches a token's
+binding. A stream stops sending history its caller may no longer read, and one
+that lost access entirely ends with an `access_ended` message. A command
+session that lost access ends with the refusal (401 or 403); like a
+disconnect, the command itself may keep running in the task. Both also end
+when the daemon shuts down.

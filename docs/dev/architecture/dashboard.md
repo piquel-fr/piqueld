@@ -1,7 +1,7 @@
 # Dashboard
 
 The dashboard is a Leptos application compiled to WebAssembly and embedded in the
-daemon binary. See the [dashboard](https://github.com/piquel-fr/piqueld/blob/main/../user/dashboard.md) page of the user guide
+daemon binary. See the [dashboard](../../user/dashboard.md) page of the user guide
 for what it does.
 
 ## Development

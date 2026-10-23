@@ -43,7 +43,8 @@ paths like any other page.
   as `https://github.com/piquel-fr/piqueld/blob/main/examples/piqueld.toml`
   (`tree` instead of `blob` for a directory). A relative path would break in
   the book. The link check resolves these URLs against your checkout, so the
-  file must exist on your branch.
+  file must exist on your branch, and fails links to any other branch or
+  commit.
 - A heading's anchor is its text in lower case, with spaces replaced by hyphens
   and punctuation removed. Renaming a heading breaks the links to it; the link
   check finds them.

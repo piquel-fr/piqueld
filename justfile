@@ -100,8 +100,9 @@ generate:
 # Builds the documentation book into target/book, failing on any mdBook
 # warning, then checks every link and heading anchor in it and in the
 # repository's Markdown files, offline (see lychee.toml). Links to this
-# repository on GitHub are checked against the checkout. CI runs this on every
-# pull request; see docs/dev/documentation.md.
+# repository on GitHub are checked against the checkout; the second remap
+# fails those that don't point at main, which would otherwise go unchecked.
+# CI runs this on every pull request; see docs/dev/documentation.md.
 docs:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -109,9 +110,12 @@ docs:
         echo "$log" >&2
         exit 1
     fi
-    lychee --root-dir "{{justfile_directory()}}/target/book" \
-        --remap 'https://(github\.com/piquel-fr/piqueld/(blob|tree)|raw\.githubusercontent\.com/piquel-fr/piqueld)/main/ file://{{justfile_directory()}}/' \
-        target/book $(git ls-files --cached --others --exclude-standard '*.md')
+    repository='https://(github\.com/piquel-fr/piqueld/(blob|tree)|raw\.githubusercontent\.com/piquel-fr/piqueld)'
+    git ls-files -z --cached --others --exclude-standard '*.md' \
+        | xargs -0 lychee --root-dir "{{justfile_directory()}}/target/book" \
+            --remap "$repository/main/ file://{{justfile_directory()}}/" \
+            --remap "$repository/ file:///links-to-this-repository-must-point-at-main/" \
+            target/book
 
 # Serves the documentation book on localhost, rebuilding it on every change.
 docs-serve *ARGS:
