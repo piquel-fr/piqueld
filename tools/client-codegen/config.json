@@ -436,6 +436,11 @@
       "rustType": "piqueld_core::edit::ExportsValue"
     },
     {
+      "schema": "GeneratedSecretsValue",
+      "name": "GeneratedSecretsValue",
+      "rustType": "piqueld_core::edit::GeneratedSecretsValue"
+    },
+    {
       "schema": "ImportsValue",
       "name": "ImportsValue",
       "rustType": "piqueld_core::edit::ImportsValue"

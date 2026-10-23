@@ -10,7 +10,8 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     ApplicationManifest, Client, ClientError, EnvironmentAccess, EnvironmentId, MountedSecret,
-    SecretAccess, SecretMetadata, SecretMount, StoredSecret, Template,
+    SecretAccess, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMetadata, SecretMount,
+    StoredSecret, Template,
     edit::{ApplicationEdit, ServiceEdit},
 };
 use std::collections::BTreeSet;
@@ -822,7 +823,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     <div>
                         <h3>"Generated secrets"</h3>
                         <p>
-                            "Values piqueld generated for this environment, never shared with another one. Running deployments keep their versions."
+                            "Values piqueld generated for this environment, never shared with another one, for the secrets the application's Secrets tab declares. Running deployments keep their versions."
                         </p>
                     </div>
                 </header>
@@ -858,14 +859,212 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
     }
 }
 
-/// The application's Secrets tab: its secret store, then every service's
-/// secret file references.
+/// One editable generated-secret declaration. `size` is the number of random
+/// bytes, or the RSA key's bits, as typed.
+#[derive(Clone, PartialEq)]
+struct DeclarationDraft {
+    name: String,
+    rsa: bool,
+    size: String,
+    encoding: SecretEncoding,
+}
+
+impl Default for DeclarationDraft {
+    fn default() -> Self {
+        Self::of_kind(false)
+    }
+}
+
+impl DeclarationDraft {
+    /// A new random (or RSA) declaration with that generator's usual size.
+    fn of_kind(rsa: bool) -> Self {
+        Self {
+            name: String::new(),
+            rsa,
+            size: if rsa { "3072" } else { "32" }.into(),
+            encoding: SecretEncoding::default(),
+        }
+    }
+
+    /// The manifest's declarations as editable rows.
+    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
+        manifest
+            .spec
+            .secrets
+            .iter()
+            .map(|secret| match secret.generate {
+                SecretGenerator::Random { bytes, encoding } => Self {
+                    name: secret.name.clone(),
+                    rsa: false,
+                    size: bytes.to_string(),
+                    encoding,
+                },
+                SecretGenerator::Rsa { bits } => Self {
+                    name: secret.name.clone(),
+                    rsa: true,
+                    size: bits.to_string(),
+                    encoding: SecretEncoding::default(),
+                },
+            })
+            .collect()
+    }
+
+    /// The declaration, or a message when the size does not parse; manifest
+    /// validation checks its range.
+    fn declaration(self) -> Result<SecretDeclaration, String> {
+        let size = self
+            .size
+            .parse()
+            .map_err(|_| format!("The size of {} must be a whole number", self.name))?;
+        Ok(SecretDeclaration {
+            name: self.name,
+            generate: if self.rsa {
+                SecretGenerator::Rsa { bits: size }
+            } else {
+                SecretGenerator::Random {
+                    bytes: size,
+                    encoding: self.encoding,
+                }
+            },
+        })
+    }
+}
+
+/// Editor for the secrets piqueld generates, `spec.secrets`. Saving replaces
+/// every declaration; values already generated are kept.
+#[component]
+fn GeneratedSecretSettings() -> impl IntoView {
+    let context = editor();
+    let draft = Draft::synced("generated-secrets", DeclarationDraft::rows);
+    let secrets = draft.value;
+    let save = move || match secrets
+        .get_untracked()
+        .into_iter()
+        .map(DeclarationDraft::declaration)
+        .collect()
+    {
+        Ok(saved) => draft.save(
+            ApplicationEdit::GeneratedSecrets(saved),
+            DeclarationDraft::rows,
+        ),
+        Err(message) => context.error.set(Some(message)),
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Generated secrets"</h3>
+                    <p>
+                        "Secrets piqueld generates for each environment and preview, the first time one of its deployments mounts them, so they never need a value from you. A value is never replaced: changing or removing a declaration keeps values already generated, which each environment's Secrets tab can regenerate. A name can't be both generated and in the secret store."
+                    </p>
+                </div>
+            </header>
+            <fieldset class="stack-sm" disabled={move || context.blocked()}>
+                <Show when={move || secrets.with(Vec::is_empty)}>
+                    {empty("No generated secrets declared.")}
+                </Show>
+                <For
+                    each={move || secrets.indices()}
+                    key={|index| *index}
+                    children={move |index| {
+                        view! {
+                            <div class="form-row" data-generated-secret={index}>
+                                <label class="field">
+                                    <span>"Secret name"</span>
+                                    <input
+                                        type="text"
+                                        placeholder="database-password"
+                                        prop:value={move || secrets.field(index, |s| s.name.clone())}
+                                        on:input={move |event| {
+                                            secrets.edit(index, |s| s.name = event_target_value(&event));
+                                        }}
+                                    />
+                                </label>
+                                <label class="field" style="max-width:200px">
+                                    <span>"Generates"</span>
+                                    <select
+                                        prop:value={move || {
+                                            if secrets.field(index, |s| s.rsa) { "rsa" } else { "random" }
+                                        }}
+                                        on:change={move |event| {
+                                            let rsa = event_target_value(&event) == "rsa";
+                                            secrets.edit(index, |s| {
+                                                if s.rsa != rsa {
+                                                    let name = std::mem::take(&mut s.name);
+                                                    *s = DeclarationDraft { name, ..DeclarationDraft::of_kind(rsa) };
+                                                }
+                                            });
+                                        }}
+                                    >
+                                        <option value="random">"Random bytes"</option>
+                                        <option value="rsa">"RSA key"</option>
+                                    </select>
+                                </label>
+                                <label class="field" style="max-width:160px">
+                                    <span>
+                                        {move || {
+                                            if secrets.field(index, |s| s.rsa) { "Bits" } else { "Bytes" }
+                                        }}
+                                    </span>
+                                    <input
+                                        type="number"
+                                        prop:value={move || secrets.field(index, |s| s.size.clone())}
+                                        on:input={move |event| {
+                                            secrets.edit(index, |s| s.size = event_target_value(&event));
+                                        }}
+                                    />
+                                </label>
+                                <Show when={move || !secrets.field(index, |s| s.rsa)}>
+                                    <label class="field" style="max-width:160px">
+                                        <span>"Encoding"</span>
+                                        <select
+                                            prop:value={move || {
+                                                secrets.field(index, |s| s.encoding.as_str())
+                                            }}
+                                            on:change={move |event| {
+                                                if let Some(encoding) = SecretEncoding::parse(
+                                                    &event_target_value(&event),
+                                                ) {
+                                                    secrets.edit(index, |s| s.encoding = encoding);
+                                                }
+                                            }}
+                                        >
+                                            {SecretEncoding::ALL
+                                                .map(|encoding| {
+                                                    view! {
+                                                        <option value={encoding
+                                                            .as_str()}>{encoding.as_str()}</option>
+                                                    }
+                                                })}
+                                        </select>
+                                    </label>
+                                </Show>
+                                {remove_button(move || secrets.remove(index))}
+                            </div>
+                        }
+                    }}
+                />
+                <div>
+                    {add_button(
+                        "Add generated secret",
+                        move || secrets.update(|secrets| secrets.push(DeclarationDraft::default())),
+                    )}
+                </div>
+                {draft.actions(save, || false)}
+            </fieldset>
+        </section>
+    }
+}
+
+/// The application's Secrets tab: its secret store, the secrets piqueld
+/// generates, then every service's secret file references.
 #[component]
 pub(super) fn SecretFileSettings() -> impl IntoView {
     let context = editor();
     view! {
         <div class="stack">
             <StoredSecrets />
+            <GeneratedSecretSettings />
             <For
                 each={move || {
                     context

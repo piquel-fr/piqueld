@@ -49,6 +49,7 @@ piquelctl app reconcile <name-or-id>
 piquelctl app deploy <name-or-id>
 piquelctl app rename <name-or-id> <new-name>
 piquelctl app secret <name-or-id> list|set|access|delete
+piquelctl app generated-secret list|set|remove <name-or-id> ...
 piquelctl app releases <name-or-id> [--cursor <cursor>]
 piquelctl app repository sync <name-or-id> off|poll|webhook [--interval <seconds>]
 piquelctl app repository webhook show|rotate <name-or-id>
@@ -408,6 +409,7 @@ written to stderr, so stdout remains valid JSON.
 | `app route list` | `[RouteStatus]`, each with `"environment": string` (its name) |
 | `app file list` | `[ServiceFile]`, each with `"service": string` |
 | `app export list` / `app import list` | `[Export]` / `[Import]`, as saved |
+| `app generated-secret list` | `[SecretDeclaration]`, as saved |
 | `app secret list` | `[StoredSecret]` |
 | `app secret set` / `access` | `StoredSecret` |
 | `env secret list` | `[SecretMetadata]` |
@@ -1045,8 +1047,23 @@ saved configuration or runnable deployment still uses.
 
 Manifests can declare secrets that piqueld generates for each environment when
 a deployment first mounts them instead; see
-[application manifests](application-manifest.md). They are listed, regenerated
-and deleted per environment. `regenerate` creates a new version for the next
+[application manifests](application-manifest.md). `app generated-secret`
+edits these declarations like other saved settings:
+
+```sh
+piquelctl app generated-secret set notes database-password --bytes 32 --yes
+piquelctl app generated-secret set notes session-key --bytes 64 --encoding base64url --yes
+piquelctl app generated-secret set notes signing-key --rsa-bits 3072 --yes
+piquelctl app generated-secret list notes
+piquelctl app generated-secret remove notes session-key --yes
+```
+
+`set` declares a secret, or replaces how a declared one is generated:
+`--bytes` random bytes (16–512), encoded as `hex` unless `--encoding base64url`,
+or an RSA key of `--rsa-bits` (2048, 3072, or 4096). It takes the edit flags
+`--deploy`, `--no-wait`, `--expected-generation`, and `--force`. Changing or
+removing a declaration never changes values already generated. Generated values
+are listed, regenerated and deleted per environment. `regenerate` creates a new version for the next
 deployment, to rotate a value or replace one discarded by key recovery; running
 deployments keep theirs. `delete` removes an unused one:
 

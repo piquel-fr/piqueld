@@ -258,6 +258,11 @@ pub(crate) enum AppCommand {
     },
     /// Run a one-off command in a running task of a service, streaming its output.
     Exec(crate::exec::ExecArgs<crate::exec::ApplicationTarget>),
+    /// Declare, change, or remove secrets piqueld generates for each environment.
+    GeneratedSecret {
+        #[command(subcommand)]
+        command: crate::editing::GeneratedSecretCommand,
+    },
     /// Manage the application's store of manually set secrets and their access lists.
     Secret {
         /// Application name or stable ID.

@@ -107,6 +107,7 @@ async fn app(
             application,
             action,
         } => action.run(client, console, application).await,
+        AppCommand::GeneratedSecret { command } => command.run(client, console).await,
         AppCommand::Validate { .. } => unreachable!("validation runs before connecting"),
         AppCommand::Plan(args) => args.run(client, console).await,
         AppCommand::Apply(args) => args.run(client, console).await,

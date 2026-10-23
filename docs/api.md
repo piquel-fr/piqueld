@@ -217,6 +217,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/routes` | `{ "value": [{ "hostname": "notes.example.com", "service": "web", "port": 3000 }] }`; replaces this application's routes |
 | PUT | `/jobs` | `{ "value": [{ "name": "migrate", "service": "web", "command": ["notes", "migrate"], "run": "before-rollout", "timeout_seconds": 300, "volume_access": "read-only" }] }`; replaces the jobs, in execution order |
 | PUT | `/exports` | `{ "value": [{ "service": "api", "applications": ["notes"], "previews": false }] }`; replaces the services other applications may reach |
+| PUT | `/generated-secrets` | `{ "value": [{ "name": "database-password", "generate": { "type": "random", "bytes": 32, "encoding": "hex" } }] }`; replaces the `spec.secrets` declarations, keeping values already generated |
 | PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } }, "previews": { "domain": "preview.piquel.fr" } } }`; replaces every variable value, clearing those it omits |
 | PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](ingress.md#public-and-private-routes) ceiling of the environment with that name |
