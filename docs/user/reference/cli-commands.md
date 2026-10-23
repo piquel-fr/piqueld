@@ -59,8 +59,8 @@ Commands:
 - [`piquelctl login`](#piquelctl-login): Sign in with a passkey through your browser, and save the login.
 - [`piquelctl logout`](#piquelctl-logout): Sign out: revoke the current credential and delete its saved copy.
 - [`piquelctl whoami`](#piquelctl-whoami): Show who you are signed in as and what the current credential may do.
-- [`piquelctl account`](#piquelctl-account): Manage accounts: list them, change their grants, and create invitation and enrollment links.
-- [`piquelctl token`](#piquelctl-token): Create, list and revoke your API tokens and sessions.
+- [`piquelctl account`](#piquelctl-account): Manage accounts: list, edit and delete them, change their grants and passkeys, and create and revoke invitation and enrollment links.
+- [`piquelctl token`](#piquelctl-token): Create, list and revoke your API tokens and sessions, or revoke an account's.
 - [`piquelctl audit`](#piquelctl-audit): Read the audit trail of API requests, newest first.
 - [`piquelctl recover-admin`](#piquelctl-recover-admin): Print a one-time link that creates a new administrator account.
 - [`piquelctl sign-in-link`](#piquelctl-sign-in-link): Print a one-time link that signs a browser in as the host operator.
@@ -141,7 +141,7 @@ piquelctl whoami [OPTIONS]
 
 ## `piquelctl account`
 
-Manage accounts: list them, change their grants, and create invitation and enrollment links.
+Manage accounts: list, edit and delete them, change their grants and passkeys, and create and revoke invitation and enrollment links.
 
 ```text
 piquelctl account [OPTIONS] <COMMAND>
@@ -153,6 +153,10 @@ Commands:
 - [`piquelctl account access`](#piquelctl-account-access): Replace an account's grants.
 - [`piquelctl account invite`](#piquelctl-account-invite): Print a link that creates a new account with the selected grants.
 - [`piquelctl account enroll`](#piquelctl-account-enroll): Print a link that adds a passkey to an existing account.
+- [`piquelctl account update`](#piquelctl-account-update): Change an account's username or display name.
+- [`piquelctl account delete`](#piquelctl-account-delete): Delete an account, with its passkeys, sessions and API tokens.
+- [`piquelctl account passkey`](#piquelctl-account-passkey): List, rename and remove passkeys.
+- [`piquelctl account invitation`](#piquelctl-account-invitation): List and revoke pending invitation and enrollment links.
 
 ## `piquelctl account list`
 
@@ -267,9 +271,148 @@ Arguments:
 
 - `<ACCOUNT>`: Account username or ID.
 
+## `piquelctl account update`
+
+Change an account's username or display name.
+
+Give `--username`, `--display-name`, or both; the other keeps its value. Anyone may change their own account; another account needs `accounts:manage` and every grant it has. An API token or limited login can't change its own account. Renaming an account you saved a login for also renames the login, so `--account` finds it.
+
+```text
+piquelctl account update [OPTIONS] <--username <USERNAME>|--display-name <NAME>> <ACCOUNT>
+```
+
+Arguments:
+
+- `<ACCOUNT>`: Account username or ID.
+
+Options:
+
+- `--username <USERNAME>`: Rename the account to this unique username.
+- `--display-name <NAME>`: Set the account's display name.
+
+  An empty value clears it.
+
+## `piquelctl account delete`
+
+Delete an account, with its passkeys, sessions and API tokens.
+
+Anyone may delete their own account; another account needs `accounts:manage` and every grant it has. An API token or limited login can't delete its own account. The daemon refuses when no account with `admin` and a passkey would remain.
+
+```text
+piquelctl account delete [OPTIONS] <ACCOUNT>
+```
+
+Arguments:
+
+- `<ACCOUNT>`: Account username or ID.
+
+Options:
+
+- `-y, --yes`: Skip the confirmation prompt.
+
+## `piquelctl account passkey`
+
+List, rename and remove passkeys.
+
+Add a passkey with an `account enroll` link.
+
+```text
+piquelctl account passkey [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`piquelctl account passkey list`](#piquelctl-account-passkey-list): List the passkeys of the accounts you can see, with their owners.
+- [`piquelctl account passkey rename`](#piquelctl-account-passkey-rename): Rename a passkey.
+- [`piquelctl account passkey remove`](#piquelctl-account-passkey-remove): Remove a passkey, so it can no longer sign in.
+
+## `piquelctl account passkey list`
+
+List the passkeys of the accounts you can see, with their owners.
+
+With `accounts:manage`, that is every account. Otherwise, it is only yours.
+
+```text
+piquelctl account passkey list [OPTIONS] [ACCOUNT]
+```
+
+Arguments:
+
+- `[ACCOUNT]`: Only list this account's passkeys, by username or ID.
+
+## `piquelctl account passkey rename`
+
+Rename a passkey.
+
+Anyone may rename their own; another account's needs `accounts:manage` and every grant it has. An API token or limited login can't rename its own account's.
+
+```text
+piquelctl account passkey rename [OPTIONS] <ID> <NAME>
+```
+
+Arguments:
+
+- `<ID>`: Passkey ID, from `account passkey list`.
+- `<NAME>`: New name.
+
+## `piquelctl account passkey remove`
+
+Remove a passkey, so it can no longer sign in.
+
+Sessions it signed in stay valid until revoked with `token revoke`. Anyone may remove their own; another account's needs `accounts:manage` and every grant it has. An API token or limited login can't remove its own account's. The daemon refuses when no account with `admin` and a passkey would remain.
+
+```text
+piquelctl account passkey remove [OPTIONS] <ID>
+```
+
+Arguments:
+
+- `<ID>`: Passkey ID, from `account passkey list`.
+
+Options:
+
+- `-y, --yes`: Skip the confirmation prompt.
+
+## `piquelctl account invitation`
+
+List and revoke pending invitation and enrollment links.
+
+```text
+piquelctl account invitation [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`piquelctl account invitation list`](#piquelctl-account-invitation-list): List pending invitation and enrollment links, with the grants they hand out.
+- [`piquelctl account invitation revoke`](#piquelctl-account-invitation-revoke): Revoke a pending invitation or enrollment link, so it no longer works.
+
+## `piquelctl account invitation list`
+
+List pending invitation and enrollment links, with the grants they hand out.
+
+Needs `accounts:manage`; without it, the list is empty.
+
+```text
+piquelctl account invitation list [OPTIONS]
+```
+
+## `piquelctl account invitation revoke`
+
+Revoke a pending invitation or enrollment link, so it no longer works.
+
+An invitation needs `accounts:manage` and every grant it hands out. An enrollment link needs what `account enroll` does.
+
+```text
+piquelctl account invitation revoke [OPTIONS] <ID>
+```
+
+Arguments:
+
+- `<ID>`: Invitation ID, from `account invitation list`.
+
 ## `piquelctl token`
 
-Create, list and revoke your API tokens and sessions.
+Create, list and revoke your API tokens and sessions, or revoke an account's.
 
 ```text
 piquelctl token [OPTIONS] <COMMAND>
@@ -278,8 +421,8 @@ piquelctl token [OPTIONS] <COMMAND>
 Commands:
 
 - [`piquelctl token create`](#piquelctl-token-create): Create an API token for your account, and print it.
-- [`piquelctl token list`](#piquelctl-token-list): List your sessions and API tokens, with their grants and expiry.
-- [`piquelctl token revoke`](#piquelctl-token-revoke): Revoke a session or API token by ID.
+- [`piquelctl token list`](#piquelctl-token-list): List the sessions and API tokens of an account, with their grants and expiry.
+- [`piquelctl token revoke`](#piquelctl-token-revoke): Revoke a session or API token by ID, or every one of an account with `--all`.
 
 ## `piquelctl token create`
 
@@ -338,25 +481,43 @@ Options:
 
 ## `piquelctl token list`
 
-List your sessions and API tokens, with their grants and expiry.
+List the sessions and API tokens of an account, with their grants and expiry.
+
+Without `--user`, lists yours.
 
 ```text
 piquelctl token list [OPTIONS]
 ```
 
+Options:
+
+- `--user <ACCOUNT>`: List this account's instead, by username or ID.
+
+  Accounts other than yours need `accounts:manage`.
+
 ## `piquelctl token revoke`
 
-Revoke a session or API token by ID.
+Revoke a session or API token by ID, or every one of an account with `--all`.
 
-Give the ID of one of yours, from `token list`, or of a host operator browser session, from `account list`.
+Give the ID of a credential from `token list`, or of a host operator browser session, from `account list`.
 
 ```text
-piquelctl token revoke [OPTIONS] <ID>
+piquelctl token revoke [OPTIONS] [ID]
 ```
 
 Arguments:
 
-- `<ID>`: Credential ID.
+- `[ID]`: Credential ID.
+
+Options:
+
+- `--all`: Revoke every session and API token of an account instead.
+
+  Without `--user`, revokes yours, including the login this command uses. An API token or limited login can't revoke its own account's.
+- `--user <ACCOUNT>`: Revoke this account's with `--all`, by username or ID.
+
+  Accounts other than yours need `accounts:manage` and every grant the account has.
+- `-y, --yes`: Skip the confirmation prompt of `--all`.
 
 ## `piquelctl audit`
 

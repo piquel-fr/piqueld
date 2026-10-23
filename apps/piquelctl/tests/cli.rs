@@ -9,7 +9,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
-    os::unix::net::UnixListener,
+    os::unix::{fs::PermissionsExt, net::UnixListener},
     path::PathBuf,
     process::{Command, Output, Stdio},
     sync::{
@@ -2757,6 +2757,89 @@ fn audit_matches_accounts_missing_from_the_directory() {
     assert!(
         audits[1].contains(&format!("user_id={deleted}")),
         "{audits:?}"
+    );
+}
+
+/// Account commands name accounts by username and send the daemon's IDs;
+/// `update` keeps the profile fields it was not asked to change, and renames
+/// the account's saved login so `--account` still finds it.
+#[test]
+fn account_changes_resolve_usernames_to_typed_requests() {
+    let server = start_server(false, 13, |request| match request.path.as_str() {
+        "/api/v1/auth/me" => Reply::bare(&json!({
+            "user": {"id": "bob-id", "username": "bob", "display_name": "Bob"},
+            "grants": [],
+            "scoped": false
+        })),
+        "/api/v1/auth/directory" => Reply::bare(&json!({
+            "users": [{
+                "user": {"id": "bob-id", "username": "bob", "display_name": "Bob"},
+                "grants": []
+            }],
+            "passkeys": [],
+            "credentials": [],
+            "invitations": []
+        })),
+        "/api/v1/auth/manage" => Reply::bare(&json!({})),
+        "/api/v1/applications" => Reply::json(page(Vec::new(), None)),
+        path => panic!("unexpected path {path}"),
+    });
+    let Endpoint::Tcp(url) = &server.endpoint else {
+        panic!("TCP server");
+    };
+    // Saved logins are keyed by the endpoint without its trailing slash.
+    let url = url.trim_end_matches('/');
+    let directory = tempdir().expect("credentials directory");
+    let credentials = directory.path().join("credentials.json");
+    let login = json!({"username": "bob", "token": "pqd_bob"});
+    let saved = json!({"endpoints": {url: {"selected": "bob-id", "accounts": {"bob-id": login}}}});
+    fs::write(&credentials, saved.to_string()).unwrap();
+    fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut update = server.command();
+    update.env("PIQUELD_CREDENTIALS_FILE", &credentials);
+    let output = update
+        .args(["--json", "--account", "bob", "account", "update", "bob"])
+        .args(["--username", "robert"])
+        .output()
+        .unwrap();
+    assert_json_success(&output);
+    let saved: Value = serde_json::from_slice(&fs::read(&credentials).unwrap()).unwrap();
+    assert_eq!(
+        saved["endpoints"][url]["accounts"]["bob-id"],
+        json!({"username": "robert", "token": "pqd_bob"})
+    );
+    for arguments in [
+        &["account", "delete", "bob", "--yes"][..],
+        &["account", "passkey", "rename", "key-1", "laptop"],
+        &["account", "passkey", "remove", "key-1", "--yes"],
+        &["account", "invitation", "revoke", "inv-1"],
+        &["token", "revoke", "--all", "--user", "bob", "--yes"],
+        &["token", "revoke", "--all", "--yes"],
+    ] {
+        let output = run(&server, arguments);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let sent: Vec<Value> = server
+        .finish()
+        .into_iter()
+        .filter(|request| request.path == "/api/v1/auth/manage")
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            json!({"action": "update_user", "user_id": "bob-id", "username": "robert", "display_name": "Bob"}),
+            json!({"action": "delete_user", "user_id": "bob-id"}),
+            json!({"action": "rename_passkey", "id": "key-1", "name": "laptop"}),
+            json!({"action": "remove_passkey", "id": "key-1"}),
+            json!({"action": "revoke_invitation", "id": "inv-1"}),
+            json!({"action": "revoke_all", "user_id": "bob-id"}),
+            json!({"action": "revoke_all", "user_id": "bob-id"}),
+        ]
     );
 }
 

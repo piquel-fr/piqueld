@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { test, expect, api, auth, adminToken, register, proof, Passkeys, type Session, type Directory, type Managed, type Ceremony } from '../fixtures.js';
+import { test, expect, api, auth, adminToken, register, proof, Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony } from '../fixtures.js';
 
 test('setup gates anonymous access, closes permanently, and supports username-less login', async ({ page, daemon, passkeys }) => {
   void passkeys;
@@ -170,6 +170,48 @@ test('CLI device approval, private credentials, API tokens, revocation and expir
     await expect(page.getByRole('button', { name: 'Sign in with a passkey', exact: true })).toBeVisible();
     await expect(dialog).toHaveCount(0);
   } finally { await login.stop(); }
+});
+
+test('the CLI edits and deletes accounts and manages their passkeys, links and credentials', async ({ page, account, browser, cli }) => {
+  // Tokens can't create invitations, so the browser does.
+  const invite = async () => (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [] })).invitation_url;
+  const token = await adminToken(page, 'cli');
+  const ctl = async (...args: string[]) => {
+    const result = await cli.run(['--json', ...args], token);
+    expect(result.code, result.stderr).toBe(0);
+    return result.stdout ? JSON.parse(result.stdout) : null;
+  };
+  const context = await browser.newContext();
+  try {
+    const recipient = await context.newPage();
+    const device = await Passkeys.create(recipient);
+    try {
+      const bob = await register(recipient, await invite(), 'bob');
+      const updated = await ctl('account', 'update', 'bob', '--username', 'robert', '--display-name', 'Robert');
+      expect(updated.accounts[0].user).toMatchObject({ id: bob.id, username: 'robert', display_name: 'Robert' });
+
+      const [passkey] = await ctl('account', 'passkey', 'list', 'robert');
+      expect(passkey.user_id).toBe(bob.id);
+      await ctl('account', 'passkey', 'rename', passkey.id, 'Laptop');
+      expect((await ctl('account', 'passkey', 'list', 'robert'))[0].name).toBe('Laptop');
+
+      // Bob's browser session ends with the rest of his credentials.
+      expect(await ctl('token', 'list', '--user', 'robert')).not.toHaveLength(0);
+      await ctl('token', 'revoke', '--all', '--user', 'robert', '--yes');
+      expect(await ctl('token', 'list', '--user', 'robert')).toHaveLength(0);
+      expect((await api(recipient, 'me')).status).toBe(401);
+
+      await invite();
+      const [pending] = await ctl('account', 'invitation', 'list');
+      await ctl('account', 'invitation', 'revoke', pending.id);
+      expect(await ctl('account', 'invitation', 'list')).toHaveLength(0);
+
+      await ctl('account', 'passkey', 'remove', passkey.id, '--yes');
+      expect(await ctl('account', 'passkey', 'list', 'robert')).toHaveLength(0);
+      await ctl('account', 'delete', 'robert', '--yes');
+      expect((await ctl('account', 'list')).accounts.map((entry: Account) => entry.user.id)).toEqual([account.id]);
+    } finally { await device.close(); }
+  } finally { await context.close(); }
 });
 
 test('account deletion can be cancelled and the last administrator is protected', async ({ page, account }) => {
