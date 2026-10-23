@@ -14,7 +14,7 @@ Every worktree has its own instance: configuration (`piqueld.local.toml`),
 data, Unix socket, localhost port, and Docker-in-Docker engine, and serves on
 a port of the shared tailnet node once it is logged in. It never
 touches the host's Docker Engine, where a production piqueld runs, or another
-worktree's instance. `docs/development.md` describes it in full.
+worktree's instance. `docs/dev/development.md` describes it in full.
 
 ## Start and wait
 

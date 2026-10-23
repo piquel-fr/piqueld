@@ -1,3 +1,5 @@
+-- Build output chunks record their stream, stdout or stderr, and capture
+-- time; `build_log_stream` filters by stream before paging backwards.
 -- Old output has no stream or capture time and cannot satisfy the new contract.
 -- Expire those logs while retaining build metadata.
 UPDATE builds SET log_expired=1,log_bytes=0

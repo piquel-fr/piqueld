@@ -5,5 +5,5 @@ The daemon tests cover a fresh SQLite lifecycle, the real Docker abstraction wit
 an in-memory fake, and an opt-in isolated Docker qualification. The client tests
 cover the loopback TCP and Unix-socket transports. This directory holds only the
 [Playwright browser tests](playwright/README.md), which drive the embedded
-dashboard. See [contract coverage](../docs/contract-coverage.md) for where each
+dashboard. See [contract coverage](../docs/dev/contract-coverage.md) for where each
 contract is tested.

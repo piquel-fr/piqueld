@@ -352,7 +352,7 @@ proves that the tunnel reaches this gateway.
 ## Push webhooks
 
 Applications whose repository syncs with `webhook` (see
-[deploying on push](application-manifest.md#deploying-on-push)) need GitHub to
+[deploying on push](../reference/manifest.md#deploying-on-push)) need GitHub to
 reach piqueld, whose API is only on the tailnet. The gateway exposes exactly one
 path for that, on a dedicated public hostname:
 
@@ -407,7 +407,7 @@ the secret, and the `push` event. GitHub's delivery log shows each response.
 ## Dashboard hostname
 
 The website (dashboard and API) is served on the daemon's own listeners, such as
-its [tailnet node](configuration.md#tailnet-node) at
+its [tailnet node](../reference/configuration.md#tailnet-node) at
 `https://piqueld.<tailnet>.ts.net`. To reach it on your own domain instead, serve
 it through private ingress, like a private route:
 
@@ -431,7 +431,7 @@ dashboard_hostname = "dashboard.example.com"
   daemon asks the apps node who that client is (`tailscale whois`, through the
   node's socket in `<data_dir>/ingress/tailscale/run`), so the `tailscale` CLI
   must be on `PATH` for the audit trail to name tailnet users and for
-  [tailnet-bound tokens](authorization.md#tailnet-bound-tokens) to work here.
+  [tailnet-bound tokens](../accounts/authorization.md#tailnet-bound-tokens) to work here.
 - **DNS and certificates.** The hostname gets a private route's A/AAAA records
   to the apps node's addresses, managed like routes' when a DNS provider sets
   `manage_records` for its zone (see [managed DNS records](#managed-dns-records)),
@@ -443,7 +443,7 @@ dashboard_hostname = "dashboard.example.com"
   created on another origin, such as the tailnet node's, stop working there.
   Register new ones with an enrollment link (`piquelctl account enroll`, with a
   CLI login that still works), or, if none does,
-  [recover administrator access](authentication.md#recovering-administrator-access).
+  [recover administrator access](../accounts/authentication.md#recovering-administrator-access).
   The tailnet node keeps serving the API, and `piquelctl status` reports that
   `auth.public_url` is not its origin.
 
@@ -455,7 +455,7 @@ hostname is not served.
 
 Private routes, which a public CA cannot reach, get certificates through ACME
 DNS-01 instead of Caddy's automatic HTTPS. piqueld obtains them itself through the
-[DNS providers](configuration.md#dns-providers) in daemon TOML and loads them into
+[DNS providers](../reference/configuration.md#dns-providers) in daemon TOML and loads them into
 stock Caddy through its admin API (`tls.certificates.load_pem`). Automatic HTTPS
 is off on the private listener, so Caddy never attempts HTTP-01 for them. DNS
 credentials stay in the daemon, so a compromised gateway cannot take over a
@@ -503,7 +503,7 @@ hostnames, expiry and last error.
 ## Managed DNS records
 
 piqueld can create and maintain each route's DNS records through the
-[DNS providers](configuration.md#dns-providers) that set `manage_records`:
+[DNS providers](../reference/configuration.md#dns-providers) that set `manage_records`:
 
 ```toml
 [ingress]
@@ -654,7 +654,7 @@ tailnet addresses. A broken node degrades only private routes. Each route report
 its effective `visibility`, the `dns` records its hostname needs, and whether
 piqueld [manages them](#managed-dns-records) (`dns_state`). `routes` lists
 only the routes of applications the caller can
-[read](authorization.md#what-callers-see).
+[read](../accounts/authorization.md#what-callers-see).
 
 Every gateway change (network, image pull, start, replacement, recovery, route
 reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it

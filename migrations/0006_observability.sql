@@ -1,4 +1,9 @@
--- Events carry their own context; application deletion only removes application scope.
+-- Events carry their own diagnostic and action context; application deletion
+-- only removes application scope. Executing actions are kept for recovery,
+-- history coverage records what retention pruned, and a durable outbox
+-- delivers webhook notifications of events and observed health conditions.
+-- Existing events keep application scope without diagnostic detail, and
+-- notification processing starts after them, so they raise no alerts.
 ALTER TABLE events ADD COLUMN scope TEXT NOT NULL DEFAULT 'application' CHECK(scope IN ('application','daemon'));
 ALTER TABLE events ADD COLUMN action_id TEXT;
 ALTER TABLE events ADD COLUMN retry INTEGER;

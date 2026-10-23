@@ -38,7 +38,7 @@ lock, so old-target repair cannot continue after promotion. There is no automati
 rollback after rollout starts.
 
 Promoting a release into a
-[promoted environment](application-manifest.md#promoted-environments) (`env
+[promoted environment](../../user/reference/manifest.md#promoted-environments) (`env
 promote`, not to be confused with the target promotion above) has no
 preparation phase. The daemon checks the source and the release's images,
 renders and compiles the release when it accepts the request, and saves the
@@ -182,7 +182,7 @@ reconstruct state. Their independent retention defaults to 90 days. Application 
 scopes have separate policies. Action intent is journaled before runtime mutation;
 retries and outcomes retain sanitized diagnostics. Unchanged successful
 observations and raw Docker response bodies are not logged as events. See
-[observability](observability.md) for crash recovery and notification semantics.
+[observability](../../user/guides/observability.md) for crash recovery and notification semantics.
 
 Docker requests have deadlines, image resolution checks tag stability, and
 service observation inspects complete specifications. Raw engine error sources
@@ -238,7 +238,7 @@ another architecture needs its musl target added.
 
 ## Service files
 
-Each [file](application-manifest.md#files) a service mounts is an immutable
+Each [file](../../user/reference/manifest.md#files) a service mounts is an immutable
 Swarm config holding its content, named after the environment, the content's
 SHA-256 digest, and the file's mode (`piqueld-<environment>-file-…`), since
 Docker materializes a config once per container, and labelled
@@ -283,7 +283,7 @@ An image is kept while a retention root uses it:
 - each environment's last `images.keep_deployments` successful deployments
   (default 3), so their releases can be promoted again; previews keep none;
 - what every environment that a
-  [promoted environment](application-manifest.md#promoted-environments)
+  [promoted environment](../../user/reference/manifest.md#promoted-environments)
   promotes from currently runs: the release `env promote` takes by default.
 
 Images a container uses, even a stopped one, are kept too. Cleanup runs when the
@@ -311,7 +311,7 @@ between.
 
 ## Link networks
 
-A [link](application-manifest.md#links) is an overlay network the importing
+A [link](../../user/reference/manifest.md#links) is an overlay network the importing
 environment owns, named after it and the exporting environment
 (`piqueld-<importer>-network-link-<exporter>-…`), labelled with the importer's
 ownership labels plus `io.piqueld.link=<exporter environment ID>`. Every service
@@ -353,7 +353,7 @@ frees up.
 ## Telemetry sockets
 
 In an environment granted telemetry, the service that sets
-[`receives_telemetry`](application-manifest.md#telemetry-receivers) gets the
+[`receives_telemetry`](../../user/reference/manifest.md#telemetry-receivers) gets the
 socket directory of its own, `<data_dir>/telemetry/<environment-id>/<service>/`,
 as a writable bind mount at `/run/piqueld/telemetry`, and runs as the daemon's
 `uid:gid` instead of its image's user, so the daemon can connect to the socket

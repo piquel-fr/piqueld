@@ -1,7 +1,9 @@
 -- Applications split into the product and its deployable environments.
 -- Every existing application becomes an application with one environment
 -- named `production`. Both keep the existing ID, so Docker names, ownership
--- labels, secret encryption context and history still derive from it.
+-- labels, secret encryption context and history still derive from it, and
+-- nothing is redeployed. Stored operation records and request receipts keep
+-- saying `application_id`, which the daemon still decodes.
 DROP INDEX application_live_name;
 -- Renaming the table also repoints every foreign key that referenced it.
 ALTER TABLE applications RENAME TO environments;

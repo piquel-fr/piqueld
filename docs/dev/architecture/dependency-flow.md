@@ -3,7 +3,7 @@
 `piqueld-core` owns manifest and resource types, application and environment
 identities (`ApplicationId` for the product owning the manifest, `EnvironmentId`
 for the deployable unit that runtime names derive from), pure planning and
-[link](../application-manifest.md#links) resolution, environment status,
+[link](../../user/reference/manifest.md#links) resolution, environment status,
 operation records, and shared API requests and responses. It has no HTTP server,
 database, Docker, or UI dependency. The daemon uses these contracts directly.
 `piqueld-client` adds HTTP transport and reexports the shared contracts for the
@@ -20,7 +20,7 @@ Progenitor cannot generate: the two TOML operations, the local snapshot upload,
 and the exec WebSocket. The generator is enabled
 only by the daemon's `openapi-codegen` feature; the client uses Progenitor's
 small runtime support crate. See
-[client generation](../../tools/client-codegen/README.md).
+[client generation](https://github.com/piquel-fr/piqueld/blob/main/tools/client-codegen/README.md).
 
 Inside the daemon:
 

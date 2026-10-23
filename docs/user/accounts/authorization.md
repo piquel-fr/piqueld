@@ -18,7 +18,7 @@ system:read                    installation-wide; never limited to applications
 ```
 
 An account's access is the union of its grants. A grant on an application
-covers each of its [environments](application-manifest.md), including ones
+covers each of its [environments](../reference/manifest.md), including ones
 added later: requests about an environment are checked on its application.
 
 | Permission | Scope | Allows |
@@ -26,7 +26,7 @@ added later: requests about an environment are checked on its application.
 | `admin` | all or listed applications | On every application: everything, including installation-wide permissions. On listed applications: every application permission there |
 | `apps:read` | all or listed applications | Configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, and secret names and which environments may mount them |
 | `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding, renaming or changing the source of environments, opting them into or out of sync, and generating webhook secrets |
-| `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
+| `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](../reference/manifest.md#deploying-on-push) or opt an environment into it |
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
 | `previews:deploy` | all or listed applications | Create and deploy [previews](#preview-permissions), including from a local worktree, and read their logs; included in `apps:deploy` |
 | `previews:delete` | all or listed applications | Delete and prune previews; included in `apps:delete` |
@@ -38,14 +38,14 @@ added later: requests about an environment are checked on its application.
 | `system:read` | installation | Daemon configuration, resources, daemon history, notification destinations and deliveries, and DNS providers and certificates |
 | `system:operate` | installation | Secret key recovery, notification retries, and DNS provider checks |
 | `accounts:manage` | installation | Other accounts and invitations, within the limits below |
-| `audit:read` | installation | Every account's [audit trail](observability.md#audit-trail); everyone reads their own |
+| `audit:read` | installation | Every account's [audit trail](../guides/observability.md#audit-trail); everyone reads their own |
 | `telemetry:grant` | installation | Grant or revoke an environment's [telemetry](#telemetry-receivers), which its receiving service gets from every application |
-| `notifications:manage` | installation | Create, change, test and delete [notification destinations](observability.md#notifications), which receive notifications about every application they select |
+| `notifications:manage` | installation | Create, change, test and delete [notification destinations](../guides/observability.md#notifications), which receive notifications about every application they select |
 
 Every application permission also allows reading that application, so a
 deploy-only token can follow its own deployment. The daemon status, readiness,
 and `OpenAPI` document are available to every signed-in account. The generated
-[OpenAPI document](openapi-v1.json) names each operation's requirement in its
+[OpenAPI document](../../openapi-v1.json) names each operation's requirement in its
 `x-piqueld-access` extension: `public`, `authenticated`, or a permission.
 
 ## Preview permissions
@@ -89,7 +89,7 @@ out the whole-application ones.
 
 ## Links between applications
 
-[Links](application-manifest.md#links) are configuration: editing exports
+[Links](../reference/manifest.md#links) are configuration: editing exports
 (`PUT .../exports`) or imports (`PUT .../imports`) needs `apps:write` on that
 application, and deploying them `apps:deploy` (or `previews:deploy` for a
 preview's imports). Importing needs no permission on the exporting application:
@@ -109,7 +109,7 @@ environment's importers list only applications the caller can read.
 
 An environment granted telemetry gets the daemon's traces, metrics and logs
 from **every** application in its
-[receiving service](observability.md#receiving-telemetry-in-an-application),
+[receiving service](../guides/observability.md#receiving-telemetry-in-an-application),
 so the grant can't rest on that application's own permissions. Granting or
 revoking it (`PUT /api/v1/environments/{id}/telemetry`, `piquelctl env telemetry`)
 needs `telemetry:grant`, an installation-wide permission, and reading the
@@ -211,7 +211,7 @@ piquelctl token revoke <id>
 ```
 
 `auth.max_token_days` limits the lifetime of new tokens; see
-[configuration](configuration.md#authentication-origin). Deleting an
+[configuration](../reference/configuration.md#authentication-origin). Deleting an
 application removes grants on it; tokens left without any grant are revoked.
 
 A CLI login can ask for less than your access with the same options;
@@ -230,8 +230,8 @@ token or login.
 
 ### Tailnet-bound tokens
 
-With the daemon's [tailnet node](configuration.md#tailnet-node) enabled, or a
-[dashboard hostname](ingress.md#dashboard-hostname) set, a token can be bound to
+With the daemon's [tailnet node](../reference/configuration.md#tailnet-node) enabled, or a
+[dashboard hostname](../guides/ingress.md#dashboard-hostname) set, a token can be bound to
 a tailnet user or tag. It is then accepted only through that node, or that
 hostname, from a device signed in as that user or carrying that tag, as
 reported by the node's `tailscaled` (the apps node's, for the dashboard
@@ -253,28 +253,23 @@ Tagged devices belong to no user, so a user binding never matches them; bind
 those tokens to a tag. Creating a bound token without the tailnet node or a
 dashboard hostname is refused, since it could never be used.
 
-## Upgrading
+
+## When access changes take effect
 
 The first account created during setup receives `admin` on every application.
-Upgrading an existing installation gives every existing account `admin` on
-every application, so access is unchanged until you reduce it, including
-`apps:exec`. Existing tokens keep acting with their account's full access, but
-like every token they can no longer create credentials. Invitations created before the
-upgrade create accounts without access; grant it after they register.
-
 Grants are evaluated on every request, so changes take effect immediately for
 the account's sessions and tokens. Every write (account changes, passkeys,
 tokens, application mutations, secrets, key recovery, notification destinations
-and retries)
-re-reads the caller's credential and grants inside its transaction, so a request
-that authenticated just before a demotion, revocation, or expiry cannot use the
-access it lost. Connections that outlive their request, event streams and
-commands started with `apps:exec`, recheck the caller's access within a second
-of an account change, a revoked credential, or a grant change. They also
-recheck it every 30 seconds, plus the time the check takes, which catches an
-expired credential, a token revoked because its application was deleted, or a
-tailnet peer that no longer matches a token's binding. A stream stops sending
-history its caller may no longer read, and one that lost access entirely ends
-with an `access_ended` message. A command session that lost access ends with
-the refusal (401 or 403); like a disconnect, the command itself may keep
-running in the task. Both also end when the daemon shuts down.
+and retries) re-reads the caller's credential and grants inside its
+transaction, so a request that authenticated just before a demotion,
+revocation, or expiry cannot use the access it lost. Connections that outlive
+their request, event streams and commands started with `apps:exec`, recheck the
+caller's access within a second of an account change, a revoked credential, or
+a grant change. They also recheck it every 30 seconds, plus the time the check
+takes, which catches an expired credential, a token revoked because its
+application was deleted, or a tailnet peer that no longer matches a token's
+binding. A stream stops sending history its caller may no longer read, and one
+that lost access entirely ends with an `access_ended` message. A command
+session that lost access ends with the refusal (401 or 403); like a
+disconnect, the command itself may keep running in the task. Both also end
+when the daemon shuts down.

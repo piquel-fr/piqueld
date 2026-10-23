@@ -29056,7 +29056,7 @@
     },
     "/api/v1/events/stream": {
       "get": {
-        "description": "Events arrive oldest first, resuming after the `Last-Event-ID` header or\n`cursor` (from the beginning when both are absent). Invalid cursors fail with\n400 and pruned history with 410 before the stream opens. The stream emits:\n- `event` messages with `id: v1:<event-id>` for each matching event;\n- ID-only messages that advance the resume position past filtered-out events;\n- a final `history_expired` or `stream_error` message, after which the\n  stream ends and history must be reloaded before reconnecting;\n- a final `access_ended` message whose data is the `ErrorBody` of the\n  request that would now be refused, once the caller loses access (see\n  docs/authorization.md for how soon).\n\nThe stream also ends, without a message, when the daemon shuts down.",
+        "description": "Events arrive oldest first, resuming after the `Last-Event-ID` header or\n`cursor` (from the beginning when both are absent). Invalid cursors fail with\n400 and pruned history with 410 before the stream opens. The stream emits:\n- `event` messages with `id: v1:<event-id>` for each matching event;\n- ID-only messages that advance the resume position past filtered-out events;\n- a final `history_expired` or `stream_error` message, after which the\n  stream ends and history must be reloaded before reconnecting;\n- a final `access_ended` message whose data is the `ErrorBody` of the\n  request that would now be refused, once the caller loses access (see\n  docs/user/accounts/authorization.md for how soon).\n\nThe stream also ends, without a message, when the daemon shuts down.",
         "operationId": "streamEvents",
         "parameters": [
           {

@@ -1,6 +1,7 @@
 -- Scoped credentials act with their own grants, limited by their account's
 -- current access; other credentials act with the account's access. Scoped
--- credentials without grants can do nothing.
+-- credentials without grants can do nothing, and no scoped credential can
+-- create credentials, so existing API tokens lose that ability on upgrade.
 ALTER TABLE auth_credentials ADD COLUMN scoped INTEGER NOT NULL DEFAULT 0 CHECK (scoped IN (0, 1));
 -- Existing API tokens keep acting with their account's full access.
 UPDATE auth_credentials SET scoped = 1 WHERE kind = 'token';

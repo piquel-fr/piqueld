@@ -2,7 +2,7 @@
 -- last read from its repository: while the manifest there is unchanged, its
 -- deployments keep deploying the saved one, edits included. Saved manifests
 -- could not be edited until now, so each repository-backed application's is
--- the one it last read.
+-- the one it last read, and none starts with edits. Nothing is redeployed.
 ALTER TABLE applications ADD COLUMN repository_json TEXT CHECK (repository_json IS NULL OR json_valid(repository_json));
 UPDATE applications SET repository_json=desired_json WHERE json_extract(desired_json,'$.spec.manifest') IS NOT NULL;
 

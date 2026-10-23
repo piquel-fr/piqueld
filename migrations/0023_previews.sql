@@ -2,7 +2,8 @@
 -- branch of the application's manifest repository, configured by
 -- `[spec.previews]`. They reuse every environment table. A preview is named
 -- by its slug, so the existing unique name index keeps preview slugs and
--- environment names of one application apart.
+-- environment names of one application apart. Existing rows become
+-- environments, so nothing is redeployed.
 ALTER TABLE environments ADD COLUMN kind TEXT NOT NULL DEFAULT 'environment'
     CHECK (kind = 'environment' OR (kind = 'preview' AND branch IS NOT NULL AND pinned_commit IS NULL));
 -- Distinguishes several previews of one branch.

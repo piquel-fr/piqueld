@@ -10,12 +10,15 @@
 #   browser-playwright -> test-playwright
 #   cli (macOS)        -> validate-cli
 #   nix                -> the combined Nix package
+#   docs               -> docs
 #
 # Pull requests run only the jobs whose inputs changed (see `changes`). Draft
 # pull requests run only the quick jobs (checks, rust, wasm-ui): the slower
 # ones (Docker, Playwright, macOS, Nix) wait until the pull request is marked
-# ready, so iterating on a draft stays cheap. Pushes to main and manual runs
-# run everything, and build every Nix package.
+# ready, so iterating on a draft stays cheap. `docs` runs on every pull
+# request, as its links point all over the repository and any change can
+# break one. Pushes to main and manual runs run everything, and build every
+# Nix package.
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
@@ -325,6 +328,21 @@ jobs:
       - name: Build the other Nix packages
         run: nix build -L --out-link result-other ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
 
+  # Builds the documentation book and checks its links. The flake's `docs`
+  # shell provides the tools at the versions flake.lock pins, as in
+  # `nix develop`.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes or fetches with the token.
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - run: nix develop .#docs --command just docs
+
   ci:
     name: ci
     if: always()
@@ -337,6 +355,7 @@ jobs:
       - browser-playwright
       - macos-cli
       - nix
+      - docs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

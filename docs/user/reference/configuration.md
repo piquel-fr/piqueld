@@ -53,7 +53,7 @@ The Unix API socket is separate, at `<runtime_dir>/piqueld.sock`. It is always
 `0660`, owned by the daemon's user and effective group. Group membership allows
 connections; account authentication is also required, except for root and the
 daemon's own user, who act as the
-[host operator](authentication.md#the-host-operator).
+[host operator](../accounts/authentication.md#the-host-operator).
 
 The service manager or installer must create the runtime directory before
 startup. Use daemon ownership and mode `0750` for group access, or `0700` for
@@ -103,9 +103,9 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 | `retention.event_days` | `90` (`0` disables application event pruning) |
 | `retention.daemon_event_days` | `90` (`0` disables daemon event pruning) |
 | `retention.audit_days` | `365` (`0` disables audit trail pruning) |
-| `telemetry.endpoint` | none ([telemetry export](observability.md#telemetry-export) off) |
+| `telemetry.endpoint` | none ([telemetry export](../guides/observability.md#telemetry-export) off) |
 | `telemetry.headers_file` | none |
-| `telemetry.containers` | `true` ([container logs and resource usage](observability.md#container-telemetry) exported with the daemon's) |
+| `telemetry.containers` | `true` ([container logs and resource usage](../guides/observability.md#container-telemetry) exported with the daemon's) |
 | `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
 | `build_history.log_max_bytes` | `4194304` (4 MiB; `1..=67108864`) |
 | `build_history.log_retention_days` | `30` (`1..=3650`) |
@@ -122,7 +122,7 @@ For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
 The convergence timeout bounds how long a deployment waits without progress:
 it restarts each time a service converges, so each link of a
-[startup dependency](application-manifest.md#startup-dependencies) chain gets
+[startup dependency](manifest.md#startup-dependencies) chain gets
 the full timeout.
 One async controller overlaps pending work. Internal global limits allow two
 image resolutions, one image build, eight observations, and one resource
@@ -168,7 +168,7 @@ it; the Unix API socket serves the API alone.
 
 ## Previews
 
-`[previews]` bounds what [previews](application-manifest.md#previews), often
+`[previews]` bounds what [previews](manifest.md#previews), often
 created by agents, may use on the node that also runs production:
 
 ```toml
@@ -216,7 +216,7 @@ environment's last `keep_deployments` successful deployments, so their releases
 can be promoted again, and removes the rest one by one, by ID. Images other installations
 built on the same Docker Engine, images built by hand, and pulled registry
 images are never removed. See
-[image retention](docker-reconciliation.md#image-retention).
+[image retention](../../dev/architecture/docker-reconciliation.md#image-retention).
 
 ```toml
 [images]
@@ -335,8 +335,8 @@ Native clients without browser headers continue to work. The Unix socket skips
 the TCP hostname and Fetch Metadata checks; authentication and its origin checks
 still apply on every API transport.
 
-See [observability](observability.md) for telemetry export, diagnostic
-ownership and retention semantics. [Notification destinations](observability.md#notifications)
+See [observability](../guides/observability.md) for telemetry export, diagnostic
+ownership and retention semantics. [Notification destinations](../guides/observability.md#notifications)
 are managed through the API, CLI and dashboard rather than this file; a
 `[notifications]` table is rejected as unknown.
 
@@ -377,9 +377,9 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - The node has its own tailnet IP, so it never competes with managed ingress
   for port 443.
 - piqueld asks its `tailscaled` who each peer is (`tailscale whois`, one
-  lookup per address at a time). The [audit trail](observability.md#audit-trail) records
+  lookup per address at a time). The [audit trail](../guides/observability.md#audit-trail) records
   that tailnet user or tag and node, cached for a minute per address. API
-  tokens can be [bound to a tailnet identity](authorization.md#tailnet-bound-tokens),
+  tokens can be [bound to a tailnet identity](../accounts/authorization.md#tailnet-bound-tokens),
   which is always checked with a fresh lookup.
 
 Startup fails if the node cannot start or obtain a certificate. While running,
@@ -397,7 +397,7 @@ dedicated node.
 `socket` makes piqueld use a `tailscaled` that is already logged in instead of
 starting its own, and `https_port` serves the website on another port of the
 node. Several daemons can then share one node, each on its own port, as the
-[development instances](development.md#tailnet) do:
+[development instances](../../dev/development.md#tailnet) do:
 
 ```toml
 [tailscale]
@@ -422,13 +422,13 @@ https_port = 7846         # https://<node>.<tailnet>.ts.net:7846
 `https://<ingress.private.dashboard_hostname>` when that is set, then to the
 tailnet node's URL when `[tailscale]` is enabled, and to `http://localhost:7845`
 otherwise. Remote passkey login requires HTTPS even over Tailscale. See
-[authentication](authentication.md) for reverse-proxy setup, the private
+[authentication](../accounts/authentication.md) for reverse-proxy setup, the private
 first-account link, invitations, and credential lifetimes.
 
 `auth.max_token_days` limits the lifetime of new API tokens. Unset (the default)
 allows any lifetime, including tokens that never expire; with a limit, tokens must
 expire within it. Existing tokens are unaffected. See
-[authorization](authorization.md#api-tokens).
+[authorization](../accounts/authorization.md#api-tokens).
 
 ```toml
 [auth]
@@ -461,7 +461,7 @@ startup, checks that it is a tunnel credentials file, and writes it, mode 0600, 
 `<data_dir>/ingress/tunnel/credentials.json` for the `cloudflared` container.
 piqueld reads `telemetry.headers_file` at
 startup and sends its `name: value` lines as gRPC headers with every
-[telemetry export](observability.md#telemetry-export).
+[telemetry export](../guides/observability.md#telemetry-export).
 
 Errors and the read-only settings view name the file a value came from, never
 the value. Restart the daemon after changing a credential file.
@@ -476,7 +476,7 @@ recovery, even when all secrets are deleted. New writes authenticate a persisten
 key verifier; replacing the key with a different valid 32-byte file fails closed.
 Restore the original key, owned by the daemon user with private permissions.
 Secret metadata remains readable without it. Key failures are recorded as
-`secret_storage_unavailable` diagnostics; see [observability](observability.md).
+`secret_storage_unavailable` diagnostics; see [observability](../guides/observability.md).
 
 Secret values use authenticated XChaCha20-Poly1305 encryption, binding ciphertext
 to application, logical name and version. The implementation uses
@@ -490,7 +490,7 @@ Restore `secrets.key` from backup whenever possible. If it cannot be recovered,
 `piquelctl secrets recover-key --yes` discards **all stored values for every
 application on the daemon**. It refuses while the current key still works.
 Names, generations, file references and deployment history remain; discarded
-versions are marked unavailable. [Notification destinations](observability.md#notifications),
+versions are marked unavailable. [Notification destinations](../guides/observability.md#notifications),
 whose URLs are encrypted with the same key, are deleted; create them again. Docker secrets and running services are left in
 place. An unusable key file is renamed to `secrets.key.retired-<ms>` rather than
 deleted, since it may match another database backup.
@@ -520,7 +520,7 @@ made while disabled, without activating saved-but-undeployed changes.
 `public_addresses` lists the server's public IPv4 and IPv6 addresses. Where a
 DNS provider manages records, direct public routes get A/AAAA records to them;
 without any, those records stay manual. Tunnel mode does not use them. See
-[managed DNS records](ingress.md#managed-dns-records).
+[managed DNS records](../guides/ingress.md#managed-dns-records).
 
 ```toml
 [ingress]
@@ -544,14 +544,14 @@ auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
 `hostname` must be a single DNS label, different from `tailscale.hostname` when
 both nodes run. Without `auth_key_file`, the daemon logs the node's login URL.
 It is read once at startup; while disabled, private routes report `disabled`.
-See [public and private routes](ingress.md#public-and-private-routes).
+See [public and private routes](../guides/ingress.md#public-and-private-routes).
 
 `ingress.private.dashboard_hostname` serves the website (dashboard and API) to the
 tailnet on your own domain, through the private listener like a private route.
 An unset `auth.public_url` becomes its HTTPS origin, and applications may not
 route it or its subdomains. It requires `ingress.enabled` and
 `ingress.private.enabled`, and is read once at startup. See
-[dashboard hostname](ingress.md#dashboard-hostname).
+[dashboard hostname](../guides/ingress.md#dashboard-hostname).
 
 `[ingress.tunnel]` serves public routes through a locally managed Cloudflare
 Tunnel instead of ports 80/443, which are then closed:
@@ -564,20 +564,20 @@ credentials_file = "cloudflared-tunnel.json"   # from `cloudflared tunnel create
 
 It is read once at startup. Each public hostname then needs a proxied CNAME to
 `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in plaintext.
-See [Cloudflare Tunnel](ingress.md#cloudflare-tunnel).
+See [Cloudflare Tunnel](../guides/ingress.md#cloudflare-tunnel).
 
 `ingress.webhook_hostname` serves GitHub push webhooks, and nothing else, on a
 dedicated public hostname, for applications whose repository syncs with
 `webhook`. The daemon then always serves the webhook socket; the gateway
 forwards to it while ingress is enabled. It is read once at startup. See
-[push webhooks](ingress.md#push-webhooks).
+[push webhooks](../guides/ingress.md#push-webhooks).
 
 Gateway certificates, accepted configuration, and the private administration socket
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
 Caddy; it receives neither the Docker socket nor the daemon API socket/database.
 The control mount also holds the webhook socket, which serves only webhook
 deliveries.
-See [ingress](ingress.md) for DNS, networking, lifecycle, and status details.
+See [ingress](../guides/ingress.md) for DNS, networking, lifecycle, and status details.
 
 ## DNS providers
 
@@ -585,7 +585,7 @@ See [ingress](ingress.md) for DNS, networking, lifecycle, and status details.
 certificates through ACME DNS-01 for hostnames a public CA cannot reach, such as
 private routes, and, with `manage_records = true`, to create and maintain routes'
 A/AAAA/CNAME records in their zones (see
-[managed DNS records](ingress.md#managed-dns-records)). Credentials are accepted only as `_file` settings; relative
+[managed DNS records](../guides/ingress.md#managed-dns-records)). Credentials are accepted only as `_file` settings; relative
 paths resolve against `$CREDENTIALS_DIRECTORY`. They are read once at startup and
 never enter a container. Settings show only their file paths.
 
@@ -617,4 +617,4 @@ providers** in the dashboard's System status panel, or call
 `POST /api/v1/system/dns/refresh`. Replacing a credential file needs a restart.
 A hostname belongs to the provider with the longest matching
 zone; a zone claimed by two providers is a conflict and is not used. See
-[ingress](ingress.md#dns-01-certificates) for issuance and renewal.
+[ingress](../guides/ingress.md#dns-01-certificates) for issuance and renewal.

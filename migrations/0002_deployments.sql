@@ -1,4 +1,8 @@
--- Editable applications remain authoritative. Operations execute captured snapshots.
+-- Editable applications remain authoritative. Operations execute captured
+-- snapshots: each deployment references its operation and captures a manifest
+-- and configuration revision. Attempt outcomes survive event pruning, and a
+-- deployment's success is kept regardless of later runtime repair.
+-- Application status gains the `not_deployed` state.
 CREATE TABLE deployments (
     id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
     application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,

@@ -13,7 +13,7 @@ only. `nix develop` provides the CLI development tools, and `just validate-cli`
 lints and tests the CLI and its shared client/core crates. `just build-cli`
 builds the release binary. CI runs `just validate-cli` on `macos-latest` when
 the CLI or its shared crates change. nix-darwin users can import
-`darwinModules.piquelctl` to install it with profiles; see [NixOS](nixos.md).
+`darwinModules.piquelctl` to install it with profiles; see [NixOS](../getting-started/nixos.md).
 
 The daemon runs on Linux. With its listen mode set to `tailscale` or `both`,
 connect from a tailnet peer using its IP address or MagicDNS name:
@@ -85,7 +85,7 @@ piquelctl events --application <application-id> --limit 50
 
 An application owns the saved manifest; its environments deploy it, each with its
 own deployments, status, volumes, generated secrets, routes, and network. A
-manifest that [declares environments](application-manifest.md#declared-environments)
+manifest that [declares environments](manifest.md#declared-environments)
 gets exactly those when it is saved or fetched from the branch `spec.manifest`
 names; otherwise applications have an environment named `production` from
 creation (existing applications were migrated to one that kept their ID). `env` commands select an environment by name
@@ -122,7 +122,7 @@ deployment. Both fail with `manifest_repository_required` for applications
 without a repository. `env list` and `env show` report the source as `saved`,
 as the branch, e.g. `main` or `main@<commit>`, or as `promoted from <name>`.
 
-[Deploying on push](application-manifest.md#deploying-on-push) is a repository
+[Deploying on push](manifest.md#deploying-on-push) is a repository
 setting: `app repository sync APP poll [--interval SECONDS]` lists the branches
 every interval (300 seconds by default), `webhook` when GitHub reports a push,
 and `off` (the default) deploys only when asked; `app repository connect` takes
@@ -134,7 +134,7 @@ deployment stays until the branch moves. `env sync … off` opts it out again;
 `env sync` needs no revision and asks no confirmation. Turning sync on, or
 opting in while it is on, needs `apps:deploy` too.
 
-`notification` manages [notification destinations](observability.md#notifications).
+`notification` manages [notification destinations](../guides/observability.md#notifications).
 `notification set NAME` creates a destination, or changes one; options it
 omits keep the current settings, and a new destination receives every category
 but `deployment_succeeded` about every application, without previews. The URL is read from `--url-file`
@@ -162,7 +162,7 @@ first, and `retry ID` retries a failed one. Changing destinations needs
 and retrying `system:operate`.
 
 `env telemetry APP ENV on` grants an environment the daemon's
-[telemetry](observability.md#receiving-telemetry-in-an-application): its
+[telemetry](../guides/observability.md#receiving-telemetry-in-an-application): its
 receiving service, marked with `app service telemetry APP SERVICE on`, gets
 the traces, metrics and logs of every application. It needs `telemetry:grant`,
 which no preset includes. `off` revokes it, which stops export at once. Either
@@ -183,7 +183,7 @@ shown again. `events` names sync deployments' actor, `sync:poll` or
 `sync:webhook`.
 
 The manifest is shared; values that differ between environments come from
-[manifest variables](application-manifest.md#variables). Environments that render
+[manifest variables](manifest.md#variables). Environments that render
 the same route hostname conflict with `hostname_conflict`, naming the sibling
 environment that reserves it. `env rename` fails with `environment_configured`
 while the manifest the environment deploys (for a repository-backed one, the one
@@ -207,11 +207,10 @@ deployed again (image cleanup keeps each environment's last
 `images.keep_deployments` successful deployments). `--json` adds the manifest
 and build inputs. `env show` reports the release the
 environment's current target runs (`none` before its first prepared
-deployment). Deployments prepared before upgrading record theirs when the
-daemon first starts. Each release also lists the deployments that received it
+deployment). Each release also lists the deployments that received it
 by promotion or by release ID.
 
-A [promoted environment](application-manifest.md#promoted-environments) never
+A [promoted environment](manifest.md#promoted-environments) never
 builds: it only receives releases from another environment of the
 application. `env create --promote-from ENV` creates one, and
 `env source APP ENV --promote-from ENV` converts an existing one (name or ID);
@@ -242,7 +241,7 @@ unusable secret, without changing anything. It exits with the conflict code 3
 when the plan is blocked or lists secrets. `--release ID --plan` plans an
 earlier release for any environment.
 
-A [preview](application-manifest.md#previews) is a disposable deployment of
+A [preview](manifest.md#previews) is a disposable deployment of
 one branch of a repository-backed application. `preview` commands address a
 preview by stable ID, then slug, then branch with `--slot` for a slotted one;
 `env` commands and `env list` never show or act on previews. `preview create`
@@ -318,7 +317,7 @@ URL: https://admin.notes.example.com (admin) pending: HTTPS (No DNS-01 certifica
 ```
 
 `--route NAME` prints only the URL of the
-[named route](application-manifest.md#routes), and warns on stderr while it is
+[named route](manifest.md#routes), and warns on stderr while it is
 pending. The daemon derives the state from what it already observes (see
 [URL readiness](api.md#url-readiness)); the CLI never probes a URL itself, so a
 URL that is known is not necessarily ready.
@@ -355,7 +354,7 @@ and each DNS-01 certificate with its hostnames, expiry and last error.
 `piquelctl dns refresh` checks the providers' credentials and zones now instead
 of at the next hourly discovery, then prints the same DNS lines. `status` also
 reports how many images this installation built that
-[image cleanup](docker-reconciliation.md#image-retention) kept, and the total
+[image cleanup](../../dev/architecture/docker-reconciliation.md#image-retention) kept, and the total
 size of those it removed since the daemon started.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
@@ -658,14 +657,14 @@ and captures a deployment atomically, then waits for it; add `--no-wait` to retu
 its receipt immediately. No local manifest file is read or rewritten. The server
 validates the complete result, so removing a mounted volume is rejected until its
 mounts are removed. Removing declarations retains Docker volume data.
-`app file add` adds a read-only [file](application-manifest.md#files), or
+`app file add` adds a read-only [file](manifest.md#files), or
 replaces the one at the same target: `--content` sets its text, `--from` reads
 a local file now and saves its content inline, and `--path` names a file in the
 manifest's repository, read by each deployment. Repository-backed applications
 are edited in Git instead. `app file list` shows each service's saved files.
 Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. `route add` and `route redirect` take an exact hostname or a
-[wildcard](ingress.md#wildcard-routes) such as `*.tenants.notes.example.com`,
+[wildcard](../guides/ingress.md#wildcard-routes) such as `*.tenants.notes.example.com`,
 which serves every name one label below it; quote it for the shell. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Routes are private (tailnet only) unless
@@ -676,7 +675,7 @@ and `env visibility` caps every route of one environment at `private` (or lifts
 the cap with `public`) in the saved manifest. Deploy after saving to activate or
 remove routing. `route list` shows each deployed route with its name, environment,
 effective visibility, state, destination, whether piqueld
-[manages its DNS records](ingress.md#managed-dns-records) (`manual`, `managed`,
+[manages its DNS records](../guides/ingress.md#managed-dns-records) (`manual`, `managed`,
 `pending` or `dns_conflict`) and the records its hostname needs, followed by the
 cause while it is not ready. `piquelctl status` also shows the
 public and private listeners: the ingress mode (ports 80/443, or the Cloudflare
@@ -701,7 +700,7 @@ the job runs. Configure dependencies with `app service depends-on`. Other
 services wait for all jobs to succeed; after a failed job, repair rolls its
 dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
 `export set` lets the listed applications reach a service through a
-[link](application-manifest.md#links), replacing who may, and whether previews
+[link](manifest.md#links), replacing who may, and whether previews
 may, if it was already exported; `--previews` lets their previews too.
 `import add` reaches another application's exported service as
 `<service>.<application>`, in the environment named like each importing one
@@ -715,7 +714,7 @@ importing its services.
 the environment named `NAME`, which must exist (an edit never declares a new
 environment, so an unknown name fails with `environment_unknown`; one that adds
 the first `[spec.environments.<name>]` block, like `env visibility … private`,
-[declares](application-manifest.md#declared-environments) every existing
+[declares](manifest.md#declared-environments) every existing
 environment), or
 with `--previews` its value in every preview (`[spec.previews.variables]`). An
 environment's or the previews' value overrides the default, and a variable
@@ -742,7 +741,7 @@ show rendered values, and it lists the value of every variable in scope, such as
 `variable_value_missing`. Without `--env`, the application's only environment is
 used; with several, the plan compares the saved manifest as written. Plans list,
 under `Environments:`, how saving the manifest would change the environments it
-[declares](application-manifest.md#declared-environments).
+[declares](manifest.md#declared-environments).
 
 Command, argument, job command, and `depends-on` arrays preserve individual elements; place
 command options before `--`. An empty array clears the setting. Optional limits and pinned
@@ -753,7 +752,7 @@ any command for its values and options.
 Git-backed applications are edited like any other: field edits and `app apply`
 change the saved manifest, which deployments of the connection's branch deploy
 until a push changes the manifest there (see
-[editing](application-manifest.md#editing-repository-backed-applications)).
+[editing](manifest.md#editing-repository-backed-applications)).
 `app show` lists the edits,
 and `app repository reset` discards them, saving the manifest last read from the
 repository again. Only `app rename` fails with `repository_managed`, since the
@@ -788,7 +787,7 @@ It runs in the application's only environment; with several, `--env ENV` names
 one. `preview exec` runs it in a preview instead, addressed like `preview logs`. The command runs inside the task, so it shares the task's image, environment,
 secrets, mounts and networks. It works over every transport, uses account
 authentication and needs no SSH access; the account (or token) needs
-[`apps:exec`](authorization.md) on the application. Output streams to stdout and stderr, and
+[`apps:exec`](../accounts/authorization.md) on the application. Output streams to stdout and stderr, and
 `piquelctl` exits with the command's exit code. `-i` forwards standard input.
 `-t` allocates a terminal, implies `-i`, requires a terminal on standard input
 and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
@@ -876,7 +875,7 @@ link (`--open` also opens it in the default browser); only the Unix socket serve
 it. Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
 the current account and its grants, and `logout` to revoke it. On the daemon host,
 root and the daemon's own user need no login: without a token, they act over the
-Unix socket as the [host operator](authentication.md#the-host-operator), with
+Unix socket as the [host operator](../accounts/authentication.md#the-host-operator), with
 `admin` on every application, and `whoami` prints `host operator (uid 0)`. Run
 that way, `piquelctl sign-in-link` prints a one-time link (valid for 10
 minutes) that signs a browser in as the host operator for 12 hours; it raises a
@@ -886,17 +885,17 @@ lists accounts (and live host operator browser sessions), replaces their grants
 and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
 manages API tokens for your account (`--tailnet` binds one to a tailnet user
 or tag), and `login` accepts the same grant options
-to ask for a limited session; see [authorization](authorization.md).
-`piquelctl audit` reads the [audit trail](observability.md#audit-trail), one line
+to ask for a limited session; see [authorization](../accounts/authorization.md).
+`piquelctl audit` reads the [audit trail](../guides/observability.md#audit-trail), one line
 per request with the application or environment it addressed, filtered
 by `--user` (a username, or any account ID, including a deleted account's),
 `--credential`, and `--outcome`; `piquelctl audit verify` checks its
-[hash chain](observability.md#tamper-evidence). When no administrator can sign
+[hash chain](../guides/observability.md#tamper-evidence). When no administrator can sign
 in, `sudo piquelctl recover-admin` on the daemon host prints a one-time link
 that creates a new administrator; see
-[recovering administrator access](authentication.md#recovering-administrator-access). Saved credentials are separate
+[recovering administrator access](../accounts/authentication.md#recovering-administrator-access). Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
-a saved account. See [authentication](authentication.md) for details.
+a saved account. See [authentication](../accounts/authentication.md) for details.
 
 `app deploy` and `env deploy` fetch a repository-backed environment's manifest
 from its branch, then explicitly resolve image or Git build sources. They
@@ -1049,7 +1048,7 @@ saved configuration or runnable deployment still uses.
 
 Manifests can declare secrets that piqueld generates for each environment when
 a deployment first mounts them instead; see
-[application manifests](application-manifest.md). They are listed, regenerated
+[application manifests](manifest.md). They are listed, regenerated
 and deleted per environment. `regenerate` creates a new version for the next
 deployment, to rotate a value or replace one discarded by key recovery; running
 deployments keep theirs. `delete` removes an unused one:

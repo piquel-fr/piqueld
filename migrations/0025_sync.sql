@@ -1,12 +1,15 @@
 -- Deploying on push. How an application syncs is part of its repository
 -- connection, `spec.manifest.sync` in its saved manifest; this stores what
--- sync observed and the webhook secret.
+-- sync observed and the webhook secret. Existing applications don't sync, so
+-- nothing is redeployed. A development database that ran this change's former
+-- `0024_sync.sql` needs resetting.
 
 -- An environment opts into its application's sync with `sync = 1`;
 -- previews follow their application's setting and ignore it.
 -- `synced_commit` is the branch head as of its last deployment, sync's or one
 -- of its own branch: sync deploys only once the branch moves past it, and
--- nothing follows before its first deployment.
+-- nothing follows before its first deployment. Changing the branch or the
+-- application's repository URL clears it.
 ALTER TABLE environments ADD COLUMN sync INTEGER NOT NULL DEFAULT 0
     CHECK (sync IN (0, 1));
 ALTER TABLE environments ADD COLUMN synced_commit TEXT;
@@ -22,7 +25,8 @@ ALTER TABLE applications ADD COLUMN sync_checked_at_ms INTEGER;
 ALTER TABLE applications ADD COLUMN sync_error TEXT;
 
 -- The secret GitHub signs an application's push webhooks with, encrypted
--- with the secret master key. Generating another replaces it.
+-- with the secret master key. Generating another replaces it, and lost-key
+-- recovery deletes them all.
 CREATE TABLE webhook_secrets (
     application_id TEXT PRIMARY KEY REFERENCES applications(id) ON DELETE CASCADE,
     nonce BLOB NOT NULL,

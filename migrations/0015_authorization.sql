@@ -1,7 +1,9 @@
 -- An account's access is a set of grants. Each row grants one permission on one
--- application, or on every application when application_id is NULL. A row
--- belongs to exactly one account, credential, or invitation; deleting any of
--- them, or the application, removes its grants.
+-- application, and so on each of its environments, or on every application
+-- when application_id is NULL. A row belongs to exactly one account,
+-- credential, or invitation; deleting any of them, or the application, removes
+-- its grants. Request receipts from before the upgrade have no account, so an
+-- account retrying its request across the upgrade gets `request_id_conflict`.
 CREATE TABLE auth_grants (
     user_id TEXT REFERENCES auth_users(id) ON DELETE CASCADE,
     credential_id TEXT REFERENCES auth_credentials(id) ON DELETE CASCADE,

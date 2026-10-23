@@ -39,7 +39,7 @@ pub fn embed(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
 ///
 /// The shell has no inline scripts, so the Content-Security-Policy is a
 /// constant. Running Cargo from a build script is a stopgap until artifact
-/// dependencies stabilise; see `docs/architecture/0002-cargo-built-dashboard.md`.
+/// dependencies stabilise; see `docs/dev/architecture/adr/0002-cargo-built-dashboard.md`.
 struct Dashboard {
     /// Canonical `apps/piqueld-ui` directory.
     ui_dir: PathBuf,

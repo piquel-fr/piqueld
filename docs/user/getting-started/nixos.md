@@ -51,7 +51,7 @@ the generated system file now serves all users. Keep intentional user overrides
 in the user configuration file. Profile settings remain in the public Nix store
 and must not contain credentials.
 
-The module runs [`piqueld check-config`](configuration.md) on the generated
+The module runs [`piqueld check-config`](../reference/configuration.md) on the generated
 file while building the system, so an invalid setting fails `nixos-rebuild
 build` instead of `piqueld.service`. Credentials are not read during the check.
 Set `services.piqueld.checkConfig = false;` when the package cannot run on the
@@ -65,7 +65,7 @@ to the socket without sudo. Membership permits only a socket connection; run
 `piquelctl login` to authenticate an account before `piquelctl status` or other
 API operations. It grants no direct access to private state or permission to
 replace the socket. Root (`sudo piquelctl …`) and the `piqueld` user act as the
-[host operator](authentication.md#the-host-operator) without logging in.
+[host operator](../accounts/authentication.md#the-host-operator) without logging in.
 Only the existing `piqueld.service` is needed; no proxy or socket unit is required.
 
 Custom `runtimeDir` values must be dedicated directories below `/run`. Configure
@@ -92,7 +92,7 @@ Tailscale is unavailable at startup, piqueld warns and requires a restart to
 activate remote listening. Ensure your firewall and tailnet policy permit the
 selected port on the Tailscale interface. All callers must authenticate. Configure
 `settings.auth.public_url` with a stable HTTPS hostname and terminate TLS externally;
-see [authentication](authentication.md).
+see [authentication](../accounts/authentication.md).
 
 For HTTPS without a proxy, let piqueld join the tailnet as its own node instead.
 piqueld runs a dedicated, unprivileged `tailscaled` from
@@ -108,7 +108,7 @@ services.piqueld.settings.tailscale = {
 ```
 
 `settings.auth.public_url` defaults to the node's HTTPS URL. See
-[the tailnet node](configuration.md#tailnet-node) for details.
+[the tailnet node](../reference/configuration.md#tailnet-node) for details.
 
 `settings` declares typed options for `server.listen_mode`, `server.port`,
 `server.allowed_hosts`, `auth.public_url`, `auth.max_token_days`, `tailscale.enabled`,
@@ -123,21 +123,21 @@ Tailscale CLI on the service's `PATH`), `ingress.tunnel.enabled`, `ingress.tunne
 (also a systemd credential, required while the tunnel is enabled),
 `ingress.webhook_hostname`, `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
-the five [`previews`](configuration.md#previews) limits,
-[`snapshots.max_upload_bytes`](configuration.md#local-snapshots),
-[`checkouts.max_bytes`](configuration.md#git-checkouts), both `images` settings,
+the five [`previews`](../reference/configuration.md#previews) limits,
+[`snapshots.max_upload_bytes`](../reference/configuration.md#local-snapshots),
+[`checkouts.max_bytes`](../reference/configuration.md#git-checkouts), both `images` settings,
 `telemetry.endpoint`, `telemetry.headers_file` (a systemd credential),
 and `telemetry.containers`, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero
 disabling pruning. Unknown settings are rejected.
 
-[Notification destinations](observability.md#notifications) are managed with
+[Notification destinations](../guides/observability.md#notifications) are managed with
 `piquelctl notification` or the dashboard, not the module; the former
 `settings.notifications` options are removed.
 
-[Telemetry export](observability.md#telemetry-export) pushes traces, metrics
+[Telemetry export](../guides/observability.md#telemetry-export) pushes traces, metrics
 and logs to an OTLP/gRPC collector, along with the
-[logs and resource usage of every container](observability.md#container-telemetry)
+[logs and resource usage of every container](../guides/observability.md#container-telemetry)
 unless `containers = false`. A collector token goes in `headers_file`, which
 systemd passes to the daemon as the `otlp-headers` credential:
 
@@ -149,10 +149,7 @@ services.piqueld.settings.telemetry = {
 };
 ```
 
-The former `metrics.listen` option is gone; the daemon no longer serves
-Prometheus metrics itself.
-
-[DNS providers](configuration.md#dns-providers) take their credentials only as
+[DNS providers](../reference/configuration.md#dns-providers) take their credentials only as
 files:
 
 ```nix

@@ -91,13 +91,13 @@ dropped and logged. On shutdown the daemon waits up to 10 seconds for pending re
 it loses. Each record keeps the action
 (method and route template), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
-network address (and, through the [tailnet node](configuration.md#tailnet-node),
+network address (and, through the [tailnet node](../reference/configuration.md#tailnet-node),
 the tailnet user or tags and device, such as `alice@example.com on laptop`),
 request ID, addressed application or environment (with the environment's
 application, when the request was allowed or lacked a permission there, so a
 refusal never reveals who owns an environment hidden from its caller), and the
 permission a refusal lacked. Requests by the
-[host operator](authentication.md#the-host-operator) have no account; they
+[host operator](../accounts/authentication.md#the-host-operator) have no account; they
 record `operator` with its Unix user ID instead, shown as
 `host operator (uid 0)`, and its browser session as the credential, if any. Bodies are never recorded. Records copy the account and
 credential, so they outlive both, and application deletion keeps them.
@@ -167,8 +167,8 @@ notify immediately:
 | --- | --- |
 | `admin_granted` | An account receives `admin` on every application: by an account change, an invitation, first-account setup, or an admin recovery link |
 | `privileged_token_created` | An API token is created without expiry or with `admin` |
-| `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [authentication](authentication.md#recovering-administrator-access) |
-| `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the host operator; see [authentication](authentication.md#the-host-operator) |
+| `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [authentication](../accounts/authentication.md#recovering-administrator-access) |
+| `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the host operator; see [authentication](../accounts/authentication.md#the-host-operator) |
 | `access_denial_burst` | 20 requests from one address and account are refused within a minute; at most once every 10 minutes per address and account while it continues |
 | `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
 | `secret_key_recovered` | The secrets master key was recovered, discarding stored values |
@@ -213,10 +213,10 @@ history intentionally removes that data rather than exposing deletion tombstones
 
 ## API and dashboard
 
-Routes require the permissions described in [authorization](authorization.md):
+Routes require the permissions described in [authorization](../accounts/authorization.md):
 application history, diagnostics, and analytics are limited to the applications a
 caller holds `events:read` on, and daemon history requires `system:read`. See the generated
-[OpenAPI document](openapi-v1.json) for exact contracts.
+[OpenAPI document](../../openapi-v1.json) for exact contracts.
 
 | Route | Purpose |
 | --- | --- |
@@ -247,7 +247,7 @@ HTTP 410, or a terminal `history_expired` event if pruning happens during the
 stream. A terminal `stream_error` indicates a storage failure. Clients should
 refresh their snapshot before reconnecting after an expired history response.
 Streams recheck the caller's access while open (see
-[authorization](authorization.md)): history it may no longer read
+[authorization](../accounts/authorization.md)): history it may no longer read
 stops arriving, and a caller that lost access entirely receives a terminal
 `access_ended` message whose data is the refusal's `ErrorBody`. Streams end
 without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
@@ -302,7 +302,7 @@ Each destination has a unique name, such as `ops`, a kind (`json` or
 
 Listing destinations needs `system:read` or `notifications:manage`, and
 changing them `notifications:manage`. URLs are credentials: they are stored encrypted with
-the [secret master key](configuration.md#secret-storage) and never returned,
+the [secret master key](../reference/configuration.md#secret-storage) and never returned,
 and lost-key recovery deletes the destinations.
 
 Disabling a destination, removing a category, or narrowing its applications
@@ -401,7 +401,7 @@ Without an endpoint, nothing is exported there; an application can still
 `http://` sends in plain text, so use
 it only on loopback or a private network. `headers_file` holds gRPC metadata sent
 with every export, such as a collector token, as one `name: value` per line. It
-is a [credential file](configuration.md#credential-files): relative paths
+is a [credential file](../reference/configuration.md#credential-files): relative paths
 resolve against `$CREDENTIALS_DIRECTORY`, and only its path is ever shown.
 Endpoints cannot carry credentials or a path. Configuration is read at startup;
 restart after changing it.
@@ -526,11 +526,9 @@ failing, and whether container telemetry is exported. They list the
 environments you can read too. The settings themselves appear read-only in the
 configuration view.
 
-piqueld no longer serves Prometheus metrics itself: the `[metrics]` table was
-removed, and configurations that still set it fail to load. Set
-`telemetry.endpoint` to a collector instead. Prometheus 3 receives OTLP itself
-(over HTTP, with `--web.enable-otlp-receiver`), so the collector can forward
-metrics to it with its `otlp_http` exporter, without a scrape endpoint.
+piqueld doesn't serve a Prometheus scrape endpoint. Prometheus 3 receives
+OTLP itself (over HTTP, with `--web.enable-otlp-receiver`), so the collector
+can forward metrics to it with its `otlp_http` exporter.
 
 ### Receiving telemetry in an application
 
@@ -558,7 +556,7 @@ as it does with the [ingress gateway](ingress.md).
    Telemetry settings in the dashboard edit it too.
 
 2. Grant the environment telemetry. This needs the `telemetry:grant`
-   [permission](authorization.md#telemetry-receivers), held only by `admin`,
+   [permission](../accounts/authorization.md#telemetry-receivers), held only by `admin`,
    since the receiving service gets the telemetry of every application:
 
    ```console
@@ -592,7 +590,7 @@ service:
     logs: { receivers: [otlp], exporters: [debug] }
 ```
 
-Mount it with a [file](application-manifest.md#files), for example at
+Mount it with a [file](../reference/manifest.md#files), for example at
 `/etc/otelcol-contrib/config.yaml`. The daemon exports to every granted
 environment's receiving service alongside `[telemetry] endpoint`, which is
 optional, with the same records, bounded queues and guarantees: it never
@@ -603,7 +601,7 @@ listen again when it restarts. A receiver failing for a minute raises the same `
 diagnostic, attributed to its environment and notified under
 `service_degradation`.
 
-The mount follows the grant live, like [links](application-manifest.md#links):
+The mount follows the grant live, like [links](../reference/manifest.md#links):
 it is never part of a deployment.
 
 - **Revoking** the grant, or deleting the environment, stops export to its
@@ -637,7 +635,7 @@ container: nothing of the daemon's beyond the socket directory is mounted.
 
 ## Observability stack
 
-[`examples/observability`](../examples/observability/application.toml) is an
+[`examples/observability`](https://github.com/piquel-fr/piqueld/blob/main/examples/observability/application.toml) is an
 ordinary application that stores and shows piqueld's telemetry: an
 OpenTelemetry Collector receiving it, Prometheus keeping metrics for 15 days,
 Tempo and Loki keeping traces and logs for 7, and Grafana. Grafana's data
@@ -693,7 +691,7 @@ adjust each `path`. Then:
    can send any telemetry, including records that pass for the daemon's, so
    list only applications you trust, and replace the placeholder `my-app`
    before deploying: a name no application holds is granted to whichever
-   application [takes it first](application-manifest.md#links).
+   application [takes it first](../reference/manifest.md#links).
 
 Container metrics carry the [container attributes](#container-telemetry)
 `piqueld.application`, `piqueld.environment`, `piqueld.preview`,
