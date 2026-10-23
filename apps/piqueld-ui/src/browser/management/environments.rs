@@ -20,7 +20,7 @@ use piqueld_client::sync::short_commit;
 use piqueld_client::{
     ApplicationManifest, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentChange, EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest,
-    EnvironmentView, TrackedBranch, Visibility,
+    EnvironmentView, RepositoryManifest, TrackedBranch, Visibility,
     access::{AppPermission, GlobalPermission, Permission},
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
@@ -631,7 +631,8 @@ fn NewEnvironment() -> impl IntoView {
 /// from another environment. Saving changes only where later deployments
 /// come from; nothing is redeployed. An environment following a branch also
 /// shows whether pushes to it deploy it, with a button to opt in or out.
-/// Changing either needs `apps:write`.
+/// Changing either needs `apps:write`, and opting in while the repository
+/// syncs `apps:deploy` too.
 #[component]
 fn SourceSettings() -> impl IntoView {
     let context = editor();
@@ -825,6 +826,21 @@ fn SourceSettings() -> impl IntoView {
                 sync()
                     .map(|(environment, state)| {
                         let (badge, reason) = sync_badge(state);
+                        let opting_in = !environment.sync;
+                        let allowed = move || {
+                            writable()
+                                && (!opting_in || context.can(AppPermission::Deploy)
+                                    || !context
+                                        .saved
+                                        .with(|saved| {
+                                            saved
+                                                .application
+                                                .spec()
+                                                .manifest
+                                                .as_ref()
+                                                .is_some_and(RepositoryManifest::syncs)
+                                        }))
+                        };
                         view! {
                             <dl class="kv">
                                 <dt>"Deploy on push"</dt>
@@ -832,7 +848,7 @@ fn SourceSettings() -> impl IntoView {
                                 <dt>"Last synced"</dt>
                                 <dd>{last_synced(environment.synced)}</dd>
                             </dl>
-                            <div class="form-actions" hidden={move || !writable()}>
+                            <div class="form-actions" hidden={move || !allowed()}>
                                 <button
                                     type="button"
                                     class="btn"

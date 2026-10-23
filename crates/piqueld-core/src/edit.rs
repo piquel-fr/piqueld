@@ -352,6 +352,21 @@ pub enum EditError {
 }
 
 impl ApplicationEdit {
+    /// Whether this edit, on an application whose repository connection is
+    /// `current`, lets sync deploy what no deployment chose: it turns sync
+    /// on. That takes the permission to deploy.
+    #[must_use]
+    pub fn deploys_on_push(&self, current: Option<&RepositoryManifest>) -> bool {
+        let off = !current.is_some_and(RepositoryManifest::syncs);
+        match self {
+            Self::Repository(changed) => {
+                off && changed.as_ref().is_some_and(RepositoryManifest::syncs)
+            }
+            Self::RepositorySync(sync) => off && !sync.is_off(),
+            _ => false,
+        }
+    }
+
     /// The environment this edit configures, if any.
     #[must_use]
     pub fn environment(&self) -> Option<&str> {

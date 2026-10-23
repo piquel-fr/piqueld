@@ -407,28 +407,12 @@ impl Mutation {
     /// with its next deployment, as without sync.
     #[must_use]
     pub fn deploys_on_push(&self, connection: Option<&RepositoryManifest>) -> bool {
-        use piqueld_core::edit::ApplicationEdit;
-        let syncs = |connection: Option<&RepositoryManifest>| {
-            connection.is_some_and(|connection| !connection.sync.is_off())
-        };
-        let turns_on = |changed: Option<&RepositoryManifest>| syncs(changed) && !syncs(connection);
         match self {
-            Self::Save { application, .. } => {
-                let changed = application.spec().manifest.as_ref();
-                turns_on(changed)
-                    || (syncs(changed)
-                        && application
-                            .spec()
-                            .environments
-                            .values()
-                            .any(|config| config.sync == Some(true)))
+            Self::Save { application, .. } => application.spec().deploys_on_push(connection),
+            Self::Edit { edit, .. } => edit.deploys_on_push(connection),
+            Self::SetSync { enabled, .. } => {
+                *enabled && connection.is_some_and(RepositoryManifest::syncs)
             }
-            Self::Edit { edit, .. } => match edit.as_ref() {
-                ApplicationEdit::Repository(changed) => turns_on(changed.as_ref()),
-                ApplicationEdit::RepositorySync(sync) => !sync.is_off() && !syncs(connection),
-                _ => false,
-            },
-            Self::SetSync { enabled, .. } => *enabled && syncs(connection),
             _ => false,
         }
     }

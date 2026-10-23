@@ -1522,10 +1522,22 @@ fn EditorFeedback() -> impl IntoView {
 
 /// How a repository-backed application's saved configuration differs from
 /// the manifest last read from its repository, with a button saving that
-/// manifest again for holders of `apps:write`. Shown only while it has edits.
+/// manifest again for holders of `apps:write`, and of `apps:deploy` when it
+/// lets pushes deploy. Shown only while it has edits.
 #[component]
 fn RepositoryEdits() -> impl IntoView {
     let context = editor();
+    let allowed = move || {
+        context.can(AppPermission::Write)
+            && (context.can(AppPermission::Deploy)
+                || !context.saved.with(|saved| {
+                    saved.repository.as_ref().is_some_and(|repository| {
+                        repository
+                            .spec()
+                            .deploys_on_push(saved.application.spec().manifest.as_ref())
+                    })
+                }))
+    };
     move || {
         let edits = context
             .saved
@@ -1540,7 +1552,7 @@ fn RepositoryEdits() -> impl IntoView {
                     <div class="stack-sm">
                         {edits.into_iter().map(deployments::change_row).collect_view()}
                     </div>
-                    <div class="btn-group" hidden={move || !context.can(AppPermission::Write)}>
+                    <div class="btn-group" hidden={move || !allowed()}>
                         <button
                             type="button"
                             class="btn btn-sm"
