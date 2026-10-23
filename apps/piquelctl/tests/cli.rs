@@ -2124,6 +2124,67 @@ fn job_commands_edit_the_loaded_jobs_and_save_the_whole_list() {
 }
 
 #[test]
+fn secret_mount_commands_edit_the_loaded_mounts_and_save_the_whole_list() {
+    let mount = |name: &str, target: &str| json!({"name": name, "target": target});
+    for (arguments, expected) in [
+        // Adding at a mounted target replaces that mount in place.
+        (
+            vec!["add", "stripe-live", "/run/secrets/db"],
+            json!([
+                mount("stripe-live", "/run/secrets/db"),
+                mount("session", "/run/secrets/session")
+            ]),
+        ),
+        (
+            vec!["add", "${{ vars.stripe }}", "/run/secrets/stripe"],
+            json!([
+                mount("database", "/run/secrets/db"),
+                mount("session", "/run/secrets/session"),
+                mount("${{ vars.stripe }}", "/run/secrets/stripe")
+            ]),
+        ),
+        (
+            vec!["remove", "/run/secrets/db"],
+            json!([mount("session", "/run/secrets/session")]),
+        ),
+    ] {
+        let mut view = app_view("app-notes-01", "notes");
+        view["application"]["spec"]["services"][0]["secrets"] = json!([
+            mount("database", "/run/secrets/db"),
+            mount("session", "/run/secrets/session")
+        ]);
+        let (action, values) = arguments.split_first().unwrap();
+        let mut arguments = vec!["app", "service", "secret", action, "app-notes-01", "web"];
+        arguments.extend(values);
+        arguments.push("--yes");
+        assert_saves(
+            view,
+            &arguments,
+            "PUT",
+            "services/web/secrets",
+            &json!({"value": expected}),
+        );
+    }
+
+    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
+    let output = run(
+        &server,
+        &[
+            "app",
+            "service",
+            "secret",
+            "remove",
+            "app-notes-01",
+            "web",
+            "/run/secrets/db",
+            "--yes",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
 fn link_commands_edit_the_loaded_links_and_save_the_whole_list() {
     let saved_export = json!({"service": "web", "applications": ["billing"]});
     let saved_import = json!({"application": "auth", "service": "api"});

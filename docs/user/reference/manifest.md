@@ -672,7 +672,8 @@ name = "database-password"
 target = "/run/secrets/database-password"
 ```
 
-References contain names and paths, never values. A service supports up to 64
+References contain names and paths, never values. Edit a service's mounts
+with `piquelctl app service secret` or the dashboard. A service supports up to 64
 secret mounts, with unique normalized paths under `/run/secrets`. A name declared
 in `spec.secrets` is generated for each environment (see below). Any other name
 comes from the application's secret store, whose values are set with
