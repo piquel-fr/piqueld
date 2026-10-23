@@ -12,6 +12,7 @@ use piqueld_client::{
     ApplicationManifest, Client, ClientError, EnvironmentAccess, EnvironmentId, MountedSecret,
     SecretAccess, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMetadata, SecretMount,
     StoredSecret, Template,
+    access::AppPermission,
     edit::{ApplicationEdit, ServiceEdit},
 };
 use std::collections::BTreeSet;
@@ -79,8 +80,9 @@ impl Feedback {
         });
     }
 
-    /// The error with its diagnostic link, or the success notice.
-    fn view(self) -> impl IntoView {
+    /// The error with its diagnostic link, shown with `events:read`, or the
+    /// success notice.
+    fn view(self, context: EditorContext) -> impl IntoView {
         view! {
             {move || {
                 self.error
@@ -93,6 +95,7 @@ impl Feedback {
                                 {self
                                     .diagnostic
                                     .get()
+                                    .filter(|_| context.can(AppPermission::EventsRead))
                                     .map(|id| {
                                         view! {
                                             <A href={format!(
@@ -237,9 +240,10 @@ impl AccessForm {
 /// actions stay disabled until the list is refreshed. On an environment's
 /// page, given the secrets its manifest `mounts`, it lists only the secrets
 /// that environment may mount or mounts, and new ones default to it alone;
-/// `changed` runs after every write.
+/// `changed` runs after every write. Writing needs `secrets:write`.
 #[component]
-fn StoredSecrets(
+#[expect(clippy::too_many_lines, reason = "flat view! markup")]
+pub(super) fn StoredSecrets(
     #[prop(optional, into)] mounts: Option<Signal<BTreeSet<String>>>,
     #[prop(optional)] changed: Option<Callback<()>>,
 ) -> impl IntoView {
@@ -411,6 +415,7 @@ fn StoredSecrets(
             })
             .collect::<Vec<_>>()
     };
+    let writable = move || context.can(AppPermission::SecretsWrite);
     let rows = move || {
         let environments = context.saved.with(|saved| saved.environments.clone());
         shown()
@@ -429,7 +434,11 @@ fn StoredSecrets(
                         <td>{secret.access.describe(&environments)}</td>
                         <td>{status_badge(&metadata, "stored")}</td>
                         <td class="actions">
-                            <span class="btn-group" style="justify-content:flex-end">
+                            <span
+                                class="btn-group"
+                                style="justify-content:flex-end"
+                                hidden={move || !writable()}
+                            >
                                 <button
                                     type="button"
                                     class="btn btn-sm"
@@ -487,7 +496,7 @@ fn StoredSecrets(
                 </button>
             </header>
             <div class="stack-sm">
-                {feedback.view()}
+                {feedback.view(context)}
                 {move || {
                     secrets
                         .with(|items| items.iter().any(|s| s.metadata.unavailable))
@@ -532,7 +541,11 @@ fn StoredSecrets(
                         }
                     }}
                 </div>
-                <fieldset class="stack-sm" disabled={move || context.blocked() || !ready.get()}>
+                <fieldset
+                    class="stack-sm"
+                    hidden={move || !writable()}
+                    disabled={move || context.blocked() || !ready.get()}
+                >
                     <div class="section-header">
                         <h4>"Save a secret"</h4>
                     </div>
@@ -634,9 +647,9 @@ impl GeneratedAction {
 }
 
 /// An environment's Secrets tab: where each secret the manifest it deploys
-/// mounts comes from, and its generated values (never read back), which can
-/// be regenerated for the next deployment, or deleted so a later deployment
-/// generates new ones.
+/// mounts comes from, and its generated values (never read back), which
+/// holders of `secrets:write` can regenerate for the next deployment, or
+/// delete so a later deployment generates new ones.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EnvironmentSecrets() -> impl IntoView {
@@ -742,6 +755,9 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                                         <button
                                             type="button"
                                             class="btn btn-ghost btn-sm"
+                                            hidden={move || {
+                                                !context.can(AppPermission::SecretsWrite)
+                                            }}
                                             disabled={move || context.blocked() || !ready.get()}
                                             on:click={move |_| act.run((action, secret.clone()))}
                                         >
@@ -779,7 +795,7 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                     </button>
                 </header>
                 <div class="stack-sm">
-                    {feedback.view()}
+                    {feedback.view(context)}
                     <div class="table-wrap">
                         {move || match mounted() {
                             None => {
@@ -1056,14 +1072,13 @@ fn GeneratedSecretSettings() -> impl IntoView {
     }
 }
 
-/// The application's Secrets tab: its secret store, the secrets piqueld
-/// generates, then every service's secret file references.
+/// The secrets piqueld generates, then every service's secret file
+/// references, below the secret store on the application's Secrets tab.
 #[component]
 pub(super) fn SecretFileSettings() -> impl IntoView {
     let context = editor();
     view! {
         <div class="stack">
-            <StoredSecrets />
             <GeneratedSecretSettings />
             <For
                 each={move || {

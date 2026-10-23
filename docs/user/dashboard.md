@@ -250,10 +250,11 @@ The API Unix socket is API-only, and the daemon does not add CORS, browser telem
 or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
 their grants, invitations, passkey enrollment links, and tokens. See
-[managing accounts](accounts/accounts.md). Pages the
-signed-in account cannot use are hidden, as are most actions needing an
-installation-wide permission it lacks; other actions remain visible, and the
-daemon refuses them with `permission_denied`. See
+[managing accounts](accounts/accounts.md). Pages, tabs, and actions the
+signed-in account cannot use are hidden. Without `apps:write` on an
+application, its configuration forms are read-only. The daemon still checks
+every request, and refuses what the account's grants don't allow with
+`permission_denied`. See
 [permissions](accounts/permissions.md#what-people-without-access-see).
 A link from `piquelctl sign-in-link` opens a page that signs the browser in as
 the [host operator](accounts/recovery.md#the-host-operator) for 12 hours, without

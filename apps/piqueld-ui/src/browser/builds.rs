@@ -12,6 +12,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
+    access::AppPermission,
 };
 
 /// `/builds` page: build history across all applications.
@@ -27,15 +28,19 @@ pub(super) fn BuildsPage() -> impl IntoView {
 }
 
 /// Build list, optionally scoped to one `application`'s environments or to one
-/// `environment`. A 3-second loop refetches
-/// the first page on demand or while any build is running (skipped while the tab
-/// is hidden). Once older pages have been loaded, refreshed builds are merged by
-/// ID instead of replacing the list so the extra pages are kept.
+/// `environment`. A 3-second loop refetches the first page on demand or while
+/// any build is running (skipped while the tab is hidden). Once older pages
+/// have been loaded, refreshed builds are merged by ID instead of replacing the
+/// list so the extra pages are kept. Given `allowed`, whether the caller holds
+/// a permission in a build's environment, a build's output needs `logs:read`
+/// and its events link `events:read`; without it, the daemon refuses what the
+/// caller may not read.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn BuildHistory(
     #[prop(optional, into)] application: Option<String>,
     #[prop(optional, into)] environment: Option<String>,
+    #[prop(optional)] allowed: Option<Callback<(AppPermission, String), bool>>,
 ) -> impl IntoView {
     let records = RwSignal::new(Vec::<BuildRecord>::new());
     let cursor = RwSignal::new(None::<String>);
@@ -142,7 +147,7 @@ pub(super) fn BuildHistory(
                 key={|build| build.id}
                 children={move |initial| {
                     let build = live_row(records, initial, |build| &build.id);
-                    view! { <BuildCard record={build} scoped={scoped} /> }
+                    view! { <BuildCard record={build} scoped={scoped} allowed={allowed} /> }
                 }}
             />
             {load_older("Load older builds", cursor, loading, older)}
@@ -150,10 +155,20 @@ pub(super) fn BuildHistory(
     }
 }
 
-/// Expandable summary of one build; expanding shows metadata and mounts `BuildOutput`.
+/// Expandable summary of one build; expanding shows metadata and mounts
+/// `BuildOutput`. See `BuildHistory` for `allowed`.
 #[component]
-fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
+fn BuildCard(
+    record: Signal<BuildRecord>,
+    scoped: bool,
+    allowed: Option<Callback<(AppPermission, String), bool>>,
+) -> impl IntoView {
     let opened = RwSignal::new(false);
+    let may = move |permission| {
+        allowed.is_none_or(|allowed| {
+            allowed.run((permission, record.with(|b| b.environment_id.clone())))
+        })
+    };
     view! {
         <article class="expander">
             {expander_summary(
@@ -189,10 +204,18 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                                         <dt>"Environment"</dt>
                                         <dd>{environment}</dd>
                                     }
-                                })} <dt>"Operation"</dt> <dd>
-                                <A href={operation_events(&operation_id)}>
-                                    <code>{operation_id.clone()}</code>
-                                </A>
+                                })} <dt>"Operation"</dt>
+                            <dd>
+                                {if may(AppPermission::EventsRead) {
+                                    view! {
+                                        <A href={operation_events(&operation_id)}>
+                                            <code>{operation_id.clone()}</code>
+                                        </A>
+                                    }
+                                        .into_any()
+                                } else {
+                                    view! { <code>{operation_id.clone()}</code> }.into_any()
+                                }}
                             </dd>
                             {b
                                 .job
@@ -219,7 +242,7 @@ fn BuildCard(record: Signal<BuildRecord>, scoped: bool) -> impl IntoView {
                         </dl>
                     }
                 }}
-                <Show when={move || opened.get()}>
+                <Show when={move || opened.get() && may(AppPermission::LogsRead)}>
                     <BuildOutput record={record} />
                 </Show>
             </div>

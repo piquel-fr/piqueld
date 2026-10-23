@@ -20,7 +20,7 @@ use piqueld_client::{
     ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
     EnvironmentView, HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView,
     PromoteRequest, ReleaseAvailability, RuntimeCoverage, SecretProblem, Service, Source, Template,
-    ValidatedRollout,
+    ValidatedRollout, access::AppPermission,
 };
 use std::fmt::Display;
 
@@ -34,7 +34,8 @@ use std::fmt::Display;
 /// environments to choose one. A promoted target, which never builds,
 /// offers Promote from its source instead. Either also offers Promote,
 /// before its own action, into the environments promoted from it. On its own page, Deploy
-/// doesn't name the environment.
+/// doesn't name the environment. Preview is shown with `apps:write`, the
+/// others with `apps:deploy`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn DeploymentActions() -> impl IntoView {
@@ -129,6 +130,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                                     type="button"
                                     class="btn btn-primary"
                                     title="Create an environment to deploy"
+                                    hidden={move || !context.can(AppPermission::Deploy)}
                                     on:click={move |_| context.tab.set("Environments")}
                                 >
                                     {icon(Icon::Rocket)}
@@ -158,6 +160,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 <button
                     type="button"
                     class="btn"
+                    hidden={move || !context.can(AppPermission::Write)}
                     disabled={move || {
                         context.environment_action_blocked()
                             || context.next_manifest().is_none()
@@ -186,6 +189,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 <button
                     type="button"
                     class="btn btn-primary"
+                    hidden={move || !context.can(AppPermission::Deploy)}
                     disabled={move || context.environment_action_blocked()}
                     on:click={deploy}
                 >
@@ -353,7 +357,8 @@ fn DeployRevision() -> impl IntoView {
 
 /// `environment`'s own action: Deploy for one that builds its source, or
 /// Promote for a promoted one (see `PromoteAction`). Either shows its
-/// deployments once accepted, then closes `dialog`.
+/// deployments once accepted, then closes `dialog`. Hidden without
+/// `apps:deploy`.
 #[component]
 pub(super) fn EnvironmentAction(
     environment: EnvironmentView,
@@ -381,6 +386,7 @@ pub(super) fn EnvironmentAction(
             type="button"
             class={if compact { "btn btn-sm" } else { "btn btn-primary" }}
             aria-label={label.clone()}
+            hidden={move || !context.can(AppPermission::Deploy)}
             disabled={move || context.action_blocked() || deleting}
             on:click={move |_| {
                 let (id, navigate) = (id.get_value(), navigate.get_value());
@@ -408,7 +414,7 @@ pub(super) fn EnvironmentAction(
 /// with its own action (see `EnvironmentAction`), so one can be chosen:
 /// "Deploy" over an application's environments, "Promote" over the
 /// environments promoted from the shown one. Closes once an action was
-/// accepted.
+/// accepted. Hidden without `apps:deploy`.
 #[component]
 fn ChooseEnvironment(
     label: &'static str,
@@ -421,6 +427,7 @@ fn ChooseEnvironment(
         <button
             type="button"
             class="btn btn-primary"
+            hidden={move || !context.can(AppPermission::Deploy)}
             disabled={move || environments.with(Vec::is_empty)}
             on:click={move |_| opened.set(true)}
         >
@@ -459,7 +466,7 @@ fn ChooseEnvironment(
 /// the release), then shows the environment's deployments. Confirmation
 /// stays disabled while the release mounts secrets the environment lacks or
 /// may not use. `compact` is the smaller list-row button; `dialog` closes once
-/// the promotion was accepted.
+/// the promotion was accepted. Hidden without `apps:deploy`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PromoteAction(
@@ -569,6 +576,7 @@ pub(super) fn PromoteAction(
             type="button"
             class={if compact { "btn btn-sm" } else { "btn btn-primary" }}
             aria-label={label}
+            hidden={move || !context.can(AppPermission::Deploy)}
             disabled={move || context.action_blocked() || deleting()}
             on:click={inspect}
         >
@@ -1331,9 +1339,11 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     }
 }
 
-/// One attempt outcome with a link to its events and diagnostics.
+/// One attempt outcome with a link to its events and diagnostics, shown with
+/// `events:read`.
 #[component]
 fn AttemptRow(attempt: Operation) -> impl IntoView {
+    let context = editor();
     let history = operation_events(&attempt.id);
     let outcome = match (attempt.error_code, attempt.error_message) {
         (Some(code), Some(message)) => format!("{code}: {message}"),
@@ -1348,7 +1358,9 @@ fn AttemptRow(attempt: Operation) -> impl IntoView {
             <td class="muted">{outcome}</td>
             <td class="muted">{when(attempt.updated_at_ms)}</td>
             <td class="actions">
-                <A href={history}>"Events"</A>
+                <Show when={move || context.can(AppPermission::EventsRead)}>
+                    <A href={history.clone()}>"Events"</A>
+                </Show>
             </td>
         </tr>
     }
