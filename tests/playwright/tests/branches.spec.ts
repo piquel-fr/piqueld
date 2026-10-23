@@ -108,16 +108,77 @@ test('an environment page reads the manifest last fetched from its branch', asyn
   await expect(deployment).toContainText('manifest_connection_ignored: The fetched manifest names another repository.');
 });
 
+test('a repository-backed application is edited like any other, and resets to its repository manifest', async ({ page, account }) => {
+  void account;
+  const { app } = await createRepositoryApplication(page);
+  // The browser fixture never fetches: model the manifest the application
+  // last read from its repository as the one it was created with.
+  let read: Record<string, any> | undefined;
+  await rewrite(page, `/api/v1/applications/${app}`, data => {
+    read ??= structuredClone(data.application);
+    data.repository = { ...structuredClone(read), spec: { ...structuredClone(read!.spec), manifest: data.application.spec.manifest } };
+  });
+  await page.goto(`/dashboard/applications/${app}`);
+  await applicationTab(page, 'Volumes').click();
+  const edits = page.getByText('Edited since the manifest was last read from the repository.', { exact: false });
+  await expect(edits).toHaveCount(0);
+  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
+  await page.getByLabel('Volume name', { exact: true }).fill('cache');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
+  // The edit is listed against the repository's manifest, which has no volume.
+  await expect(edits).toBeVisible();
+  await expect(page.locator('.diff-row', { hasText: 'volumes.cache' })).toBeVisible();
+
+  page.once('dialog', async dialog => {
+    expect(dialog.message()).toContain('Discard every edit');
+    await dialog.accept();
+  });
+  await page.getByRole('button', { name: 'Reset to repository', exact: true }).click();
+  await expect(page.getByText("Reset to the repository's manifest.", { exact: true })).toBeVisible();
+  await expect(edits).toHaveCount(0);
+  await expect(page.getByLabel('Volume name', { exact: true })).toHaveCount(0);
+  await page.reload();
+  await applicationTab(page, 'Volumes').click();
+  await expect(page.getByLabel('Volume name', { exact: true })).toHaveCount(0);
+  await expect(edits).toHaveCount(0);
+});
+
+test('an environment following the connection branch previews the saved manifest', async ({ page, account }) => {
+  void account;
+  const { app, staging } = await createRepositoryApplication(page, true);
+  // As above, the manifest last read is the one the application was created with.
+  let read: Record<string, any> | undefined;
+  await rewrite(page, `/api/v1/applications/${app}`, data => {
+    read ??= structuredClone(data.application);
+    data.repository = { ...structuredClone(read), spec: { ...structuredClone(read!.spec), manifest: data.application.spec.manifest } };
+  });
+  const saved = await call(page, 'GET', `applications/${app}`);
+  await call(page, 'POST', `applications/${app}/volumes?expected_generation=${saved.generation}`, { name: 'cache' });
+  const production = saved.environments.find((environment: { name: string }) => environment.name === 'production').id;
+  await page.goto(`/dashboard/applications/${app}/environments/${production}`);
+  const preview = page.getByRole('button', { name: 'Preview', exact: true });
+  await expect(preview).toBeEnabled();
+  const planned = page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/applications/plan'));
+  await preview.click();
+  expect((await planned).postDataJSON().manifest.spec.volumes.map((volume: { name: string }) => volume.name)).toEqual(['cache']);
+  // Staging follows `release`, and deploys its own manifest, not fetched yet.
+  await page.goto(`/dashboard/applications/${app}/environments/${staging}`);
+  await expect(preview).toBeDisabled();
+});
+
 test('a repository-backed application page reloads what environments fetch', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
   await page.clock.install();
   await page.goto(`/dashboard/applications/${app}`);
   await applicationTab(page, 'Volumes').click();
-  await expect(page.getByLabel('Volume name', { exact: true })).toHaveCount(0);
+  const edits = page.getByText('Edited since the manifest was last read from the repository.', { exact: false });
+  await expect(edits).toHaveCount(0);
 
-  // Model a fetch that added a volume: the saved manifest changes, its
-  // revision does not, and the polled listing reports the newer update.
+  // Model a fetch that only recorded the repository's manifest, now with a
+  // volume: the saved manifest and its revision stay, and the polled
+  // listing reports the newer update.
   let generation = 0;
   await rewrite(page, '/api/v1/applications', data => {
     for (const row of data.items.filter((row: { id: string }) => row.id === app)) {
@@ -126,13 +187,13 @@ test('a repository-backed application page reloads what environments fetch', asy
     }
   });
   await rewrite(page, `/api/v1/applications/${app}`, data => {
-    data.application.spec.volumes = [{ name: 'cache' }];
-    data.spec_hash = 'fetched';
+    data.repository = { ...structuredClone(data.application), spec: { ...structuredClone(data.application.spec), volumes: [{ name: 'cache' }] } };
     data.updated_at_ms += 1_000;
   });
   await page.clock.runFor(16_000);
-  // The read-only forms are rebuilt from the fetched manifest.
-  await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('cache');
+  // The view is reloaded: the saved manifest now differs from the repository's.
+  await expect(edits).toBeVisible();
+  await expect(page.locator('.diff-row', { hasText: 'volumes.cache' })).toBeVisible();
   const conflict = page.getByText('Configuration changed elsewhere.', { exact: false });
   await expect(conflict).toHaveCount(0);
 

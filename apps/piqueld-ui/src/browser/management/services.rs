@@ -173,7 +173,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                 <button
                     type="button"
                     class="btn btn-danger"
-                    disabled={move || context.action_blocked() || context.managed()}
+                    disabled={move || context.action_blocked()}
                     on:click={remove}
                 >
                     "Remove service"
@@ -183,15 +183,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         <EditorFeedback />
         <Tabs label="Service sections" options={&SERVICE_TABS} selected={selected} />
         <div class="stack">
-            {move || {
-                (context.managed() && selected.get() != "Logs")
-                    .then(|| {
-                        notice(
-                            Tone::Info,
-                            "This service is managed in Git. Edit it in the repository manifest.",
-                        )
-                    })
-            }} <Show when={move || selected.get() == "Logs"}>
+            <Show when={move || selected.get() == "Logs"}>
                 <ServiceLogs name={log_service.clone()} />
             </Show> {groups}
         </div>

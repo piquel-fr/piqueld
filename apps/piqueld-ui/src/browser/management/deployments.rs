@@ -17,8 +17,8 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
-    EnvironmentView, HealthCheck, Operation, Page, PlanView, PromoteRequest, SecretProblem,
-    Service, Source, Template, ValidatedRollout,
+    EnvironmentView, HealthCheck, ManifestChange, Operation, Page, PlanView, PromoteRequest,
+    SecretProblem, Service, Source, Template, ValidatedRollout,
 };
 use std::fmt::Display;
 
@@ -81,7 +81,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
         });
     };
     let inspect = move |_| {
-        let Some(manifest) = context.environment_manifest() else {
+        let Some(manifest) = context.next_manifest() else {
             return;
         };
         let app = context.saved.get_untracked();
@@ -157,11 +157,11 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     class="btn"
                     disabled={move || {
                         context.environment_action_blocked()
-                            || context.environment_manifest().is_none()
+                            || context.next_manifest().is_none()
                     }}
                     on:click={inspect}
                     title={move || {
-                        if context.environment_manifest().is_some() {
+                        if context.next_manifest().is_some() {
                             "Show what deploying this environment's manifest would change"
                         } else {
                             "Deploy this environment to fetch its manifest from its branch first"
@@ -548,6 +548,20 @@ fn DeploymentPreview(preview: RwSignal<Option<PlanView>>) -> impl IntoView {
     }
 }
 
+/// One manifest field change: its path, then its value before and after.
+pub(super) fn change_row(change: ManifestChange) -> impl IntoView {
+    view! {
+        <div class="diff-row">
+            <code>{change.field}</code>
+            <span class="before">{change.before.unwrap_or_else(|| "absent".into())}</span>
+            <span class="arrow" aria-hidden="true">
+                "→"
+            </span>
+            <span class="after">{change.after.unwrap_or_else(|| "absent".into())}</span>
+        </div>
+    }
+}
+
 /// What deploying a plan changes: configuration changes, variable values,
 /// planned runtime actions, rollouts, and plan diagnostics.
 #[component]
@@ -561,26 +575,7 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                 view! { <p class="hint">"No configuration changes since the last deployment."</p> }
                     .into_any()
             } else {
-                plan.changes
-                    .into_iter()
-                    .map(|change| {
-                        view! {
-                            <div class="diff-row">
-                                <code>{change.field}</code>
-                                <span class="before">
-                                    {change.before.unwrap_or_else(|| "absent".into())}
-                                </span>
-                                <span class="arrow" aria-hidden="true">
-                                    "→"
-                                </span>
-                                <span class="after">
-                                    {change.after.unwrap_or_else(|| "absent".into())}
-                                </span>
-                            </div>
-                        }
-                    })
-                    .collect_view()
-                    .into_any()
+                plan.changes.into_iter().map(change_row).collect_view().into_any()
             }}
         </section>
         {(!plan.variables.is_empty())

@@ -237,7 +237,7 @@ pub(crate) enum AppCommand {
         #[command(subcommand)]
         command: crate::editing::VariableCommand,
     },
-    /// Connect, edit, or disconnect the manifest repository.
+    /// Connect, edit, or disconnect the manifest repository, or reset edits to it.
     Repository {
         #[command(subcommand)]
         command: crate::editing::RepositoryCommand,

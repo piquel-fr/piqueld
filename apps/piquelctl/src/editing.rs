@@ -11,10 +11,11 @@ use crate::{
 };
 use clap::{Args, Subcommand, builder::TypedValueParser};
 use piqueld_client::{
-    ApplicationView, Build, Client, Export, FileMode, FileSource, GitRepository, HealthCheck,
-    Import, Job, JobRun, JobVolumeAccess, Mount, Redirect, RedirectStatus, RepositoryManifest,
-    Rollout, RolloutOrder, Route, SavedApplication, SecretMount, Service, ServiceFile, Source,
-    SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    ApplicationView, ApplyApplicationRequest, ApplyOptions, Build, Client, Export, FileMode,
+    FileSource, GitRepository, HealthCheck, Import, Job, JobRun, JobVolumeAccess, Mount, Redirect,
+    RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication,
+    SecretMount, Service, ServiceFile, Source, SourceRepository, Template, Typed, Variable,
+    Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
@@ -776,9 +777,10 @@ pub(crate) struct RepositoryText {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum RepositoryCommand {
-    /// Enable repository ownership of services and volumes. Every environment
-    /// follows `--branch`, as do environments created later without one; change
-    /// an environment's branch with `env branch`.
+    /// Read configuration from a manifest in Git. Every environment follows
+    /// `--branch`, as do environments created later without one; change an
+    /// environment's branch with `env branch`. Edits made here afterwards
+    /// are deployed from that branch until a push changes the manifest.
     Connect {
         #[command(flatten)]
         target: RepositoryTarget,
@@ -822,6 +824,11 @@ pub(crate) enum RepositoryCommand {
         #[arg(long)]
         interval: Option<u32>,
     },
+    /// Discard the edits made since the manifest was last read from the
+    /// repository (`app show` lists them), saving that manifest again.
+    /// Deployments of the connection's branch deploy the saved manifest
+    /// until a push changes the manifest there.
+    Reset(RepositoryTarget),
     /// Show or generate the GitHub webhook that reports pushes to sync.
     Webhook {
         #[command(subcommand)]
@@ -1382,6 +1389,7 @@ impl RepositoryCommand {
                 ApplicationEdit::RepositorySync(mode.with_interval(*interval)?),
             ),
             Self::Webhook { command } => return command.run(client, console).await,
+            Self::Reset(target) => return target.flags.reset(client, console, &target.app).await,
             Self::Disconnect(target) => (target, ApplicationEdit::Repository(None)),
             Self::Url(args) => (
                 &args.target,
@@ -1496,6 +1504,53 @@ impl EditFlags {
             client.edit_application(current.application.id().as_str(), edit, &options)
         })
         .await?;
+        self.deployment.finish(client, console, &saved).await
+    }
+
+    /// Confirms and saves the manifest `app` last read from its repository,
+    /// discarding its edits, under the same preconditions as `save_loaded`.
+    async fn reset(&self, client: &Client, console: &mut Console, app: &str) -> Result<()> {
+        let current = resolve_application(client, app).await?;
+        let name = &current.application.metadata().name;
+        let Some(repository) = &current.repository else {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                format!("application {name:?} is not repository-backed"),
+            ));
+        };
+        if !current.edited() {
+            return console.info(format_args!(
+                "application {name:?} has no edits; it matches its repository manifest"
+            ));
+        }
+        console
+            .confirm(
+                self.yes,
+                &format!(
+                    "Discard the edits to application {name:?} since its manifest was last read from the repository{}?",
+                    if self.deployment.deploy {
+                        " and deploy"
+                    } else {
+                        ""
+                    }
+                ),
+            )
+            .await?;
+        let request = ApplyApplicationRequest {
+            manifest: repository.to_manifest(),
+            expected_generation: expected_generation(
+                self.force,
+                self.expected_generation,
+                current.generation,
+            ),
+            expected_application_id: (!self.force).then(|| current.application.id().to_string()),
+        };
+        let options = ApplyOptions {
+            force: self.force,
+            deploy: self.deployment.deploy,
+        };
+        let saved =
+            retry_transport(|| client.apply_application_with_options(&request, &options)).await?;
         self.deployment.finish(client, console, &saved).await
     }
 }

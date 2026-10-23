@@ -326,7 +326,7 @@ impl From<StoreError> for ApiError {
             StoreError::RepositoryManaged => Self::new(
                 StatusCode::CONFLICT,
                 "repository_managed",
-                "Edit runtime configuration in the repository manifest; only its connection settings can be changed directly",
+                "Rename a repository-backed application while it is disconnected, then rename it in its repository manifest",
             ),
             StoreError::Busy => Self::new(
                 StatusCode::CONFLICT,

@@ -34,8 +34,9 @@ use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
-    ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView, Client,
-    ClientError, DeploymentOrigin, EnvironmentConfig, EnvironmentSource, EnvironmentView, Metadata,
+    ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView,
+    ApplyApplicationRequest, Client, ClientError, DeploymentOrigin, EnvironmentConfig,
+    EnvironmentSource, EnvironmentView, Metadata, TrackedBranch,
     access::{GlobalPermission, Permission},
     edit::{ApplicationEdit, EditOptions},
 };
@@ -166,6 +167,25 @@ impl EditorContext {
                 .filter(|detail| detail.environment.id == environment.id)?;
             detail.manifest.clone()
         })
+    }
+
+    /// The manifest the shown environment's next deployment deploys, as far
+    /// as known without fetching: the saved one for an environment following
+    /// the branch the connection names, once the application read a manifest
+    /// from it, which it deploys until a push changes the manifest there;
+    /// otherwise its own (see `environment_manifest`).
+    fn next_manifest(self) -> Option<ApplicationTemplate> {
+        let environment = self.selected_environment()?;
+        self.saved
+            .with(|saved| {
+                let connection = saved.application.spec().manifest.as_ref()?;
+                let follows = environment.preview().is_none()
+                    && saved.repository.is_some()
+                    && environment.source.branch()
+                        == TrackedBranch::of(&connection.repository).ok().as_ref();
+                follows.then(|| saved.application.clone())
+            })
+            .or_else(|| self.environment_manifest())
     }
 
     /// The application's ID.
@@ -313,8 +333,8 @@ impl EditorContext {
         }
     }
 
-    /// Whether runtime configuration is owned by a Git manifest instead of these forms.
-    fn managed(self) -> bool {
+    /// Whether the application reads its manifest from a Git repository.
+    fn repository_backed(self) -> bool {
         self.saved
             .with(|saved| saved.application.spec().manifest.is_some())
     }
@@ -445,15 +465,63 @@ impl EditorContext {
             },
             move |receipt| {
                 let application = validated.normalize(saved.application.id().clone());
+                // As the daemon keeps it: the manifest last read from the
+                // repository follows the connection, and goes with it.
+                let repository = application.spec().manifest.clone().and_then(|connection| {
+                    saved
+                        .repository
+                        .clone()
+                        .map(|repository| repository.with_manifest(Some(connection)))
+                });
                 let updated = ApplicationView {
                     spec_hash: application.spec_hash(),
                     application,
                     generation: receipt.generation,
+                    repository,
                     ..saved
                 };
                 self.saved.set(updated.clone());
                 on_saved(updated);
                 self.notice.set("Saved.".into());
+                self.refresh_dashboard();
+            },
+        );
+    }
+
+    /// Saves the manifest last read from the repository again, after
+    /// confirmation, discarding the edits made since; deploying stays
+    /// explicit.
+    fn reset_edits(self) {
+        let saved = self.saved.get_untracked();
+        let Some(repository) = saved.repository.clone() else {
+            return;
+        };
+        if self.action_blocked()
+            || !super::confirm(
+                "Discard every edit made since the manifest was last read from the repository, and save the repository's manifest again? Deploy afterwards to apply it.",
+            )
+        {
+            return;
+        }
+        let request = ApplyApplicationRequest {
+            manifest: repository.to_manifest(),
+            expected_generation: Some(saved.generation),
+            expected_application_id: Some(saved.application.id().to_string()),
+        };
+        self.mutate(
+            move |client| {
+                let request = request.clone();
+                async move { client.apply_application(&request).await }
+            },
+            move |receipt| {
+                self.saved.set(ApplicationView {
+                    spec_hash: repository.spec_hash(),
+                    application: repository,
+                    generation: receipt.generation,
+                    ..saved
+                });
+                self.notice
+                    .set("Reset to the repository's manifest.".into());
                 self.refresh_dashboard();
             },
         );
@@ -971,9 +1039,9 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
                     saved.delete_intent = application.delete_intent;
                 });
             }
-            // Fetches replace a repository-backed application's saved manifest
-            // without advancing its revision; reload it unless it is being
-            // edited. Newer revisions show the conflict notice instead. A
+            // A fetch that only replaces a repository-backed application's
+            // repository manifest keeps its revision; reload it unless it is
+            // being edited. Newer revisions show the conflict notice instead. A
             // save may finish while the reload is in flight, so its response
             // is checked again on arrival.
             if context.fetched_since(application.generation, application.updated_at_ms)
@@ -1114,8 +1182,10 @@ fn ApplicationOverview() -> impl IntoView {
                                     {format!(
                                         "Revision {} · {}",
                                         saved.generation,
-                                        if context.managed() {
-                                            "managed in Git"
+                                        if saved.edited() {
+                                            "read from Git, edited in piqueld"
+                                        } else if context.repository_backed() {
+                                            "read from Git"
                                         } else {
                                             "saved in piqueld"
                                         },
@@ -1380,8 +1450,44 @@ fn EditorFeedback() -> impl IntoView {
     }
 }
 
-/// Source, services, routes, volumes, jobs and secret file tabs. Editing them is
-/// disabled while the application is managed from a Git manifest.
+/// How a repository-backed application's saved configuration differs from
+/// the manifest last read from its repository, with a button saving that
+/// manifest again. Shown only while it has edits.
+#[component]
+fn RepositoryEdits() -> impl IntoView {
+    let context = editor();
+    move || {
+        let edits = context
+            .saved
+            .with(|saved| saved.edited().then(|| saved.edits()));
+        edits.map(|edits| {
+            notice(
+                Tone::Info,
+                view! {
+                    <span>
+                        "Edited since the manifest was last read from the repository. Environments following the branch the connection names deploy this configuration until a push changes the manifest there, which replaces it. Previews and other branches deploy their own branch's manifest."
+                    </span>
+                    <div class="stack-sm">
+                        {edits.into_iter().map(deployments::change_row).collect_view()}
+                    </div>
+                    <div class="btn-group">
+                        <button
+                            type="button"
+                            class="btn btn-sm"
+                            disabled={move || context.action_blocked()}
+                            on:click={move |_| context.reset_edits()}
+                        >
+                            "Reset to repository"
+                        </button>
+                    </div>
+                },
+            )
+        })
+    }
+}
+
+/// Source, services, routes, volumes, jobs and secret file tabs. A
+/// repository-backed application's edits are listed above them.
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
@@ -1426,18 +1532,9 @@ fn ApplicationSettings() -> impl IntoView {
             )
         }}>
             <div class="stack">
-                {move || {
-                    context
-                        .managed()
-                        .then(|| {
-                            notice(
-                                Tone::Info,
-                                "Runtime configuration is managed in Git. This page shows the manifest last fetched by any environment; each environment's page shows what it deploys from its own branch. Disconnect the repository in Source to edit services, variables, routes, volumes, jobs, links, and secret files here.",
-                            )
-                        })
-                }} <div hidden={move || context.tab.get() != "Source"}>
+                <RepositoryEdits /> <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
-                </div> <fieldset disabled={move || { context.managed() }}>{forms}</fieldset>
+                </div> {forms}
             </div>
         </div>
     }

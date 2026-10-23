@@ -10,8 +10,9 @@ the API returns them, like validation errors, as `details.errors` entries with a
 path and message; JSON request bodies report only `json_malformed`.
 
 The manifest is shared by the application's environments (for a
-repository-backed application, each environment reads it from its own
-branch; a [promoted environment](#promoted-environments) deploys the manifest
+repository-backed application, environments following another branch than the
+one `spec.manifest` names, and previews, read it from their own branch; a
+[promoted environment](#promoted-environments) deploys the manifest
 of the release it receives), including services,
 replica counts, limits, volumes, routes, jobs, repository settings and secret
 file references. Manually set secret values live in one store per application,
@@ -159,8 +160,10 @@ it targets a different application. Use the explicit rename action to retain
 identity and resources, then update the manifest name.
 
 Individual field endpoints edit the saved internal manifest atomically, validate
-the result, and save without deployment unless requested. Git ownership and
-configuration revision checks apply to field edits as well as manifest imports.
+the result, and save without deployment unless requested. Configuration
+revision checks apply to field edits as well as manifest imports, and
+repository-backed applications are [edited](#editing-repository-backed-applications)
+the same way.
 `piquelctl app repository disconnect NAME --yes` removes repository backing while
 retaining the current saved services and volumes.
 
@@ -535,9 +538,10 @@ page read that manifest, so a fetch for one environment never changes what
 another deploys or reserves. An environment that was never deployed has fetched
 nothing and reserves no hostnames yet. The application's saved manifest is the
 one last fetched from the branch and commit `spec.manifest` names, by any of
-its environments, keeping the application's own connection: the application
-page and `app show` display it, environments deploy it after disconnecting,
-and it [declares the environments](#declared-environments). Fetches from other
+its environments, keeping the application's own connection, unless it was
+[edited](#editing-repository-backed-applications) since: the application page
+and `app show` display it, environments deploy it after disconnecting, and it
+[declares the environments](#declared-environments). Fetches from other
 branches, and one-off revisions, change only their environment's own manifest.
 
 A fetched file's own `spec.manifest` is ignored: files on different branches
@@ -552,17 +556,40 @@ Git service source with an explicit repository resolves its own revision
 independently; `repository = "self"` builds the fetched manifest commit. Image
 sources are explicitly refreshed, even when the fetched manifest is unchanged.
 
-Git owns runtime configuration while backing is enabled: direct apply and field
-edits cannot change anything but `spec.manifest`, and rename is rejected with
-`repository_managed`.
-Connection settings alone remain editable through apply so an incorrect path
-can be repaired. Manifest connection settings do not change the runtime spec
-hash. Source builds, deployment, and rollback retain the behavior described above.
+Manifest connection settings do not change the runtime spec hash. Source
+builds, deployment, and rollback retain the behavior described above. Rename is
+rejected with `repository_managed`: the name must match the fetched manifests',
+so rename the application while disconnected, then in the repository.
 
 `piquelctl env deploy NAME ENV --branch feature` (or `--commit SHA`, also on
 `app deploy`) fetches the manifest from another revision for one deployment,
 without changing the environment's branch. `self` sources build that revision
 too. Subsequent deploys fetch the environment's own branch again.
+
+### Editing repository-backed applications
+
+A repository-backed application is edited like any other, with field edits
+(`piquelctl app service`, `app variable`, …, or the dashboard) or `app apply`,
+which change its saved manifest. Pushing the manifest changes it too.
+
+Each application keeps the manifest it last read from the branch and commit
+`spec.manifest` names. A deployment of that branch (or of its pinned commit)
+fetches the manifest file again; while the file is the one last read, the push
+left the manifest unchanged, and it deploys the saved manifest, edits included,
+building `repository = "self"` services and reading repository files at the
+fetched commit. When the file differs, it deploys the file, which also becomes
+the saved manifest once the deployment is prepared, as `app apply` would save
+it, unless another deployment read a manifest since: a push that changes the
+manifest replaces the edits. Environments following
+other branches, one-off revisions and previews always deploy the manifest from
+their own branch.
+
+While the saved manifest differs from the one last read, `app show` and the
+application's settings tabs list the edited fields, from the repository's
+value to the edited one. **Reset to repository** on the application page, or
+`piquelctl app repository reset NAME`, discards them, saving the manifest last
+read again; deploying stays explicit, or pass `--deploy`. Disconnecting keeps
+the saved manifest, edits included.
 
 ### Deploying on push
 
@@ -987,10 +1014,10 @@ digest; since it reads nothing from the repository, it shows changed paths, but
 not changed repository contents. Promotion plans compare the captured bytes
 too, as `repository_files.<path>`.
 
-For repository-backed applications, Git owns files, as it owns the rest of the
-configuration: `piquelctl app file` and the dashboard edit them only for other
-applications. Disconnecting the repository fails validation while services
-still mount repository files; replace them with inline `content` first.
+Files are [edited](#editing-repository-backed-applications) like the rest of
+the configuration, with `piquelctl app file` or the dashboard. Disconnecting the
+repository fails validation while services still mount repository files;
+replace them with inline `content` first.
 
 ## Startup dependencies
 

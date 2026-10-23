@@ -106,6 +106,8 @@ impl Store {
     /// `IllegalTransition` while deletion is pending, `AlreadyExists` for a taken
     /// name, `SecretDeleting` for manifests that reference secrets being deleted,
     /// and `secret_name_conflict` for declared secrets the application stores.
+    /// The manifest an application last read from its repository is kept
+    /// while it stays repository-backed (see `Self::repository_manifest_on`).
     pub(super) async fn save_configuration_on(
         tx: &mut Transaction<'_, Sqlite>,
         app: &ApplicationTemplate,
@@ -136,7 +138,8 @@ impl Store {
         let json = serde_json::to_string(app).map_err(StoreError::corrupt)?;
         let name = app.metadata().name.as_str();
         let now = now_ms();
-        let changed = sqlx::query!("INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,generation=excluded.generation,updated_at_ms=excluded.updated_at_ms WHERE applications.delete_intent=0",id,name,json,generation,now)
+        let backed = app.spec().manifest.is_some();
+        let changed = sqlx::query!("INSERT INTO applications(id,name,desired_json,generation,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(id) DO UPDATE SET desired_json=excluded.desired_json,repository_json=CASE WHEN ?6 THEN applications.repository_json END,generation=excluded.generation,updated_at_ms=excluded.updated_at_ms WHERE applications.delete_intent=0",id,name,json,generation,now,backed)
             .execute(&mut **tx).await.map_err(StoreError::constraint)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);

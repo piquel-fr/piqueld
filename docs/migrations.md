@@ -272,6 +272,14 @@ dropped. Destinations configured in
 cancelled; remove that table from the configuration, which now rejects it, and
 create the destinations again.
 
+`0030_repository_manifests.sql` makes repository-backed applications editable.
+`applications.repository_json` keeps the manifest each one last read from its
+repository; every existing repository-backed application's is its saved
+manifest, which could not be edited before, so none starts with edits.
+`deployment_inputs.repository_json` captures that manifest when a deployment is
+requested, and `deployment_inputs.fetched_json` records the manifest it
+fetched, which replaces both when they differ. Nothing is redeployed.
+
 ## Upgrade and rollback
 
 Migrations are forward-only. An older daemon rejects a database with a newer

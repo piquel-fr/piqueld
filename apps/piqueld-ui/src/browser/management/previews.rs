@@ -207,7 +207,7 @@ pub(super) fn PreviewList() -> impl IntoView {
         );
     };
     let none = move || {
-        if context.managed() {
+        if context.repository_backed() {
             "No previews yet. Create one to deploy a branch."
         } else {
             "No previews. Previews deploy branches of the application's manifest repository: connect one in Source first."
@@ -306,7 +306,7 @@ fn NewPreview() -> impl IntoView {
         <button
             type="button"
             class="btn btn-primary"
-            disabled={move || context.blocked() || !context.managed()}
+            disabled={move || context.blocked() || !context.repository_backed()}
             on:click={move |_| opened.set(true)}
         >
             {icon(Icon::Plus)}

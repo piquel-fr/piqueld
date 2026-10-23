@@ -823,6 +823,25 @@
             },
             "type": "array"
           },
+          "repository": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ApplicationTemplate"
+                  }
+                ],
+                "description": "The manifest it last read from its repository, with its connection,\nwhile repository-backed and once it has read one: where the saved\nmanifest differs from it, it was [edited](Self::edits) since."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "spec_hash": {
             "description": "Hash of the normalized desired specification.",
             "type": "string"
@@ -3314,6 +3333,25 @@
                   "$ref": "#/components/schemas/EnvironmentView"
                 },
                 "type": "array"
+              },
+              "repository": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationTemplate"
+                      }
+                    ],
+                    "description": "The manifest it last read from its repository, with its connection,\nwhile repository-backed and once it has read one: where the saved\nmanifest differs from it, it was [edited](Self::edits) since."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "spec_hash": {
                 "description": "Hash of the normalized desired specification.",

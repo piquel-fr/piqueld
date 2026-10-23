@@ -2840,7 +2840,7 @@ async fn mixed_sources_report_the_failing_source() {
 
 mod repository_deployments {
     use super::*;
-    use piqueld::api::{ApplicationError, Mutation, MutationResponse, PreviewMutation};
+    use piqueld::api::{Mutation, MutationResponse, PreviewMutation};
     use piqueld::store::StoreError;
     use piqueld_core::manifest::{
         GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
@@ -3359,15 +3359,63 @@ mod repository_deployments {
         assert_eq!(before.application.generation, after.application.generation);
         assert_eq!(before.resolved, after.resolved);
         assert_eq!(harness.store.list(None, 50).await.unwrap().items.len(), 1);
-        let mut manual = initial;
-        manual.spec.services[0].replicas = 4.into();
-        assert!(matches!(
-            harness
-                .applications()
-                .apply(manual.validate_template().unwrap(), Some(1))
-                .await,
-            Err(ApplicationError::Store(StoreError::RepositoryManaged))
-        ));
+    }
+
+    /// The connection's branch deploys the saved manifest, edits included,
+    /// until a push changes the manifest there, which replaces it.
+    #[tokio::test]
+    async fn edits_deploy_until_a_push_changes_the_manifest() {
+        let repository = Repository::new();
+        let harness = ControllerHarness::new().await;
+        let initial = repository.manifest("app.json");
+        repository.write("app.json", &initial);
+        repository.commit(&[]);
+        let first = harness.apply(initial.clone(), Some(0)).await;
+        harness.finish(&first).await;
+        let environment = first.environment_id.clone();
+        let saved = || async { harness.store.get(&environment).await.unwrap() };
+        let id = saved().await.application.application.id().clone();
+        let generation = saved().await.application.generation;
+        let mut edited = initial.clone();
+        edited.spec.services[0].replicas = 4.into();
+        harness.save(edited, Some(generation)).await;
+        // A push that leaves the manifest alone deploys the edit.
+        repository.commit(&[("README.md", b"notes")]);
+        harness.finish(&harness.deploy(&environment).await).await;
+        let current = saved().await;
+        assert_eq!(current.own.unwrap().spec().services[0].replicas, 4.into());
+        let view = harness.applications().application(&id).await.unwrap();
+        assert!(view.edited());
+        assert_eq!(
+            view.edits()
+                .into_iter()
+                .map(|edit| edit.field)
+                .collect::<Vec<_>>(),
+            ["services.web.replicas"]
+        );
+        // One that changes it replaces the saved manifest.
+        let mut pushed = initial;
+        pushed.spec.services[0]
+            .environment
+            .insert("MODE".into(), "pushed".into());
+        repository.write("app.json", &pushed);
+        repository.commit(&[]);
+        harness.finish(&harness.deploy(&environment).await).await;
+        let current = saved().await;
+        for deployed in [
+            current.own.as_ref().unwrap(),
+            &current.application.application,
+        ] {
+            let web = &deployed.spec().services[0];
+            assert_eq!(web.replicas, 1.into());
+            assert_eq!(web.environment["MODE"], "pushed");
+        }
+        assert_eq!(
+            current.environment.resolved_generation,
+            Some(current.application.generation)
+        );
+        let view = harness.applications().application(&id).await.unwrap();
+        assert!(!view.edited());
     }
 
     #[tokio::test]
