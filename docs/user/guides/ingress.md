@@ -641,7 +641,8 @@ treats a modified value as drift. Requests reaching Caddy through Docker's userl
 
 The gateway serves none of a [stopped](api.md#stopped-environments)
 environment's routes: stopping reconfigures it before the request returns,
-and acknowledging that withdrawal empties the environment's applied routes.
+or on its next pass if that fails, and acknowledging that withdrawal empties
+the environment's applied routes.
 Its hostnames stay reserved, and its DNS-01 certificates are still renewed and
 its managed DNS records kept, so starting it serves the routes again on the
 next gateway pass, within ten seconds, without waiting for DNS or a

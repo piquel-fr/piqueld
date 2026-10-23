@@ -680,8 +680,10 @@ applications the caller can read. Daemons older than links omit the field.
 `POST /api/v1/environments/{id}/stop` stops an environment until it is
 started: its services keep their configuration, volumes and secrets but run no
 replicas, and the gateway serves none of its routes, withdrawing them before
-the request returns. Their hostnames stay reserved, and their certificates and
-managed DNS records stay in place, so starting serves them again at once.
+the request returns; if the gateway can't be reconfigured then, its next pass
+retries within ten seconds. Their hostnames stay reserved, and their
+certificates and managed DNS records stay in place, so starting serves them
+again at once.
 `EnvironmentView.run_state` is `stopped` (`running` otherwise, and from daemons
 older than stopping), its runtime health `stopped` once every service has
 scaled down, and its sync state `stopped`: pushes don't deploy it, and sync

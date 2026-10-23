@@ -664,7 +664,8 @@ impl<D: DockerApi> Controller<D> {
     /// Applies `Plan::next_repair` toward `target`, the active target, under
     /// the global mutation lock and in its own journal entry, and returns
     /// whether it did. Skips blocked plans, operations no longer the latest
-    /// or promoted since, and removals that would drop resources still
+    /// or promoted since, environments stopped or started since, and
+    /// removals that would drop resources still
     /// referenced by routes awaiting cutover. While the deployment may still
     /// roll out, prepared job prerequisites and services stopped for an
     /// exclusive job are left to it; once it has ended, repair restores them.
@@ -676,6 +677,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<bool, OperationError> {
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
+        let stopped = self.store.is_stopped(id).await?;
         let desired = self
             .runtime_target(target, &accepted_routes, &observed)
             .await?;
@@ -690,6 +692,7 @@ impl<D: DockerApi> Controller<D> {
             .await?
             .is_none_or(|op| op.id != operation_id)
             || self.store.is_promoted(operation_id).await?
+            || self.store.is_stopped(id).await? != stopped
         {
             return Ok(false);
         }
