@@ -3327,6 +3327,37 @@ async fn environment_visibility_edits_cap_routes_in_the_saved_manifest() {
 }
 
 #[tokio::test]
+async fn preview_visibility_edits_save_the_previews_ceiling() {
+    use piqueld_core::{
+        edit::{ApplicationEdit, EditOptions},
+        manifest::Visibility,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api.save().await;
+    let id = &saved.application_id;
+    api.client
+        .edit_application(
+            id,
+            &ApplicationEdit::PreviewVisibility(Visibility::Public),
+            &EditOptions {
+                expected_generation: Some(1),
+                ..EditOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let manifest = api
+        .client
+        .application(id)
+        .await
+        .unwrap()
+        .application
+        .to_manifest();
+    assert_eq!(manifest.spec.previews.visibility, Visibility::Public);
+}
+
+#[tokio::test]
 async fn route_field_edits_follow_service_renames_and_removals() {
     use piqueld_client::{
         Route,

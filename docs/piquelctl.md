@@ -73,6 +73,7 @@ piquelctl preview deploy <app> <preview> [--slot <slot>]
 piquelctl preview deploy <app> --local [--branch <branch>] [--slot <slot>] [--full-history]
 piquelctl preview list <app>
 piquelctl preview show <app> <preview> [--slot <slot>]
+piquelctl preview visibility <app> <public|private>
 piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
 piquelctl preview wait <app> <preview> [--slot <slot>] [--deployment <id>] [--ready runtime|routes]
 piquelctl preview url <app> <preview> [--slot <slot>] [--route <name>]
@@ -627,6 +628,7 @@ piquelctl app route name notes notes.example.com web --yes
 piquelctl app route list notes
 piquelctl app route remove notes notes.example.com --yes
 piquelctl env visibility notes staging private --yes
+piquelctl preview visibility notes public --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
 piquelctl app job set notes migrate web --volume-access exclusive --yes -- notes migrate
 piquelctl app job set notes migrate web --env OWNER_PASSWORD_FILE=/run/secrets/owner --secret owner-password=/run/secrets/owner --yes -- notes migrate
@@ -673,7 +675,8 @@ added with `--visibility public`; `route visibility` changes an existing route,
 `route add --name` and `route redirect --name` name a new route, `route name`
 names an existing one (or removes its name without `NAME`),
 and `env visibility` caps every route of one environment at `private` (or lifts
-the cap with `public`) in the saved manifest. Deploy after saving to activate or
+the cap with `public`) in the saved manifest; `preview visibility` sets the same
+ceiling for every preview, `private` unless set. Deploy after saving to activate or
 remove routing. `route list` shows each deployed route with its name, environment,
 effective visibility, state, destination, whether piqueld
 [manages its DNS records](ingress.md#managed-dns-records) (`manual`, `managed`,

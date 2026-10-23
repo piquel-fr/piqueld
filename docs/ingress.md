@@ -113,9 +113,10 @@ addition. Hostname reservations ignore visibility.
 
 `piquelctl app route add|redirect ... --visibility public|private`,
 `piquelctl app route visibility <app> <hostname> <public|private>` and
-`piquelctl env visibility <app> <env> <public|private>` edit the saved manifest;
-the dashboard has a visibility selector per route in the Routes tab and the
-ceiling in each environment's Overview.
+`piquelctl env visibility <app> <env> <public|private>` and
+`piquelctl preview visibility <app> <public|private>` edit the saved manifest;
+the dashboard has a visibility selector per route and the preview ceiling in the
+Routes tab, and the ceiling in each environment's Overview.
 
 ### Listeners
 
