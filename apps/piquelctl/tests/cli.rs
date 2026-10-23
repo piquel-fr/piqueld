@@ -2288,6 +2288,49 @@ fn git_service_creation_does_not_require_a_placeholder_image() {
     assert_eq!(server.finish().len(), 2);
 }
 
+#[test]
+fn self_git_sources_build_the_manifest_repository() {
+    assert_saves_field(
+        &[
+            "app",
+            "service",
+            "source",
+            "git",
+            "app-notes-01",
+            "web",
+            "self",
+            "--dockerfile",
+            "build/Dockerfile",
+            "--yes",
+        ],
+        "source",
+        &json!({"value":{"type":"git","repository":"self","build":{"type":"docker","dockerfile":"build/Dockerfile","context":"."}}}),
+    );
+    // `self` always builds the manifest's commit, so a revision is rejected
+    // before contacting the daemon.
+    let server = start_server(false, 0, |_| {
+        panic!("`self` with a branch must fail locally")
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "service",
+            "add",
+            "app-notes-01",
+            "worker",
+            "--git",
+            "self",
+            "--branch",
+            "release",
+            "--yes",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("do not apply to `self`"));
+    let _ = server.finish();
+}
+
 // Runs over TCP so the global `--url` endpoint and the positional repository
 // URL are both given.
 #[test]
