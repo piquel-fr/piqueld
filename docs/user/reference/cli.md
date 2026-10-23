@@ -333,6 +333,25 @@ reports how many images this installation built that
 [image cleanup](../../dev/architecture/docker-reconciliation.md#image-retention) kept, and the total
 size of those it removed since the daemon started.
 
+`status` answers whether the daemon and its subsystems are up. Two more
+read-only commands, both requiring `system:read`, show what the dashboard's
+Daemon status and Host settings pages do:
+
+- `piquelctl resources` shows the daemon's
+  [resource measurements](../guides/observability.md#api-and-dashboard): uptime,
+  resident memory, CPU usage, the database and its write-ahead log, free disk
+  on the data directory's filesystem, retained events, diagnostics and build
+  output, running and queued operations, and notification deliveries
+  awaiting a retry or failed.
+  The daemon measures at most every 5 seconds and averages CPU usage since
+  its previous measurement, so its first measurement has none. What the host
+  cannot measure is unavailable, never zero.
+- `piquelctl settings` shows the daemon's effective
+  [configuration](configuration.md), grouped as on the Host settings page.
+  Credentials appear only as the file they are read from. Change settings in
+  the daemon's TOML and restart it. Each read is recorded in the
+  [audit trail](../guides/observability.md#audit-trail).
+
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
 is interpreted as seconds. The timeout bounds the complete command, except
@@ -351,6 +370,8 @@ written to stderr, so stdout remains valid JSON.
 | --- | --- |
 | `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
 | `status` | `SystemStatus` |
+| `resources` | `DaemonStats` |
+| `settings` | `HostConfiguration` |
 | `dns refresh` | `DnsStatus` |
 | `login` | `User` |
 | `whoami` | `Session` |

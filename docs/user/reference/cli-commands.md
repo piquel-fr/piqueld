@@ -69,6 +69,8 @@ Commands:
 - [`piquelctl secrets`](#piquelctl-secrets): Manage the daemon's encryption key for secrets.
 - [`piquelctl notification`](#piquelctl-notification): Manage notification destinations and their deliveries.
 - [`piquelctl status`](#piquelctl-status): Show whether the daemon responds, its version, and the health of its subsystems.
+- [`piquelctl resources`](#piquelctl-resources): Show the daemon process's resource usage, storage, retained history, and queues, measured at most every 5 seconds (requires system:read).
+- [`piquelctl settings`](#piquelctl-settings): Show the daemon's effective host settings, read-only (requires system:read). Change them in its TOML configuration and restart it.
 - [`piquelctl dns`](#piquelctl-dns): Inspect the daemon's DNS providers.
 - [`piquelctl app`](#piquelctl-app): Create, inspect, edit and deploy applications.
 - [`piquelctl env`](#piquelctl-env): Create, inspect, deploy and delete an application's environments.
@@ -762,6 +764,22 @@ Show whether the daemon responds, its version, and the health of its subsystems.
 
 ```text
 piquelctl status [OPTIONS]
+```
+
+## `piquelctl resources`
+
+Show the daemon process's resource usage, storage, retained history, and queues, measured at most every 5 seconds (requires system:read).
+
+```text
+piquelctl resources [OPTIONS]
+```
+
+## `piquelctl settings`
+
+Show the daemon's effective host settings, read-only (requires system:read). Change them in its TOML configuration and restart it.
+
+```text
+piquelctl settings [OPTIONS]
 ```
 
 ## `piquelctl dns`

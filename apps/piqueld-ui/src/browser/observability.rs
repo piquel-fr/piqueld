@@ -1,6 +1,6 @@
 //! Event history, diagnostics, daemon statistics and settings, analytics,
 //! and the audit trail.
-use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
+use super::format::{duration, duration_f64, now_ms, timestamp};
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, metric, notice, when,
 };
@@ -13,8 +13,9 @@ use piqueld_client::{
     Client, DEFAULT_PAGE_SIZE, Event, EventActor,
     access::{GlobalPermission, Permission},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome},
-    observability::{DaemonStats, DeploymentAnalytics, EventFilter, EventScope},
+    observability::{Bytes, DaemonStats, DeploymentAnalytics, EventFilter, EventScope, Uptime},
 };
+use std::time::Duration;
 
 /// Revision counter that observability resources track to refetch.
 /// Bumped every 5 seconds while the tab is visible, or on demand.
@@ -31,7 +32,7 @@ impl Refresh {
                     revision.update(|r| *r = r.wrapping_add(1));
                 }
             },
-            std::time::Duration::from_secs(5),
+            Duration::from_secs(5),
         ) {
             on_cleanup(move || handle.clear());
         }
@@ -514,6 +515,7 @@ pub(super) fn SystemPage() -> impl IntoView {
 /// Metric tiles and counters of the daemon process.
 fn resource_stats(stats: &DaemonStats) -> AnyView {
     let unavailable = || "Unavailable".to_owned();
+    let bytes = |value| Bytes(value).to_string();
     let counters = [
         ("Retained events", stats.events.to_string()),
         ("Diagnostic occurrences", stats.diagnostics.to_string()),
@@ -528,7 +530,11 @@ fn resource_stats(stats: &DaemonStats) -> AnyView {
     ];
     view! {
         <div class="metrics">
-            {metric("Uptime", duration_secs(stats.uptime_seconds), None::<&str>)}
+            {metric(
+                "Uptime",
+                Uptime(Duration::from_secs(stats.uptime_seconds)).to_string(),
+                None::<&str>,
+            )}
             {metric("Memory", stats.memory_bytes.map_or_else(unavailable, bytes), Some("resident"))}
             {metric(
                 "CPU",

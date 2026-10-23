@@ -13,11 +13,12 @@ use piqueld_client::{
     ServiceImage, Source, StoredSecret, SystemStatus, TelemetryDestinationStatus, TelemetryStatus,
     Template, UrlState, VariableValue,
     links::ImportState,
+    observability::{Bytes, DaemonStats, Uptime},
     sync::{SyncState, WebhookSecret, WebhookView, short_commit},
-    system::{IngressStatus, PublicIngressStatus, RouteStatus},
+    system::{HostConfiguration, IngressStatus, PublicIngressStatus, RouteStatus},
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, time::Duration};
 
 // Implements `Report` with the block as `render_human`. The JSON is the value
 // itself, what it dereferences to, or one of its fields:
@@ -393,6 +394,79 @@ report!(DnsStatus, self, out, {
         )?;
         if let Some(error) = &certificate.error {
             out.label("Certificate problem", error)?;
+        }
+    }
+    Ok(())
+});
+
+// `resources`: the measurements the dashboard's Daemon status page shows.
+// Measurements the host cannot provide are unavailable rather than zero.
+report!(DaemonStats, self, out, {
+    let unavailable = || "unavailable on this host".to_owned();
+    out.label("Measured", format_args!("Unix ms {}", self.sampled_at_ms))?;
+    out.label("Uptime", Uptime(Duration::from_secs(self.uptime_seconds)))?;
+    out.label(
+        "Memory",
+        self.memory_bytes
+            .map_or_else(unavailable, |bytes| format!("{} resident", Bytes(bytes))),
+    )?;
+    // CPU usage compares two measurements, so the daemon's first has none.
+    out.label(
+        "CPU",
+        match (self.cpu_percent, self.cpu_seconds) {
+            (Some(percent), _) => {
+                format!("{percent:.1}% of one core, averaged since the previous measurement")
+            }
+            (None, Some(_)) => "not measured yet; ask again in 5 seconds".to_owned(),
+            (None, None) => unavailable(),
+        },
+    )?;
+    out.label(
+        "Database",
+        format_args!(
+            "{} (WAL {})",
+            Bytes(self.database_bytes),
+            Bytes(self.wal_bytes)
+        ),
+    )?;
+    out.label(
+        "Available disk",
+        self.available_disk_bytes.map_or_else(unavailable, |bytes| {
+            format!("{} on the data directory's filesystem", Bytes(bytes))
+        }),
+    )?;
+    out.label("Retained events", self.events)?;
+    out.label("Diagnostic occurrences", self.diagnostics)?;
+    out.label(
+        "Retained build output",
+        Bytes(u64::try_from(self.build_output_bytes).unwrap_or(0)),
+    )?;
+    out.label(
+        "Operations",
+        format_args!(
+            "{} running, {} queued",
+            self.running_operations, self.queued_operations
+        ),
+    )?;
+    out.label(
+        "Notification deliveries",
+        format_args!(
+            "{} awaiting a retry, {} failed",
+            self.pending_deliveries, self.failed_deliveries
+        ),
+    )
+});
+
+// `settings`: each group of host settings, as the dashboard's Host settings
+// page shows them.
+report!(HostConfiguration, self, out, {
+    for (index, (group, settings)) in self.groups.iter().enumerate() {
+        if index > 0 {
+            out.blank()?;
+        }
+        out.heading(&format!("{group}:"))?;
+        for (setting, value) in settings {
+            out.label(&format!("  {setting}"), value)?;
         }
     }
     Ok(())

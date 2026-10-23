@@ -269,6 +269,12 @@ pub(crate) enum Command {
     },
     /// Show whether the daemon responds, its version, and the health of its subsystems.
     Status,
+    /// Show the daemon process's resource usage, storage, retained history,
+    /// and queues, measured at most every 5 seconds (requires system:read).
+    Resources,
+    /// Show the daemon's effective host settings, read-only (requires
+    /// system:read). Change them in its TOML configuration and restart it.
+    Settings,
     /// Inspect the daemon's DNS providers.
     Dns {
         #[command(subcommand)]

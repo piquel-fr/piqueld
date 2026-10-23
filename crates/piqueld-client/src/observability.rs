@@ -5,6 +5,55 @@ use crate::{
     client::{EnvelopedCall, GeneratedCall, check_page_limit},
 };
 pub use piqueld_core::observability::*;
+use std::{fmt, time::Duration};
+
+/// A size as people read it, in binary units with one decimal from a
+/// kibibyte: `512 B`, `1.5 KiB` or `118.3 GiB`. The dashboard and
+/// `piquelctl` show sizes this way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Bytes(pub u64);
+
+impl fmt::Display for Bytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+        // The largest unit it reaches, of 2^(10 × power) bytes.
+        match (1..=UNITS.len())
+            .rev()
+            .find(|power| self.0 >> (10 * power) > 0)
+        {
+            None => write!(formatter, "{} B", self.0),
+            Some(power) => {
+                let unit = 1_u128 << (10 * power);
+                // Tenths of the unit, rounded half up.
+                let tenths = (u128::from(self.0) * 10 + unit / 2) / unit;
+                let unit = UNITS[power - 1];
+                write!(formatter, "{}.{} {unit}", tenths / 10, tenths % 10)
+            }
+        }
+    }
+}
+
+/// A long duration to the minute, as uptime reads: `3 d 4 h`, `2 h 5 min`,
+/// `12 min` or, under a minute, `45 s`. The dashboard and `piquelctl` show
+/// the daemon's uptime this way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Uptime(pub Duration);
+
+impl fmt::Display for Uptime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let seconds = self.0.as_secs();
+        match (
+            seconds / 86_400,
+            seconds % 86_400 / 3_600,
+            seconds % 3_600 / 60,
+        ) {
+            (days @ 1.., hours, _) => write!(formatter, "{days} d {hours} h"),
+            (0, hours @ 1.., minutes) => write!(formatter, "{hours} h {minutes} min"),
+            (0, 0, minutes @ 1..) => write!(formatter, "{minutes} min"),
+            _ => write!(formatter, "{seconds} s"),
+        }
+    }
+}
 
 impl Client {
     /// Reads a filtered page of durable history.
@@ -161,5 +210,38 @@ impl Client {
             .payload()
             .await
             .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Bytes, Uptime};
+    use std::time::Duration;
+
+    #[test]
+    fn bytes_use_the_largest_reached_binary_unit() {
+        for (bytes, text) in [
+            (0, "0 B"),
+            (1023, "1023 B"),
+            (1024, "1.0 KiB"),
+            (1536, "1.5 KiB"),
+            (52_428_800, "50.0 MiB"),
+            (127_026_911_232, "118.3 GiB"),
+            (u64::MAX, "16777216.0 TiB"),
+        ] {
+            assert_eq!(Bytes(bytes).to_string(), text);
+        }
+    }
+
+    #[test]
+    fn uptime_keeps_its_two_largest_units() {
+        for (seconds, text) in [
+            (45, "45 s"),
+            (720, "12 min"),
+            (7_500, "2 h 5 min"),
+            (273_600, "3 d 4 h"),
+        ] {
+            assert_eq!(Uptime(Duration::from_secs(seconds)).to_string(), text);
+        }
     }
 }

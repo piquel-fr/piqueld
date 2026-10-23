@@ -1,5 +1,5 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
-use super::format::{bytes, duration, timestamp};
+use super::format::{duration, timestamp};
 use super::logs::{LogKind, LogViewer, StreamFilter};
 use super::ui::{
     Icon, PageHeader, Tone, build_badge, code_or, empty, expander_summary, icon, load_older,
@@ -13,6 +13,7 @@ use leptos_router::components::A;
 use piqueld_client::{
     BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
     access::AppPermission,
+    observability::Bytes,
 };
 
 /// `/builds` page: build history across all applications.
@@ -238,7 +239,7 @@ fn BuildCard(
                             <dt>"Resolved commit"</dt> <dd>{code_or(b.commit, "Not resolved")}</dd>
                             <dt>"Image"</dt> <dd>{code_or(b.image_id, "Not produced")}</dd>
                             <dt>"Retained output"</dt>
-                            <dd>{bytes(u64::try_from(b.log_bytes).unwrap_or(0))}</dd>
+                            <dd>{Bytes(u64::try_from(b.log_bytes).unwrap_or(0)).to_string()}</dd>
                         </dl>
                     }
                 }}

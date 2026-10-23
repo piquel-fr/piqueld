@@ -264,6 +264,8 @@ diagnostic counts, retained build-output bytes, operation queues, and pending/fa
 measurements that are unavailable are null and omitted from exported metrics, not
 zero.
 These are current samples; piqueld does not persist a resource time series.
+`piquelctl resources` and `piquelctl settings` show the measurements and the
+host settings in a terminal; see [piquelctl](../reference/cli.md).
 
 ## Notifications
 
