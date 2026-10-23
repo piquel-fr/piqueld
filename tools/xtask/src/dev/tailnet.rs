@@ -15,7 +15,7 @@ use serde::Deserialize;
 use tokio::process::Command;
 
 use super::supervisor::Supervisor;
-use super::{Instance, RUNTIME_ROOT};
+use super::{Instance, LEGACY_RUNTIME_ROOT};
 use crate::process::{Job, Shutdown, checked_stdout};
 
 const HOSTNAME: &str = "piqueld-dev";
@@ -56,13 +56,16 @@ struct NodeStatus {
 pub(super) struct Tailnet {
     state: PathBuf,
     runtime: PathBuf,
+    /// Where older checkouts ran the node, with the same state directory.
+    legacy_runtime: PathBuf,
 }
 
 impl Tailnet {
     pub(super) fn new() -> Result<Self> {
         Ok(Self {
             state: Instance::state_root()?.join("tailnet"),
-            runtime: Path::new(RUNTIME_ROOT).join("tailnet"),
+            runtime: Instance::runtime_root()?.join("tailnet"),
+            legacy_runtime: Path::new(LEGACY_RUNTIME_ROOT).join("tailnet"),
         })
     }
 
@@ -97,6 +100,7 @@ impl Tailnet {
     /// Starts the node in the background unless it runs, and waits until its
     /// socket accepts connections.
     pub(super) async fn start(&self) -> Result<()> {
+        self.stop_legacy().await?;
         Instance::create_private_dir(&self.runtime)?;
         let log = self.log();
         self.supervisor()
@@ -117,6 +121,29 @@ impl Tailnet {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        Ok(())
+    }
+
+    /// Stops the node an older checkout runs from the legacy runtime
+    /// directory: it shares this node's state directory, and two tailscaled
+    /// on one state would fight over the node. Its dev.pid is only trusted in
+    /// a directory that is the user's alone.
+    async fn stop_legacy(&self) -> Result<()> {
+        let supervisor = Supervisor::in_dir(&self.legacy_runtime);
+        if supervisor.running().is_none() {
+            return Ok(());
+        }
+        let legacy = self.legacy_runtime.display();
+        ensure!(
+            Instance::private_runtime_dir(&self.legacy_runtime),
+            "a tailnet node runs from {legacy}, which is not a directory only you can access; \
+             stop it, then retry"
+        );
+        supervisor
+            .stop()
+            .await
+            .with_context(|| format!("stop the tailnet node in {legacy}"))?;
+        eprintln!("stopped the tailnet node that an older checkout ran from {legacy}");
         Ok(())
     }
 
@@ -198,5 +225,55 @@ impl Tailnet {
             .filter(|_| status.backend_state == "Running")
             .map(|node| node.dns_name.trim_end_matches('.').to_owned())
             .filter(|name| !name.is_empty()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A supervisor from an older checkout: `sleep` holds the lock on its
+    /// dev.pid, through its standard input, until SIGTERM ends it.
+    fn legacy_supervisor(runtime: &Path) -> std::process::Child {
+        let pid_file = fs::File::create(runtime.join("dev.pid")).unwrap();
+        pid_file.lock().unwrap();
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(pid_file.try_clone().unwrap())
+            .spawn()
+            .unwrap();
+        fs::write(runtime.join("dev.pid"), child.id().to_string()).unwrap();
+        child
+    }
+
+    #[tokio::test]
+    async fn starting_stops_an_older_checkouts_node() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = Instance::own_private_dir(temporary.path().join("root")).unwrap();
+        let tailnet = Tailnet {
+            state: root.join("state"),
+            runtime: root.join("runtime"),
+            legacy_runtime: Instance::own_private_dir(root.join("legacy")).unwrap(),
+        };
+        tailnet.stop_legacy().await.unwrap();
+        let mut legacy = legacy_supervisor(&tailnet.legacy_runtime);
+        tailnet.stop_legacy().await.unwrap();
+        assert!(
+            Supervisor::in_dir(&tailnet.legacy_runtime)
+                .running()
+                .is_none()
+        );
+        legacy.wait().unwrap();
+
+        // Another user could have planted a dev.pid in a shared directory.
+        let shared = Tailnet {
+            legacy_runtime: temporary.path().join("shared"),
+            ..tailnet
+        };
+        fs::create_dir(&shared.legacy_runtime).unwrap();
+        let mut planted = legacy_supervisor(&shared.legacy_runtime);
+        assert!(shared.stop_legacy().await.is_err());
+        planted.kill().unwrap();
+        planted.wait().unwrap();
     }
 }

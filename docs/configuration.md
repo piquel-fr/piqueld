@@ -402,7 +402,7 @@ node. Several daemons can then share one node, each on its own port, as the
 ```toml
 [tailscale]
 enabled = true
-socket = "/tmp/piqueld-dev/tailnet/tailscaled.sock"
+socket = "/tmp/piqueld-dev-1000/tailnet/tailscaled.sock"
 https_port = 7846         # https://<node>.<tailnet>.ts.net:7846
 ```
 

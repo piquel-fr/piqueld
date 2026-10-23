@@ -234,12 +234,12 @@ impl Engine {
     }
 
     /// Waits up to 60 seconds for the Docker-in-Docker engine in `container`,
-    /// then opens its socket to the host user, whose private directory still
-    /// guards it.
+    /// then gives its socket to the host user, in their private directory.
     pub async fn wait_for_dind(&self, container: &str) -> Result<()> {
         let ready = format!(
             "docker -H unix://{DIND_SOCKET_DIR}/docker.sock info >/dev/null 2>&1 \
-             && chmod 666 {DIND_SOCKET_DIR}/docker.sock"
+             && chown {uid} {DIND_SOCKET_DIR}/docker.sock",
+            uid = rustix::process::getuid().as_raw()
         );
         for _ in 0..60 {
             if !self.running(container).await? {

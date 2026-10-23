@@ -59,7 +59,9 @@ networks, such as a tailnet or LAN; piqueld must never be exposed to the
 internet. No forwarded-header trust configuration is needed: WebAuthn and CSRF
 checks use the explicitly configured origin. Restrict access to the proxy's
 unencrypted upstream as appropriate for your deployment. `http://localhost:7845`
-is the development default. Use `localhost`, not an IP address, for browser login.
+is the development default; a subdomain of `localhost`, such as
+`http://dev.localhost:7845`, also works over HTTP. Use `localhost`, not an IP
+address, for browser login.
 Tailscale transport encryption alone does not make an HTTP website a secure
 browser context; remote browser access still needs an HTTPS hostname.
 

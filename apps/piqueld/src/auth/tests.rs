@@ -1256,11 +1256,16 @@ async fn signed_in(identity: Option<axum::Extension<Identity>>) -> axum::http::S
 
 #[test]
 fn webauthn_origins_and_cookie_flags_are_explicit() {
-    for origin in ["https://piqueld.example", "http://localhost:7845"] {
+    for origin in [
+        "https://piqueld.example",
+        "http://localhost:7845",
+        "http://worktree-1a2b3c4d.localhost:7846",
+    ] {
         assert!(Auth::validate_origin(origin).is_ok());
     }
     for origin in [
         "http://piqueld.example",
+        "http://localhost.example",
         "https://127.0.0.1",
         "https://user:secret@example.com",
         "https://example.com/path",
