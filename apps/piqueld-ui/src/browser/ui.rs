@@ -583,13 +583,25 @@ pub(super) fn Modal(
 }
 
 /// Tab buttons choosing one of `options` into `selected`; the chosen tab is
-/// marked current.
+/// marked current. Tabs `hidden` holds for are not offered, and the first
+/// tab replaces one selected anyway, e.g. by a link.
 #[component]
 pub(super) fn Tabs(
     label: &'static str,
     options: &'static [&'static str],
     selected: RwSignal<&'static str>,
+    #[prop(optional, into)] hidden: Option<Callback<&'static str, bool>>,
 ) -> impl IntoView {
+    let is_hidden = move |tab| hidden.is_some_and(|hidden| hidden.run(tab));
+    let reveal = move || {
+        if is_hidden(selected.get()) {
+            selected.set(options[0]);
+        }
+    };
+    // At once, so panels rendered after the tabs never mount a hidden one,
+    // then whenever the selected tab becomes hidden.
+    untrack(reveal);
+    Effect::new(move |_| reveal());
     view! {
         <nav class="tabs" aria-label={label}>
             {options
@@ -599,6 +611,7 @@ pub(super) fn Tabs(
                     view! {
                         <button
                             type="button"
+                            hidden={move || is_hidden(tab)}
                             class:active={move || selected.get() == tab}
                             aria-current={move || {
                                 if selected.get() == tab { "page" } else { "false" }

@@ -17,8 +17,9 @@ use super::format::timestamp;
 use super::runtime::RuntimeOverview;
 use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
 use super::{
-    Alive, ClientErrorExt, DashboardContext, DashboardSignals, access::can, dashboard_context,
-    environment_href,
+    Alive, ClientErrorExt, DashboardContext, DashboardSignals,
+    access::{self, can},
+    dashboard_context, environment_href,
 };
 use crate::state::ApplicationHealth;
 use piqueld_client::sync::short_commit;
@@ -37,10 +38,10 @@ use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView,
     ApplyApplicationRequest, Client, ClientError, DeploymentOrigin, EnvironmentConfig,
     EnvironmentSource, EnvironmentView, Metadata, TrackedBranch,
-    access::{GlobalPermission, Permission},
+    access::{AppPermission, GlobalPermission, Grants, Permission},
     edit::{ApplicationEdit, EditOptions},
 };
-use secrets::{EnvironmentSecrets, SecretFileSettings};
+use secrets::{EnvironmentSecrets, SecretFileSettings, StoredSecrets};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
 
@@ -120,6 +121,8 @@ impl Page {
 #[derive(Clone, Copy)]
 struct EditorContext {
     dashboard: StoredValue<DashboardContext>,
+    /// The signed-in credential's grants, which `can` checks.
+    grants: Signal<Grants>,
     saved: RwSignal<ApplicationView>,
     page: StoredValue<Page>,
     /// Environment that runtime actions target: the environment page's, or on
@@ -337,6 +340,55 @@ impl EditorContext {
     fn repository_backed(self) -> bool {
         self.saved
             .with(|saved| saved.application.spec().manifest.is_some())
+    }
+
+    /// Whether the signed-in credential holds `permission` on the application,
+    /// or in `environment`, if that is one of its previews, the previews
+    /// permission that also allows it there (see `AppPermission::on_previews`).
+    /// Tracked, so controls hidden or disabled by it follow the session; the
+    /// daemon stays authoritative.
+    fn can_in(self, permission: AppPermission, environment: Option<&str>) -> bool {
+        self.saved.with(|saved| {
+            let holds = |permission| {
+                self.grants.with(|grants| {
+                    grants
+                        .require_app(permission, saved.application.id())
+                        .is_ok()
+                })
+            };
+            let preview = environment.is_some_and(|id| {
+                saved
+                    .previews
+                    .iter()
+                    .any(|preview| preview.id.as_str() == id)
+            });
+            holds(permission) || (preview && permission.on_previews().is_some_and(holds))
+        })
+    }
+
+    /// `can_in` the environment or preview runtime actions target, if any.
+    fn can(self, permission: AppPermission) -> bool {
+        self.can_in(permission, self.environment.get().as_deref())
+    }
+
+    /// Notice that configuration forms are read-only without `apps:write`.
+    fn read_only_notice(self) -> Option<AnyView> {
+        (!self.can(AppPermission::Write)).then(|| {
+            notice(
+                Tone::Info,
+                "Read-only: editing this configuration requires the apps:write permission.",
+            )
+        })
+    }
+
+    /// Whether the caller may not open tab `tab`: logs need `logs:read`, and
+    /// history `events:read`.
+    fn tab_hidden(self, tab: &str) -> bool {
+        match tab {
+            "Logs" => !self.can(AppPermission::LogsRead),
+            "Events" => !self.can(AppPermission::EventsRead),
+            _ => false,
+        }
     }
 
     /// Whether saves are currently disallowed.
@@ -1002,6 +1054,7 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
     };
     let context = EditorContext {
         dashboard: StoredValue::new(dashboard),
+        grants: access::grants(),
         saved,
         environment: Memo::new(move |_| {
             shown.clone().or_else(|| {
@@ -1127,7 +1180,12 @@ fn ApplicationSections() -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs label="Application sections" options={&APPLICATION_TABS} selected={context.tab} />
+        <Tabs
+            label="Application sections"
+            options={&APPLICATION_TABS}
+            selected={context.tab}
+            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
+        />
         <div hidden={move || context.tab.get() != "Overview"}>
             <div class="stack">
                 <ApplicationOverview />
@@ -1145,7 +1203,12 @@ fn ApplicationSections() -> impl IntoView {
             <releases::ReleaseHistory application={context.id()} />
         </Show>
         <Show when={move || context.tab.get() == "Builds"}>
-            <super::builds::BuildHistory application={context.id()} />
+            <super::builds::BuildHistory
+                application={context.id()}
+                allowed={Callback::new(move |(permission, environment): (AppPermission, String)| {
+                    context.can_in(permission, Some(&environment))
+                })}
+            />
         </Show>
         <Show when={move || context.tab.get() == "Events"}>
             <super::observability::EventHistory application={context.id()} />
@@ -1281,7 +1344,12 @@ fn EnvironmentPage() -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs label="Environment sections" options={&ENVIRONMENT_TABS} selected={context.tab} />
+        <Tabs
+            label="Environment sections"
+            options={&ENVIRONMENT_TABS}
+            selected={context.tab}
+            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
+        />
         <div hidden={move || context.tab.get() != "Overview"}>
             <div class="stack">
                 {preview.then(|| view! { <previews::PreviewSettings /> })} <RuntimeOverview />
@@ -1308,6 +1376,7 @@ fn EnvironmentPage() -> impl IntoView {
 
 /// Danger-zone card that deletes the application (guarded by the saved
 /// generation) after confirmation, then returns to the application list.
+/// Hidden without `apps:delete`.
 #[component]
 fn DeleteApplication() -> impl IntoView {
     let context = editor();
@@ -1342,7 +1411,7 @@ fn DeleteApplication() -> impl IntoView {
         );
     };
     view! {
-        <section class="card card-danger">
+        <section class="card card-danger" hidden={move || !context.can(AppPermission::Delete)}>
             <header>
                 <div>
                     <h3>"Delete application"</h3>
@@ -1417,6 +1486,7 @@ fn EditorFeedback() -> impl IntoView {
                                     {context
                                         .diagnostic_id
                                         .get()
+                                        .filter(|_| context.can(AppPermission::EventsRead))
                                         .map(|id| {
                                             view! {
                                                 <A
@@ -1452,7 +1522,7 @@ fn EditorFeedback() -> impl IntoView {
 
 /// How a repository-backed application's saved configuration differs from
 /// the manifest last read from its repository, with a button saving that
-/// manifest again. Shown only while it has edits.
+/// manifest again for holders of `apps:write`. Shown only while it has edits.
 #[component]
 fn RepositoryEdits() -> impl IntoView {
     let context = editor();
@@ -1470,7 +1540,7 @@ fn RepositoryEdits() -> impl IntoView {
                     <div class="stack-sm">
                         {edits.into_iter().map(deployments::change_row).collect_view()}
                     </div>
-                    <div class="btn-group">
+                    <div class="btn-group" hidden={move || !context.can(AppPermission::Write)}>
                         <button
                             type="button"
                             class="btn btn-sm"
@@ -1486,8 +1556,10 @@ fn RepositoryEdits() -> impl IntoView {
     }
 }
 
-/// Source, services, routes, volumes, jobs and secret file tabs. A
-/// repository-backed application's edits are listed above them.
+/// Source, services, routes, volumes, jobs and secrets tabs. A
+/// repository-backed application's edits are listed above them. Their forms
+/// are read-only without `apps:write`; the secret store needs `secrets:write`
+/// instead.
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
@@ -1532,9 +1604,13 @@ fn ApplicationSettings() -> impl IntoView {
             )
         }}>
             <div class="stack">
-                <RepositoryEdits /> <div hidden={move || context.tab.get() != "Source"}>
+                {move || context.read_only_notice()} <RepositoryEdits />
+                <div hidden={move || context.tab.get() != "Source"}>
                     <RepositorySettings />
-                </div> {forms}
+                </div> <div hidden={move || context.tab.get() != "Secrets"}>
+                    <StoredSecrets />
+                </div>
+                <fieldset disabled={move || !context.can(AppPermission::Write)}>{forms}</fieldset>
             </div>
         </div>
     }

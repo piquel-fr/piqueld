@@ -236,10 +236,12 @@ configured localhost or Tailscale TCP listeners and, with a
 The API Unix socket is API-only, and the daemon does not add CORS, browser telemetry,
 or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
-their grants, invitations, passkey enrollment links, and tokens. Pages the
-signed-in account cannot use are hidden, as are most actions needing an
-installation-wide permission it lacks; other actions remain visible, and the
-daemon refuses them with `permission_denied`. See [authorization](authorization.md).
+their grants, invitations, passkey enrollment links, and tokens. Pages, tabs,
+and actions the signed-in account cannot use are hidden, or disabled where
+they show current settings: an application's configuration forms are
+read-only without `apps:write` on it. The daemon still checks every request,
+refusing what the account's grants do not allow with `permission_denied`. See
+[authorization](authorization.md).
 A link from `piquelctl sign-in-link` opens a page that signs the browser in as
 the [host operator](authentication.md#the-host-operator) for 12 hours, without
 an account. The dashboard then shows "Host operator" as the signed-in user and
