@@ -236,6 +236,46 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await expect(deployment).toContainText('migrate on web, up to 60s: migrate --all');
 });
 
+test('declares, changes, and removes generated secrets', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await applicationTab(page, 'Secrets').click();
+  await expect(page.getByText('No generated secrets declared.', { exact: true })).toBeVisible();
+  const secret = (index: number) => page.locator(`[data-generated-secret="${index}"]`);
+  const add = async (index: number, name: string) => {
+    await page.getByRole('button', { name: 'Add generated secret', exact: true }).click();
+    await secret(index).getByLabel('Secret name', { exact: true }).fill(name);
+  };
+  await add(0, 'database-password');
+  await secret(0).getByLabel('Bytes', { exact: true }).fill('64');
+  await secret(0).getByRole('combobox', { name: 'Encoding', exact: true }).selectOption('base64url');
+  await add(1, 'signing-key');
+  await secret(1).getByRole('combobox', { name: 'Generates', exact: true }).selectOption('rsa');
+  await expect(secret(1).getByLabel('Bits', { exact: true })).toHaveValue('3072');
+  await expect(secret(1).getByRole('combobox', { name: 'Encoding', exact: true })).toHaveCount(0);
+  await save(page);
+  await page.reload();
+  await applicationTab(page, 'Secrets').click();
+  await expect(secret(0).getByLabel('Secret name', { exact: true })).toHaveValue('database-password');
+  await expect(secret(0).getByLabel('Bytes', { exact: true })).toHaveValue('64');
+  await expect(secret(0).getByRole('combobox', { name: 'Encoding', exact: true })).toHaveValue('base64url');
+  await expect(secret(1).getByLabel('Secret name', { exact: true })).toHaveValue('signing-key');
+  await expect(secret(1).getByLabel('Bits', { exact: true })).toHaveValue('3072');
+
+  // Validation rejects an out-of-range size and keeps the edit.
+  await secret(0).getByLabel('Bytes', { exact: true }).fill('4');
+  await visible(page, 'Save changes').click();
+  await expect(page.getByRole('alert').getByText(/secret_generator_invalid/)).toBeVisible();
+  await visible(page, 'Discard').click();
+
+  await secret(0).getByRole('button', { name: 'Remove', exact: true }).click();
+  await save(page);
+  await page.reload();
+  await applicationTab(page, 'Secrets').click();
+  await expect(secret(0).getByLabel('Secret name', { exact: true })).toHaveValue('signing-key');
+  await expect(secret(1)).toHaveCount(0);
+});
+
 test('unsaved edits block deployment and navigation until discarded', async ({ page, account }) => {
   void account;
   await createApplication(page);

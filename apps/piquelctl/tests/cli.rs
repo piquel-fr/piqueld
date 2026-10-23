@@ -2272,6 +2272,107 @@ fn link_commands_edit_the_loaded_links_and_save_the_whole_list() {
 }
 
 #[test]
+fn generated_secret_commands_edit_the_loaded_declarations_and_save_the_whole_list() {
+    let saved =
+        json!({"name": "session", "generate": {"type": "random", "bytes": 32, "encoding": "hex"}});
+    for (arguments, expected) in [
+        // Setting a declared name replaces how it is generated, in place.
+        (
+            vec![
+                "app",
+                "generated-secret",
+                "set",
+                "app-notes-01",
+                "session",
+                "--bytes",
+                "64",
+                "--encoding",
+                "base64url",
+                "--yes",
+            ],
+            json!([{"name": "session", "generate": {"type": "random", "bytes": 64, "encoding": "base64url"}}]),
+        ),
+        (
+            vec![
+                "app",
+                "generated-secret",
+                "set",
+                "app-notes-01",
+                "signing-key",
+                "--rsa-bits",
+                "3072",
+                "--yes",
+            ],
+            json!([saved.clone(), {"name": "signing-key", "generate": {"type": "rsa", "bits": 3072}}]),
+        ),
+        (
+            vec![
+                "app",
+                "generated-secret",
+                "remove",
+                "app-notes-01",
+                "session",
+                "--yes",
+            ],
+            json!([]),
+        ),
+    ] {
+        let mut view = app_view("app-notes-01", "notes");
+        view["application"]["spec"]["secrets"] = json!([saved.clone()]);
+        assert_saves(
+            view,
+            &arguments,
+            "PUT",
+            "generated-secrets",
+            &json!({"value": expected}),
+        );
+    }
+
+    // A generator is required, and `--encoding` applies only to random bytes.
+    for arguments in [
+        &[
+            "app",
+            "generated-secret",
+            "set",
+            "app-notes-01",
+            "session",
+            "--yes",
+        ][..],
+        &[
+            "app",
+            "generated-secret",
+            "set",
+            "app-notes-01",
+            "session",
+            "--rsa-bits",
+            "2048",
+            "--encoding",
+            "hex",
+            "--yes",
+        ],
+    ] {
+        let server = start_server(false, 0, |_| unreachable!("rejected before connecting"));
+        assert_eq!(run(&server, arguments).status.code(), Some(2));
+        server.finish();
+    }
+
+    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
+    let output = run(
+        &server,
+        &[
+            "app",
+            "generated-secret",
+            "remove",
+            "app-notes-01",
+            "session",
+            "--yes",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
 fn field_edit_deploy_is_explicit_and_no_wait_returns_the_saved_receipt() {
     let server = start_server(false, 2, |request| {
         if request.method == "GET" {

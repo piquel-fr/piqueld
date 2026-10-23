@@ -3,11 +3,11 @@ use crate::{Client, ClientError, SavedApplication, client::EnvelopedCall};
 use piqueld_core::{
     edit::{
         ApplicationEdit, BoolValue, CountValue, CpuValue, EditOptions, EnvironmentValue,
-        ExportsValue, FilesValue, HealthValue, ImportsValue, JobsValue, MemoryValue, MountsValue,
-        OptionalStringValue, ReplicasValue, RepositorySyncValue, RepositoryValue, ResourcesValue,
-        RolloutValue, RoutesValue, SecondsValue, SecretsValue, ServiceEdit, ServiceGeneral,
-        ServiceProcess, SourceValue, StringValue, StringsValue, TemplateValue, TemplatesValue,
-        VariablesValue, VisibilityValue, VolumesValue,
+        ExportsValue, FilesValue, GeneratedSecretsValue, HealthValue, ImportsValue, JobsValue,
+        MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
+        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
+        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
+        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -33,6 +33,7 @@ edit_method!(set_application_routes, (id), request: RoutesValue);
 edit_method!(set_application_jobs, (id), request: JobsValue);
 edit_method!(set_application_exports, (id), request: ExportsValue);
 edit_method!(set_application_imports, (id), request: ImportsValue);
+edit_method!(set_application_generated_secrets, (id), request: GeneratedSecretsValue);
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_application_variables, (id), request: VariablesValue);
 edit_method!(set_environment_visibility, (id, environment), request: VisibilityValue);
@@ -129,6 +130,11 @@ impl Client {
             ApplicationEdit::Imports(value) => {
                 send!(set_application_imports, ImportsValue, value.clone())
             }
+            ApplicationEdit::GeneratedSecrets(value) => send!(
+                set_application_generated_secrets,
+                GeneratedSecretsValue,
+                value.clone()
+            ),
             ApplicationEdit::Name(value) => send!(set_application_name, StringValue, value.clone()),
             ApplicationEdit::Repository(None) => {
                 self.disconnect_manifest_repository(id, options).await

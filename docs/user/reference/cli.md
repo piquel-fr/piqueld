@@ -363,6 +363,7 @@ written to stderr, so stdout remains valid JSON.
 | `app file list` | `[ServiceFile]`, each with `"service": string` |
 | `app service secret list` | `[SecretMount]`, each with `"service": string` |
 | `app export list` / `app import list` | `[Export]` / `[Import]`, as saved |
+| `app generated-secret list` | `[SecretDeclaration]`, as saved |
 | `app secret list` | `[StoredSecret]` |
 | `app secret set` / `access` | `StoredSecret` |
 | `env secret list` | `[SecretMetadata]` |
@@ -1024,8 +1025,18 @@ saved configuration or runnable deployment still uses.
 
 Manifests can declare secrets that piqueld generates for each environment when
 a deployment first mounts them instead; see
-[application manifests](manifest.md). They are listed, regenerated
-and deleted per environment. `regenerate` creates a new version for the next
+[application manifests](manifest.md). Declare them with
+`app generated-secret`, like other saved settings:
+
+```sh
+piquelctl app generated-secret set notes database-password --bytes 32 --yes
+piquelctl app generated-secret set notes signing-key --rsa-bits 3072 --yes
+piquelctl app generated-secret list notes
+piquelctl app generated-secret remove notes signing-key --yes
+```
+
+Changing or removing a declaration never changes values already generated.
+Generated values are listed, regenerated and deleted per environment. `regenerate` creates a new version for the next
 deployment, to rotate a value or replace one discarded by key recovery; running
 deployments keep theirs. `delete` removes an unused one:
 

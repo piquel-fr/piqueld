@@ -809,6 +809,7 @@ Commands:
 - [`piquelctl app show`](#piquelctl-app-show): Show an application and its environments.
 - [`piquelctl app logs`](#piquelctl-app-logs): Show recent Docker logs of the application's only environment.
 - [`piquelctl app exec`](#piquelctl-app-exec): Run a one-off command in a running task of a service.
+- [`piquelctl app generated-secret`](#piquelctl-app-generated-secret): Declare the secrets piqueld generates for each environment.
 - [`piquelctl app secret`](#piquelctl-app-secret): Manage the application's stored secrets and who may mount them.
 - [`piquelctl app validate`](#piquelctl-app-validate): Check a TOML manifest locally, without contacting a daemon.
 - [`piquelctl app plan`](#piquelctl-app-plan): Show what saving a TOML manifest would change, without saving it.
@@ -2632,6 +2633,89 @@ Options:
 - `-t, --tty`: Allocate a terminal, for interactive programs such as a shell.
 
   It implies `--interactive`, and needs a terminal on standard input, which it switches to raw mode so that keys such as Ctrl-C reach the command.
+
+## `piquelctl app generated-secret`
+
+Declare the secrets piqueld generates for each environment.
+
+These commands edit `spec.secrets`. Changing or removing a declaration keeps values already generated; replace one with `env secret regenerate`.
+
+```text
+piquelctl app generated-secret [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`piquelctl app generated-secret list`](#piquelctl-app-generated-secret-list): List the secrets the application declares for piqueld to generate, as saved.
+- [`piquelctl app generated-secret set`](#piquelctl-app-generated-secret-set): Declare a secret piqueld generates, or replace how it is generated.
+- [`piquelctl app generated-secret remove`](#piquelctl-app-generated-secret-remove): Remove a declaration.
+
+## `piquelctl app generated-secret list`
+
+List the secrets the application declares for piqueld to generate, as saved.
+
+`env secret list` shows the values generated in each environment.
+
+```text
+piquelctl app generated-secret list [OPTIONS] <APP>
+```
+
+Arguments:
+
+- `<APP>`: Application name or stable ID.
+
+## `piquelctl app generated-secret set`
+
+Declare a secret piqueld generates, or replace how it is generated.
+
+Give exactly one of `--bytes` or `--rsa-bits`. Values already generated are kept; `env secret regenerate` replaces them.
+
+```text
+piquelctl app generated-secret set [OPTIONS] <--bytes <BYTES>|--rsa-bits <RSA_BITS>> <APP> <NAME>
+```
+
+Arguments:
+
+- `<APP>`: Application name or stable ID.
+- `<NAME>`: Secret name, as services and jobs mount it.
+
+Options:
+
+- `--deploy`: Also deploy the saved configuration.
+- `--no-wait`: Return once the change is saved, or its deployment accepted, without waiting for the deployment to end.
+- `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
+- `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
+- `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
+- `--bytes <BYTES>`: Generate this many random bytes (16–512), encoded as text.
+- `--encoding <ENCODING>`: Text encoding of the random bytes.
+
+  By default, `hex`.
+  - `hex`: Lowercase hexadecimal, two characters per byte.
+  - `base64url`: URL-safe base64 without padding.
+- `--rsa-bits <RSA_BITS>`: Generate an RSA private key of this many bits (2048, 3072, or 4096) in PKCS#8 PEM.
+
+## `piquelctl app generated-secret remove`
+
+Remove a declaration.
+
+Values already generated are kept. Removing a name the application doesn't declare fails.
+
+```text
+piquelctl app generated-secret remove [OPTIONS] <APP> <NAME>
+```
+
+Arguments:
+
+- `<APP>`: Application name or stable ID.
+- `<NAME>`: Secret name, as services and jobs mount it.
+
+Options:
+
+- `--deploy`: Also deploy the saved configuration.
+- `--no-wait`: Return once the change is saved, or its deployment accepted, without waiting for the deployment to end.
+- `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
+- `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
+- `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
 
 ## `piquelctl app secret`
 

@@ -408,6 +408,15 @@ pub(crate) enum AppCommand {
     /// command may keep running. `--timeout` limits connecting, not the
     /// session. Needs `apps:exec`.
     Exec(crate::exec::ExecArgs<crate::exec::ApplicationTarget>),
+    /// Declare the secrets piqueld generates for each environment.
+    ///
+    /// These commands edit `spec.secrets`. Changing or removing a declaration
+    /// keeps values already generated; replace one with `env secret
+    /// regenerate`.
+    GeneratedSecret {
+        #[command(subcommand)]
+        command: crate::editing::GeneratedSecretCommand,
+    },
     /// Manage the application's stored secrets and who may mount them.
     ///
     /// Values are write-only: no command prints them back.
