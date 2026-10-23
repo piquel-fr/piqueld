@@ -4,21 +4,22 @@ use super::super::builds::build_arguments;
 use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, expander_summary, icon, key_values, load_older, notice,
-    operation_badge, when,
+    operation_badge, text_field, when,
 };
 use super::super::{
     Alive, ClientErrorExt, document_hidden, live_row, operation_events, release_link,
 };
 use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
+use crate::editor::Choice;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
-    EnvironmentView, HealthCheck, Operation, Page, PlanView, PromoteRequest, SecretProblem,
-    Service, Source, Template, ValidatedRollout,
+    EnvironmentView, HealthCheck, ManifestRevision, Operation, Page, PlanView, PromoteRequest,
+    SecretProblem, Service, Source, Template, ValidatedRollout,
 };
 use std::fmt::Display;
 
@@ -26,7 +27,8 @@ use std::fmt::Display;
 /// asks the daemon to plan the manifest that environment deploys (its last
 /// fetched one when it follows a branch; cleared whenever the saved view or
 /// target changes); Deploy starts a deployment of the saved
-/// generation, then shows the environment's deployments. Without a single target
+/// generation, then shows the environment's deployments. A target following
+/// a branch also offers Deploy revision (see `DeployRevision`). Without a single target
 /// (an application with several environments or none), Deploy lists the
 /// environments to choose one. A promoted target, which never builds,
 /// offers Promote from its source instead. Either also offers Promote,
@@ -76,7 +78,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
     };
     let deploy = move |_| {
         let (environment, navigate) = (context.environment_id(), navigate.get_value());
-        context.deploy(environment.clone(), move || {
+        context.deploy(environment.clone(), None, move || {
             context.show_deployments(&environment, navigate);
         });
     };
@@ -172,6 +174,14 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     "Preview"
                 </button>
                 {promote_into()}
+                // A one-time revision overrides the branch the manifest is fetched from.
+                <Show when={move || {
+                    context
+                        .selected_environment()
+                        .is_some_and(|environment| environment.source.branch().is_some())
+                }}>
+                    <DeployRevision />
+                </Show>
                 <button
                     type="button"
                     class="btn btn-primary"
@@ -190,6 +200,153 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             </Show>
         </Show>
         <DeploymentPreview preview={preview} />
+    }
+}
+
+/// Which revision of the manifest repository `DeployRevision` deploys, as
+/// chosen in its form.
+#[derive(Clone, Copy, PartialEq)]
+enum RevisionKind {
+    /// The head of a branch.
+    Branch,
+    /// A full commit hash.
+    Commit,
+}
+
+impl Choice for RevisionKind {
+    const ALL: &'static [Self] = &[Self::Branch, Self::Commit];
+
+    fn value(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+impl RevisionKind {
+    /// The label of the input naming the revision.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Branch => "Branch name",
+            Self::Commit => "Commit hash",
+        }
+    }
+
+    /// The revision `input` names, trimmed; none while blank.
+    fn revision(self, input: &str) -> Option<ManifestRevision> {
+        let input = input.trim().to_owned();
+        (!input.is_empty()).then_some(match self {
+            Self::Branch => ManifestRevision::Branch(input),
+            Self::Commit => ManifestRevision::Commit(input),
+        })
+    }
+}
+
+/// "Deploy revision" button and dialog for the editor's target environment,
+/// which follows a branch: deploys the manifest on another branch or commit
+/// of the application's repository once, without saving either, then shows
+/// the environment's deployments.
+#[component]
+fn DeployRevision() -> impl IntoView {
+    let context = editor();
+    let opened = RwSignal::new(false);
+    let kind = RwSignal::new(RevisionKind::Branch);
+    let input = RwSignal::new(String::new());
+    let navigate = StoredValue::new(use_navigate());
+    let revision = move || input.with(|input| kind.get().revision(input));
+    // The branch the environment follows.
+    let current = Memo::new(move |_| {
+        context
+            .selected_environment()
+            .and_then(|environment| environment.source.branch().cloned())
+    });
+    // Each opening starts from a blank form, without earlier errors.
+    let open = move |_| {
+        kind.set(RevisionKind::Branch);
+        input.set(String::new());
+        context.set_error(None);
+        opened.set(true);
+    };
+    let submit = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        let Some(revision) = untrack(revision) else {
+            return;
+        };
+        // Validated here for a precise error; the daemon validates it again.
+        if let Some(current) = current.get_untracked()
+            && let Err(error) = current.at(&revision)
+        {
+            context.set_error(Some(error.to_string()));
+            return;
+        }
+        let (environment, navigate) = (context.environment_id(), navigate.get_value());
+        context.deploy(environment.clone(), Some(revision), move || {
+            opened.set(false);
+            context.show_deployments(&environment, navigate);
+        });
+    };
+    view! {
+        <button
+            type="button"
+            class="btn"
+            title="Deploy another branch or commit once, without changing what this environment follows"
+            disabled={move || context.environment_action_blocked()}
+            on:click={open}
+        >
+            {icon(Icon::GitBranch)}
+            "Deploy revision"
+        </button>
+        <Modal
+            title="Deploy a branch or commit"
+            opened={opened}
+            busy={context.busy}
+        >
+            <form class="stack-sm" on:submit={submit}>
+                <fieldset class="stack-sm" disabled={move || context.environment_action_blocked()}>
+                    <p class="hint">
+                        {move || {
+                            format!(
+                                "Deploys the manifest on another branch or commit of the application's repository once, without saving it. The environment still follows {}: its next deployment, or a push when it deploys on push, returns to it.",
+                                current.get().map(|branch| branch.to_string()).unwrap_or_default(),
+                            )
+                        }}
+                    </p>
+                    <div class="form-grid">
+                        <label class="field">
+                            <span>"Deploy"</span>
+                            <select
+                                prop:value={move || kind.get().value()}
+                                on:change={move |event| {
+                                    if let Some(choice) = RevisionKind::parse(
+                                        &event_target_value(&event),
+                                    ) {
+                                        kind.set(choice);
+                                    }
+                                }}
+                            >
+                                <option value="branch">"The head of a branch"</option>
+                                <option value="commit">"A commit"</option>
+                            </select>
+                        </label>
+                        {move || text_field(kind.get().label(), input)}
+                    </div>
+                </fieldset>
+                {move || context.error.get().map(|error| notice(Tone::Bad, error))}
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                        disabled={move || {
+                            context.environment_action_blocked() || revision().is_none()
+                        }}
+                    >
+                        {icon(Icon::Rocket)}
+                        "Deploy"
+                    </button>
+                </div>
+            </form>
+        </Modal>
     }
 }
 
@@ -229,6 +386,7 @@ pub(super) fn EnvironmentAction(
                 context
                     .deploy(
                         id.clone(),
+                        None,
                         move || {
                             context.show_deployments(&id, navigate);
                             if let Some(dialog) = dialog {

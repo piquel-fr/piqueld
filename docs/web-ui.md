@@ -97,7 +97,12 @@ several, **Deploy** opens a list of every environment, each with its own **Deplo
 **Promote from <source>** button. On an environment's own page the button is just **Deploy**. Deployment actions
 are disabled for deleting environments. Preview plans the manifest the
 environment deploys: for an environment that follows a branch, the one last
-fetched from it, so Preview is disabled until its first deployment. A service's Logs tab reads the only
+fetched from it, so Preview is disabled until its first deployment. Such an
+environment also offers **Deploy revision**, which deploys the manifest on the
+head of another branch, or a full commit hash, of the application's repository
+once, like `piquelctl env deploy --branch|--commit`: nothing is saved, and the
+environment's next deployment, or a push to its branch when it deploys on push,
+returns to its branch. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
 A promoted environment never builds, so its page and its Environments row offer

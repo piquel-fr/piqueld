@@ -35,7 +35,8 @@ pub(super) use navigation::HistoryGuard;
 use navigation::guard_navigation;
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView, Client,
-    ClientError, DeploymentOrigin, EnvironmentConfig, EnvironmentSource, EnvironmentView, Metadata,
+    ClientError, DeploymentOrigin, EnvironmentConfig, EnvironmentSource, EnvironmentView,
+    ManifestRevision, Metadata,
     access::{GlobalPermission, Permission},
     edit::{ApplicationEdit, EditOptions},
 };
@@ -563,14 +564,21 @@ impl EditorContext {
     }
 
     /// Deploys the saved revision to `environment`, then runs `accepted`.
-    fn deploy(self, environment: String, accepted: impl FnOnce() + 'static) {
+    /// `revision` fetches the repository manifest from another branch or
+    /// commit than the environment's, for this deployment only.
+    fn deploy(
+        self,
+        environment: String,
+        revision: Option<ManifestRevision>,
+        accepted: impl FnOnce() + 'static,
+    ) {
         let generation = self.saved.with_untracked(|saved| saved.generation);
         self.mutate(
             move |client| {
-                let environment = environment.clone();
+                let (environment, revision) = (environment.clone(), revision.clone());
                 async move {
                     client
-                        .deploy_environment(&environment, generation, None)
+                        .deploy_environment(&environment, generation, revision.as_ref())
                         .await
                 }
             },

@@ -108,6 +108,55 @@ test('an environment page reads the manifest last fetched from its branch', asyn
   await expect(deployment).toContainText('manifest_connection_ignored: The fetched manifest names another repository.');
 });
 
+test('an environment following a branch deploys another branch or commit once', async ({ page, account }) => {
+  void account;
+  const { app, staging } = await createRepositoryApplication(page, true);
+  await page.goto(`/dashboard/applications/${app}/environments/${staging}`);
+  await expect(title(page)).toHaveText('staging');
+  const open = page.getByRole('button', { name: 'Deploy revision', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Deploy a branch or commit' });
+  const deploy = dialog.getByRole('button', { name: 'Deploy', exact: true });
+  const deployed = async () => {
+    const request = await page.waitForRequest(request => request.method() === 'POST' && request.url().includes(`/environments/${staging}/deploy?`));
+    return new URL(request.url()).searchParams;
+  };
+
+  await open.click();
+  await expect(deploy).toBeDisabled();
+  await dialog.getByLabel('Branch name', { exact: true }).fill(' feat/login ');
+  let query = deployed();
+  await deploy.click();
+  expect((await query).get('branch')).toBe('feat/login');
+  expect((await query).has('commit')).toBe(false);
+  await expect(dialog).toBeHidden();
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+
+  // A short commit hash is refused before it is sent.
+  const commit = '0123456789abcdef0123456789abcdef01234567';
+  await open.click();
+  await dialog.getByRole('combobox', { name: 'Deploy', exact: true }).selectOption('commit');
+  const hash = dialog.getByLabel('Commit hash', { exact: true });
+  await hash.fill(commit.slice(0, 7));
+  await deploy.click();
+  const refused = 'commit must be a full lowercase hexadecimal Git hash';
+  await expect(dialog).toContainText(refused);
+  // Reopening starts over.
+  await page.keyboard.press('Escape');
+  await open.click();
+  await expect(dialog).not.toContainText(refused);
+  await dialog.getByRole('combobox', { name: 'Deploy', exact: true }).selectOption('commit');
+  await hash.fill(commit);
+  query = deployed();
+  await deploy.click();
+  expect((await query).get('commit')).toBe(commit);
+  expect((await query).has('branch')).toBe(false);
+  await expect(dialog).toBeHidden();
+
+  // Neither changed the branch the environment follows.
+  await environmentTab(page, 'Overview').click();
+  await expect(page.getByLabel('Branch', { exact: true })).toHaveValue('release');
+});
+
 test('a repository-backed application page reloads what environments fetch', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
