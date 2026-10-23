@@ -1499,8 +1499,8 @@ fn human_output_reports_a_closed_pipe_without_panicking() {
 }
 
 #[test]
-fn reconcile_and_deploy_retry_transport() {
-    for action in ["reconcile", "deploy"] {
+fn runtime_commands_retry_transport() {
+    for action in ["reconcile", "deploy", "stop", "start"] {
         let mut attempts = 0;
         let server = start_server(false, 3, move |request| {
             if request.method == "GET" {
@@ -2357,7 +2357,7 @@ fn two_environment_view() -> Value {
 
 #[test]
 fn runtime_app_commands_never_pick_one_of_several_environments() {
-    for action in ["deploy", "reconcile", "logs"] {
+    for action in ["deploy", "reconcile", "stop", "start", "logs"] {
         let server = start_server(false, 1, move |request| match request.path.as_str() {
             "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
             path => panic!("unexpected path {path}"),
@@ -3134,4 +3134,55 @@ fn json_errors_are_one_envelope_on_stderr() {
     let error = support::json_error(&output);
     assert_eq!(error["code"], "usage");
     assert!(error["message"].as_str().unwrap().contains("required"));
+}
+
+/// `env stop` waits until the runtime reports its services stopped, fails
+/// when the deployment it ran again failed, even before its first poll, and
+/// ends when the environment is started meanwhile.
+#[test]
+fn env_stop_waits_until_stopped_unless_the_stop_fails_or_is_undone() {
+    // (attempt after the stop, run state, runtime health, exit code)
+    for (attempt, run_state, health, code) in [
+        (1, "stopped", "stopped", 0),
+        (2, "stopped", "ready", 5),
+        (1, "running", "ready", 0),
+    ] {
+        let server = start_server(false, usize::MAX, move |request| {
+            match request.path.as_str() {
+                "/api/v1/applications/app-notes-01" => {
+                    Reply::json(app_view("app-notes-01", "notes"))
+                }
+                "/api/v1/environments/app-notes-01/deployments" => {
+                    Reply::json(page(vec![deployment("succeeded")], None))
+                }
+                "/api/v1/environments/app-notes-01/stop" => {
+                    Reply::accepted(accepted("app-notes-01"))
+                }
+                "/api/v1/environments/app-notes-01/status" => {
+                    let mut status = status("app-notes-01", "ready");
+                    status["runtime_health"] = json!(health);
+                    Reply::json(status)
+                }
+                "/api/v1/environments/app-notes-01" => {
+                    let mut environment = environment("app-notes-01", "app-notes-01", "production");
+                    environment["run_state"] = json!(run_state);
+                    Reply::json(environment)
+                }
+                "/api/v1/operations/operation-01" => {
+                    let mut operation = operation(if attempt > 1 { "failed" } else { "succeeded" });
+                    operation["attempt"] = json!(attempt);
+                    Reply::json(operation)
+                }
+                path => panic!("unexpected path {path}"),
+            }
+        });
+        let output = run(&server, &["env", "stop", "app-notes-01", "--yes"]);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        server.stop();
+    }
 }

@@ -155,8 +155,15 @@ pub enum Mutation {
         /// Stable environment ID.
         id: EnvironmentId,
     },
-    /// Repair an environment's accepted intent.
+    /// Start an environment and repair its accepted intent: its latest
+    /// operation runs again once it has ended or failed.
     Reconcile {
+        /// Stable environment ID.
+        id: EnvironmentId,
+    },
+    /// Stop an environment: its services scale to zero and the gateway
+    /// withdraws its routes until it is started or deployed again.
+    Stop {
         /// Stable environment ID.
         id: EnvironmentId,
     },
@@ -359,6 +366,7 @@ impl Mutation {
             Self::Deploy { .. }
             | Self::Promotion(PromotionMutation::Promote { .. })
             | Self::Reconcile { .. }
+            | Self::Stop { .. }
             | Self::Sync(_) => &[Deploy],
             Self::Preview(
                 PreviewMutation::Create { .. }
@@ -386,12 +394,16 @@ impl Mutation {
     }
 
     /// Whether accepting this mutation may change which environments
-    /// receive telemetry: granting or revoking it, or deleting environments.
+    /// receive telemetry: granting or revoking it, or stopping or deleting
+    /// environments. Started ones receive it again at the next refresh.
     #[must_use]
     pub const fn changes_receivers(&self) -> bool {
         matches!(
             self,
-            Self::SetTelemetry { .. } | Self::Delete { .. } | Self::DeleteApplication { .. }
+            Self::SetTelemetry { .. }
+                | Self::Stop { .. }
+                | Self::Delete { .. }
+                | Self::DeleteApplication { .. }
         )
     }
 
@@ -468,8 +480,8 @@ impl Mutation {
     }
 
     /// Whether submitting this change without `force` lacks the revision
-    /// precondition it needs: every change but reconcile, sync, telemetry
-    /// grants and previews needs the inspected revision, and saves over a nonzero one also the
+    /// precondition it needs: every change but reconcile, stopping, sync,
+    /// telemetry grants and previews needs the inspected revision, and saves over a nonzero one also the
     /// inspected identity.
     const fn lacks_precondition(&self, expected_generation: Option<u64>) -> bool {
         match self {
@@ -491,6 +503,7 @@ impl Mutation {
             | Self::Deploy { .. }
             | Self::Delete { .. } => expected_generation.is_none(),
             Self::Reconcile { .. }
+            | Self::Stop { .. }
             | Self::SetSync { .. }
             | Self::SetTelemetry { .. }
             | Self::Sync(_)
@@ -898,12 +911,36 @@ impl ApplicationService {
     ) -> Result<MutationResponse, ApplicationError> {
         mutation.check_submission(expected_generation, force, request_id)?;
         let receivers = mutation.changes_receivers();
-        let (response, wake) = self
-            .store
-            .accept(actor, mutation, expected_generation, force, request_id)
+        let stops = matches!(mutation, Mutation::Stop { .. });
+        let started = match &mutation {
+            Mutation::Reconcile { id } => Some(id.clone()),
+            _ => None,
+        };
+        let (response, wake) =
+            Box::pin(
+                self.store
+                    .accept(actor, mutation, expected_generation, force, request_id),
+            )
             .await?;
+        if stops && let Some(ingress) = &self.ingress {
+            // Withdraws its routes before answering, so they no longer
+            // reach services about to stop; the gateway retries failures.
+            if let Err(error) = ingress.refresh().await {
+                tracing::warn!(?error, "withdrawing a stopped environment's routes failed");
+            }
+        }
         if wake {
             self.runtime.trigger_reconciliation();
+        }
+        // Sync skips a stopped environment, and webhooks don't come again:
+        // list its repository now, so a start deploys the head it missed.
+        // The worker coalesces hints, so reconciling an environment that
+        // wasn't stopped costs at most one listing. Best effort: it was
+        // accepted already.
+        if let Some(id) = started
+            && let Ok(stored) = self.store.get(&id).await
+        {
+            self.hints.hint(stored.environment.application_id);
         }
         if receivers {
             // Stops export to a revoked or deleted receiver before

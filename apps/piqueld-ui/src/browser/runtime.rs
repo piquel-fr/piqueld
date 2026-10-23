@@ -101,7 +101,8 @@ fn runtime_status_card(
     let app = &detail.application;
     let status = &detail.status;
     let observed = &detail.observed;
-    let health = ApplicationHealth::from_server_state(status.state);
+    let health = ApplicationHealth::from_server_state(status.state)
+        .unless_stopped(detail.environment.stopped());
     let latest = detail.latest_operation.clone();
     view! {
         <section class="card" aria-labelledby="runtime-status-heading">
@@ -129,7 +130,13 @@ fn runtime_status_card(
             </header>
             <dl class="kv">
                 <dt>"State"</dt>
-                <dd>{badge(health.tone(), status.state.to_string())}</dd>
+                <dd>
+                    {if detail.environment.stopped() {
+                        health_badge(health)
+                    } else {
+                        badge(health.tone(), status.state.to_string())
+                    }}
+                </dd>
                 <dt>"Runtime health"</dt>
                 <dd>
                     <span class="btn-group">

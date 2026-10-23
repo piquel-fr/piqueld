@@ -82,21 +82,24 @@ impl<D> Controller<D> {
 
     /// `target` as reconciliation plans it against `observed`: with the
     /// ingress networks its routes and the `accepted` ones need, the links
-    /// it takes part in, and its telemetry socket while its environment is
-    /// granted telemetry, whose directory the service update creates.
-    /// Prepared targets never carry any of them.
+    /// it takes part in, its telemetry socket while its environment is
+    /// granted telemetry, whose directory the service update creates, and
+    /// no replicas while its environment is stopped. Prepared targets never
+    /// carry any of them.
     async fn runtime_target(
         &self,
         target: &piqueld_core::ResolvedApplication,
         accepted: &[piqueld_core::manifest::ValidatedRoute],
         observed: &piqueld_core::ObservedApplication,
     ) -> Result<piqueld_core::ResolvedApplication, StoreError> {
+        let stopped = self.store.is_stopped(&target.id).await?;
         let linked = self
             .store
             .with_links(
                 target
                     .clone()
-                    .with_ingress_routes(self.ingress_enabled(), accepted),
+                    .with_ingress_routes(self.ingress_enabled(), accepted)
+                    .with_stopped(stopped),
                 observed,
             )
             .await?;

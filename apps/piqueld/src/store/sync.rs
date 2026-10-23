@@ -87,8 +87,8 @@ impl Store {
     /// moved past the head of its last deployment:
     ///
     /// 1. Anything not following that branch of that repository (re-pointed,
-    ///    reconnected, pinned, not opted in, its application's sync off, or
-    ///    being deleted) is `Current`.
+    ///    reconnected, pinned, not opted in, stopped, its application's sync
+    ///    off, or being deleted) is `Current`.
     /// 2. While a deployment runs without failing, or once one recorded a head
     ///    since the listing started, `Busy`, since it may still record, or
     ///    recorded, a newer head. The caller tries again once it finished, so

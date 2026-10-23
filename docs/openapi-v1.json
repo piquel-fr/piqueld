@@ -4050,6 +4050,10 @@
                 "nullable": true,
                 "type": "integer"
               },
+              "run_state": {
+                "$ref": "#/components/schemas/RunState",
+                "description": "Whether it runs its services, or is stopped until it is started or\ndeployed again."
+              },
               "source": {
                 "$ref": "#/components/schemas/EnvironmentSource",
                 "description": "Where deployments come from; a preview's branch."
@@ -6843,6 +6847,10 @@
             "minimum": 0,
             "nullable": true,
             "type": "integer"
+          },
+          "run_state": {
+            "$ref": "#/components/schemas/RunState",
+            "description": "Whether it runs its services, or is stopped until it is started or\ndeployed again."
           },
           "source": {
             "$ref": "#/components/schemas/EnvironmentSource",
@@ -10482,6 +10490,14 @@
         ],
         "type": "object"
       },
+      "RunState": {
+        "description": "Whether an environment runs its services.",
+        "enum": [
+          "running",
+          "stopped"
+        ],
+        "type": "string"
+      },
       "SavedApplication": {
         "description": "Saved application configuration, optionally accompanied by a deployment.",
         "properties": {
@@ -11296,6 +11312,7 @@
           "off",
           "pinned",
           "not_opted_in",
+          "stopped",
           "awaiting_deployment"
         ],
         "type": "string"
@@ -27953,7 +27970,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Reconciles an environment.",
+        "summary": "Reconciles an environment, starting it if it is stopped.",
         "x-piqueld-access": "apps:deploy"
       }
     },
@@ -28495,6 +28512,124 @@
         "x-piqueld-access": "apps:write"
       }
     },
+    "/api/v1/environments/{id}/start": {
+      "post": {
+        "description": "Its services scale back to their replicas and the gateway serves its\nroutes again. Like `reconcileEnvironment`, which it is, returns 202 with\nits latest operation, requested again when it finished or failed, or as\nis while it is in progress; 404 when it was never deployed.\n`expected_generation` is optional.",
+        "operationId": "startEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Start accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Starts a stopped environment.",
+        "x-piqueld-access": "apps:deploy"
+      }
+    },
     "/api/v1/environments/{id}/status": {
       "get": {
         "operationId": "environmentStatus",
@@ -28574,6 +28709,124 @@
         },
         "summary": "Get environment status",
         "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/environments/{id}/stop": {
+      "post": {
+        "description": "Its services scale to zero replicas, keeping their configuration, volumes\nand secrets, and the gateway stops serving its routes before the request\nreturns, or on its next pass if that fails. It stays stopped until it is\nstarted, deployed, promoted into or reconciled; sync deploys nothing to it\nmeanwhile. Returns 202 with its latest operation: run again when its\ndeployment had rolled out and has ended, so the services stop now, or as\nis while it is in progress, which then rolls out with no replicas. 404\nwhen it was never deployed, 409 while it is deleted. `expected_generation` is optional.",
+        "operationId": "stopEnvironment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Current intent revision; optional for reconcile, required for deletion unless forced.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass intent preconditions.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AcceptedOperation"
+                }
+              }
+            },
+            "description": "Stop accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Stops an environment.",
+        "x-piqueld-access": "apps:deploy"
       }
     },
     "/api/v1/environments/{id}/sync": {

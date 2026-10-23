@@ -362,12 +362,15 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         rollout: Some(desired.rollout_policy()),
         telemetry: desired.telemetry.clone(),
         runtime_configuration_matches: true,
-        tasks: vec![ObservedTask {
-            state: TaskState::Running,
-            healthy: Some(true),
-            desired_running: true,
-            diagnostic: None,
-        }],
+        // One running task per replica, as Swarm converges to.
+        tasks: (0..desired.replicas)
+            .map(|_| ObservedTask {
+                state: TaskState::Running,
+                healthy: Some(true),
+                desired_running: true,
+                diagnostic: None,
+            })
+            .collect(),
         convergence: Convergence::Converged,
     }
 }
@@ -1934,6 +1937,63 @@ async fn telemetry_sockets_are_mounted_while_the_environment_is_granted() {
     assert_eq!(mounted(&harness).await, None, "revoking unmounts it");
     harness.scan().await;
     assert!(!sockets.exists(), "and removes the directories");
+}
+
+/// Stopping scales every service to zero and reports the runtime stopped:
+/// the deployment that rolled out runs again with no replicas, and after a
+/// later one failed before rolling out, repair stops what runs. Starting
+/// runs them again, and so does deploying.
+#[tokio::test]
+async fn stopped_environments_run_no_replicas_until_started_or_deployed() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = harness.apply(manifest(), None).await;
+    harness.finish(&first).await;
+    let id = first.environment_id.clone();
+    let health = async || harness.store.status(&id).await.unwrap().runtime_health;
+
+    let stopped = applications.stop(&id).await.unwrap();
+    assert_eq!(stopped.id, first.id, "the rolled out deployment runs again");
+    harness.finish(&stopped).await;
+    assert_eq!(harness.replicas().await, 0);
+    assert_eq!(health().await.as_deref(), Some("stopped"));
+    harness.scan().await;
+    assert_eq!(harness.replicas().await, 0, "repair keeps it stopped");
+
+    let started = applications.reconcile(&id, None).await.unwrap();
+    harness.finish(&started).await;
+    assert_eq!(harness.replicas().await, 1);
+    assert_eq!(health().await.as_deref(), Some("ready"));
+
+    let mut unstable = manifest();
+    unstable.spec.services[0].source = piqueld_core::Source::Image {
+        image: "ghcr.io/example/unstable:1".into(),
+    };
+    harness.docker.arm_tag_flips(100).await;
+    let failed = harness.apply(unstable, None).await;
+    harness.scan().await;
+    assert_eq!(
+        harness.operation(&failed.id).await.state,
+        OperationState::Failed
+    );
+    let stopped = applications.stop(&id).await.unwrap();
+    assert_eq!(
+        (stopped.id.as_str(), stopped.state),
+        (failed.id.as_str(), OperationState::Failed),
+        "a deployment that never rolled out is not retried"
+    );
+    harness.scan().await;
+    assert_eq!(
+        harness.replicas().await,
+        0,
+        "repair stops the active target"
+    );
+
+    harness.docker.arm_tag_flips(0).await;
+    let deployed = harness.apply(manifest(), None).await;
+    harness.finish(&deployed).await;
+    assert_eq!(harness.replicas().await, 1);
+    assert!(!harness.store.get(&id).await.unwrap().environment.stopped());
 }
 
 #[tokio::test]

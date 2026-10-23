@@ -483,7 +483,7 @@ pub(super) async fn delete(
     .await
 }
 
-/// Reconciles an environment.
+/// Reconciles an environment, starting it if it is stopped.
 ///
 /// Returns 202 with the environment's latest operation, requested again when it
 /// finished or failed, or as is while it is still in progress; 404 when the
@@ -513,4 +513,61 @@ pub(super) async fn reconcile(
         &headers,
     )
     .await
+}
+
+/// Stops an environment.
+///
+/// Its services scale to zero replicas, keeping their configuration, volumes
+/// and secrets, and the gateway stops serving its routes before the request
+/// returns, or on its next pass if that fails. It stays stopped until it is
+/// started, deployed, promoted into or reconciled; sync deploys nothing to it
+/// meanwhile. Returns 202 with its latest operation: run again when its
+/// deployment had rolled out and has ended, so the services stop now, or as
+/// is while it is in progress, which then rolls out with no replicas. 404
+/// when it was never deployed, 409 while it is deleted. `expected_generation` is optional.
+#[utoipa::path(post,path="/api/v1/environments/{id}/stop",operation_id="stopEnvironment",
+    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
+    responses((status=202,description="Stop accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn stop(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(id): ApiPath<String>,
+    headers: HeaderMap,
+    ApiQuery(query): ApiQuery<GenerationQuery>,
+) -> Result<Response, ApiError> {
+    accept_mutation(
+        &state,
+        &identity,
+        Mutation::Stop {
+            id: EnvironmentId::parse(id)?,
+        },
+        query.expected_generation,
+        query.force,
+        &headers,
+    )
+    .await
+}
+
+/// Starts a stopped environment.
+///
+/// Its services scale back to their replicas and the gateway serves its
+/// routes again. Like `reconcileEnvironment`, which it is, returns 202 with
+/// its latest operation, requested again when it finished or failed, or as
+/// is while it is in progress; 404 when it was never deployed.
+/// `expected_generation` is optional.
+#[utoipa::path(post,path="/api/v1/environments/{id}/start",operation_id="startEnvironment",
+    params(("id"=String,Path),GenerationQuery,("Idempotency-Key"=Option<String>,Header)),
+    responses((status=202,description="Start accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn start(
+    state: State<ApiState>,
+    identity: Extension<Identity>,
+    id: ApiPath<String>,
+    headers: HeaderMap,
+    query: ApiQuery<GenerationQuery>,
+) -> Result<Response, ApiError> {
+    reconcile(state, identity, id, headers, query).await
 }

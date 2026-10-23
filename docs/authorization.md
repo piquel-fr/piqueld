@@ -26,7 +26,7 @@ added later: requests about an environment are checked on its application.
 | `admin` | all or listed applications | On every application: everything, including installation-wide permissions. On listed applications: every application permission there |
 | `apps:read` | all or listed applications | Configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, and secret names and which environments may mount them |
 | `apps:write` | all or listed applications | Configuration edits, manifest apply, rename, adding, renaming or changing the source of environments, opting them into or out of sync, and generating webhook secrets |
-| `apps:deploy` | all or listed applications | Deploy, promote releases into, and reconcile environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
+| `apps:deploy` | all or listed applications | Deploy, promote releases into, reconcile, stop and start environments, create and deploy previews, including local snapshots, and, with `apps:write`, turn on [deploying on push](application-manifest.md#deploying-on-push) or opt an environment into it |
 | `apps:delete` | all or listed applications | Delete the application, its environments or its previews |
 | `previews:deploy` | all or listed applications | Create and deploy [previews](#preview-permissions), including from a local worktree, and read their logs; included in `apps:deploy` |
 | `previews:delete` | all or listed applications | Delete and prune previews; included in `apps:delete` |
@@ -60,7 +60,7 @@ piquelctl token create agent --app notes \
 
 This token can create, deploy (also from a local worktree), read the logs of,
 delete, and prune previews of `notes`, including previews created later. It cannot deploy, promote into,
-reconcile, or delete long-lived environments, read their logs, change the
+reconcile, stop, or delete long-lived environments, read their logs, change the
 application's configuration, environments, or secrets, delete the application,
 or run commands anywhere: commands in a preview still need `apps:exec`, which
 reaches the secrets previews mount. Like every application permission, both

@@ -3,7 +3,7 @@ pub use piqueld_core::api::{
     AcceptedPromotion, CreateEnvironmentRequest, DeploymentOrigin, EnvironmentBranchRequest,
     EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView,
     EnvironmentTelemetryRequest, EnvironmentView, PromoteRequest, ReleasePlan, ReleasePromotion,
-    RouteUrl, SecretProblem, TelemetryReport, UrlCondition, UrlState,
+    RouteUrl, RunState, SecretProblem, TelemetryReport, UrlCondition, UrlState,
 };
 pub use piqueld_core::{EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch};
 
@@ -160,7 +160,8 @@ impl Client {
     }
 
     /// Retries the latest operation with its saved inputs once it has ended or failed,
-    /// without resolving sources again. An operation still in progress is returned as is.
+    /// without resolving sources again, starting the environment if it is stopped.
+    /// An operation still in progress is returned as is.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn reconcile_environment(
@@ -170,6 +171,37 @@ impl Client {
     ) -> Result<AcceptedOperation, ClientError> {
         self.generated
             .reconcile_environment(id, expected, None, None)
+            .data()
+            .await
+    }
+
+    /// Stops an environment: its services scale to zero and the gateway
+    /// withdraws its routes, until it is started or deployed again. Returns
+    /// its latest operation, which runs again when it had rolled out.
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn stop_environment(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.generated
+            .stop_environment(id, expected, None, None)
+            .data()
+            .await
+    }
+
+    /// Starts a stopped environment, reconciling it like
+    /// [`Self::reconcile_environment`].
+    /// # Errors
+    /// Returns transport, API, or decoding errors.
+    pub async fn start_environment(
+        &self,
+        id: &str,
+        expected: Option<u64>,
+    ) -> Result<AcceptedOperation, ClientError> {
+        self.generated
+            .start_environment(id, expected, None, None)
             .data()
             .await
     }

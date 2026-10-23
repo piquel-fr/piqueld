@@ -71,7 +71,7 @@ The supported manifest and runtime model are documented in:
 | Supported | Deferred until later releases |
 | --- | --- |
 | Prebuilt images, Git/Docker builds, repository-backed manifests, declared environments, variables, generated and stored secrets, read-only files, replicas, environment, command/args, health checks (including HTTP probes), startup dependencies, rollout order, resource limits, named volumes, mounts, one-shot before-rollout jobs, and private links between applications | Registry management and registry credentials |
-| Single-node Swarm reconciliation, deployment on push, releases and promotion, branch previews, managed Caddy HTTPS routes (public, private on the tailnet, wildcard, redirects, Cloudflare Tunnel, managed DNS records), drift repair, durable operations, volume retention, application log snapshots, one-off commands in running tasks, and the `piquelctl` workflow | Arbitrary TCP/UDP ports, state transfer, and multi-node operation |
+| Single-node Swarm reconciliation, deployment on push, releases and promotion, branch previews, stopping and starting environments, managed Caddy HTTPS routes (public, private on the tailnet, wildcard, redirects, Cloudflare Tunnel, managed DNS records), drift repair, durable operations, volume retention, application log snapshots, one-off commands in running tasks, and the `piquelctl` workflow | Arbitrary TCP/UDP ports, state transfer, and multi-node operation |
 | Unix-socket, localhost, and Tailscale API transports, SSE event streams, scoped accounts and API tokens, a tamper-evident audit trail, and a Leptos/WASM dashboard for editing configuration, deploying, promoting, previews, secrets, history, and recent logs | |
 
 ## Development

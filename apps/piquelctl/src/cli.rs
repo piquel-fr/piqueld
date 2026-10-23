@@ -278,8 +278,13 @@ pub(crate) enum AppCommand {
     /// Confirm and delete an application and all its environments by name or ID.
     Delete(DeleteArgs),
     /// Retry the latest operation of the application's only environment once it
-    /// has ended or failed, reusing its saved inputs.
+    /// has ended or failed, reusing its saved inputs. Starts it if it is stopped.
     Reconcile(TargetArgs),
+    /// Stop the application's only environment: its services scale to zero
+    /// and its routes are withdrawn, until it is started or deployed again.
+    Stop(TargetArgs),
+    /// Start the application's only environment again.
+    Start(TargetArgs),
     /// Deploy saved configuration to the application's only environment, fetching
     /// the manifest and resolving sources again.
     Deploy(DeployArgs),
@@ -515,7 +520,8 @@ impl RevisionArgs {
     }
 }
 
-// Application selection, confirmation, and waiting shared by `app reconcile` and `app deploy`.
+// Application selection, confirmation, and waiting shared by `app reconcile`,
+// `app stop`, `app start` and `app deploy`.
 #[derive(Debug, Args)]
 pub(crate) struct TargetArgs {
     /// Application name or stable ID.
@@ -524,7 +530,8 @@ pub(crate) struct TargetArgs {
     pub(crate) flags: OperationFlags,
 }
 
-// Precondition, confirmation, and waiting flags shared by deploy and reconcile.
+// Precondition, confirmation, and waiting flags shared by deploy, reconcile,
+// stop and start.
 #[derive(Debug, Args)]
 pub(crate) struct OperationFlags {
     /// Optionally require this application revision.

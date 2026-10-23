@@ -1,23 +1,23 @@
 //! `piquelctl env`: an application's environments, plus the environment
 //! selection and runtime commands shared with `app deploy`, `app reconcile`,
-//! and `app logs`.
+//! `app stop`, `app start`, and `app logs`.
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
-    commands::{resolve_application, wait_for_deletion, wait_for_operation},
+    commands::{finish_operation, resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Target, UrlArgs, WaitArgs, wait_for_accepted},
     editing::{EditFlags, on_off, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
-        Console,
+        Console, TaskOutcome,
         reports::{DeletionReport, EnvironmentRow, EnvironmentShowReport, Named, PromotionReport},
     },
-    support::{join_or, retry_transport},
+    support::{POLL_INTERVAL, join_or, retry_transport},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView,
-    PromoteRequest, Visibility, edit::ApplicationEdit,
+    Operation, PromoteRequest, Visibility, edit::ApplicationEdit,
 };
 
 // `env` subcommands; `///` on variants and fields is user-facing help.
@@ -76,8 +76,27 @@ pub(crate) enum EnvCommand {
         revision: RevisionArgs,
     },
     /// Retry an environment's latest operation once it has ended or failed,
-    /// reusing its saved inputs.
+    /// reusing its saved inputs. Starts it if it is stopped.
     Reconcile {
+        #[command(flatten)]
+        target: EnvironmentArgs,
+        #[command(flatten)]
+        flags: OperationFlags,
+    },
+    /// Stop an environment: its services scale to zero, keeping their
+    /// configuration and volumes, and its routes are withdrawn. It stays
+    /// stopped until `env start`, a deployment, or `env reconcile`; pushes
+    /// don't deploy it meanwhile. Waits until its services have stopped.
+    Stop {
+        #[command(flatten)]
+        target: EnvironmentArgs,
+        #[command(flatten)]
+        flags: OperationFlags,
+    },
+    /// Start a stopped environment: its services run their replicas again
+    /// and its routes are served. Like `env reconcile`, retries its latest
+    /// operation once it has ended or failed.
+    Start {
         #[command(flatten)]
         target: EnvironmentArgs,
         #[command(flatten)]
@@ -184,8 +203,17 @@ impl EnvCommand {
                 deploy(client, console, &application, &environment, flags, revision).await
             }
             Self::Reconcile { target, flags } => {
-                let (application, environment) = target.resolve(client).await?;
-                reconcile(client, console, &application, &environment, flags).await
+                Lifecycle::Reconcile
+                    .run_on(client, console, target, flags)
+                    .await
+            }
+            Self::Stop { target, flags } => {
+                Lifecycle::Stop.run_on(client, console, target, flags).await
+            }
+            Self::Start { target, flags } => {
+                Lifecycle::Start
+                    .run_on(client, console, target, flags)
+                    .await
             }
             Self::Logs { target, window } => {
                 logs(console, client, &target.resolve(client).await?.1, window).await
@@ -803,31 +831,173 @@ pub(crate) async fn deploy(
     result
 }
 
-/// Confirms and retries an environment's latest operation with its saved inputs,
-/// guarded by the expected generation only when one is given. Waits for it
-/// unless `--no-wait`.
-pub(crate) async fn reconcile(
-    client: &Client,
-    console: &mut Console,
-    application: &ApplicationView,
-    environment: &EnvironmentView,
-    flags: &OperationFlags,
-) -> Result<()> {
-    console
-        .confirm(
-            flags.yes,
-            &format!(
-                "Retry the latest operation of application {:?} in environment {:?}?",
-                application.application.metadata().name,
-                environment.name.as_str()
+/// A change to an environment's runtime that `reconcile`, `stop` and `start`
+/// request, each guarded by the expected generation only when one is given.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Lifecycle {
+    /// Retry its latest operation with its saved inputs, starting it if it
+    /// is stopped.
+    Reconcile,
+    /// Scale its services to zero and withdraw its routes.
+    Stop,
+    /// Start it again, reconciling it.
+    Start,
+}
+
+impl Lifecycle {
+    /// The confirmation question for `environment` of `application`.
+    fn question(self, application: &ApplicationView, environment: &EnvironmentView) -> String {
+        let (application, environment) = (
+            application.application.metadata().name.as_str(),
+            environment.name.as_str(),
+        );
+        match self {
+            Self::Reconcile => format!(
+                "Retry the latest operation of application {application:?} in environment {environment:?}?"
             ),
-        )
+            Self::Stop => format!(
+                "Stop environment {environment:?} of application {application:?}? Its services stop and its routes are withdrawn."
+            ),
+            Self::Start => {
+                format!("Start environment {environment:?} of application {application:?}?")
+            }
+        }
+    }
+
+    /// [`Self::run`] on the environment `target` names.
+    async fn run_on(
+        self,
+        client: &Client,
+        console: &mut Console,
+        target: &EnvironmentArgs,
+        flags: &OperationFlags,
+    ) -> Result<()> {
+        let (application, environment) = target.resolve(client).await?;
+        self.run(client, console, &application, &environment, flags)
+            .await
+    }
+
+    /// [`Self::run`] on the only environment of the application `target`
+    /// names.
+    pub(crate) async fn run_on_application(
+        self,
+        client: &Client,
+        console: &mut Console,
+        target: &crate::cli::TargetArgs,
+    ) -> Result<()> {
+        let (application, environment) = select(client, &target.name_or_id, None).await?;
+        self.run(client, console, &application, &environment, &target.flags)
+            .await
+    }
+
+    /// Confirms and requests the change, then waits unless `--no-wait`: for
+    /// a stop, until the environment's services have stopped, else for the
+    /// operation it returned.
+    async fn run(
+        self,
+        client: &Client,
+        console: &mut Console,
+        application: &ApplicationView,
+        environment: &EnvironmentView,
+        flags: &OperationFlags,
+    ) -> Result<()> {
+        console
+            .confirm(flags.yes, &self.question(application, environment))
+            .await?;
+        let (id, expected) = (environment.id.as_str(), flags.expected_generation);
+        let before = match self {
+            Self::Stop if !flags.no_wait => Baseline::latest(client, id).await?,
+            _ => None,
+        };
+        let accepted = retry_transport(|| async move {
+            match self {
+                Self::Reconcile => client.reconcile_environment(id, expected).await,
+                Self::Stop => client.stop_environment(id, expected).await,
+                Self::Start => client.start_environment(id, expected).await,
+            }
+        })
         .await?;
-    let accepted = retry_transport(|| {
-        client.reconcile_environment(environment.id.as_str(), flags.expected_generation)
-    })
-    .await?;
-    wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await
+        match self {
+            Self::Stop if !flags.no_wait => {
+                let operation = &accepted.operation_id;
+                let environment =
+                    wait_until_stopped(console, client, environment, operation, before).await?;
+                console.emit(&Named::new(&environment, application))
+            }
+            _ => wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await,
+        }
+    }
+}
+
+/// An operation's attempt as of a moment, to tell whether it ran since.
+struct Baseline {
+    operation: String,
+    attempt: u64,
+    terminal: bool,
+}
+
+impl Baseline {
+    /// The latest deployment's operation of environment `id`, if any.
+    async fn latest(client: &Client, id: &str) -> Result<Option<Self>> {
+        let deployments = client.deployments(id, None).await?;
+        Ok(deployments.items.into_iter().next().map(|deployment| Self {
+            terminal: deployment.operation.state.terminal(),
+            attempt: deployment.operation.attempt,
+            operation: deployment.operation.id,
+        }))
+    }
+
+    /// Whether `operation`'s outcome is news since this one: another
+    /// operation, a later attempt, or one in progress then.
+    fn outdated_by(&self, operation: &Operation) -> bool {
+        self.operation != operation.id || operation.attempt > self.attempt || !self.terminal
+    }
+}
+
+/// Polls `environment`'s status with a progress task until it reports its
+/// services stopped, and returns the environment then. A stop may leave its
+/// latest operation `operation` as it was `before` the stop, e.g. a
+/// deployment that failed before rolling out, so its runtime tells when it
+/// is done; but when the stop ran it again, or it was in progress, and it
+/// fails, so does the wait. Starting or deploying the environment meanwhile
+/// ends the wait.
+async fn wait_until_stopped(
+    console: &mut Console,
+    client: &Client,
+    environment: &EnvironmentView,
+    operation: &str,
+    before: Option<Baseline>,
+) -> Result<EnvironmentView> {
+    let id = environment.id.as_str();
+    let progress = console.start_task(id);
+    loop {
+        let status = client.environment_status(id).await?;
+        let environment = client.environment(id).await?;
+        let health = status.runtime_health.as_deref().unwrap_or("unknown");
+        if matches!(health, "stopped" | "absent") {
+            progress.finish(TaskOutcome::Succeeded, "services stopped");
+            return Ok(environment);
+        }
+        if !environment.stopped() {
+            progress.finish(
+                TaskOutcome::Skipped,
+                "started again before its services stopped",
+            );
+            return Ok(environment);
+        }
+        let operation = client.operation(operation).await?;
+        if operation.state.terminal()
+            && before
+                .as_ref()
+                .is_none_or(|before| before.outdated_by(&operation))
+            && let Err(error) = finish_operation(operation)
+        {
+            progress.finish(TaskOutcome::Failed, &error.to_string());
+            return Err(error);
+        }
+        progress.update(&format!("stopping services (runtime {health})"));
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Emits a bounded snapshot of runtime logs, warning when the daemon truncated it.
