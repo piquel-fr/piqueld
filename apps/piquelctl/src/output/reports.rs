@@ -9,8 +9,8 @@ use piqueld_client::{
     Export, FileSource, ImageStatus, Import, LocalSnapshot, ManifestChange, MountedSecret,
     Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
     ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
-    SecretMetadata, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus,
-    TelemetryDestinationStatus, TelemetryStatus, Template, UrlState, VariableValue,
+    SecretMetadata, SecretMount, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret,
+    SystemStatus, TelemetryDestinationStatus, TelemetryStatus, Template, UrlState, VariableValue,
     links::ImportState,
     sync::{SyncState, WebhookSecret, WebhookView, short_commit},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
@@ -247,23 +247,33 @@ report!(PreviewUsage, self, out, {
     Ok(())
 });
 
-/// One file of `file list`, with the service mounting it.
+/// One file or secret mount of `file list` and `service secret list`, with
+/// the service mounting it.
 #[derive(Serialize)]
-pub(crate) struct FileRow {
+pub(crate) struct ServiceRow<T> {
     pub(crate) service: String,
     #[serde(flatten)]
-    pub(crate) file: ServiceFile,
+    pub(crate) item: T,
 }
 
-report!(Vec<FileRow> as [FileRow], self, out, {
+report!(Vec<ServiceRow<ServiceFile>> as [ServiceRow<ServiceFile>], self, out, {
     out.table(self, "No files.", "SERVICE  TARGET  MODE  SOURCE", |out, row| {
-        let source = match &row.file.source {
+        let source = match &row.item.source {
             FileSource::Path(path) => format!("repository {path}"),
             FileSource::Content(content) => format!("inline, {} bytes", content.len()),
         };
         out.line(format_args!(
             "{}  {}  {}  {source}",
-            row.service, row.file.target, row.file.mode
+            row.service, row.item.target, row.item.mode
+        ))
+    })
+});
+
+report!(Vec<ServiceRow<SecretMount>> as [ServiceRow<SecretMount>], self, out, {
+    out.table(self, "No secret mounts.", "SERVICE  SECRET  TARGET", |out, row| {
+        out.line(format_args!(
+            "{}  {}  {}",
+            row.service, row.item.name, row.item.target
         ))
     })
 });

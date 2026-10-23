@@ -407,6 +407,7 @@ written to stderr, so stdout remains valid JSON.
 | `app plan` | `PlanView` |
 | `app route list` | `[RouteStatus]`, each with `"environment": string` (its name) |
 | `app file list` | `[ServiceFile]`, each with `"service": string` |
+| `app service secret list` | `[SecretMount]`, each with `"service": string` |
 | `app export list` / `app import list` | `[Export]` / `[Import]`, as saved |
 | `app secret list` | `[StoredSecret]` |
 | `app secret set` / `access` | `StoredSecret` |
@@ -612,6 +613,10 @@ piquelctl app service cpu notes web --clear --yes
 piquelctl app volume add notes data --yes
 piquelctl app service mount set notes web data /var/lib/data --yes
 piquelctl app service mount remove notes web /var/lib/data --yes
+piquelctl app service secret add notes web database-password /run/secrets/database-password --yes
+piquelctl app service secret add notes web '${{ vars.stripe_key }}' /run/secrets/stripe --yes
+piquelctl app service secret list notes web
+piquelctl app service secret remove notes web /run/secrets/stripe --yes
 piquelctl app file add notes web /etc/app/motd --content hello --yes
 piquelctl app file add notes web /etc/prometheus/prometheus.yml --from ./prometheus.yml --yes
 piquelctl app file add notes web /etc/otelcol/config.yaml --path otel/config.yaml --mode 0440 --yes
@@ -663,6 +668,11 @@ replaces the one at the same target: `--content` sets its text, `--from` reads
 a local file now and saves its content inline, and `--path` names a file in the
 manifest's repository, read by each deployment. Repository-backed applications
 are edited in Git instead. `app file list` shows each service's saved files.
+`app service secret add` mounts a secret as a file under `/run/secrets`, or
+replaces the mount at the same target; its name may reference variables, so
+each environment can mount its own stored secret. `app service secret remove`
+unmounts it by target, and `app service secret list` shows each service's
+saved mounts. Values and who may mount them are managed with `app secret`.
 Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. `route add` and `route redirect` take an exact hostname or a
 [wildcard](ingress.md#wildcard-routes) such as `*.tenants.notes.example.com`,
@@ -1026,6 +1036,8 @@ piquelctl app secret notes access stripe-live --environments production,staging 
 piquelctl app secret notes access stripe-live --all-environments --no-previews
 piquelctl app secret notes delete database-password --yes
 ```
+
+Services mount these secrets with `app service secret add`.
 
 `list` shows each secret's version and who may mount it, naming environments.
 `--environments a,b` (names or IDs; `--environments ''` for none) or
