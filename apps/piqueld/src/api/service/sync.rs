@@ -65,6 +65,12 @@ impl Hints {
     fn take(&self) -> BTreeSet<ApplicationId> {
         std::mem::take(&mut *self.applications.lock())
     }
+
+    /// Puts back `hinted`, taken by a pass that could not act on them, for
+    /// the next pass, without waking the worker.
+    fn restore(&self, hinted: BTreeSet<ApplicationId>) {
+        self.applications.lock().extend(hinted);
+    }
 }
 
 /// When the worker next lists each repository, by URL, and why. A
@@ -153,14 +159,18 @@ impl ApplicationService {
         schedule: &mut Schedule,
         now: Instant,
     ) {
+        // Taken first, so a hint given while applications are read, e.g.
+        // by an environment that just started, waits for the next pass,
+        // which sees that environment follow its branch.
+        let hinted = self.hints.take();
         let applications = match self.store.sync_applications().await {
             Ok(applications) => applications,
             Err(error) => {
                 tracing::warn!(?error, "sync could not read applications");
+                self.hints.restore(hinted);
                 return;
             }
         };
-        let hinted = self.hints.take();
         let mut repositories = BTreeMap::<String, Vec<SyncApplication>>::new();
         for application in applications {
             repositories

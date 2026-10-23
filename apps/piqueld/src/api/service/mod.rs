@@ -913,10 +913,9 @@ impl ApplicationService {
         let receivers = mutation.changes_receivers();
         let stops = matches!(mutation, Mutation::Stop { .. });
         let started = match &mutation {
-            Mutation::Reconcile { id } if self.store.is_stopped(id).await? => Some(id.clone()),
+            Mutation::Reconcile { id } => Some(id.clone()),
             _ => None,
         };
-        // Boxed: acceptance holds a whole mutation across awaits.
         let (response, wake) =
             Box::pin(
                 self.store
@@ -933,11 +932,15 @@ impl ApplicationService {
         if wake {
             self.runtime.trigger_reconciliation();
         }
-        if let Some(id) = started {
-            // Sync skipped it while stopped, and webhooks don't come again:
-            // list its repository now to deploy the head it missed.
-            self.hints
-                .hint(self.store.get(&id).await?.environment.application_id);
+        // Sync skips a stopped environment, and webhooks don't come again:
+        // list its repository now, so a start deploys the head it missed.
+        // The worker coalesces hints, so reconciling an environment that
+        // wasn't stopped costs at most one listing. Best effort: it was
+        // accepted already.
+        if let Some(id) = started
+            && let Ok(stored) = self.store.get(&id).await
+        {
+            self.hints.hint(stored.environment.application_id);
         }
         if receivers {
             // Stops export to a revoked or deleted receiver before
