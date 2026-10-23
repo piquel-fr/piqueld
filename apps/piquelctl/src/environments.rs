@@ -17,7 +17,7 @@ use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView,
-    PromoteRequest, Visibility, edit::ApplicationEdit,
+    Operation, PromoteRequest, Visibility, edit::ApplicationEdit,
 };
 
 // `env` subcommands; `///` on variants and fields is user-facing help.
@@ -983,6 +983,10 @@ impl Lifecycle {
             .confirm(flags.yes, &self.question(application, environment))
             .await?;
         let (id, expected) = (environment.id.as_str(), flags.expected_generation);
+        let before = match self {
+            Self::Stop if !flags.no_wait => Baseline::latest(client, id).await?,
+            _ => None,
+        };
         let accepted = retry_transport(|| async move {
             match self {
                 Self::Reconcile => client.reconcile_environment(id, expected).await,
@@ -993,8 +997,9 @@ impl Lifecycle {
         .await?;
         match self {
             Self::Stop if !flags.no_wait => {
-                wait_until_stopped(console, client, environment, &accepted.operation_id).await?;
-                let environment = client.environment(id).await?;
+                let operation = &accepted.operation_id;
+                let environment =
+                    wait_until_stopped(console, client, environment, operation, before).await?;
                 console.emit(&Named::new(&environment, application))
             }
             _ => wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await,
@@ -1002,34 +1007,71 @@ impl Lifecycle {
     }
 }
 
+/// An operation's attempt as of a moment, to tell whether it ran since.
+struct Baseline {
+    operation: String,
+    attempt: u64,
+    terminal: bool,
+}
+
+impl Baseline {
+    /// The latest deployment's operation of environment `id`, if any.
+    async fn latest(client: &Client, id: &str) -> Result<Option<Self>> {
+        let deployments = client.deployments(id, None).await?;
+        Ok(deployments.items.into_iter().next().map(|deployment| Self {
+            terminal: deployment.operation.state.terminal(),
+            attempt: deployment.operation.attempt,
+            operation: deployment.operation.id,
+        }))
+    }
+
+    /// Whether `operation`'s outcome is news since this one: another
+    /// operation, a later attempt, or one in progress then.
+    fn outdated_by(&self, operation: &Operation) -> bool {
+        self.operation != operation.id || operation.attempt > self.attempt || !self.terminal
+    }
+}
+
 /// Polls `environment`'s status with a progress task until it reports its
-/// services stopped. A stop may leave its latest operation `operation` as it
-/// was, e.g. a deployment that failed before rolling out, so its runtime
-/// tells when it is done; but when the stop runs that operation again and it
-/// fails, so does the wait.
+/// services stopped, and returns the environment then. A stop may leave its
+/// latest operation `operation` as it was `before` the stop, e.g. a
+/// deployment that failed before rolling out, so its runtime tells when it
+/// is done; but when the stop ran it again, or it was in progress, and it
+/// fails, so does the wait. Starting or deploying the environment meanwhile
+/// ends the wait.
 async fn wait_until_stopped(
     console: &mut Console,
     client: &Client,
     environment: &EnvironmentView,
     operation: &str,
-) -> Result<()> {
-    let progress = console.start_task(environment.id.as_str());
-    let running = !client.operation(operation).await?.state.terminal();
+    before: Option<Baseline>,
+) -> Result<EnvironmentView> {
+    let id = environment.id.as_str();
+    let progress = console.start_task(id);
     loop {
-        let status = client.environment_status(environment.id.as_str()).await?;
+        let status = client.environment_status(id).await?;
+        let environment = client.environment(id).await?;
         let health = status.runtime_health.as_deref().unwrap_or("unknown");
         if matches!(health, "stopped" | "absent") {
             progress.finish(TaskOutcome::Succeeded, "services stopped");
-            return Ok(());
+            return Ok(environment);
         }
-        if running {
-            let operation = client.operation(operation).await?;
-            if operation.state.terminal()
-                && let Err(error) = finish_operation(operation)
-            {
-                progress.finish(TaskOutcome::Failed, &error.to_string());
-                return Err(error);
-            }
+        if !environment.stopped() {
+            progress.finish(
+                TaskOutcome::Skipped,
+                "started again before its services stopped",
+            );
+            return Ok(environment);
+        }
+        let operation = client.operation(operation).await?;
+        if operation.state.terminal()
+            && before
+                .as_ref()
+                .is_none_or(|before| before.outdated_by(&operation))
+            && let Err(error) = finish_operation(operation)
+        {
+            progress.finish(TaskOutcome::Failed, &error.to_string());
+            return Err(error);
         }
         progress.update(&format!("stopping services (runtime {health})"));
         tokio::time::sleep(POLL_INTERVAL).await;
