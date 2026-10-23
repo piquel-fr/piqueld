@@ -138,7 +138,8 @@ message says why. See [notifications](../guides/observability.md#notifications).
 `env stop APP [ENV]` confirms, then stops an environment: the gateway
 withdraws its routes at once and its services scale to zero replicas, keeping
 their configuration, volumes and secrets. It waits until its runtime reports
-`stopped`, unless `--no-wait`. A stopped environment stays stopped until `env
+`stopped`, unless `--no-wait`, and fails if the deployment the stop runs again
+fails. A stopped environment stays stopped until `env
 start`, `env reconcile`, a deployment, or a promotion into it; pushes don't
 deploy it meanwhile, and sync deploys the head it missed once it starts. `env
 start APP [ENV]` confirms, then starts it again, retrying its latest operation

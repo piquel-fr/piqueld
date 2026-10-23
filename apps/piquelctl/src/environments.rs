@@ -3,7 +3,7 @@
 //! `app stop`, `app start`, and `app logs`.
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
-    commands::{resolve_application, wait_for_deletion, wait_for_operation},
+    commands::{finish_operation, resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Target, UrlArgs, WaitArgs, wait_for_accepted},
     editing::{EditFlags, on_off, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
@@ -993,7 +993,7 @@ impl Lifecycle {
         .await?;
         match self {
             Self::Stop if !flags.no_wait => {
-                wait_until_stopped(console, client, environment).await?;
+                wait_until_stopped(console, client, environment, &accepted.operation_id).await?;
                 let environment = client.environment(id).await?;
                 console.emit(&Named::new(&environment, application))
             }
@@ -1003,21 +1003,33 @@ impl Lifecycle {
 }
 
 /// Polls `environment`'s status with a progress task until it reports its
-/// services stopped. A stop may leave its latest operation as it was, e.g.
-/// a deployment that failed before rolling out, so its runtime, not that
-/// operation, tells when it is done.
+/// services stopped. A stop may leave its latest operation `operation` as it
+/// was, e.g. a deployment that failed before rolling out, so its runtime
+/// tells when it is done; but when the stop runs that operation again and it
+/// fails, so does the wait.
 async fn wait_until_stopped(
     console: &mut Console,
     client: &Client,
     environment: &EnvironmentView,
+    operation: &str,
 ) -> Result<()> {
     let progress = console.start_task(environment.id.as_str());
+    let running = !client.operation(operation).await?.state.terminal();
     loop {
         let status = client.environment_status(environment.id.as_str()).await?;
         let health = status.runtime_health.as_deref().unwrap_or("unknown");
         if matches!(health, "stopped" | "absent") {
             progress.finish(TaskOutcome::Succeeded, "services stopped");
             return Ok(());
+        }
+        if running {
+            let operation = client.operation(operation).await?;
+            if operation.state.terminal()
+                && let Err(error) = finish_operation(operation)
+            {
+                progress.finish(TaskOutcome::Failed, &error.to_string());
+                return Err(error);
+            }
         }
         progress.update(&format!("stopping services (runtime {health})"));
         tokio::time::sleep(POLL_INTERVAL).await;

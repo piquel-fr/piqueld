@@ -361,8 +361,8 @@ target, so its services keep every other setting and starting restores their
 replicas without preparing anything. Stopping reruns a deployment that rolled
 out, which then converges to zero replicas; a deployment in progress plans the
 same and rolls out with none. Stopping or starting ends a convergence wait in
-progress, and an operation whose plan predates either plans again before
-succeeding. When the latest deployment never rolled out,
+progress, so the operation replans at once, and an operation that succeeds
+under a plan that predates either runs again right away. When the latest deployment never rolled out,
 active-target repair applies every change that needs no convergence wait in
 one pass, rather than one per scan, so the services of the target the
 environment runs all scale down at once. Jobs are not projected: a deployment
