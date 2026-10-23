@@ -10,7 +10,7 @@ use piqueld_client::{
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UnixListener},
     sync::mpsc,
     time::timeout,
@@ -60,9 +60,8 @@ fn raw_response(status_line: &str, content_type: &str, body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// Accepts one connection and returns it with its request head.
-async fn accept_head(listener: TcpListener) -> (TcpStream, String) {
-    let (mut socket, _) = listener.accept().await.unwrap();
+/// Reads a request head, through its terminating blank line.
+async fn read_head(socket: &mut (impl AsyncRead + Unpin)) -> String {
     let mut buffer = Vec::new();
     loop {
         let mut chunk = [0u8; 1024];
@@ -73,11 +72,21 @@ async fn accept_head(listener: TcpListener) -> (TcpStream, String) {
             break;
         }
     }
-    (socket, String::from_utf8_lossy(&buffer).into_owned())
+    String::from_utf8_lossy(&buffer).into_owned()
 }
 
-/// Sends a response head promising more body than follows, then stalls.
-async fn stall_body(mut socket: impl AsyncWrite + Unpin) {
+/// Accepts one connection and returns it with its request head.
+async fn accept_head(listener: TcpListener) -> (TcpStream, String) {
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let head = read_head(&mut socket).await;
+    (socket, head)
+}
+
+/// Reads the request head, sends a response head promising more body than
+/// follows, then stalls. Reading first matters: the client rejects a response
+/// that arrives before its request is written.
+async fn stall_body(mut socket: impl AsyncRead + AsyncWrite + Unpin) {
+    read_head(&mut socket).await;
     socket
         .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\nshort")
         .await
