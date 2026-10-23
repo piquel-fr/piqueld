@@ -49,29 +49,6 @@ pub(super) fn relative(milliseconds: i64) -> String {
     }
 }
 
-/// Elapsed time such as "850 ms", "3.2 s", or "4 min 12 s".
-pub(super) fn duration(milliseconds: i64) -> String {
-    let milliseconds = milliseconds.max(0);
-    match milliseconds {
-        0..=999 => format!("{milliseconds} ms"),
-        1_000..=59_949 => format!("{:.1} s", milliseconds as f64 / 1_000.0),
-        59_950..=3_599_999 => {
-            let seconds = (milliseconds + 500) / 1_000;
-            format!("{} min {} s", seconds / 60, seconds % 60)
-        }
-        _ => format!(
-            "{} h {} min",
-            milliseconds / 3_600_000,
-            (milliseconds % 3_600_000) / 60_000
-        ),
-    }
-}
-
-/// Elapsed time from a fractional millisecond measurement.
-pub(super) fn duration_f64(milliseconds: f64) -> String {
-    duration(milliseconds as i64)
-}
-
 /// Uptime-style durations such as "3 d 4 h" or "12 min".
 pub(super) fn duration_secs(seconds: u64) -> String {
     let (days, hours, minutes) = (

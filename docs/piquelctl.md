@@ -81,6 +81,7 @@ piquelctl preview delete <app> <preview> [--slot <slot>]
 piquelctl preview prune <app> --branch-gone
 piquelctl notification list|set|test|delete|deliveries|retry
 piquelctl events --application <application-id> --limit 50
+piquelctl analytics [--app <name-or-id> [--env <env>]] [--since <duration>] [--until <duration>]
 ```
 
 An application owns the saved manifest; its environments deploy it, each with its
@@ -359,8 +360,8 @@ reports how many images this installation built that
 size of those it removed since the daemon started.
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
-milliseconds (`ms`), seconds (`s`), minutes (`m`), or hours (`h`); a bare integer
-is interpreted as seconds. The timeout bounds the complete command, except
+milliseconds (`ms`), seconds (`s`), minutes (`m`), hours (`h`), or days (`d`); a
+bare integer is interpreted as seconds. The timeout bounds the complete command, except
 `login`, which waits for browser approval, and an `app exec` or `preview exec` session; interactive
 confirmation prompts do not consume it. Read requests can use the full remaining
 command budget. Idempotent mutations retry one transport failure if time remains;
@@ -447,6 +448,7 @@ written to stderr, so stdout remains valid JSON.
 | `app`/`env` `reconcile` / `deploy` | `{ "accepted": AcceptedOperation, "operation": Operation }` and the fields of `Deployment`, with `outcome` and `urls` |
 | `app`/`env` `reconcile --no-wait` / `deploy --no-wait` | `AcceptedOperation` (`operation_id`, `environment_id`, `generation`) and the fields of `Deployment` |
 | `events` | `{ "items": [Event], "next_cursor": string or null }` |
+| `analytics` | `DeploymentAnalytics` |
 
 `Deployment` is the CLI's summary of one deployment of an environment or
 preview, flattened into the results above:
@@ -846,6 +848,17 @@ stable application ID: application-wide events such as edits and renames, and th
 events of all its environments, including deleted ones. `--environment ID` filters
 by stable environment ID. Deleting an application removes its history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
+
+`analytics` summarizes [deployment analytics](observability.md#api-and-dashboard),
+as the dashboard's Analytics page does: deployments by the outcome of their
+latest attempt, the mean attempt duration, failed and retry attempts, action
+retries, mean durations per action phase, and the most frequent failure codes.
+It covers every application the caller holds `events:read` on, or, with
+`--app`, that application's only environment; `--env` names one when it has
+several. `--since DURATION` starts the window that long ago (default: 30 days
+before its end) and `--until DURATION` ends it that long ago (default: now),
+so `--since 14d --until 7d` covers the week before last. A warning reports when
+the window reaches before retained history.
 
 By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll every 250 ms
 until a terminal state. Supersession returns immediately with exit code 0 and

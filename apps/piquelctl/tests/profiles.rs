@@ -61,7 +61,7 @@ fn profile_and_environment_selection_report_configuration_errors() {
         (
             vec!["--profile", "testing", "status"],
             vec![("PIQUELD_TIMEOUT", "bad")],
-            "timeout must be",
+            "invalid timeout",
         ),
     ] {
         let result = fixture.run(&args, &env);

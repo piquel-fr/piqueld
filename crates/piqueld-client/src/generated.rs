@@ -109,7 +109,8 @@ impl Client {
 
     Arguments:
     - `environment_id`: Only include deployments of this environment.
-    - `since_ms`: Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.
+    - `since_ms`: Inclusive Unix millisecond lower bound; defaults to 30 days before
+    `until_ms`, and no earlier than zero.
     - `until_ms`: Inclusive Unix millisecond upper bound; defaults to now.
     */
     pub async fn deployment_analytics<'a>(
