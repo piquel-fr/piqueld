@@ -3,6 +3,7 @@
 //! `just generate` renders into the command reference.
 
 mod accounts;
+mod analytics;
 mod auth;
 mod cli;
 mod commands;
@@ -341,6 +342,7 @@ mod tests {
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
         assert_eq!(parse_duration("2m").unwrap(), Duration::from_mins(2));
         assert_eq!(parse_duration("1").unwrap(), Duration::from_secs(1));
+        assert_eq!(parse_duration("7d").unwrap(), Duration::from_hours(7 * 24));
     }
 
     #[test]

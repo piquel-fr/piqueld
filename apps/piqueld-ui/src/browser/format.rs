@@ -1,4 +1,4 @@
-//! Human-readable time and duration formatting for browser views.
+//! Human-readable time formatting for browser views.
 // JavaScript numbers are doubles. Browser timestamps and durations stay far
 // below 2^53, so converting between them and integers is exact in practice.
 #![allow(
@@ -47,27 +47,4 @@ pub(super) fn relative(milliseconds: i64) -> String {
     } else {
         format!("{text} ago")
     }
-}
-
-/// Elapsed time such as "850 ms", "3.2 s", or "4 min 12 s".
-pub(super) fn duration(milliseconds: i64) -> String {
-    let milliseconds = milliseconds.max(0);
-    match milliseconds {
-        0..=999 => format!("{milliseconds} ms"),
-        1_000..=59_949 => format!("{:.1} s", milliseconds as f64 / 1_000.0),
-        59_950..=3_599_999 => {
-            let seconds = (milliseconds + 500) / 1_000;
-            format!("{} min {} s", seconds / 60, seconds % 60)
-        }
-        _ => format!(
-            "{} h {} min",
-            milliseconds / 3_600_000,
-            (milliseconds % 3_600_000) / 60_000
-        ),
-    }
-}
-
-/// Elapsed time from a fractional millisecond measurement.
-pub(super) fn duration_f64(milliseconds: f64) -> String {
-    duration(milliseconds as i64)
 }

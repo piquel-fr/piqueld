@@ -252,7 +252,15 @@ stops arriving, and a caller that lost access entirely receives a terminal
 `access_ended` message whose data is the refusal's `ErrorBody`. Streams end
 without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
 
-The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
+Read deployment analytics for the last 7 days:
+
+```console
+piquelctl analytics --since 7d
+```
+
+`--app` and `--env` limit them to one environment; see the
+[CLI reference](../reference/cli.md). The dashboard adds Events, Errors,
+Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation
 history. Error feedback links to the specific diagnostic where available. Views
 refresh while visible. Host settings are displayed read-only; credentials show

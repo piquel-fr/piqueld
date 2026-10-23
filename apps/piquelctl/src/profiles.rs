@@ -212,7 +212,8 @@ impl Profiles {
                     profile_source
                 };
                 cli.timeout = parse_duration(value).map_err(|message| {
-                    Self::invalid(message).configuration(cli.connection_sources.timeout.to_string())
+                    Self::invalid(format!("invalid timeout: {message}"))
+                        .configuration(cli.connection_sources.timeout.to_string())
                 })?;
             }
         }
@@ -253,7 +254,7 @@ impl Profile {
             piqueld_client::Client::tcp(url).map_err(|error| error.to_string())?;
         }
         if let Some(timeout) = &self.timeout {
-            parse_duration(timeout)?;
+            parse_duration(timeout).map_err(|message| format!("invalid timeout: {message}"))?;
         }
         Ok(())
     }
@@ -383,7 +384,7 @@ socket = "/tmp/user-only.sock"
             ("url = 'invalid'", "not a valid URL"),
             (
                 "socket = '/tmp/dev.sock'\ntimeout = 'bad'",
-                "timeout must be",
+                "invalid timeout",
             ),
         ] {
             let path = files.write("invalid.toml", &format!("[profiles.broken]\n{settings}"));
