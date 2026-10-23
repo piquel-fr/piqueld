@@ -5494,6 +5494,10 @@
                 },
                 "type": "array"
               },
+              "runtime_coverage": {
+                "$ref": "#/components/schemas/RuntimeCoverage",
+                "description": "How much of the runtime change `plan` lists."
+              },
               "variables": {
                 "additionalProperties": {
                   "$ref": "#/components/schemas/VariableValue"
@@ -7814,6 +7818,7 @@
           "timeout_seconds": {
             "description": "Seconds the job may run before the deployment fails.",
             "format": "int32",
+            "maximum": 4294967295,
             "minimum": 0,
             "type": "integer"
           },
@@ -9063,6 +9068,10 @@
             },
             "type": "array"
           },
+          "runtime_coverage": {
+            "$ref": "#/components/schemas/RuntimeCoverage",
+            "description": "How much of the runtime change `plan` lists."
+          },
           "variables": {
             "additionalProperties": {
               "$ref": "#/components/schemas/VariableValue"
@@ -9956,6 +9965,7 @@
               "interval_seconds": {
                 "description": "Seconds between listings, from 60 to 86400.",
                 "format": "int32",
+                "maximum": 4294967295,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -10482,6 +10492,15 @@
         ],
         "type": "object"
       },
+      "RuntimeCoverage": {
+        "description": "How much of the runtime change a plan lists.",
+        "enum": [
+          "complete",
+          "resolution",
+          "omitted"
+        ],
+        "type": "string"
+      },
       "SavedApplication": {
         "description": "Saved application configuration, optionally accompanied by a deployment.",
         "properties": {
@@ -10600,6 +10619,7 @@
               "bytes": {
                 "description": "Number of random bytes before encoding.",
                 "format": "int32",
+                "maximum": 65535,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -10626,6 +10646,7 @@
               "bits": {
                 "description": "Modulus size in bits.",
                 "format": "int32",
+                "maximum": 65535,
                 "minimum": 0,
                 "type": "integer"
               },

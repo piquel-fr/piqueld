@@ -439,7 +439,9 @@ rendered release with the environment's current deployment and whose `plan`
 compares it with the observed runtime. Its `release` is a `ReleasePlan`: the
 `ReleaseView` with `availability`, the `origin`, `new_volumes` that would be
 created empty, and every unusable secret in `secrets`, which do not fail the
-plan. Plans of an earlier `release` work for any environment.
+plan. An `unavailable` release adds a blocking `image_unavailable` diagnostic
+for each missing image, since promoting it would fail. Plans of an earlier
+`release` work for any environment.
 
 Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
 digits, `-`, `_`, `.`, or `:`; 400 `invalid_request` otherwise). The CLI generates one UUID per command and reuses
@@ -529,7 +531,11 @@ differences and the runtime plan compare with the environment selected by
 `environment=ID` (by default the application's only environment): its last
 deployment snapshot, not saved configuration, and its observed runtime. Without a
 selection and with several environments, they compare the saved manifests as
-written and the runtime plan is empty. A new application renders for the
+written and the runtime plan is empty. `runtime_coverage` says how much of the
+runtime change the plan lists: `complete`; `resolution` when sources must be
+resolved or built first, so the plan lists those actions and declared jobs,
+while network, volume and service changes are
+planned by the deployment; or `omitted` without an environment. A new application renders for the
 first environment it declares that builds, or `production`. An environment of another
 application returns 404, and a promoted one 409 `environment_promoted`: plan its
 promotion instead. Image tags report resolution requirements even when unchanged,

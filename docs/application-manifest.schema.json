@@ -114,6 +114,7 @@
       "description": "Explicit build backend, extensible independently from source selection.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Build a local container image using Docker.",
           "properties": {
             "args": {
@@ -312,6 +313,7 @@
       "description": "User-declared container health check.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "HTTP health endpoint check.",
           "properties": {
             "interval_seconds": {
@@ -352,6 +354,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Executable command health check.",
           "properties": {
             "command": {
@@ -465,6 +468,7 @@
         "timeout_seconds": {
           "description": "Seconds the job may run before the deployment fails.",
           "format": "int32",
+          "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
@@ -634,11 +638,13 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "List the branch heads every `interval_seconds`.",
           "properties": {
             "interval_seconds": {
               "description": "Seconds between listings, from 60 to 86400.",
               "format": "int32",
+              "maximum": 4294967295,
               "minimum": 0,
               "type": "integer"
             },
@@ -815,11 +821,13 @@
       "description": "The exhaustive set of secret value generators.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Random bytes from the operating system, encoded as text.",
           "properties": {
             "bytes": {
               "description": "Number of random bytes before encoding.",
               "format": "int32",
+              "maximum": 65535,
               "minimum": 0,
               "type": "integer"
             },
@@ -841,11 +849,13 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "RSA private key in PKCS#8 PEM.",
           "properties": {
             "bits": {
               "description": "Modulus size in bits.",
               "format": "int32",
+              "maximum": 65535,
               "minimum": 0,
               "type": "integer"
             },
@@ -1017,6 +1027,7 @@
       "description": "The exhaustive set of deployable service sources.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Pull a prebuilt image from a registry.",
           "properties": {
             "image": {
@@ -1037,6 +1048,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Build a checked-out Git revision.",
           "properties": {
             "build": {
@@ -1107,6 +1119,7 @@
       "oneOf": [
         {
           "format": "int32",
+          "maximum": 65535,
           "minimum": 0,
           "type": "integer"
         },
@@ -1121,6 +1134,7 @@
       "oneOf": [
         {
           "format": "int32",
+          "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
@@ -1135,6 +1149,7 @@
       "oneOf": [
         {
           "format": "int64",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "type": "integer"
         },

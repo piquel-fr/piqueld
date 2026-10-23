@@ -53,7 +53,7 @@ pub use applications::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest, ApplyOptions,
     DeletedApplication, DeploymentView, DiagnosticView, ListApplicationsOptions,
     ObservedApplicationView, ObservedServiceView, PlanView, ReleaseView, RenameApplicationRequest,
-    RenamedApplication, SavedApplication,
+    RenamedApplication, RuntimeCoverage, SavedApplication,
 };
 pub use client::Client;
 pub use environments::{

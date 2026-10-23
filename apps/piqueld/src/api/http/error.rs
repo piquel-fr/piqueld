@@ -444,9 +444,11 @@ impl From<BoundaryError> for ApiError {
                 "application_compilation_failed",
                 "application compilation failed",
             ),
-            BoundaryError::ImageUnavailable(error) => {
-                Self::new(StatusCode::CONFLICT, "image_unavailable", error.to_string())
-            }
+            BoundaryError::ImageUnavailable(error) => Self::new(
+                StatusCode::CONFLICT,
+                piqueld_core::codes::IMAGE_UNAVAILABLE,
+                error.to_string(),
+            ),
         };
         error.diagnostic = Some(Box::new(diagnostic));
         error

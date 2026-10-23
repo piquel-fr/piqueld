@@ -270,3 +270,6 @@ pub const FOREIGN_RESOURCE_IGNORED: &str = "foreign_resource_ignored";
 pub const SERVICE_UPDATE_FAILED: &str = "service_update_failed";
 /// Obsolete owned resources await removal until earlier changes converge.
 pub const CLEANUP_DEFERRED: &str = "cleanup_deferred";
+/// A release image is missing and can't be pulled again, so the release
+/// can't be deployed.
+pub const IMAGE_UNAVAILABLE: &str = "image_unavailable";

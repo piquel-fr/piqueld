@@ -2,8 +2,8 @@
 //! and whether a release's images are still present.
 
 use crate::{
-    ImmutableImage, RepositoryDigest, ServiceName, resource::ResolvedApplication,
-    resource::ResolvedSource,
+    DiagnosticSeverity, ImmutableImage, PlanDiagnostic, RepositoryDigest, ServiceName, codes,
+    resource::ResolvedApplication, resource::ResolvedSource,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -65,6 +65,31 @@ pub enum ReleaseAvailability {
         /// The missing images, built or pulled.
         missing: Vec<ServiceImage>,
     },
+}
+
+impl ReleaseAvailability {
+    /// One blocking `image_unavailable` diagnostic per missing image of an
+    /// unavailable release, since deploying it fails; none otherwise.
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<PlanDiagnostic> {
+        match self {
+            Self::Present | Self::Pullable { .. } => Vec::new(),
+            Self::Unavailable { missing } => missing
+                .iter()
+                .map(|missing| {
+                    PlanDiagnostic::new(
+                        codes::IMAGE_UNAVAILABLE,
+                        DiagnosticSeverity::Error,
+                        missing.service.as_str(),
+                        format!(
+                            "the release can't be deployed again: its built images were removed (image {} of service {} is missing)",
+                            missing.image, missing.service
+                        ),
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 /// The images present in the local Docker Engine, by local image ID and by
@@ -208,5 +233,27 @@ mod tests {
             missing.iter().map(|m| &m.service).collect::<Vec<_>>(),
             [&api, &web]
         );
+    }
+
+    /// A plan of a release that can't be deployed again is blocked, like
+    /// the promotion; one whose images can be pulled again is not.
+    #[test]
+    fn only_unavailable_releases_block_plans() {
+        let web = ServiceName::parse("web").unwrap();
+        let sources = BTreeMap::from([(web, built('b'))]);
+        let diagnostics = LocalImages::default().availability(&sources).diagnostics();
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.resource.as_str()))
+                .collect::<Vec<_>>(),
+            [(codes::IMAGE_UNAVAILABLE, "web")]
+        );
+        assert!(diagnostics[0].blocking);
+        let pullable = ReleaseAvailability::Pullable {
+            missing: Vec::new(),
+        };
+        assert_eq!(pullable.diagnostics(), []);
+        assert_eq!(ReleaseAvailability::Present.diagnostics(), []);
     }
 }

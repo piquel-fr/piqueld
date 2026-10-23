@@ -74,7 +74,10 @@ Image references reject URL schemes, credentials, malformed tags, and malformed
 digests; registry hostnames are validated case-insensitively and canonicalized
 to lowercase (IPv6 literal hosts are not accepted). Mount targets are normalized
 absolute paths below `/`; environment names and runtime strings reject invalid
-control data. `PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
+control data. Environment values and mount targets reach the container as
+written, once [variables](#variables) are rendered: Docker Swarm's own
+`{{ }}` templates, such as `{{.Service.Name}}`, are not expanded.
+`PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
 routed services (see [managed ingress](ingress.md#client-addresses)).
 Health-check paths are absolute, health-check timeouts cannot exceed their
 interval, and resource limits must specify CPU, memory, or both.
@@ -234,6 +237,11 @@ variables. System variables:
 | `deployment.id` | ID of the deployment being captured. |
 
 `secrets.*` is reserved for secret references.
+
+Variable values are not secret: plans, `app show`, `env show`, deployments and
+the dashboard show them, even where they render into `environment` values,
+which plans otherwise redact. Mount passwords and keys as secret files
+(`[[spec.services.secrets]]`) instead.
 
 References are allowed in values: service `environment` values, `command` and
 `arguments`, health check settings, `replicas`, resource limits, rollout `order`
@@ -705,6 +713,8 @@ it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate N
 generates a new version for the next deployment. A value discarded by key
 recovery has nothing left to keep, so the next deployment that mounts it
 generates a new one. Removing a declaration retains the generated value.
+`app plan` lists a changed declaration as `secrets.<name>`, never a
+value.
 
 ## Promoted environments
 
