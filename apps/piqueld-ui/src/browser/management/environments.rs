@@ -18,9 +18,9 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::sync::short_commit;
 use piqueld_client::{
-    ApplicationManifest, ApplicationSpec, Client, ClientError, CreateEnvironmentRequest,
-    EnvironmentBranchRequest, EnvironmentChange, EnvironmentName, EnvironmentRequest,
-    EnvironmentSourceRequest, EnvironmentView, TrackedBranch, Visibility,
+    ApplicationManifest, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
+    EnvironmentChange, EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest,
+    EnvironmentView, TrackedBranch, Visibility,
     access::{GlobalPermission, Permission},
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
@@ -530,7 +530,7 @@ fn NewEnvironment() -> impl IntoView {
             context.set_error(Some(error.to_string()));
             return;
         }
-        let tracked = if context.managed() && builds() {
+        let tracked = if context.repository_backed() && builds() {
             match tracked_branch(branch.get_untracked()) {
                 Ok(tracked) => Some(tracked),
                 Err(error) => {
@@ -579,7 +579,7 @@ fn NewEnvironment() -> impl IntoView {
                         {move || {
                             if !builds() {
                                 "The environment starts empty and only deploys releases promoted from the chosen environment, with its own secrets, volumes, and history."
-                            } else if context.managed() {
+                            } else if context.repository_backed() {
                                 "The environment starts empty and deploys the manifest on its own branch of the application's repository, with its own secrets, volumes, and history."
                             } else {
                                 "The environment starts empty and deploys the application's configuration with its own secrets, volumes, and history."
@@ -605,7 +605,7 @@ fn NewEnvironment() -> impl IntoView {
                         />
                     </Show>
                     <Show when={move || {
-                        context.managed() && builds()
+                        context.repository_backed() && builds()
                     }}>{branch_fields(branch)}</Show>
                 </fieldset>
                 {move || context.error.get().map(|error| notice(Tone::Bad, error))}
@@ -918,25 +918,18 @@ fn EnvironmentTelemetry() -> impl IntoView {
 
 impl EditorContext {
     /// The visibility ceiling `[spec.environments.<name>]` gives the shown
-    /// environment: in the `saved` manifest its form saves to, or while
-    /// managed in Git, read-only, in the manifest it last fetched.
+    /// environment in the `saved` manifest its form saves to.
     fn visibility(self, saved: &ApplicationManifest) -> Visibility {
-        let name = self.selected_name();
-        let read =
-            |spec: &ApplicationSpec| spec.environments.get(&name).map(|config| config.visibility);
-        if self.managed() {
-            self.environment_manifest()
-                .and_then(|manifest| read(manifest.spec()))
-        } else {
-            read(&saved.spec)
-        }
-        .unwrap_or(Visibility::Public)
+        saved
+            .spec
+            .environments
+            .get(&self.selected_name())
+            .map_or(Visibility::Public, |config| config.visibility)
     }
 }
 
 /// The visibility ceiling of the environment page's environment, saved in
-/// `[spec.environments.<name>]`. Read-only while the application is managed
-/// in Git.
+/// `[spec.environments.<name>]`.
 #[component]
 fn EnvironmentVisibility() -> impl IntoView {
     let context = editor();
@@ -977,7 +970,7 @@ fn EnvironmentVisibility() -> impl IntoView {
             <form class="stack-sm" on:submit={save}>
                 <fieldset
                     class="stack-sm"
-                    disabled={move || context.blocked() || context.managed()}
+                    disabled={move || context.blocked()}
                 >
                     <label class="field">
                         <span>"Route visibility"</span>
@@ -1001,7 +994,7 @@ fn EnvironmentVisibility() -> impl IntoView {
                         type="submit"
                         class="btn"
                         disabled={move || {
-                            context.blocked() || context.managed() || !draft.changed()
+                            context.blocked() || !draft.changed()
                         }}
                     >
                         "Save visibility"

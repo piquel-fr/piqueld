@@ -55,7 +55,7 @@ impl Store {
     ///    request from the same account.
     /// 3. With `force`, drops the generation and identity preconditions.
     /// 4. Executes the mutation against the current application or environment,
-    ///    refusing manifest changes to repository-managed applications, and
+    ///    refusing renames of repository-backed applications, and
     ///    gives an account that created an application through an unscoped
     ///    credential its matching grants there.
     /// 5. Attributes the operations and events it wrote to the caller.
@@ -419,7 +419,7 @@ impl Store {
             } => {
                 let current =
                     Self::find_by_name_on(tx, application.metadata().name.as_str()).await?;
-                Self::check_save(current.as_ref(), &application, expected)?;
+                Self::check_save(current.as_ref(), expected)?;
                 let application = application.with_id(Self::application_identity(
                     current.as_ref(),
                     expected_application_id.as_deref(),
@@ -800,8 +800,9 @@ impl Store {
 
     /// Applies a single field edit to the saved manifest, revalidates it, and
     /// saves it (renames go through `rename_on`), optionally starting a deployment.
-    /// Repository-managed applications only accept repository settings; applications
-    /// being deleted are `Busy`. Records an `application_edited` event naming the
+    /// Edits of a repository-backed application apply to the manifests its
+    /// deployments fetch (see `piqueld_core::manifest::LocalEdits`);
+    /// applications being deleted are `Busy`. Records an `application_edited` event naming the
     /// edited field and resource once, in the application's history.
     async fn accept_edit(
         tx: &mut Transaction<'_, Sqlite>,
@@ -813,9 +814,6 @@ impl Store {
         use piqueld_core::edit::ApplicationEdit;
         if current.delete_intent {
             return Err(StoreError::Busy);
-        }
-        if current.application.spec().manifest.is_some() && !edit.is_repository_setting() {
-            return Err(StoreError::RepositoryManaged);
         }
         let id = current.application.id().clone();
         let mut manifest = current.application.to_manifest();
@@ -925,25 +923,16 @@ impl Store {
         Ok(())
     }
 
-    /// Checks saving `application` over `current`, the application that has
-    /// its name, if any, against the `expected` generation. Generation zero
-    /// creates, so a taken name is `AlreadyExists`, as for renames, whoever
-    /// manages the application that has it. Otherwise a repository-managed
-    /// application's runtime fields are `RepositoryManaged`, and a stale
-    /// revision a generation conflict.
+    /// Checks saving over `current`, the application that has the saved
+    /// name, if any, against the `expected` generation. Generation zero
+    /// creates, so a taken name is `AlreadyExists`, as for renames. Otherwise
+    /// a stale revision is a generation conflict.
     fn check_save(
         current: Option<&StoredApplication>,
-        application: &piqueld_core::manifest::ApplicationTemplate,
         expected: Option<u64>,
     ) -> Result<(), StoreError> {
         if expected == Some(0) && current.is_some() {
             return Err(StoreError::AlreadyExists);
-        }
-        if let Some(current) = current
-            && current.application.spec().manifest.is_some()
-            && current.application.spec_hash() != application.spec_hash()
-        {
-            return Err(StoreError::RepositoryManaged);
         }
         Self::check_generation(expected, current.map_or(0, |app| app.generation))
     }
@@ -965,7 +954,8 @@ impl Store {
         )
     }
 
-    /// Renames an idle application that is not repository-managed. A real name
+    /// Renames an idle application that is not repository-backed: its name
+    /// must match the manifests it fetches. A real name
     /// change bumps the generation (and each environment's resolved generation
     /// when it was current and its configuration does not render the name,
     /// e.g. `${{ app.name }}`), updates the display name of every environment's

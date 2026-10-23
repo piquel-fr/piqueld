@@ -110,7 +110,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                 <div>
                     <h3>"Repository manifest"</h3>
                     <p>
-                        "Load the complete application manifest from Git on every deploy. The repository and manifest path are shared by every environment; each environment follows its own branch, set when connecting or on its page. Runtime configuration moves to the repository."
+                        "Load the complete application manifest from Git on every deploy. The repository and manifest path are shared by every environment; each environment follows its own branch, set when connecting or on its page. Edits made here are deployed from the branch the connection names until a push changes the manifest there."
                     </p>
                 </div>
             </header>
@@ -631,9 +631,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
                     <p>{section_hint(section)}</p>
                 </div>
             </header>
-            <fieldset disabled={move || {
-                context.blocked() || context.managed()
-            }}>
+            <fieldset disabled={move || context.blocked()}>
                 {service_fields(section, name.get_value(), form)} {draft.actions(save, || false)}
             </fieldset>
         </section>

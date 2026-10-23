@@ -352,18 +352,6 @@ pub enum EditError {
 }
 
 impl ApplicationEdit {
-    /// Whether this edit changes only repository connection settings.
-    #[must_use]
-    pub const fn is_repository_setting(&self) -> bool {
-        matches!(
-            self,
-            Self::Repository(_)
-                | Self::RepositoryUrl(_)
-                | Self::RepositoryPath(_)
-                | Self::RepositorySync(_)
-        )
-    }
-
     /// The environment this edit configures, if any.
     #[must_use]
     pub fn environment(&self) -> Option<&str> {

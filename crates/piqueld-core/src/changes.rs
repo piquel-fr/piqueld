@@ -51,6 +51,49 @@ impl ManifestChange {
         )
     }
 
+    /// Compares the specification a repository-backed application last read
+    /// from its repository with its saved one, like [`Self::between`], plus
+    /// what plans leave out: generated secret declarations, keyed by name,
+    /// and each declared environment, with the settings of its source.
+    ///
+    /// ```text
+    /// secrets.token                  -> {"generate":{"type":"random",...}}
+    /// environments.staging           -> "declared"
+    /// environments.staging.branch    -> "release"
+    /// ```
+    #[must_use]
+    pub fn edits(read: &ApplicationSpec, saved: &ApplicationSpec) -> Vec<Self> {
+        let fields = |spec: &ApplicationSpec| {
+            let mut fields = BTreeMap::new();
+            for secret in &spec.secrets {
+                let mut value = serde_json::to_value(secret).unwrap_or(Value::Null);
+                if let Value::Object(object) = &mut value {
+                    object.remove("name");
+                }
+                fields.insert(format!("secrets.{}", secret.name), value);
+            }
+            for (name, config) in &spec.environments {
+                fields.insert(format!("environments.{name}"), "declared".into());
+                let source = [
+                    ("branch", config.branch.clone().map(Value::from)),
+                    ("commit", config.commit.clone().map(Value::from)),
+                    ("promote_from", config.promote_from.clone().map(Value::from)),
+                    ("sync", config.sync.map(Value::from)),
+                ];
+                for (key, value) in source {
+                    if let Some(value) = value {
+                        fields.insert(format!("environments.{name}.{key}"), value);
+                    }
+                }
+            }
+            fields
+        };
+        let mut changes = Self::between(Some(read), saved);
+        changes.extend(Self::differences(&fields(read), &fields(saved)));
+        changes.sort_by(|left, right| left.field.cmp(&right.field));
+        changes
+    }
+
     /// Every field whose value differs between `old` and `new`, including
     /// fields only one has.
     fn differences(old: &BTreeMap<String, Value>, new: &BTreeMap<String, Value>) -> Vec<Self> {
@@ -308,6 +351,30 @@ TOKEN="old-secret"
         assert!(!json.contains("new-secret"));
         assert!(json.contains("redacted"));
         assert!(ManifestChange::between(Some(&original), &original).is_empty());
+    }
+
+    /// Edits list generated secrets and environment sources too, which plans
+    /// leave out.
+    #[test]
+    fn edits_list_secret_declarations_and_environment_sources() {
+        let spec = |body: &str| {
+            crate::manifest::parse_template_toml(&format!(
+                "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='example'\n[spec.manifest]\npath='app.toml'\n[spec.manifest.repository]\nurl='https://example.com/app.git'\nbranch='main'\n[[spec.services]]\nname='web'\nsource={{type='image',image='example:1'}}\n{body}"
+            ))
+            .unwrap()
+            .spec()
+            .clone()
+        };
+        let read = spec("[spec.environments.production]\n");
+        let saved = spec(
+            "[[spec.secrets]]\nname='token'\n[spec.secrets.generate]\ntype='random'\nbytes=16\nencoding='hex'\n[spec.environments.production]\nbranch='release'\n",
+        );
+        let fields = ManifestChange::edits(&read, &saved)
+            .into_iter()
+            .map(|change| change.field)
+            .collect::<Vec<_>>();
+        assert_eq!(fields, ["environments.production.branch", "secrets.token"]);
+        assert!(ManifestChange::between(Some(&read), &saved).is_empty());
     }
 
     #[test]

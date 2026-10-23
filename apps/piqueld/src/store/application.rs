@@ -132,6 +132,44 @@ impl Store {
             .ok_or(StoreError::NotFound)
     }
 
+    /// The manifest a repository-backed application last read from the
+    /// branch and commit `spec.manifest` names, with its current connection:
+    /// where its saved manifest differs from it, it was edited since. `None`
+    /// unless repository-backed and until a deployment read one.
+    ///
+    /// # Errors
+    /// Returns a storage or decoding error.
+    pub async fn repository_manifest(
+        &self,
+        application: &StoredApplication,
+    ) -> Result<Option<ApplicationTemplate>, StoreError> {
+        Self::repository_manifest_on(&mut *self.connection().await?, application).await
+    }
+
+    /// See [`Self::repository_manifest`].
+    pub(super) async fn repository_manifest_on(
+        connection: &mut SqliteConnection,
+        application: &StoredApplication,
+    ) -> Result<Option<ApplicationTemplate>, StoreError> {
+        let id = application.application.id().as_str();
+        let json = sqlx::query_scalar!("SELECT repository_json FROM applications WHERE id=?1", id)
+            .fetch_optional(connection)
+            .await
+            .map_err(StoreError::database)?
+            .flatten();
+        let Some(connection) = application.application.spec().manifest.clone() else {
+            return Ok(None);
+        };
+        json.map(|json| {
+            let repository: ApplicationTemplate =
+                serde_json::from_str(&json).map_err(StoreError::corrupt)?;
+            Ok(repository
+                .with_name(application.application.metadata().name.clone())
+                .with_manifest(Some(connection)))
+        })
+        .transpose()
+    }
+
     /// Reads an application on an existing connection or transaction.
     pub(super) async fn application_on(
         connection: &mut SqliteConnection,

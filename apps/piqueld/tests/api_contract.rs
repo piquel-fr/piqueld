@@ -3552,10 +3552,10 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     );
 }
 
-/// Creating an application under the name of a repository-managed one is a
-/// name collision, not an edit refused for being repository-managed.
+/// Creating an application under the name of a repository-backed one is a
+/// name collision, not an edit of it.
 #[tokio::test]
-async fn creating_over_a_repository_managed_name_collides() {
+async fn creating_over_a_repository_backed_name_collides() {
     use piqueld_client::{GitRepository, RepositoryManifest, edit::ApplicationEdit};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
@@ -3577,7 +3577,7 @@ async fn creating_over_a_repository_managed_name_collides() {
         .edit_application(&saved.application_id, &repository, &options)
         .await
         .unwrap();
-    // A runtime change, which the repository-managed check would refuse.
+    // A runtime change, which would be an edit of the existing application.
     let mut request = new_application();
     request.manifest.spec.services[0].replicas = 2.into();
     let error = api.client.apply_application(&request).await.unwrap_err();
@@ -3585,7 +3585,7 @@ async fn creating_over_a_repository_managed_name_collides() {
 }
 
 #[tokio::test]
-async fn field_edits_validate_atomically_and_preserve_git_ownership() {
+async fn field_edits_validate_atomically_and_track_repository_edits() {
     use piqueld_client::{
         GitRepository, RepositoryManifest,
         edit::{ApplicationEdit, EditOptions, ServiceEdit},
@@ -3629,16 +3629,16 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
         force: true,
         deploy: false,
     };
-    let blocked = ApplicationEdit::Service {
+    // Repository-backed configuration is edited like any other. Nothing was
+    // read from the repository yet, so nothing counts as edited.
+    let edit = ApplicationEdit::Service {
         name: "web".into(),
         edit: ServiceEdit::Replicas(2.into()),
     };
-    let error = api
-        .client
-        .edit_application(id, &blocked, &options)
+    api.client
+        .edit_application(id, &edit, &options)
         .await
-        .unwrap_err();
-    assert_eq!(api_error(error).code, "repository_managed");
+        .unwrap();
     api.client
         .edit_application(
             id,
@@ -3647,30 +3647,20 @@ async fn field_edits_validate_atomically_and_preserve_git_ownership() {
         )
         .await
         .unwrap();
-    let before = api
-        .client
-        .application(id)
-        .await
-        .unwrap()
-        .application
-        .to_manifest();
+    let edited = api.client.application(id).await.unwrap();
+    assert_eq!(edited.application.spec().services[0].replicas, 2.into());
+    assert!(edited.repository.is_none() && !edited.edited());
     api.client
         .edit_application(id, &ApplicationEdit::Repository(None), &options)
         .await
         .unwrap();
-    let after = api
-        .client
-        .application(id)
-        .await
-        .unwrap()
-        .application
-        .to_manifest();
-    assert_eq!(after.spec.services, before.spec.services);
-    assert!(after.spec.manifest.is_none());
-    api.client
-        .edit_application(id, &blocked, &options)
-        .await
-        .unwrap();
+    let after = api.client.application(id).await.unwrap();
+    assert_eq!(
+        after.application.spec().services[0].replicas,
+        2.into(),
+        "disconnecting keeps edits"
+    );
+    assert!(after.application.spec().manifest.is_none());
 }
 
 #[tokio::test]

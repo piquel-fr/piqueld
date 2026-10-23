@@ -54,9 +54,9 @@ impl ApplicationService {
         self.application_view(id, application).await
     }
     /// Projects application `id`'s stored intent into the API view, with its
-    /// environments, its previews, the spec hash, and its last sync check
-    /// while it syncs: a check from before sync was turned off describes
-    /// nothing current.
+    /// environments, its previews, the spec hash, its repository manifest
+    /// while repository-backed, and its last sync check while it syncs: a
+    /// check from before sync was turned off describes nothing current.
     async fn application_view(
         &self,
         id: &ApplicationId,
@@ -71,6 +71,7 @@ impl ApplicationService {
             .as_ref()
             .is_some_and(|connection| !connection.sync.is_off());
         let sync_check = self.store.sync_check(id).await?.filter(|_| syncs);
+        let repository = self.store.repository_manifest(&stored).await?;
         // Saved manifests were validated, declarations included, when saved.
         let declarations = stored
             .application
@@ -80,6 +81,7 @@ impl ApplicationService {
         Ok(ApplicationView {
             drift: piqueld_core::manifest::EnvironmentChange::between(&declarations, &environments),
             sync_check,
+            repository,
             generation: stored.generation,
             spec_hash: stored.application.spec_hash(),
             application: stored.application,

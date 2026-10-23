@@ -96,8 +96,11 @@ environment. On the application page they target its only environment; with
 several, **Deploy** opens a list of every environment, each with its own **Deploy** or
 **Promote from <source>** button. On an environment's own page the button is just **Deploy**. Deployment actions
 are disabled for deleting environments. Preview plans the manifest the
-environment deploys: for an environment that follows a branch, the one last
-fetched from it, so Preview is disabled until its first deployment. A service's Logs tab reads the only
+environment deploys: the saved one for an environment following the branch
+`spec.manifest` names, once the application has read a manifest from it (it is
+deployed until a push changes the manifest there); for one that follows another
+branch, the one last fetched from it, so Preview is disabled until its first
+deployment. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
 A promoted environment never builds, so its page and its Environments row offer
@@ -212,7 +215,13 @@ confirmation names the environments being deleted.
 
 Forms save typed fields or settings sections through individual endpoints, without
 resubmitting the application manifest. Related fields within a form save atomically.
-All form saves update configuration only; Deploy remains explicit.
+All form saves update configuration only; Deploy remains explicit. A
+repository-backed application's forms edit it the same way; its settings tabs
+then list its [edits](application-manifest.md#editing-repository-backed-applications)
+from the manifest last read from the repository, which deployments of the
+connection's branch deploy until a push changes the manifest there, and
+**Reset to repository** discards them, after confirmation. Its Overview says whether its configuration is read from Git or
+also edited in piqueld.
 Concurrent edits are rejected using configuration revisions; failed saves retain
 local form values. **Reload saved configuration**, offered after a failure or a
 change made elsewhere, reloads it in place: forms without edits show the latest
@@ -379,7 +388,7 @@ Each environment of a repository-backed application follows its own branch.
 **New environment** asks for the branch (by default the one `spec.manifest`
 names) and an optional commit, the Environments list shows each environment's
 branch, and the **Source** card on an environment's Overview changes it; nothing
-is redeployed until its next deployment. The environment's Variables card, Preview, and
+is redeployed until its next deployment. The environment's Variables card and
 Logs service filter read the manifest last fetched from its branch; the
 Variables card says when it has fetched nothing yet.
 

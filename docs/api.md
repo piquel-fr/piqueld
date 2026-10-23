@@ -246,9 +246,9 @@ The braces listing multiple names denote separate documented endpoints. Nested
 source/check settings require the appropriate variant; switch variants through
 `source` or `healthcheck`. Unknown fields, missing values, invalid manifests, and
 missing resources are rejected. Optional values must explicitly use null to clear.
-The same validation and Git ownership rules apply even with `force=true`.
-Repository-backed applications accept only the `/repository` edits; others
-return 409 `repository_managed`.
+The same validation rules apply even with `force=true`. Repository-backed
+applications accept every edit; each applies to the manifests their deployments
+fetch (see [editing repository-backed applications](application-manifest.md#editing-repository-backed-applications)).
 Disconnecting a repository preserves saved services and volumes for local editing.
 Renaming a service updates its routes, its jobs, its export, and dependents'
 `depends_on`; removing a service removes its routes, jobs, and export and drops
@@ -456,8 +456,8 @@ overwriting intervening changes again. A new forced command needs a new key.
 Rename accepts JSON `{ "name": "new-name", "expected_generation": 3 }` and returns
 200 with `RenamedApplication`. It rejects pending/running operations in any
 environment and deletion intent with 409 `application_busy`, occupied names
-with 409 `application_name_collision`, and repository-backed applications with
-409 `repository_managed`. It preserves the stable ID, runtime
+with 409 `application_name_collision`, and repository-backed applications, whose
+name their fetched manifests must keep, with 409 `repository_managed`. It preserves the stable ID, runtime
 resources, and operation identity; a changed name advances generation and records
 an `application_renamed` event in the application's history. Update the manifest's name before
 subsequent name-based apply.
@@ -582,12 +582,18 @@ becomes that environment's last fetched manifest and, when fetched from the
 branch `spec.manifest` names, the application's saved configuration; other
 environments keep their own. Its `refresh` operation records
 `fetching_manifest` progress and a `manifest_fetched` event with the commit
-hash. Fetches leave the generation unchanged unless the saved manifest's
+hash. A fetch advances the generation when it changes the saved manifest, or
+when the saved manifest's
 [declared environments](application-manifest.md#declared-environments) change
 the source of an environment with a deployment in progress.
 Failures use `manifest_not_found`, `manifest_fetch_failed`, or `manifest_invalid`.
-Direct apply may repair manifest connection settings but rejects changes to
-repository-managed runtime fields with `409 repository_managed`.
+Direct apply saves a repository-backed application's configuration like any
+other's. Once it read one, `ApplicationView.repository` is the manifest the
+application last read from the branch `spec.manifest` names, with its
+connection: where the saved manifest differs from it are its
+[edits](application-manifest.md#editing-repository-backed-applications), which
+deployments of that branch deploy until a push changes the manifest, and
+applying it again (`piquelctl app repository reset`) discards them.
 Reconcile retries the latest operation with its saved inputs; deploy refreshes
 sources and fetches repository-backed configuration when configured.
 

@@ -2,7 +2,7 @@
 use super::{Controller, DockerApi, Operation, OperationError};
 use crate::git::snapshot::SnapshotSource;
 use crate::store::StoreError;
-use crate::store::Tracking;
+use crate::store::{DeploymentInput, Tracking};
 use piqueld_core::{
     NormalizedApplication,
     api::{DeploymentOrigin, DiagnosticView},
@@ -22,10 +22,11 @@ impl<D: DockerApi> Controller<D> {
     /// re-read variables, a moving branch, or the files services mount.
     /// Otherwise the repository is cloned and the manifest file (at most
     /// 2 MiB; `.json` parsed as JSON, anything else as TOML) is validated,
-    /// required to keep the application name, captured with the repository
-    /// files its services mount, rendered for `environment` at the fetched
-    /// commit, bounded by `[previews]` when it is a preview, and persisted
-    /// with it.
+    /// required to keep the application name, and replaced by the captured
+    /// saved manifest when unchanged (see [`Self::fetched_template`]), then
+    /// captured with the repository files its services mount, rendered for
+    /// `environment` at the fetched commit, bounded by `[previews]` when it
+    /// is a preview, and persisted with it.
     /// Its own `spec.manifest` must decode but is ignored, even when absent or
     /// invalid: the repository it was fetched from replaces it before
     /// validation, with a `manifest_connection_ignored` warning when it names
@@ -62,7 +63,13 @@ impl<D: DockerApi> Controller<D> {
         let Some(backing) = backing else {
             let rendering = snapshot.rendering.ok_or(StoreError::Corrupt)?;
             self.store
-                .save_deployment_input(operation, &input.template, &rendering, (None, None), &[])
+                .save_deployment_input(
+                    operation,
+                    (&input.template, None),
+                    &rendering,
+                    (None, None),
+                    &[],
+                )
                 .await?;
             return Ok((rendering.application, None));
         };
@@ -83,21 +90,13 @@ impl<D: DockerApi> Controller<D> {
                 tracing::error!(?error, "manifest repository fetch failed");
                 OperationError::ManifestFetchFailed(error)
             })?;
-        let mut manifest = Self::read_manifest(&checkout, &backing.path).await?;
-        // Replaced before validation: `self` sources and `git.*` references
-        // need a connection, and the file's own may be absent or invalid.
-        let declared = manifest.spec.manifest.replace(backing.clone());
-        let mut warnings = Self::ignored_connection(declared.as_ref(), backing)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let template = manifest
-            .validate_template()
-            .map_err(Self::invalid_manifest)?
-            .normalize(input.template.id().clone());
-        if template.metadata().name != input.template.metadata().name {
-            return Err(OperationError::ManifestInvalid);
-        }
-        let template = Self::capture_files(&checkout, template).await?;
+        let (template, fetched, mut warnings) = Box::pin(self.fetched_template(
+            operation,
+            &environment.environment().kind,
+            (&checkout, backing),
+            &input,
+        ))
+        .await?;
         let mut rendering = template
             .render(&RenderContext {
                 target: environment.environment().target(),
@@ -128,7 +127,7 @@ impl<D: DockerApi> Controller<D> {
         self.store
             .save_deployment_input(
                 operation,
-                &template,
+                (&template, Some(&fetched)),
                 &rendering,
                 (Some(&checkout.commit), branch_head.as_ref()),
                 &warnings,
@@ -138,6 +137,57 @@ impl<D: DockerApi> Controller<D> {
             rendering.application.pin_manifest_sources(&checkout.commit),
             source,
         ))
+    }
+
+    /// Reads the manifest at `backing`'s path in `checkout` and validates
+    /// it as `input`'s application, with its connection and name. A
+    /// deployment of `kind` reading the application's connection deploys
+    /// the saved manifest it captured instead while the one read is the one
+    /// the application last read: only a push changing the manifest replaces
+    /// edits made since. Returns the manifest to deploy, with the repository
+    /// files it mounts, the one read, and a
+    /// `manifest_connection_ignored` warning when the file names another
+    /// connection.
+    async fn fetched_template(
+        &self,
+        operation: &Operation,
+        kind: &piqueld_core::EnvironmentKind,
+        (checkout, backing): (&crate::git::Checkout, &RepositoryManifest),
+        input: &DeploymentInput,
+    ) -> Result<
+        (
+            ApplicationTemplate,
+            ApplicationTemplate,
+            Vec<DiagnosticView>,
+        ),
+        OperationError,
+    > {
+        let mut manifest = Self::read_manifest(checkout, &backing.path).await?;
+        // Replaced before validation: `self` sources and `git.*` references
+        // need a connection, and the file's own may be absent or invalid.
+        let declared = manifest.spec.manifest.replace(backing.clone());
+        let warnings = Self::ignored_connection(declared.as_ref(), backing)
+            .into_iter()
+            .collect();
+        let template = manifest
+            .validate_template()
+            .map_err(Self::invalid_manifest)?
+            .normalize(input.template.id().clone());
+        if template.metadata().name != input.template.metadata().name {
+            return Err(OperationError::ManifestInvalid);
+        }
+        let deployed = if input.unchanged(&template)
+            && self
+                .store
+                .reads_connection(operation, kind, &template)
+                .await?
+        {
+            input.template.clone()
+        } else {
+            template.clone()
+        };
+        let deployed = Self::capture_files(checkout, deployed).await?;
+        Ok((deployed, template, warnings))
     }
 
     /// The kept snapshot a deployment of `origin` from the repository of

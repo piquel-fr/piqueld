@@ -30,6 +30,7 @@ mod promotion;
 pub(crate) use operation::JournalPosition;
 pub use preview::PreviewOrigins;
 pub use promotion::{Promotion, PromotionCandidate, PromotionError};
+pub(crate) use repository::DeploymentInput;
 mod release;
 mod repository;
 mod secret;
@@ -212,8 +213,8 @@ pub enum StoreError {
         /// The application's environments, in name order.
         environments: Vec<EnvironmentName>,
     },
-    /// Runtime fields are managed by the repository manifest.
-    #[error("application configuration is managed by its repository manifest")]
+    /// A repository-backed application's name is its manifests' name.
+    #[error("a repository-backed application's name is managed by its repository manifest")]
     RepositoryManaged,
     /// Previews deploy a branch of the application's manifest repository.
     #[error(

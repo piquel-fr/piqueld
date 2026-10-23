@@ -750,21 +750,25 @@ commits use `--clear`; health checks use `health clear`. Nested Git/health setti
 require the corresponding source/check to be configured first. Use `--help` on
 any command for its values and options.
 
-Git-backed applications keep their whole configuration, including the
-application name, under repository ownership: field edits, `app rename`, and
-`app apply` of a different manifest fail with `repository_managed`. The
-repository URL, manifest path and sync setting remain editable;
-connecting points every environment at `--branch` (default `main`), and each
-environment's branch then changes with `env branch`. Disconnect explicitly to
-retain the saved manifest (the one last fetched from the branch `spec.manifest`
-names) and edit it locally; disconnecting also drops declared environments'
-`branch`, `commit` and `sync`, returning them to the saved manifest:
+Git-backed applications are edited like any other: field edits and `app apply`
+change the saved manifest, which deployments of the connection's branch deploy
+until a push changes the manifest there (see
+[editing](application-manifest.md#editing-repository-backed-applications)).
+`app show` lists the edits,
+and `app repository reset` discards them, saving the manifest last read from the
+repository again. Only `app rename` fails with `repository_managed`, since the
+fetched manifests must keep the name. Connecting points every environment at
+`--branch` (default `main`), and each environment's branch then changes with
+`env branch`. Disconnecting retains the saved manifest, edits included, and also
+drops declared environments' `branch`, `commit` and `sync`, returning them to
+the saved manifest:
 
 ```console
 piquelctl app repository connect notes https://example.com/infra.git infra/app.toml --yes
 piquelctl app repository path notes corrected/app.toml --yes
 piquelctl app repository sync notes poll --interval 120 --yes
 piquelctl env branch notes production release --yes
+piquelctl app repository reset notes --yes
 piquelctl app repository disconnect notes --yes
 ```
 

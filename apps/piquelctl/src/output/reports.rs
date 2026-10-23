@@ -778,6 +778,11 @@ report!(ShowReport<'_>, self, out, {
         out.heading("Differs from the manifest:")?;
         out.environment_changes(&app.drift)?;
     }
+    if app.edited() {
+        out.blank()?;
+        out.heading("Edited since read from the repository (reset with `app repository reset`):")?;
+        out.manifest_changes(&app.edits())?;
+    }
     for service in &spec.services {
         out.blank()?;
         out.label("Service", &service.name)?;

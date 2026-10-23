@@ -111,9 +111,35 @@ pub struct ApplicationView {
     /// did, and while sync is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_check: Option<crate::sync::SyncCheck>,
+    /// The manifest it last read from its repository, with its connection,
+    /// while repository-backed and once it has read one: where the saved
+    /// manifest differs from it, it was [edited](Self::edits) since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<ApplicationTemplate>,
 }
 
 impl ApplicationView {
+    /// Whether the saved manifest was edited since it was last read from
+    /// its repository. Its deployments from the branch `spec.manifest` names
+    /// keep deploying it until a push changes the manifest there.
+    #[must_use]
+    pub fn edited(&self) -> bool {
+        self.repository
+            .as_ref()
+            .is_some_and(|repository| repository.spec_hash() != self.spec_hash)
+    }
+
+    /// The fields edited since the manifest was last read from its
+    /// repository, from the repository's values to the saved ones.
+    #[must_use]
+    pub fn edits(&self) -> Vec<ManifestChange> {
+        self.repository
+            .as_ref()
+            .map_or_else(Vec::new, |repository| {
+                ManifestChange::edits(repository.spec(), self.application.spec())
+            })
+    }
+
     /// Selects the environment runtime commands use when none is named: the
     /// application's only environment.
     ///
@@ -1887,6 +1913,7 @@ mod tests {
             previews: Vec::new(),
             drift: Vec::new(),
             sync_check: None,
+            repository: None,
         };
         assert_eq!(
             view.environment("app-notes-01").unwrap().name.as_str(),
