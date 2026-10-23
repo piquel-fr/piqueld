@@ -82,8 +82,8 @@ impl Store {
     /// Records a meaningful observed health transition without overwriting intent progress.
     /// Health is `absent` with no services, `ready` when every expected
     /// service is observed and all observed ones converged, `stopped`
-    /// instead in a stopped environment, whose services converge to no
-    /// replicas, else `degraded`.
+    /// instead in a stopped environment once they run no replica and no
+    /// task, else `degraded`.
     /// Expected are the services of the operation's target while it is in
     /// progress, else of the environment's active target, and none while it
     /// is deleted. The observation time is refreshed on every call, while a
@@ -128,7 +128,15 @@ impl Store {
             .iter()
             .all(|service| service.convergence == piqueld_core::Convergence::Converged)
         {
-            if stopped { "stopped" } else { "ready" }
+            // Stopped once Swarm runs nothing, not merely once the flag is set.
+            let down = observed.services.iter().all(|service| {
+                service.replicas == 0
+                    && service
+                        .tasks
+                        .iter()
+                        .all(|task| task.state != piqueld_core::resource::TaskState::Running)
+            });
+            if stopped && down { "stopped" } else { "ready" }
         } else {
             "degraded"
         };

@@ -121,7 +121,12 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
     ]
     .into();
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&table, Some(&edge), Some(&edge));
+    let configuration = ingress.build_configuration(
+        &table,
+        &ingress.exact_hostnames(&table),
+        Some(&edge),
+        Some(&edge),
+    );
     let servers = &configuration["apps"]["http"]["servers"];
     // Ports 80 and 443 have no server; private routes keep their own.
     assert_eq!(

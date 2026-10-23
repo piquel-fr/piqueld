@@ -694,10 +694,13 @@ impl Ingress {
     /// the rest stay pending; when disabled, routes report disabled (or failed while
     /// shutdown is unconfirmed).
     async fn probe_routes(&self) {
-        let Ok(table) = self.store.served_table().await else {
+        let (Ok(table), Ok(everything)) = (
+            self.store.served_table().await,
+            self.store.routing_table().await,
+        ) else {
             return;
         };
-        let exact = &self.exact_hostnames(&table);
+        let exact = &self.exact_hostnames(&everything);
         let (healthy, private) = {
             let health = self.health.read().await;
             (health.healthy, health.private.clone())

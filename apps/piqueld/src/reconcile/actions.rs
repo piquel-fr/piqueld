@@ -291,7 +291,8 @@ impl<D: DockerApi> Controller<D> {
     /// `removed`, no longer exists). A `Failed` convergence ends the wait with
     /// `ServiceUpdateFailed`, and a service that disappeared fails the
     /// attempt, which is retried, rather than waiting out the deadline, which
-    /// yields `ConvergenceTimeout`.
+    /// yields `ConvergenceTimeout`. Stopping or starting the environment
+    /// meanwhile ends the wait, so the operation replans at once.
     pub(super) async fn wait_service(
         &self,
         operation: &Operation,
@@ -301,7 +302,11 @@ impl<D: DockerApi> Controller<D> {
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
         let mut poll = SERVICE_POLL;
+        let stopped = self.store.is_stopped(&operation.environment_id).await?;
         loop {
+            if self.store.is_stopped(&operation.environment_id).await? != stopped {
+                return Ok(());
+            }
             let observed = self
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;

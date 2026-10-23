@@ -9569,12 +9569,12 @@ impl Client {
 
     Its services scale to zero replicas, keeping their configuration, volumes
     and secrets, and the gateway stops serving its routes before the request
-    returns. It stays stopped until it is started, deployed, promoted into or
-    reconciled; sync deploys nothing to it meanwhile. Returns 202 with its
-    latest operation: run again when its deployment had rolled out and has
-    ended, so the services stop now, or as is while it is in progress, which
-    then rolls out with no replicas. 404 when it was never deployed, 409 while
-    it is deleted. `expected_generation` is optional.
+    returns, or on its next pass if that fails. It stays stopped until it is
+    started, deployed, promoted into or reconciled; sync deploys nothing to it
+    meanwhile. Returns 202 with its latest operation: run again when its
+    deployment had rolled out and has ended, so the services stop now, or as
+    is while it is in progress, which then rolls out with no replicas. 404
+    when it was never deployed, 409 while it is deleted. `expected_generation` is optional.
 
     Sends a `POST` request to `/api/v1/environments/{id}/stop`
 

@@ -306,6 +306,7 @@ impl<D: DockerApi> Controller<D> {
             self.check_current(operation).await?;
             self.store.record_health(&operation.id, &observed).await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
+            let stopped = self.store.is_stopped(&operation.environment_id).await?;
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
                     desired: self
@@ -345,6 +346,10 @@ impl<D: DockerApi> Controller<D> {
                 !matches!(action.kind, piqueld_core::ActionKind::RetainVolume { .. })
             });
             let Some(action) = action else {
+                // Stopped or started since planning: plan again.
+                if self.store.is_stopped(&operation.environment_id).await? != stopped {
+                    continue;
+                }
                 if operation.kind != OperationKind::Delete
                     && !self
                         .store

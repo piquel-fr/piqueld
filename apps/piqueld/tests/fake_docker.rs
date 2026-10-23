@@ -362,12 +362,15 @@ fn observed_service(desired: &DesiredService) -> ObservedService {
         rollout: Some(desired.rollout_policy()),
         telemetry: desired.telemetry.clone(),
         runtime_configuration_matches: true,
-        tasks: vec![ObservedTask {
-            state: TaskState::Running,
-            healthy: Some(true),
-            desired_running: true,
-            diagnostic: None,
-        }],
+        // One running task per replica, as Swarm converges to.
+        tasks: (0..desired.replicas)
+            .map(|_| ObservedTask {
+                state: TaskState::Running,
+                healthy: Some(true),
+                desired_running: true,
+                diagnostic: None,
+            })
+            .collect(),
         convergence: Convergence::Converged,
     }
 }

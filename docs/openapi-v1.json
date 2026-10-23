@@ -28713,7 +28713,7 @@
     },
     "/api/v1/environments/{id}/stop": {
       "post": {
-        "description": "Its services scale to zero replicas, keeping their configuration, volumes\nand secrets, and the gateway stops serving its routes before the request\nreturns. It stays stopped until it is started, deployed, promoted into or\nreconciled; sync deploys nothing to it meanwhile. Returns 202 with its\nlatest operation: run again when its deployment had rolled out and has\nended, so the services stop now, or as is while it is in progress, which\nthen rolls out with no replicas. 404 when it was never deployed, 409 while\nit is deleted. `expected_generation` is optional.",
+        "description": "Its services scale to zero replicas, keeping their configuration, volumes\nand secrets, and the gateway stops serving its routes before the request\nreturns, or on its next pass if that fails. It stays stopped until it is\nstarted, deployed, promoted into or reconciled; sync deploys nothing to it\nmeanwhile. Returns 202 with its latest operation: run again when its\ndeployment had rolled out and has ended, so the services stop now, or as\nis while it is in progress, which then rolls out with no replicas. 404\nwhen it was never deployed, 409 while it is deleted. `expected_generation` is optional.",
         "operationId": "stopEnvironment",
         "parameters": [
           {

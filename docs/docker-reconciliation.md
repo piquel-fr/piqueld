@@ -360,12 +360,15 @@ from the environment's state as it is now, and is never part of a prepared
 target, so its services keep every other setting and starting restores their
 replicas without preparing anything. Stopping reruns a deployment that rolled
 out, which then converges to zero replicas; a deployment in progress plans the
-same and rolls out with none. When the latest deployment never rolled out,
+same and rolls out with none. Stopping or starting ends a convergence wait in
+progress, and an operation whose plan predates either plans again before
+succeeding. When the latest deployment never rolled out,
 active-target repair applies every change that needs no convergence wait in
 one pass, rather than one per scan, so the services of the target the
 environment runs all scale down at once. Jobs are not projected: a deployment
 started before the stop may still run its `before-rollout` jobs, whose startup
-dependencies then have no replicas.
+dependencies then have no replicas, and a job already running keeps the
+dependencies it started with until it ends.
 
 ## Telemetry sockets
 

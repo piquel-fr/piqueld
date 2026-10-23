@@ -73,7 +73,8 @@ impl Ingress {
     /// The complete replacement configuration for `table`, with the private
     /// and tunnel listeners trusting only the edge network's subnets. The
     /// private listener is left out unless Swarm's address pools are verified
-    /// outside the tailnet ranges.
+    /// outside the tailnet ranges. Wildcards leave alone the exact hostnames
+    /// of every route, stopped environments' included, which `table` omits.
     pub(super) async fn configuration(&self, table: &RoutingTable) -> Result<Value> {
         let edge = if self.node.is_some() || self.tunnel.is_some() {
             Some(self.edge_subnets().await?)
@@ -95,7 +96,8 @@ impl Ingress {
             }
             proxies
         });
-        Ok(self.build_configuration(table, proxies.as_deref(), tunnel.as_deref()))
+        let exact = self.exact_hostnames(&self.store.routing_table().await?);
+        Ok(self.build_configuration(table, &exact, proxies.as_deref(), tunnel.as_deref()))
     }
 
     /// Every exact hostname, served on this gateway or not, which wildcards
@@ -112,7 +114,8 @@ impl Ingress {
             .collect()
     }
 
-    /// Produces the configuration. Private routes are served only when
+    /// Produces the configuration, whose wildcards leave the `exact`
+    /// hostnames alone (see [`Self::exact_hostnames`]). Private routes are served only when
     /// `proxies` gives the private listener's trusted PROXY sources. Public
     /// routes are served on the tunnel listener, instead of ports 80/443, when
     /// `tunnel` gives the edge subnets `cloudflared` connects from. Exact-host
@@ -130,12 +133,12 @@ impl Ingress {
     pub(super) fn build_configuration(
         &self,
         table: &RoutingTable,
+        exact: &[Hostname],
         proxies: Option<&[String]>,
         tunnel: Option<&[String]>,
     ) -> Value {
         let mut public = Listener::default();
         let mut private = Listener::default();
-        let exact = self.exact_hostnames(table);
         let matcher = |host: &RouteHostname| {
             let covered: Vec<&Hostname> = exact.iter().filter(|name| host.matches(name)).collect();
             match host.wildcard() {
