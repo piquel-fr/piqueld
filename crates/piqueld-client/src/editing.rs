@@ -36,6 +36,7 @@ edit_method!(set_application_imports, (id), request: ImportsValue);
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_application_variables, (id), request: VariablesValue);
 edit_method!(set_environment_visibility, (id, environment), request: VisibilityValue);
+edit_method!(set_preview_visibility, (id), request: VisibilityValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
 edit_method!(set_manifest_repository_url, (id), request: StringValue);
@@ -174,6 +175,9 @@ impl Client {
                     options,
                 )
                 .await
+            }
+            ApplicationEdit::PreviewVisibility(value) => {
+                send!(set_preview_visibility, VisibilityValue, *value)
             }
         }
     }

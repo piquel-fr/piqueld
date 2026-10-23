@@ -5,6 +5,7 @@ use crate::{
     cli::LogArgs,
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
     deployments::{Deployed, Target, UrlArgs, WaitArgs, wait_for_accepted},
+    editing::{EditFlags, visibility},
     environments::logs,
     error::{CliError, ErrorKind, Result},
     exec::ExecArgs,
@@ -18,7 +19,7 @@ use crate::{
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, BranchState, Client, ClientError, CreatePreviewRequest, CreatedPreview,
-    EnvironmentView, PrunePreviewsRequest, codes,
+    EnvironmentView, PrunePreviewsRequest, Visibility, codes, edit::ApplicationEdit,
 };
 
 // `preview` subcommands; `///` on variants and fields is user-facing help.
@@ -49,6 +50,10 @@ pub(crate) enum PreviewCommand {
     },
     /// Show one preview, its URLs, and whether its branch exists, moved, or is gone.
     Show(PreviewArgs),
+    /// Cap the visibility of every preview's routes in the saved manifest,
+    /// `[spec.previews]`: `private`, the default, keeps every route on the
+    /// tailnet, `public` restricts nothing.
+    Visibility(VisibilityArgs),
     /// Read a bounded snapshot of a preview's Docker logs.
     Logs {
         #[command(flatten)]
@@ -115,6 +120,29 @@ pub(crate) struct DeployArgs {
     /// Return after the daemon accepts the deployment.
     #[arg(long)]
     no_wait: bool,
+}
+
+/// `preview visibility` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct VisibilityArgs {
+    /// Application name or stable ID.
+    application: String,
+    /// The strictest visibility preview routes get.
+    #[arg(value_parser = visibility())]
+    visibility: Visibility,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+
+impl VisibilityArgs {
+    /// Saves the previews' visibility ceiling in `[spec.previews]`.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let application = resolve_application(client, &self.application).await?;
+        let edit = ApplicationEdit::PreviewVisibility(self.visibility);
+        self.flags
+            .save_loaded(client, console, &application, &edit)
+            .await
+    }
 }
 
 /// An application and one of its previews.
@@ -195,6 +223,7 @@ impl PreviewCommand {
                 let (_, preview) = target.resolve(client).await?;
                 console.emit(&client.preview(preview.id.as_str()).await?)
             }
+            Self::Visibility(args) => args.run(client, console).await,
             Self::Logs { target, window } => {
                 let (_, preview) = target.resolve(client).await?;
                 logs(console, client, &preview, window).await

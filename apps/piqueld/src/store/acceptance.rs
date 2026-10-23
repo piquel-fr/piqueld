@@ -846,6 +846,7 @@ impl Store {
             ApplicationEdit::Imports(_) => "imports",
             ApplicationEdit::Variables(_) => "variables",
             ApplicationEdit::EnvironmentVisibility { .. } => "environments",
+            ApplicationEdit::PreviewVisibility(_) => "previews",
         };
         let resource = match &edit {
             ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {

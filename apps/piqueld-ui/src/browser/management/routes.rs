@@ -147,7 +147,7 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     <div>
                         <h3>"Routes"</h3>
                         <p>
-                            "Public routes are reachable from the internet: point their DNS at this server (or, with a Cloudflare Tunnel, a proxied CNAME at the tunnel), and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. A wildcard hostname such as *.example.com routes every name one label below example.com, except names with their own route, and gets its certificate from a DNS provider, unless it is public behind a Cloudflare Tunnel, which terminates its TLS. An environment’s visibility can make its routes private. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
+                            "Public routes are reachable from the internet: point their DNS at this server (or, with a Cloudflare Tunnel, a proxied CNAME at the tunnel), and their certificates are managed automatically. Private routes, the default, are reachable only from the tailnet on the same hostname: point their DNS at the apps node’s tailnet addresses, and their certificates come from a DNS provider. A wildcard hostname such as *.example.com routes every name one label below example.com, except names with their own route, and gets its certificate from a DNS provider, unless it is public behind a Cloudflare Tunnel, which terminates its TLS. An environment’s visibility can make its routes private, and preview routes are private unless preview visibility is public. Redirects are answered by the gateway and need no service. Save, then deploy to activate changes."
                         </p>
                     </div>
                 </header>
@@ -192,8 +192,52 @@ pub(super) fn RouteSettings() -> impl IntoView {
                     </fieldset>
                 </div>
             </section>
+            <PreviewVisibility />
             <DeployedRoutes />
         </div>
+    }
+}
+
+/// The visibility ceiling of every preview's routes, `[spec.previews]`.
+#[component]
+fn PreviewVisibility() -> impl IntoView {
+    let context = editor();
+    let read = |manifest: &ApplicationManifest| manifest.spec.previews.visibility;
+    let draft = Draft::synced("preview-visibility", read);
+    let save = move || {
+        draft.save(
+            ApplicationEdit::PreviewVisibility(draft.value.get_untracked()),
+            read,
+        );
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Preview visibility"</h3>
+                    <p>
+                        "The strictest visibility preview routes get. Private, the default, keeps every preview route on the tailnet, whatever the route itself says; public leaves each route's own visibility. Previews apply it on their next deployment."
+                    </p>
+                </div>
+            </header>
+            <fieldset class="stack-sm" disabled={move || context.blocked()}>
+                <label class="field">
+                    <span>"Preview route visibility"</span>
+                    <select
+                        prop:value={move || draft.value.get().to_string()}
+                        on:change={move |event| {
+                            if let Ok(visibility) = event_target_value(&event).parse() {
+                                draft.value.set(visibility);
+                            }
+                        }}
+                    >
+                        <option value="private">"Private: every route is tailnet-only"</option>
+                        <option value="public">"Public: routes keep their own visibility"</option>
+                    </select>
+                </label>
+                {draft.actions(save, || false)}
+            </fieldset>
+        </section>
     }
 }
 
