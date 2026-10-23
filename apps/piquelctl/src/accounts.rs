@@ -1,10 +1,12 @@
-//! Account access: `whoami`, `account list|access|invite|enroll`,
+//! Account access: `whoami`, `account list|access|invite|enroll|update|delete`,
+//! `account passkey list|rename|remove`, `account invitation list|revoke`,
 //! `token create|list|revoke`, and the `audit` trail.
 //!
 //! Grants are given with `--preset` and `--permission`, limited to the
 //! applications named with `--app` (every application when omitted). Grants
 //! are displayed with application names where the caller can read them.
 use crate::{
+    auth::Credentials,
     error::{CliError, ErrorKind, Result},
     output::{Console, HumanWriter, Report, reports::report},
 };
@@ -13,7 +15,10 @@ use piqueld_client::{
     ApplicationId, Client, Page,
     access::{Grant, Grants, Permission, Preset, Scope},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome, AuditVerification},
-    auth::{Account, CredentialView, Directory, Manage, OperatorSessionView, Principal, Session},
+    auth::{
+        Account, CredentialView, Directory, InvitationView, Manage, OperatorSessionView,
+        PasskeyView, Principal, Session, User,
+    },
     tailnet::TailnetBinding,
 };
 use serde::Serialize;
@@ -45,6 +50,77 @@ pub(crate) enum AccountCommand {
         /// Account username or ID.
         #[arg(value_name = "ACCOUNT")]
         target: String,
+    },
+    /// Change an account's username or display name.
+    #[command(group(clap::ArgGroup::new("changes").required(true).multiple(true)))]
+    Update {
+        /// Account username or ID.
+        #[arg(value_name = "ACCOUNT")]
+        target: String,
+        /// New unique username.
+        #[arg(long, group = "changes")]
+        username: Option<String>,
+        /// New display name; an empty value clears it.
+        #[arg(long, group = "changes")]
+        display_name: Option<String>,
+    },
+    /// Delete an account with its passkeys, sessions, and tokens (refused
+    /// when no administrator with a passkey would remain).
+    Delete {
+        /// Account username or ID.
+        #[arg(value_name = "ACCOUNT")]
+        target: String,
+        /// Skip interactive confirmation.
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// List, rename, and remove passkeys; add one with `enroll`.
+    Passkey {
+        #[command(subcommand)]
+        command: PasskeyCommand,
+    },
+    /// List and revoke pending invitation and enrollment links.
+    Invitation {
+        #[command(subcommand)]
+        command: InvitationCommand,
+    },
+}
+
+// `account passkey` subcommands; `///` on variants and fields is user-facing help.
+#[derive(Debug, Subcommand)]
+pub(crate) enum PasskeyCommand {
+    /// List the passkeys of every account you may see, or of one account.
+    List {
+        /// Account username or ID.
+        #[arg(value_name = "ACCOUNT")]
+        target: Option<String>,
+    },
+    /// Rename a passkey.
+    Rename {
+        /// Passkey ID from `account passkey list`.
+        id: String,
+        /// New label.
+        name: String,
+    },
+    /// Remove a passkey; sessions it signed in remain until revoked.
+    Remove {
+        /// Passkey ID from `account passkey list`.
+        id: String,
+        /// Skip interactive confirmation.
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+// `account invitation` subcommands; `///` on variants and fields is user-facing help.
+#[derive(Debug, Subcommand)]
+pub(crate) enum InvitationCommand {
+    /// List pending invitation and enrollment links (requires accounts:manage).
+    List,
+    /// Revoke a pending invitation or enrollment link.
+    Revoke {
+        /// Invitation ID from `account invitation list`.
+        id: String,
     },
 }
 
@@ -150,12 +226,28 @@ pub(crate) enum TokenCommand {
         #[arg(long, value_parser = parse_tailnet)]
         tailnet: Option<TailnetBinding>,
     },
-    /// List your sessions and tokens.
-    List,
-    /// Revoke one of your sessions or tokens by ID.
+    /// List the sessions and tokens of your account, or of another with --user.
+    List {
+        /// Account username or ID (requires accounts:manage for others).
+        #[arg(long)]
+        user: Option<String>,
+    },
+    /// Revoke a session or token by ID, or every session and token of an
+    /// account with --all.
     Revoke {
         /// Credential ID from `token list`.
-        id: String,
+        #[arg(required_unless_present = "all")]
+        id: Option<String>,
+        /// Revoke every session and token of your account, including the one
+        /// this command uses, or of the account named with --user.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+        /// Account username or ID whose credentials --all revokes.
+        #[arg(long, conflicts_with = "id")]
+        user: Option<String>,
+        /// Skip interactive confirmation of --all.
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
@@ -198,23 +290,41 @@ impl TokenCommand {
                 })?;
                 console.emit(&TokenReport { token })
             }
-            Self::List => {
-                let me = client.auth_me().await?;
+            Self::List { user } => {
                 let directory = client.auth_directory().await?;
+                let owner = owner(client, &directory, user.as_deref()).await?;
                 let names = Names::load(client).await;
-                let own = me.principal.user().map(|user| user.id.as_str());
                 let credentials = directory
                     .credentials
                     .into_iter()
-                    .filter(|credential| Some(credential.user_id.as_str()) == own)
+                    .filter(|credential| credential.user_id == owner.id)
                     .collect::<Vec<_>>();
                 console.emit(&CredentialsReport { credentials, names })
             }
-            Self::Revoke { id } => {
+            Self::Revoke { id: Some(id), .. } => {
                 client
                     .auth_manage(&Manage::RevokeCredential { id: id.clone() })
                     .await?;
                 console.info(format_args!("revoked {id}"))
+            }
+            Self::Revoke { user, yes, .. } => {
+                let directory = client.auth_directory().await?;
+                let owner = owner(client, &directory, user.as_deref()).await?;
+                console
+                    .confirm(
+                        *yes,
+                        &format!("Revoke every session and token of {:?}?", owner.username),
+                    )
+                    .await?;
+                client
+                    .auth_manage(&Manage::RevokeAll {
+                        user_id: owner.id.clone(),
+                    })
+                    .await?;
+                console.info(format_args!(
+                    "revoked every session and token of {}",
+                    owner.username
+                ))
             }
         }
     }
@@ -222,7 +332,12 @@ impl TokenCommand {
 
 impl AccountCommand {
     /// Runs one `account` subcommand.
-    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+    pub(crate) async fn run(
+        &self,
+        cli: &crate::cli::Cli,
+        client: &Client,
+        console: &mut Console,
+    ) -> Result<()> {
         match self {
             Self::List => {
                 let directory = client.auth_directory().await?;
@@ -254,17 +369,11 @@ impl AccountCommand {
                         grants: grants.clone(),
                     })
                     .await?;
-                let names = Names::load(client).await;
-                console.emit(&AccountsReport {
-                    list: AccountList {
-                        accounts: &[Account {
-                            user: target.user,
-                            grants,
-                        }],
-                        operator_sessions: &[],
-                    },
-                    names: &names,
-                })
+                let account = Account {
+                    user: target.user,
+                    grants,
+                };
+                AccountsReport::emit_one(client, console, account).await
             }
             Self::Invite { grants } => {
                 let grants = grants.grants(client).await?;
@@ -282,8 +391,131 @@ impl AccountCommand {
                     .await?;
                 console.emit(&LinkReport::new(managed.invitation_url)?)
             }
+            Self::Update {
+                target,
+                username,
+                display_name,
+            } => {
+                let mut account = find(&client.auth_directory().await?, target)?;
+                if let Some(username) = username {
+                    account.user.username.clone_from(username);
+                }
+                if let Some(display_name) = display_name {
+                    account.user.display_name.clone_from(display_name);
+                }
+                client
+                    .auth_manage(&Manage::UpdateUser {
+                        user_id: account.user.id.clone(),
+                        username: account.user.username.clone(),
+                        display_name: account.user.display_name.clone(),
+                    })
+                    .await?;
+                if username.is_some() {
+                    Credentials::rename(cli, &account.user.id, &account.user.username)?;
+                }
+                AccountsReport::emit_one(client, console, account).await
+            }
+            Self::Delete { target, yes } => {
+                let target = find(&client.auth_directory().await?, target)?.user;
+                console
+                    .confirm(*yes, &format!("Delete account {:?}?", target.username))
+                    .await?;
+                client
+                    .auth_manage(&Manage::DeleteUser { user_id: target.id })
+                    .await?;
+                console.info(format_args!("deleted {}", target.username))
+            }
+            Self::Passkey { command } => command.run(client, console).await,
+            Self::Invitation { command } => command.run(client, console).await,
         }
     }
+}
+
+impl PasskeyCommand {
+    /// Runs one `account passkey` subcommand.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        match self {
+            Self::List { target } => {
+                let mut directory = client.auth_directory().await?;
+                if let Some(target) = target {
+                    let id = find(&directory, target)?.user.id;
+                    directory.passkeys.retain(|passkey| passkey.user_id == id);
+                }
+                console.emit(&PasskeysReport {
+                    passkeys: directory.passkeys,
+                    users: directory.users,
+                })
+            }
+            Self::Rename { id, name } => {
+                client
+                    .auth_manage(&Manage::RenamePasskey {
+                        id: id.clone(),
+                        name: name.clone(),
+                    })
+                    .await?;
+                console.info(format_args!("renamed passkey {id} to {name}"))
+            }
+            Self::Remove { id, yes } => {
+                console
+                    .confirm(*yes, &format!("Remove passkey {id}?"))
+                    .await?;
+                client
+                    .auth_manage(&Manage::RemovePasskey { id: id.clone() })
+                    .await?;
+                console.info(format_args!("removed passkey {id}"))
+            }
+        }
+    }
+}
+
+impl InvitationCommand {
+    /// Runs one `account invitation` subcommand.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        match self {
+            Self::List => {
+                let directory = client.auth_directory().await?;
+                console.emit(&InvitationsReport {
+                    invitations: directory.invitations,
+                    users: directory.users,
+                    names: Names::load(client).await,
+                })
+            }
+            Self::Revoke { id } => {
+                client
+                    .auth_manage(&Manage::RevokeInvitation { id: id.clone() })
+                    .await?;
+                console.info(format_args!("revoked invitation {id}"))
+            }
+        }
+    }
+}
+
+/// The account `--user` names, or the caller's own; the host operator has
+/// none, so it must name one.
+async fn owner(client: &Client, directory: &Directory, user: Option<&str>) -> Result<User> {
+    if let Some(user) = user {
+        return Ok(find(directory, user)?.user);
+    }
+    client
+        .auth_me()
+        .await?
+        .principal
+        .user()
+        .cloned()
+        .ok_or_else(|| {
+            CliError::new(
+                ErrorKind::Input,
+                "the host operator has no account; name one with --user",
+            )
+        })
+}
+
+/// Username of a visible account, or its ID when hidden.
+fn username<'a>(users: &'a [Account], id: &'a str) -> &'a str {
+    users
+        .iter()
+        .find(|account| account.user.id == id)
+        .map_or(id, |account| account.user.username.as_str())
 }
 
 /// Finds a visible account by ID, then by username (unique regardless of
@@ -384,6 +616,19 @@ struct AccountList<'a> {
 struct AccountsReport<'a> {
     list: AccountList<'a>,
     names: &'a Names,
+}
+impl AccountsReport<'_> {
+    /// Prints one account after changing it, as `account list` would.
+    async fn emit_one(client: &Client, console: &mut Console, account: Account) -> Result<()> {
+        let names = Names::load(client).await;
+        console.emit(&AccountsReport {
+            list: AccountList {
+                accounts: &[account],
+                operator_sessions: &[],
+            },
+            names: &names,
+        })
+    }
 }
 // Its JSON borrows, which `report!` cannot name.
 impl<'a> Report for AccountsReport<'a> {
@@ -584,6 +829,55 @@ report!(
             }
             if let Some(tailnet) = &credential.tailnet {
                 out.line(format_args!("  only from tailnet {tailnet}"))?;
+            }
+        }
+        Ok(())
+    }
+);
+
+/// Passkeys, with their owners' usernames for human output.
+struct PasskeysReport {
+    passkeys: Vec<PasskeyView>,
+    users: Vec<Account>,
+}
+report!(PasskeysReport as [PasskeyView] = passkeys, self, out, {
+    for passkey in &self.passkeys {
+        out.line(format_args!(
+            "{} {} ({})",
+            passkey.id,
+            passkey.name,
+            username(&self.users, &passkey.user_id)
+        ))?;
+    }
+    Ok(())
+});
+
+/// Pending invitation and enrollment links with the grants they hand out.
+struct InvitationsReport {
+    invitations: Vec<InvitationView>,
+    users: Vec<Account>,
+    names: Names,
+}
+report!(
+    InvitationsReport as [InvitationView] = invitations,
+    self,
+    out,
+    {
+        for invitation in &self.invitations {
+            let by = username(&self.users, &invitation.issuer_id);
+            let expires = invitation.expires_at;
+            if let Some(user) = &invitation.user_id {
+                out.line(format_args!(
+                    "{} enrollment for {} by {by} (expires at Unix {expires})",
+                    invitation.id,
+                    username(&self.users, user)
+                ))?;
+            } else {
+                out.line(format_args!(
+                    "{} invitation by {by} (expires at Unix {expires})",
+                    invitation.id
+                ))?;
+                self.names.render(&invitation.grants, out)?;
             }
         }
         Ok(())

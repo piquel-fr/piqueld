@@ -187,6 +187,13 @@ piquelctl account access bob --preset read-only
 piquelctl account access ci --permission apps:deploy --app blog --yes
 piquelctl account enroll bob
 piquelctl account list
+piquelctl account update bob --username robert --display-name "Robert"
+piquelctl account delete robert
+piquelctl account passkey list bob
+piquelctl account passkey rename <id> laptop
+piquelctl account passkey remove <id>
+piquelctl account invitation list
+piquelctl account invitation revoke <id>
 ```
 
 ## API tokens
@@ -208,7 +215,13 @@ piquelctl token create ci --preset deploy --app blog --days 30
 piquelctl token create reader --permission apps:read --no-expiry
 piquelctl token list
 piquelctl token revoke <id>
+piquelctl token list --user bob
+piquelctl token revoke --all --user bob
 ```
+
+`--user` lists or revokes another account's sessions and tokens, which needs
+`accounts:manage`; `token revoke --all` alone signs your own account out
+everywhere, including the CLI running it.
 
 `auth.max_token_days` limits the lifetime of new tokens; see
 [configuration](configuration.md#authentication-origin). Deleting an
