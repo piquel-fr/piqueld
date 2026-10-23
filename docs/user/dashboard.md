@@ -20,7 +20,7 @@ Applications, and Builds; the Observe section (Events, Errors, Analytics,
 Notifications); and the System section (Daemon status, Host settings, Accounts,
 Audit). Notifications, Daemon status and Host settings need `system:read`;
 retrying a failed notification delivery needs `system:operate`.
-Notifications lists [destinations](observability.md#notifications) and
+Notifications lists [destinations](guides/observability.md#notifications) and
 deliveries. With `notifications:manage` it adds, edits, tests and deletes
 destinations: their kind, URL (write-only), categories with an optional message
 each, applications and previews.
@@ -57,13 +57,13 @@ environment page whose environment no longer exists says so rather than showing
 another environment.
 
 The **Previews** tab lists the application's
-[previews](application-manifest.md#previews), never shown among its
+[previews](reference/manifest.md#previews), never shown among its
 environments: each preview's branch, slug, slot, branch state (exists, moved
 or gone, with shortened commits; local while it runs a local snapshot, with
 the branch head or "never pushed"; or unknown with the repository error), and
 status (or **Deleting**) with its status message on hover. A **Bounded**
 badge marks a preview whose deployment runs a service with the
-[`[previews]`](configuration.md#previews) default limits or fewer replicas than
+[`[previews]`](reference/configuration.md#previews) default limits or fewer replicas than
 its manifest asks for, listed on hover. It also shows whether pushes
 redeploy it, with the commit sync last deployed or found.
 The list loads when the tab opens and on **Refresh**, not on a timer, since
@@ -89,12 +89,12 @@ with what **Redeploy branch head** does then. **Redeploy branch head** always
 deploys the head of its branch from the repository, replacing a local snapshot;
 for a branch never pushed it fails until the branch is pushed. Snapshots are
 only uploaded from a worktree with the CLI. Deployment history shows a local
-snapshot's origin as "Local snapshot <commit> on <base>".
+snapshot's origin as "Local snapshot \<commit> on \<base>".
 
-**Preview** and **Deploy to <environment>** on an environment page target that
+**Preview** and **Deploy to \<environment>** on an environment page target that
 environment. On the application page they target its only environment; with
 several, **Deploy** opens a list of every environment, each with its own **Deploy** or
-**Promote from <source>** button. On an environment's own page the button is just **Deploy**. Deployment actions
+**Promote from \<source>** button. On an environment's own page the button is just **Deploy**. Deployment actions
 are disabled for deleting environments. Preview plans the manifest the
 environment deploys: the saved one for an environment following the branch
 `spec.manifest` names, once the application has read a manifest from it (it is
@@ -104,9 +104,9 @@ deployment. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
 A promoted environment never builds, so its page and its Environments row offer
-**Promote from <source>** instead of Preview and Deploy, and its source's page
+**Promote from \<source>** instead of Preview and Deploy, and its source's page
 offers **Promote**, before Deploy, listing the environments promoted from it, each
-with its own **Promote from <source>** button. Either first plans the promotion of
+with its own **Promote from \<source>** button. Either first plans the promotion of
 its source environment's current release and shows it: where the release comes
 from, the release itself (commit, each service's image, availability), the
 changes against the environment's current deployment, new (empty) volumes, the
@@ -138,7 +138,7 @@ ID), where it came from, and the build inputs it was prepared from. A badge
 says whether its images are still present, will be pulled again by digest
 when deployed, or were removed, so it can't be deployed again. **Deployed to**
 lists every environment it was promoted into, or deployed again by release ID,
-with that deployment. **Deploy to <environment>**, offered for each promoted
+with that deployment. **Deploy to \<environment>**, offered for each promoted
 environment, plans deploying the release there with that environment's current
 secrets, like `piquelctl env promote --release`, and deploys it once confirmed. The Jobs
 tab adds, edits, reorders, and removes the one-shot jobs that run before each
@@ -150,15 +150,15 @@ volume access is read-only by default; exclusive access stops the services
 using its writable volumes until the rollout. Each job also lists the
 environment variables and secret files only its container gets, added to its
 service's. The Links tab edits the
-application's [links](application-manifest.md#links): the services it exports
+application's [links](reference/manifest.md#links): the services it exports
 and the applications that may import them (and whether their previews may),
 and the services of other applications it imports, with an optional
 environment; exports and imports each save their own list. The Routes tab
-edits hostnames, each with an optional [name](application-manifest.md#routes)
+edits hostnames, each with an optional [name](reference/manifest.md#routes)
 and pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's name, effective visibility, the DNS
 records its hostname needs, whether piqueld
-[manages them](ingress.md#managed-dns-records) (`manual`, `managed`, `pending` or
+[manages them](guides/ingress.md#managed-dns-records) (`manual`, `managed`, `pending` or
 `dns_conflict`), HTTPS readiness and diagnostics in every environment and preview.
 Each environment's Overview sets its visibility ceiling. System status shows a
 Previews card with the previews against their limits, installation-wide and for
@@ -176,7 +176,7 @@ events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
 a URLs card, a Links card when it imports services or others import its
 services, a Telemetry card when it is granted the daemon's
-[telemetry](observability.md#receiving-telemetry-in-an-application) or
+[telemetry](guides/observability.md#receiving-telemetry-in-an-application) or
 deploys a service receiving it (whether it is granted, which service receives
 it, and whether the daemon is connected), observed services, and
 reconciliation diagnostics. The Links card
@@ -186,7 +186,7 @@ too. The URLs card
 lists the URL of each route the current deployment renders, with its name,
 visibility, destination and state: **ready**, or **pending** with what it waits
 for (ingress, HTTPS, DNS records, or a healthy service), as the daemon reports
-it in [URL readiness](api.md#url-readiness). Each service row opens a service page with a
+it in [URL readiness](reference/api.md#url-readiness). Each service row opens a service page with a
 breadcrumb back to the application and tabs for source and scaling,
 environment, command and arguments, volume mounts, files, health checks,
 startup dependencies, rollout, telemetry, resource limits, and logs. Files lists each
@@ -217,7 +217,7 @@ Forms save typed fields or settings sections through individual endpoints, witho
 resubmitting the application manifest. Related fields within a form save atomically.
 All form saves update configuration only; Deploy remains explicit. A
 repository-backed application's forms edit it the same way; its settings tabs
-then list its [edits](application-manifest.md#editing-repository-backed-applications)
+then list its [edits](reference/manifest.md#editing-repository-backed-applications)
 from the manifest last read from the repository, which deployments of the
 connection's branch deploy until a push changes the manifest there, and
 **Reset to repository** discards them, after confirmation. Its Overview says whether its configuration is read from Git or
@@ -232,16 +232,16 @@ read-only. There is no raw manifest editor or deployment restoration workflow.
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 configured localhost or Tailscale TCP listeners and, with a
-[dashboard hostname](ingress.md#dashboard-hostname), through private ingress.
+[dashboard hostname](guides/ingress.md#dashboard-hostname), through private ingress.
 The API Unix socket is API-only, and the daemon does not add CORS, browser telemetry,
 or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
 their grants, invitations, passkey enrollment links, and tokens. Pages the
 signed-in account cannot use are hidden, as are most actions needing an
 installation-wide permission it lacks; other actions remain visible, and the
-daemon refuses them with `permission_denied`. See [authorization](authorization.md).
+daemon refuses them with `permission_denied`. See [authorization](accounts/authorization.md).
 A link from `piquelctl sign-in-link` opens a page that signs the browser in as
-the [host operator](authentication.md#the-host-operator) for 12 hours, without
+the [host operator](accounts/authentication.md#the-host-operator) for 12 hours, without
 an account. The dashboard then shows "Host operator" as the signed-in user and
 hides actions that need an account: adding passkeys, creating tokens,
 invitation and enrollment links, and CLI login approval. Accounts with
@@ -250,12 +250,12 @@ those sessions act with `admin` on everything, only accounts holding that can
 revoke them. When the session expires or is revoked, the dashboard asks to sign
 in again over the current page, keeping unsaved edits; signing in as another
 account or the host operator reloads the dashboard without them.
-The Audit page shows the [audit trail](observability.md#audit-trail), naming the
+The Audit page shows the [audit trail](guides/observability.md#audit-trail), naming the
 application or environment each request addressed, and each
 session or token links to its own activity. New tokens can be bound to a
-tailnet user or tag; see [tailnet-bound tokens](authorization.md#tailnet-bound-tokens). With `audit:read`, **Verify
-integrity** checks the trail's [hash chain](observability.md#tamper-evidence). Log display preferences persist in browser
-local storage. See [authentication](authentication.md).
+tailnet user or tag; see [tailnet-bound tokens](accounts/authorization.md#tailnet-bound-tokens). With `audit:read`, **Verify
+integrity** checks the trail's [hash chain](guides/observability.md#tamper-evidence). Log display preferences persist in browser
+local storage. See [authentication](accounts/authentication.md).
 
 The application's **Secrets** tab lists the secret store's names, versions and
 who may mount each one, by environment name. It creates or replaces write-only
@@ -274,84 +274,6 @@ Each service has a separate
 secret-file reference editor. Save references, then deploy explicitly to mount
 those versions. Repository-backed applications keep references in their Git
 manifest. Secret values and unsaved references participate in navigation warnings.
-
-## Development
-
-Building the dashboard needs only Cargo and the `wasm32-unknown-unknown` target,
-which `rust-toolchain.toml` installs. `nix develop` provides the same toolchain
-plus `just` and Nextest. Docker must be accessible to your user and support
-a single-node Swarm. Start the development workflow:
-
-```console
-just dev
-```
-
-This watches the daemon and dashboard sources, rebuilds the embedded bundle, and
-restarts this worktree's isolated development instance, served on its own
-localhost port. Refresh the browser after a rebuild. See
-[`development.md`](development.md).
-
-Compile the browser client and dashboard without building the bundle with:
-
-```console
-just ui-check
-```
-
-The browser modules separate dashboard navigation and lists, editor state,
-configuration forms, deployment history, navigation guards, and shared
-presentation primitives (`browser/ui.rs` for icons, badges, notices, dialogs,
-and tabs; `browser/format.rs` for relative times, durations, and sizes).
-Styles are plain CSS: a base reset adapted from Tailwind's preflight, theme
-tokens, shell layout, and component rules, in `apps/piqueld-ui/styles/`. To
-format view macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it
-reads the local `leptosfmt.toml`), followed by `cargo fmt --all`.
-
-## Production assets
-
-The release dashboard ships inside the daemon binary itself, and Cargo builds
-it. With the `embedded-ui` feature, the daemon build script:
-
-1. compiles `piqueld-ui` for `wasm32-unknown-unknown` with the size-optimized
-   `dashboard` profile, using a nested Cargo with its own target directory;
-2. generates the JavaScript bindings in-process with `wasm-bindgen-cli-support`,
-   pinned to the exact `wasm-bindgen` version;
-3. concatenates `styles/` in cascade order, and writes a small loader module;
-4. fills the placeholders in `apps/piqueld-ui/index.html` with the
-   content-hashed file names, and embeds every file.
-
-Setting `PIQUELD_DASHBOARD_WASM` to a compiled `piqueld-ui.wasm` skips step 1
-and embeds that module instead, and the build warns that changes under
-`apps/piqueld-ui` are not included. The Nix packages pass their own cached
-`dashboard` build this way, so daemon-only changes don't recompile the UI.
-
-No Trunk, wasm-bindgen CLI, binaryen, Tailwind, or Node is involved. The shell
-has no inline scripts, so the Content-Security-Policy is a constant. See
-[ADR 0002](architecture/0002-cargo-built-dashboard.md) for the reasoning and
-the planned move to Cargo artifact dependencies, which would remove the nested
-Cargo invocation.
-
-```console
-cargo build --release --package piqueld --bin piqueld --features embedded-ui --locked
-# Build both the embedded daemon and CLI: just build-embedded
-```
-
-There is no runtime UI configuration: the dashboard exists exactly when the
-binary was built with the feature, and binaries built without it are API-only.
-The combined Nix package (`.#combined`, the default `.#` on Linux) includes
-`piquelctl` and a daemon with the release dashboard embedded, built by the same
-build script. The `.#daemon` output contains only the daemon without the
-feature, and the `.#cli` output (the default on macOS) contains only `piquelctl`.
-
-The TCP router serves bundle files below `/dashboard/` and uses `index.html`
-only for extensionless dashboard paths. API, health, and unknown paths never
-receive the SPA shell. Content-hashed asset filenames are served with
-immutable caching; the shell is always revalidated.
-
-The dashboard performs one initial refresh, then bounded pagination and
-environment-status and recent-deployment reads. Background polls run every 15 seconds after success and back off
-to at most 120 seconds after failures. Polls pause while the document is
-hidden, never overlap, and a manual refresh remains available. A failed refresh
-keeps the last successful view visible and marks it stale.
 
 Healthy replica counts come from Docker's container healthcheck verdicts for
 services that declare one; services without a healthcheck count running tasks
@@ -394,7 +316,7 @@ Variables card says when it has fetched nothing yet.
 
 The **Source** card makes this one choice: **Deploys** either *Builds its own source* (the
 saved manifest, or for a repository-backed application the branch and optional commit
-below) or *Releases promoted from <environment>*, which never builds and only receives
+below) or *Releases promoted from \<environment>*, which never builds and only receives
 releases promoted from it. The card says what the environment does now and what the
 selected choice would do; **Save source** applies it, redeploying nothing. A promoted
 environment's card links to its source.
@@ -406,7 +328,7 @@ change applies once its source records a new release and it is promoted. Unsaved
 changes in the Source, Visibility, and rename forms block deployment and warn
 before navigation, like other forms.
 
-When the manifest [declares environments](application-manifest.md#declared-environments),
+When the manifest [declares environments](reference/manifest.md#declared-environments),
 it owns their existence, so **Rename environment** and **Delete environment** are disabled for them, and,
 when an environment's `[spec.environments.<name>]` block sets its source, its
 source and deploy on push: its **Source** card then names that block and is
@@ -421,7 +343,7 @@ from, and a warning when the fetched file's own `spec.manifest` names another
 repository or path (`manifest_connection_ignored`); that section is ignored.
 
 **Deploy on push** in the repository settings selects how the application
-[follows pushes](application-manifest.md#deploying-on-push): off, polling every
+[follows pushes](reference/manifest.md#deploying-on-push): off, polling every
 given number of seconds, or GitHub webhooks. While it is on, the card shows the
 last check of the repository's branches and why it failed. With webhooks, a
 **GitHub webhook** card shows the payload URL to configure (or that the daemon
@@ -482,12 +404,6 @@ prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
 
-See [observability](observability.md) for diagnostic history, daemon statistics, analytics, telemetry
+See [observability](guides/observability.md) for diagnostic history, daemon statistics, analytics, telemetry
 export and webhook delivery configuration.
 
-## Browser tests
-
-The [Playwright suite](../tests/playwright/README.md) exercises the embedded dashboard against
-an isolated API fixture. Run `just setup-playwright` once, then `just test-playwright`. Chromium
-is provided by a pinned Docker image; the tests need no system browser, Python,
-or ChromeDriver. The `browser-playwright` CI job retains failure traces and screenshots.

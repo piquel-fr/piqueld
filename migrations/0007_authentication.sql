@@ -1,3 +1,8 @@
+-- Authentication: accounts, their passkeys, hashed browser, CLI and API token
+-- credentials, invitations, and a durable initial-setup marker. Existing
+-- installations have no account and need first-account setup after
+-- upgrading, as there is no anonymous access; applications and running
+-- reconciliation are unaffected.
 CREATE TABLE auth_setup (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     initialized INTEGER NOT NULL DEFAULT 0,

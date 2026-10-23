@@ -55,7 +55,7 @@ is deleted. Secret values are never manifest fields (manifests may only ask piqu
 generate them), and there are no manifest
 fields for directly published ports. HTTP routes, by exact or wildcard
 hostname, are declared in `spec.routes`; see [Routes](#routes) and
-[managed ingress](ingress.md).
+[managed ingress](../guides/ingress.md).
 
 Rollouts start each replacement task before stopping the old one, except for
 services that mount any volume without `read_only = true`. Those stop the old
@@ -76,7 +76,7 @@ digests; registry hostnames are validated case-insensitively and canonicalized
 to lowercase (IPv6 literal hosts are not accepted). Mount targets are normalized
 absolute paths below `/`; environment names and runtime strings reject invalid
 control data. `PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
-routed services (see [managed ingress](ingress.md#client-addresses)).
+routed services (see [managed ingress](../guides/ingress.md#client-addresses)).
 Health-check paths are absolute, health-check timeouts cannot exceed their
 interval, and resource limits must specify CPU, memory, or both.
 
@@ -248,7 +248,7 @@ settings and `spec.manifest`. [Files](#files) are never rendered: `${{` in a
 file's content is mounted as written.
 
 The build inputs are baked into images, so each deployment's
-[release](piquelctl.md#commands) fingerprints their rendered values. Rendering a
+[release](cli.md#commands) fingerprints their rendered values. Rendering a
 release for another environment, as [promotion](#promoted-environments) does,
 reuses its images and requires every build
 input to render the same there; a build argument such as
@@ -296,7 +296,7 @@ validation as the daemon, without contacting one, and lists every error with
 its field path, including references to undeclared variables. Validation runs against the CLI's version of `piqueld-core`;
 `app plan` checks the manifest against the connected daemon's version.
 
-[`application-manifest.schema.json`](application-manifest.schema.json) is a
+[`application-manifest.schema.json`](../../application-manifest.schema.json) is a
 JSON Schema (draft 7) generated from the manifest types by `just generate`, and
 it ships with each set of release binaries. It describes structure, field types, and
 documentation. Names, budgets, and cross-references are left to
@@ -358,7 +358,7 @@ stage. Build arguments are not secret: Docker records them in image metadata and
 piqueld shows them in manifests and build history. Use service secrets for
 sensitive values. There is no automatic build backend detection, submodule or LFS
 setup, or registry publishing. Built images are labelled with the installation's
-identity, and [image cleanup](docker-reconciliation.md#image-retention) removes
+identity, and [image cleanup](../../dev/architecture/docker-reconciliation.md#image-retention) removes
 the ones no environment runs, deploys, or keeps so their releases can be
 promoted again. Docker's build cache is
 reused and base images are refreshed with `--pull`. Builds record no provenance
@@ -464,7 +464,7 @@ and `app show` and the application's Environments tab list how the
 environments differ from the saved manifest. `app apply --deploy` deploys
 every declared environment that builds; promoted ones wait for their first
 `env promote`. So for an application such as
-[`examples/staging-production.toml`](../examples/staging-production.toml),
+[`examples/staging-production.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/staging-production.toml),
 applying it with `--deploy` is enough: staging follows `main`, and production
 receives what staging ran once you promote it.
 
@@ -619,7 +619,7 @@ unpinned branch, redeploys when its branch moves:
   applications, environments, and previews read it.
 - **`webhook`** lists them when GitHub reports a push, and once after the
   daemon starts, since pushes reported while it was down may not have
-  deployed. See [webhooks](ingress.md#push-webhooks) for exposing the
+  deployed. See [webhooks](../guides/ingress.md#push-webhooks) for exposing the
   endpoint and `piquelctl app repository webhook` for its URL and secret. A
   delivery only says that something moved: piqueld lists the branches itself
   and never deploys a commit a payload names. A missed delivery waits for
@@ -798,7 +798,7 @@ Promotion never happens automatically when the source deploys.
   they did when it was built (`release_incompatible`, see
   [Variables](#variables));
 - its images are present, or are registry images pulled again by digest
-  (`image_unavailable` otherwise); [image cleanup](docker-reconciliation.md#image-retention)
+  (`image_unavailable` otherwise); [image cleanup](../../dev/architecture/docker-reconciliation.md#image-retention)
   is held off until the promotion is saved;
 - every secret the rendered release mounts is usable: stored secrets exist,
   their access list allows the environment, and their value wasn't discarded by
@@ -902,7 +902,7 @@ port = 8080
 
 In practice these hostnames go through a variable, so environments keep their
 own: `hostname = "${{ vars.domain }}"` with `domain` set per environment and in
-`[spec.previews.variables]`. A [wildcard route](ingress.md#wildcard-routes) such
+`[spec.previews.variables]`. A [wildcard route](../guides/ingress.md#wildcard-routes) such
 as `*.${{ env.slug }}.dev.example.com` gives each preview a subdomain per tenant,
 with a certificate of its own.
 
@@ -911,7 +911,7 @@ its last fetched manifest renders, and two previews or environments rendering
 the same hostname conflict with `hostname_conflict`. Preview routes are private
 unless `[spec.previews] visibility = "public"`. Private hostnames need DNS
 records pointing at the apps tailnet node (see
-[public and private routes](ingress.md#public-and-private-routes)).
+[public and private routes](../guides/ingress.md#public-and-private-routes)).
 
 **Secrets.** Each preview generates its own `spec.secrets` values. It mounts a
 stored secret only when the secret's access allows previews; otherwise its
@@ -1109,7 +1109,7 @@ without the mount, and `app plan`, promotion plans and the deployment warn with
 deployment, which restarts the service. Previews are never granted. Volume
 mounts and files can't use `/run/piqueld/telemetry`. The receiving
 application sees every application's telemetry; see
-[receiving telemetry](observability.md#receiving-telemetry-in-an-application)
+[receiving telemetry](../guides/observability.md#receiving-telemetry-in-an-application)
 for the collector configuration and what that implies.
 
 ## Jobs
@@ -1353,7 +1353,7 @@ default to `private`.
 visibility = "private"
 ```
 
-See [public and private routes](ingress.md#public-and-private-routes) for
+See [public and private routes](../guides/ingress.md#public-and-private-routes) for
 listeners, the apps tailnet node and DNS.
 
 Each route either references a service in the same application and its internal
@@ -1375,7 +1375,7 @@ Up to 64 routes are allowed. Hostnames are public ASCII
 DNS names (use Punycode for internationalized domains), normalized to lowercase
 without a trailing dot. Paths, schemes, and hostname ports are rejected. A hostname
 starting with `*.`, such as `*.tenants.example.com`, is a
-[wildcard route](ingress.md#wildcard-routes): it serves every name one label below
+[wildcard route](../guides/ingress.md#wildcard-routes): it serves every name one label below
 `tenants.example.com` that no exact route claims. `*` is allowed only as the
 first label.
 A hostname belongs to one application across saved, captured, and deployed state.

@@ -1,6 +1,9 @@
 -- Immutable releases: what a successful preparation in a tracking environment
 -- deployed, with each service's source provenance and prepared image. They
 -- belong to the application, so they survive the environment that recorded them.
+-- A release's content hash needs the daemon, so on its first start after
+-- upgrading it records releases for deployments already prepared, oldest
+-- first; deployments that never finished preparing get none.
 CREATE TABLE releases (
  id TEXT PRIMARY KEY,
  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
@@ -12,6 +15,5 @@ CREATE TABLE releases (
 );
 CREATE INDEX release_application ON releases(application_id,id DESC);
 
--- The release a deployment's prepared target runs; NULL until prepared, and
--- for deployments prepared before releases existed.
+-- The release a deployment's prepared target runs; NULL until prepared.
 ALTER TABLE deployments ADD COLUMN release_id TEXT REFERENCES releases(id);

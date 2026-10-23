@@ -1,3 +1,6 @@
+-- Application secrets: metadata, encrypted versions, the versions each
+-- deployment pins, and a verifier for the master key. Changing a value does
+-- not change the application's configuration or request a deployment.
 CREATE TABLE application_secrets (
  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
  name TEXT NOT NULL,

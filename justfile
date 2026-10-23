@@ -1,7 +1,7 @@
 # Validation formats Rust sources and checks generated artifacts for freshness.
 default: validate
 
-validate: fmt lint check test doc-test deny openapi-check boundary check-wasm test-playwright
+validate: fmt lint check test doc-test deny openapi-check boundary check-wasm test-playwright docs
 
 build:
     @cargo build --workspace --locked
@@ -83,7 +83,7 @@ build-embedded:
 daemon-embedded *ARGS:
     @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}
 
-# Isolated development instance for this worktree (docs/development.md).
+# Isolated development instance for this worktree (docs/dev/development.md).
 [positional-arguments]
 dev *ARGS:
     @cargo xtask dev "$@"
@@ -96,6 +96,26 @@ ctl *ARGS:
 # Generate the OpenAPI document, client, and manifest JSON Schema together.
 generate:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
+
+# Builds the documentation book into target/book, failing on any mdBook
+# warning, then checks every link and heading anchor in it and in the
+# repository's Markdown files, offline (see lychee.toml). Links to this
+# repository on GitHub are checked against the checkout. CI runs this on every
+# pull request; see docs/dev/documentation.md.
+docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! log=$(mdbook build 2>&1) || grep -q WARN <<<"$log"; then
+        echo "$log" >&2
+        exit 1
+    fi
+    lychee --root-dir "{{justfile_directory()}}/target/book" \
+        --remap 'https://(github\.com/piquel-fr/piqueld/(blob|tree)|raw\.githubusercontent\.com/piquel-fr/piqueld)/main/ file://{{justfile_directory()}}/' \
+        target/book $(git ls-files --cached --others --exclude-standard '*.md')
+
+# Serves the documentation book on localhost, rebuilding it on every change.
+docs-serve *ARGS:
+    @mdbook serve {{ARGS}}
 
 docker-test:
     @cargo xtask docker-test

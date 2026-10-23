@@ -6,7 +6,7 @@
 #   piquelctl app apply --file staging-production.toml --deploy
 #
 # creates both, deploys `staging`, and leaves `production` waiting for its
-# first promotion. See docs/application-manifest.md#declared-environments.
+# first promotion. See docs/user/reference/manifest.md#declared-environments.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 

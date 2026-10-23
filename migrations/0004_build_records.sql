@@ -1,3 +1,7 @@
+-- Build records and their bounded output. A build belongs to its
+-- application, not its operation, so pruning operation history keeps build
+-- history. Builds still running when the daemon stops are marked
+-- `interrupted` on startup, and expiring output keeps the build's metadata.
 CREATE TABLE builds (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,

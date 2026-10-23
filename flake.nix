@@ -243,16 +243,24 @@
         system:
         let
           pkgs = pkgsFor system;
+          # `just docs`: builds the documentation book and checks its links.
+          docsTools = with pkgs; [
+            git
+            just
+            mdbook
+            lychee
+          ];
         in
         {
+          # Only the documentation tools, for the `docs` CI job.
+          docs = pkgs.mkShellNoCC { packages = docsTools; };
           default = pkgs.mkShell {
             packages =
               with pkgs;
-              [
+              docsTools
+              ++ [
                 (toolchainFor pkgs)
                 cargo-nextest
-                git
-                just
                 curl
                 pkg-config
                 openssl

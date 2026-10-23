@@ -1,6 +1,8 @@
 -- Manually set secrets move from environments into one store per application,
 -- where each secret lists the environments allowed to mount it. Generated
 -- secrets, the ones the saved manifest declares, stay with their environment.
+-- On upgrade, moved values keep their Docker secrets and deployment pins, so
+-- nothing is redeployed.
 CREATE TABLE application_secrets (
  application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
  name TEXT NOT NULL,
@@ -31,7 +33,7 @@ CREATE TABLE application_secret_versions (
  ciphertext BLOB NOT NULL,
  available INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0,1)),
  -- The environment a value moved from, whose encryption context it keeps
- -- until the daemon re-encrypts it on startup.
+ -- until the daemon re-encrypts it on a start with a usable master key.
  moved_from TEXT,
  PRIMARY KEY(application_id,name,generation),
  FOREIGN KEY(application_id,name) REFERENCES application_secrets(application_id,name) ON DELETE CASCADE
@@ -61,13 +63,19 @@ CREATE TABLE deployment_stored_secret_pins (
 -- application, the environment that uses it and comes first decides:
 -- production, else the oldest. An environment uses a name when it holds a value
 -- for it or the manifest it deploys declares it: the saved one, or for an
--- environment following a branch only the last one fetched from it.
+-- environment following a branch only the last one fetched from it (none
+-- before its first fetch).
 -- The deciding environment's value is generated, and stays, when its manifest
 -- declares the name or a retained deployment of it both declares and pins it
 -- (deleting a secret drops its pins, so a name set manually after deletion counts
 -- as manual). Otherwise it is manual and moves, with access limited to that
--- environment. Same-named secrets of other environments stay with them, where
--- their deployments' pins keep them, until deleted.
+-- environment, so no other environment gains access by upgrading. Same-named
+-- secrets of other environments stay with them, where their deployments' pins
+-- keep them, until deleted. An environment that disagrees with the deciding
+-- one needs a change before its next deployment: declaring a name that moved
+-- fails with `secret_name_conflict` until its manifest renames the
+-- declaration, and a name it set that the deciding environment generates is
+-- missing until it mounts another stored name through a variable.
 CREATE TEMP TABLE moved_secrets AS
 WITH users(environment_id,name) AS (
  SELECT environment_id,name FROM environment_secrets

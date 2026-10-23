@@ -1,7 +1,7 @@
 //! `just dev`: one isolated development instance per worktree, with its own
 //! configuration, data and runtime directories, localhost port, and Docker
 //! engine, so worktrees never share state. Instances can also serve on the
-//! tailnet through one shared node. See docs/development.md.
+//! tailnet through one shared node. See docs/dev/development.md.
 
 mod supervisor;
 mod tailnet;

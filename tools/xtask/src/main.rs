@@ -1,5 +1,5 @@
 //! Development tasks for the piqueld workspace, run with `cargo xtask`: this
-//! worktree's development instance (`just dev`, see docs/development.md), the
+//! worktree's development instance (`just dev`, see docs/dev/development.md), the
 //! isolated Docker integration tests, the Playwright browser suite, and the
 //! `piqueld-core` dependency boundary.
 

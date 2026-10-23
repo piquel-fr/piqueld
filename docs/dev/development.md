@@ -48,7 +48,7 @@ port, for example with `ssh -L`. Use `localhost`, not `127.0.0.1`: browsers
 allow passkeys on `localhost` over HTTP.
 
 The daemon runs as your user, so `just ctl` acts as the
-[host operator](authentication.md#the-host-operator) without signing in
+[host operator](../user/accounts/authentication.md#the-host-operator) without signing in
 (unless `PIQUELD_TOKEN` or a saved login selects an account), and
 `just ctl sign-in-link` prints a one-time link that signs the browser in the
 same way, even on a new instance. The link works once within 10 minutes; the
@@ -77,7 +77,7 @@ policy to limit who reaches the node.
 From then on, `just dev config` sets `[tailscale]` in new configurations, and
 `just dev config --force` moves an existing one to the node. The daemon only
 adds its port to the node's Serve configuration (see
-[sharing a tailscaled](configuration.md#sharing-a-tailscaled)), so the
+[sharing a tailscaled](../user/reference/configuration.md#sharing-a-tailscaled)), so the
 dashboard, the API through `piquelctl --url`, and tailnet identities work as
 in production. Session cookies are named after the port, so instances never
 sign each other out, but passkeys are bound to the node's name: a browser

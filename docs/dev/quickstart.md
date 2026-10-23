@@ -24,7 +24,7 @@ developer.
 In a second terminal, open the first-account setup link and create an account
 with a passkey, then sign in. The daemon runs as your user, so over its socket
 the CLI also works without `login`, as the
-[host operator](authentication.md#the-host-operator); `piquelctl sign-in-link`
+[host operator](../user/accounts/authentication.md#the-host-operator); `piquelctl sign-in-link`
 signs a browser in the same way, without a passkey. Over TCP, `login` is
 required:
 
@@ -41,7 +41,7 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock app apply \
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app show basic-website
 ```
 
-[`examples/basic-website.toml`](../examples/basic-website.toml) runs one
+[`examples/basic-website.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/basic-website.toml) runs one
 `nginx:alpine` replica with an HTTP health check.
 
 `status` reports the daemon version and `--json` produces the same structured
@@ -60,8 +60,8 @@ The application got one environment, `production`, which shares its ID. Add
 another with `piquelctl env create basic-website staging`; `app deploy`,
 `app reconcile`, and `app logs` then need an environment, so use
 `piquelctl env deploy basic-website staging`. A manifest can also
-[declare its environments](application-manifest.md#declared-environments).
-[`piquelctl.md`](piquelctl.md) covers field edits, secrets, previews, and
+[declare its environments](../user/reference/manifest.md#declared-environments).
+The [`piquelctl` reference](../user/reference/cli.md) covers field edits, secrets, previews, and
 promotion.
 
 ## Dashboard and cleanup
@@ -69,13 +69,13 @@ promotion.
 The development toolchain serves the dashboard through the running
 daemon, exactly like a deployment: run `just dev` instead of the commands
 above. It runs an isolated instance for the worktree, with its own Docker
-engine, on its own localhost port (see [`development.md`](development.md)). Give
+engine, on its own localhost port (see [development instances](development.md)). Give
 the first embedded build a moment to compile the dashboard, open the URL that
 `just dev wait` prints to inspect the overview, application list, and detail
 routes, and use `just ctl` instead of `just run --socket ...` for `piquelctl`;
 refresh after Rust or CSS changes. Any other daemon built with
 `--features embedded-ui` ships its own dashboard bundle inside the binary, as
-described in [`web-ui.md`](web-ui.md).
+described in the [dashboard architecture](architecture/dashboard.md).
 
 When finished, delete the application with its environments and note that
 their named volumes, if any, are retained (with several environments, add

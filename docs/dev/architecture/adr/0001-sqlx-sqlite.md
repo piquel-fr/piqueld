@@ -18,4 +18,4 @@ not implement another scheduler or persist an execution plan.
 `0001_control_plane.sql` creates the consolidated prototype schema, including
 receipts and progress fields; later numbered migrations extend it. Earlier
 prototypes require a fresh database.
-See [migrations](../migrations.md) for the schema lifecycle.
+See [persistence](../persistence.md) for the schema lifecycle.

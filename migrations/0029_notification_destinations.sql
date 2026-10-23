@@ -1,6 +1,9 @@
 -- Notification destinations, managed through the API instead of the daemon
 -- configuration. Each URL is encrypted with the secret master key; lost-key
--- recovery deletes the destinations.
+-- recovery deletes the destinations. Destinations configured in
+-- `[notifications]` are not imported, and pending deliveries to them are
+-- cancelled; the configuration now rejects that table, so destinations must
+-- be created again through the API.
 CREATE TABLE notification_destinations (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,

@@ -2,13 +2,13 @@
 
 A pure Rust infrastructure control plane for a single-node Docker Swarm: the
 `piqueld` daemon, the `piquelctl` CLI, and the Leptos dashboard. See
-`README.md` for the documentation index.
+`docs/README.md` for the documentation index.
 
 ## Testing
 
 The `piqueld-dev` skill in `.agents/skills` (linked from `.claude/skills`)
 runs this worktree's isolated development instance (`just dev`, see
-`docs/development.md`) on its own localhost port, for testing changes through
+`docs/dev/development.md`) on its own localhost port, for testing changes through
 the manifest, CLI, and dashboard preview.
 
 ## Commits & Pull Requests
@@ -28,3 +28,10 @@ For example, if we add a new setting for applications, that setting should be
 present in the manifest and editable through the CLI and the dashboard.
 
 When changing/adding to configuration, make sure to update the NixOS module.
+
+## Documentation
+
+The documentation in `docs/` is an mdBook with a user guide (`docs/user`) and a
+developer guide (`docs/dev`). Update it in the same pull request as the change
+it describes, following `docs/dev/documentation.md`, and run `just docs` to
+build it and check its links.

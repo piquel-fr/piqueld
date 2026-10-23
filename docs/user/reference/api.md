@@ -38,7 +38,7 @@ network; manually set secrets live in the application's secret store.
 Environment IDs are the IDs Docker names, ownership labels, and history derive
 from. Applications that existed before environments have one environment named
 `production` that kept their ID; new applications get the environments their
-manifest [declares](application-manifest.md#declared-environments), or a
+manifest [declares](manifest.md#declared-environments), or a
 `production` environment when it declares none. A new application's
 `production` shares the application ID; other environments get their own IDs.
 An environment's `source` is `{ "type": "saved" }` for applications without a
@@ -48,7 +48,7 @@ application's repository, optionally pinned to a commit (`"commit"`). The reposi
 manifest path stay on the application (`spec.manifest`). Connecting a repository
 points every environment at the branch `spec.manifest` names; disconnecting
 returns them to the saved manifest. A
-[promoted environment](application-manifest.md#promoted-environments) has
+[promoted environment](manifest.md#promoted-environments) has
 `{ "type": "promoted", "environment": "env-..." }`, naming by ID the environment
 it receives releases from; repository changes leave it promoted.
 
@@ -63,7 +63,7 @@ application views show and what environments deploy after disconnecting.
 A sibling hostname conflict returns `hostname_conflict` with the hostname and
 reserving environment name in `details.hostname` and `details.environment`.
 
-A [preview](application-manifest.md#previews) is an environment whose `kind`
+A [preview](manifest.md#previews) is an environment whose `kind`
 is `{ "type": "preview", "branch": "feat/login", "slot": "agent-2", "slug":
 "notes-feat-login-agent-2-503aa8" }`; environments have `{ "type": "environment" }`.
 A preview's `name` is its slug and its `source` is its branch. Application
@@ -89,7 +89,7 @@ the limits, installation-wide and for each readable application, sums the
 CPU and memory limits of their deployed replicas, and counts the replicas
 deployed before the limits applied, which run without them until redeployed.
 
-[Deploying on push](application-manifest.md#deploying-on-push) is configured by
+[Deploying on push](manifest.md#deploying-on-push) is configured by
 `spec.manifest.sync`. Environment views carry `sync`, true once an environment
 opted in (previews follow their application), and `synced`, the branch head as
 of its last deployment (`commit`, `at_ms`), which sync follows from; `commit`
@@ -99,7 +99,7 @@ preview was deployed, and `ApplicationView.sync_check` is the last listing of th
 branches (`checked_at_ms`, and `error` when it failed). Sync deployments are
 ordinary operations whose events carry a `system` actor, `sync:poll` or
 `sync:webhook`, with a `branch_synced` event naming the commit. GitHub
-deliveries never reach this API; see [push webhooks](ingress.md#push-webhooks).
+deliveries never reach this API; see [push webhooks](../guides/ingress.md#push-webhooks).
 
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
@@ -112,14 +112,14 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
-| GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments, with `drift`: how they differ from the environments the saved manifest [declares](application-manifest.md#declared-environments) |
+| GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments, with `drift`: how they differ from the environments the saved manifest [declares](manifest.md#declared-environments) |
 | POST | `/api/v1/applications/plan` | Plan a manifest without pulling images; `environment=ID` selects the environment to compare with |
-| POST | `/api/v1/applications/apply` | Save configuration by name, converging the environments it [declares](application-manifest.md#declared-environments); `?deploy=true` also deploys its only environment, or every declared one that builds (`operation_ids`) |
+| POST | `/api/v1/applications/apply` | Save configuration by name, converging the environments it [declares](manifest.md#declared-environments); `?deploy=true` also deploys its only environment, or every declared one that builds (`operation_ids`) |
 | DELETE | `/api/v1/applications/{id}` | Request deletion of every environment and preview; no body. `environments=a,b` must name every environment when there are several |
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment; 409 `repository_managed` for a repository-backed one |
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`). A `commit` without `branch` is 400 `revision_invalid`. 409 `environment_declared` for a name the saved manifest declares |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }`; 409 `environment_promoted` for a promoted environment |
-| PUT | `/api/v1/environments/{id}/telemetry` | Grant or revoke an environment's [telemetry](observability.md#receiving-telemetry-in-an-application): `{ "granted": true }`; needs `telemetry:grant` and no `expected_generation`. Revoking stops export at once. 404 for previews, which are never granted |
+| PUT | `/api/v1/environments/{id}/telemetry` | Grant or revoke an environment's [telemetry](../guides/observability.md#receiving-telemetry-in-an-application): `{ "granted": true }`; needs `telemetry:grant` and no `expected_generation`. Revoking stops export at once. 404 for previews, which are never granted |
 | PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
 | GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
 | POST | `/api/v1/applications/{id}/webhook/secret` | Generate a new webhook secret, replacing the previous one (`apps:write`); the `WebhookSecret` response is the only time it is shown |
@@ -145,7 +145,7 @@ when the complete normalized manifest is needed.
 | DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
-| GET | `/api/v1/events/stream` | Replay and follow history as server-sent events; see [observability](observability.md#api-and-dashboard) |
+| GET | `/api/v1/events/stream` | Replay and follow history as server-sent events; see [observability](../guides/observability.md#api-and-dashboard) |
 | GET | `/api/v1/environments/{id}/exec` | WebSocket streaming a command in a running service task |
 
 ### Local snapshots
@@ -219,7 +219,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/exports` | `{ "value": [{ "service": "api", "applications": ["notes"], "previews": false }] }`; replaces the services other applications may reach |
 | PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } }, "previews": { "domain": "preview.piquel.fr" } } }`; replaces every variable value, clearing those it omits |
-| PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](ingress.md#public-and-private-routes) ceiling of the environment with that name |
+| PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of the environment with that name |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -232,7 +232,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/services/{service}/file` | `ServiceFile`, e.g. `{ "target": "/etc/app/motd", "content": "hello" }`; adds/replaces by container target |
 | DELETE | `/services/{service}/file` | `{ "value": "/container/target" }` |
 | PUT | `/services/{service}/depends-on` | `{ "value": ["db"] }`; replaces the services that must be healthy before this one rolls out |
-| PUT | `/services/{service}/receives-telemetry` | `{ "value": true }`; makes the service the application's [telemetry receiver](application-manifest.md#telemetry-receivers) |
+| PUT | `/services/{service}/receives-telemetry` | `{ "value": true }`; makes the service the application's [telemetry receiver](manifest.md#telemetry-receivers) |
 | PUT | `/services/{service}/rollout` | `{ "value": { "order": "stop-first", "monitor_seconds": 30 } }`; replaces the rollout block, and omitted fields use their defaults |
 | PUT | `/services/{service}/secrets` | `{ "value": [{ "name": "token", "target": "/run/secrets/token" }] }`; replaces file references without exposing values |
 | PUT | `/services/{service}/healthcheck` | `{ "value": HealthCheck }`; null clears |
@@ -248,7 +248,7 @@ source/check settings require the appropriate variant; switch variants through
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation rules apply even with `force=true`. Repository-backed
 applications accept every edit; each applies to the manifests their deployments
-fetch (see [editing repository-backed applications](application-manifest.md#editing-repository-backed-applications)).
+fetch (see [editing repository-backed applications](manifest.md#editing-repository-backed-applications)).
 Disconnecting a repository preserves saved services and volumes for local editing.
 Renaming a service updates its routes, its jobs, its export, and dependents'
 `depends_on`; removing a service removes its routes, jobs, and export and drops
@@ -303,7 +303,7 @@ Force overrides both revision and name-based identity preconditions, even if sta
 values were supplied. Forced apply overwrites whichever application currently has
 the manifest name, or creates one if absent. ID-based mutations still target their
 URL's ID. Force never bypasses manifest validation, resource ownership, or rename
-busy/name-collision checks, and needs the same [permissions](authorization.md)
+busy/name-collision checks, and needs the same [permissions](../accounts/authorization.md)
 as the change without it.
 
 Reconcile acts on the current intent without requiring preconditions;
@@ -373,8 +373,8 @@ digest, or `{"state": "unavailable", "missing": [...]}` when a built image is
 gone, each missing entry naming its `service` and `image`. It is absent when
 Docker can't be asked. Deployments that use a retained image again fail with
 `image_unavailable`, naming the service and image, when it is gone and can't
-be pulled again; see [image retention](docker-reconciliation.md#image-retention). Deployments prepared before releases
-existed record theirs when the daemon first starts after upgrading.
+be pulled again; see
+[image retention](../../dev/architecture/docker-reconciliation.md#image-retention).
 
 A release can be rendered for another environment of its application without
 rebuilding: its own manifest renders with that environment's variables, and
@@ -384,7 +384,7 @@ release is incompatible there (422 `manifest_validation_failed` with a
 `web.source.build.args.VITE_ORIGIN`), typically because a build argument bakes
 in one environment's domain. Promotion uses this.
 
-A [promoted environment](application-manifest.md#promoted-environments) never
+A [promoted environment](manifest.md#promoted-environments) never
 builds or fetches: deploying it returns 409 `environment_promoted`, making an
 environment promoted returns 409 `application_busy` while a deployment of it
 is requested or running, and retrying an earlier deployment that never
@@ -471,7 +471,7 @@ hostnames through variables; two that render the same hostname fail with 409
 `hostname_conflict`. Renaming an environment returns 409 `environment_configured`
 while that manifest has a `[spec.environments.<name>]` block for the old or new
 name. Creating, deleting, or renaming to or from a name the saved manifest
-[declares](application-manifest.md#declared-environments), or changing the
+[declares](manifest.md#declared-environments), or changing the
 branch, source or sync of one whose block sets its source, returns 409
 `environment_declared`, naming it in `details.environment`. An application
 edit that would add a `[spec.environments.<name>]` block for a name no
@@ -517,7 +517,7 @@ selected environment. The manifest is rendered for that environment; a missing
 value fails with 422. `environments` lists how saving the manifest would change
 the application's environments: `create`, `source` and `sync` changes, and
 `undeclared` environments it no longer declares (see
-[declared environments](application-manifest.md#declared-environments)). A `start-first` order set on a service with a writable volume adds
+[declared environments](manifest.md#declared-environments)). A `start-first` order set on a service with a writable volume adds
 a non-blocking `rollout_start_first_writable_volume` warning to the plan. Each job
 appears as a `run_job` action where the deployment runs it, and an exclusive job
 adds a non-blocking `job_stops_services` warning naming the services it stops. For an existing
@@ -539,7 +539,7 @@ runtime actions. Execution computes its own unredacted plan after preparation.
 Plans cannot freeze mutable tags or runtime state.
 
 Events accept optional `cursor`, `limit` (1–100, default 50), and the filters
-listed in [observability](observability.md#api-and-dashboard), such as
+listed in [observability](../guides/observability.md#api-and-dashboard), such as
 `application_id` and `environment_id`. They survive ordinary operation pruning
 and environment deletion, and are removed with their application.
 Application-level facts (edits, renames) are recorded once, without an
@@ -552,10 +552,10 @@ resource. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
 The API requires a session cookie or bearer credential on every transport,
-except from the [host operator](authentication.md#the-host-operator) on the Unix
+except from the [host operator](../accounts/authentication.md#the-host-operator) on the Unix
 socket. Only setup/login endpoints and TCP `/health` are public; see
-[authentication](authentication.md). What each caller may do is decided by its
-[grants](authorization.md); every operation names its requirement in the
+[authentication](../accounts/authentication.md). What each caller may do is decided by its
+[grants](../accounts/authorization.md); every operation names its requirement in the
 contract's `x-piqueld-access` extension. TCP requests also validate Host and browser
 Fetch Metadata headers before authentication; DNS names need `server.allowed_hosts` (see
 [configuration](configuration.md)). Rejected requests return
@@ -565,8 +565,8 @@ Undecodable URL path parameters return `400 path_invalid`, and malformed IDs
 `400 application_id_invalid` or `environment_id_invalid`, with the usual JSON
 error and request ID. The dashboard
 is served at `/dashboard/`; `/health` is an unversioned TCP liveness endpoint.
-The Unix socket serves the API alone. See [the CLI guide](piquelctl.md) and
-[the generated contract](openapi-v1.json).
+The Unix socket serves the API alone. See [the CLI guide](cli.md) and
+[the generated contract](../../openapi-v1.json).
 
 `POST /api/v1/environments/{id}/deploy` prepares all sources again, including
 Git builds. It requires the inspected application generation unless forced and
@@ -584,14 +584,14 @@ environments keep their own. Its `refresh` operation records
 `fetching_manifest` progress and a `manifest_fetched` event with the commit
 hash. A fetch advances the generation when it changes the saved manifest, or
 when the saved manifest's
-[declared environments](application-manifest.md#declared-environments) change
+[declared environments](manifest.md#declared-environments) change
 the source of an environment with a deployment in progress.
 Failures use `manifest_not_found`, `manifest_fetch_failed`, or `manifest_invalid`.
 Direct apply saves a repository-backed application's configuration like any
 other's. Once it read one, `ApplicationView.repository` is the manifest the
 application last read from the branch `spec.manifest` names, with its
 connection: where the saved manifest differs from it are its
-[edits](application-manifest.md#editing-repository-backed-applications), which
+[edits](manifest.md#editing-repository-backed-applications), which
 deployments of that branch deploy until a push changes the manifest, and
 applying it again (`piquelctl app repository reset`) discards them.
 Reconcile retries the latest operation with its saved inputs; deploy refreshes
@@ -612,7 +612,7 @@ have no available history. No output is stored by piqueld.
 command in a running task of a service (preferring healthy tasks over those
 still starting) owned by this environment and daemon instance. Requests that
 are not WebSocket handshakes return `426 upgrade_required`. The caller needs
-[`apps:exec`](authorization.md) on the environment's application; cookie-authenticated
+[`apps:exec`](../accounts/authorization.md) on the environment's application; cookie-authenticated
 handshakes must send the configured `Origin`, like mutations.
 
 The client's first message is a JSON text message such as `{ "service": "auth",
@@ -634,7 +634,7 @@ big-endian `i64`) or a failure (4): the `u16` HTTP status an equivalent request
 would have returned, then the `ErrorBody` JSON. Failures to start the command,
 such as an invalid request, `404 not_found` or `409 service_not_running`, arrive
 this way too, so browsers can read them. The caller's access is rechecked while
-the command runs (see [authorization](authorization.md)); once it is
+the command runs (see [authorization](../accounts/authorization.md)); once it is
 lost, the session ends with the refusal, such as `401 authentication_required`
 or `403`, and the command, like after a disconnect, may keep running. When the daemon shuts down, the connection
 closes without a final message. `piqueld_core::exec` implements the
@@ -652,10 +652,10 @@ does not block configuration saves or history reads. `/health` remains a
 process-liveness endpoint. A separate `ingress` object reports gateway health and
 per-route HTTPS readiness, for applications the caller can read, without
 affecting `ready`; see
-[ingress](ingress.md#status-and-recovery). Each route status carries the
+[ingress](../guides/ingress.md#status-and-recovery). Each route status carries the
 route's `name`, when it has one. No registry checks are introduced.
 
-`EnvironmentDetailView.links` reports the [links](application-manifest.md#links)
+`EnvironmentDetailView.links` reports the [links](manifest.md#links)
 the environment's active target takes part in. `imports` lists each import with
 the `environment` it reaches, its `alias`, and its `state`: `connected`,
 `unavailable` (no deployed environment of that name exports the service to this
@@ -715,8 +715,8 @@ metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its environment.
 
-See [observability](observability.md) for diagnostic history, daemon statistics, analytics, telemetry
-export, and [notification destinations](observability.md#notifications) and their deliveries.
+See [observability](../guides/observability.md) for diagnostic history, daemon statistics, analytics, telemetry
+export, and [notification destinations](../guides/observability.md#notifications) and their deliveries.
 
 Manually set secrets live in one store per application; generated secrets
 belong to their environment. Secret endpoints expose metadata only:
@@ -809,8 +809,8 @@ database from backup), or can't be read for another reason, such as an I/O
 error or a key file that is not private to the daemon user (fix the host and
 retry the request that failed). Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
-preserved. Every application's [webhook secret](ingress.md#push-webhooks) is deleted
-too; generate a new one. So is every [notification destination](observability.md#notifications);
+preserved. Every application's [webhook secret](../guides/ingress.md#push-webhooks) is deleted
+too; generate a new one. So is every [notification destination](../guides/observability.md#notifications);
 create them again. Supplying replacement stored values creates new versions, and an
 explicit new deployment is required to adopt them; that deployment also generates
 new values for discarded generated secrets it mounts. Deployments that need

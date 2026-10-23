@@ -9,32 +9,6 @@ host without signing in, can sign a browser in with a one-time link, and can
 [recover administrator access](#recovering-administrator-access) if every
 administrator loses it.
 
-## Upgrading an existing installation
-
-1. Choose the stable HTTPS hostname and configure `auth.public_url` before creating
-   any passkeys. Arrange TLS termination, or enable the tailnet node, and verify
-   that the browser can reach it. Browsers need HTTPS even over Tailscale.
-2. Stop the daemon and back up its entire data directory, including `piqueld.db`
-   and any SQLite `-wal`/`-shm` files. Keep the previous binary and configuration.
-   The new daemon migrates the database on startup; an older binary rejects the
-   newer schema. Replacing the binary alone is not a supported rollback.
-3. Start the upgraded daemon, open the link printed by `piquelctl setup-link`, and
-   create the first account. Existing applications continue reconciling, but all
-   API clients now need credentials, including clients connecting over a Unix
-   socket, except the [host operator](#the-host-operator) (root or the daemon's
-   own user) on that socket.
-4. Run `piquelctl login` for interactive clients. Create automation tokens and
-   update scripts, deployment jobs, and API health checks that previously used
-   anonymous access. TCP `/health` remains public. Verify a browser edit and an
-   authenticated CLI command before declaring the upgrade complete.
-
-To roll back, stop the new daemon and restore the complete pre-upgrade data
-directory, previous binary, and configuration together. This discards database
-changes made since the backup, including accounts and application edits. Running
-Docker resources may have changed in the meantime; check them against the restored
-desired state before restarting reconciliation. Never restore a live database or
-combine a restored database with WAL files from the newer installation.
-
 ## Website and initial setup
 
 Build with the embedded dashboard (`just daemon-embedded` or the combined Nix
@@ -46,12 +20,12 @@ public_url = "https://piqueld.example.com"
 ```
 
 The simplest HTTPS origin on a tailnet is piqueld's own
-[tailnet node](configuration.md#tailnet-node): with `[tailscale]` enabled and
+[tailnet node](../reference/configuration.md#tailnet-node): with `[tailscale]` enabled and
 `public_url` unset, the origin is `https://<hostname>.<tailnet>.ts.net` and
 piqueld terminates TLS itself. Its state lives in the data directory, so moving
 or reinstalling the daemon with that directory keeps the name and passkeys. To use
 your own domain on the tailnet instead, set a
-[dashboard hostname](ingress.md#dashboard-hostname), which becomes the origin.
+[dashboard hostname](../guides/ingress.md#dashboard-hostname), which becomes the origin.
 
 Otherwise, terminate HTTPS at an external reverse proxy and forward requests to
 a configured piqueld listener. Keep both the proxy and piqueld reachable only from trusted
@@ -163,10 +137,10 @@ approve CLI logins. The dashboard shows it as "Host operator" and hides those
 actions. It is not an account, so every account rule still holds: in particular,
 some account must keep `admin` and a passkey.
 
-**How it is recorded.** History and the [audit trail](observability.md#audit-trail)
+**How it is recorded.** History and the [audit trail](../guides/observability.md#audit-trail)
 attribute its requests to the host operator and its Unix user, e.g.
 `host operator (uid 0)`, and to its browser session, if any. Issuing a sign-in
-link raises a [`security` notification](observability.md#security-notifications)
+link raises a [`security` notification](../guides/observability.md#security-notifications)
 ("A host operator sign-in link was issued over the Unix socket to uid 0"), and
 the daemon logs a warning. Live host operator browser sessions are listed on
 the dashboard's **Accounts** page and by `piquelctl account list`; revoke one
@@ -202,10 +176,10 @@ first account exists; use `piquelctl setup-link` then.
   never logged.
 
 **How it is recorded.** Issuing a link and redeeming it each raise a
-[`security` notification](observability.md#security-notifications) to
+[`security` notification](../guides/observability.md#security-notifications) to
 administrators ("An admin recovery link was issued over the Unix socket to uid
 0", then "… became an administrator by an admin recovery link"). Both appear in
-daemon history, the request appears in the [audit trail](observability.md#audit-trail),
+daemon history, the request appears in the [audit trail](../guides/observability.md#audit-trail),
 and the daemon logs a warning. An unexpected recovery notification means
 someone with root on the host is acting; treat it as a host compromise.
 
@@ -228,7 +202,7 @@ piquelctl --url https://piqueld.example.com status
 piquelctl --url https://piqueld.example.com logout
 ```
 
-A [tailnet node](configuration.md#tailnet-node) serves HTTPS, so
+A [tailnet node](../reference/configuration.md#tailnet-node) serves HTTPS, so
 `piquelctl --url https://piqueld.<tailnet>.ts.net login` works without any flag.
 
 Remote HTTP authentication is rejected by default, including device login.
@@ -295,7 +269,7 @@ renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity; only the
 [host operator](#the-host-operator) on the Unix socket needs none. The daemon
 serves no unauthenticated metrics; it pushes them instead, see
-[telemetry export](observability.md#telemetry-export).
+[telemetry export](../guides/observability.md#telemetry-export).
 
 Successful registrations, passkey logins, device approvals (with the requesting
 peer address), and account-management actions are logged at `info` level with the
@@ -307,52 +281,3 @@ passkey login in place. Unsaved editor changes stay mounted. After signing in,
 retry the failed action; mutations are never replayed automatically. Signing out
 still works when the server has already invalidated the session.
 
-## API and implementation
-
-The generated [OpenAPI contract](openapi-v1.json) documents `/api/v1/auth`:
-status, current account and its grants, registration and login ceremonies, logout,
-the account directory, management commands, device start/poll/inspect/approve
-operations, the first-account `GET /auth/setup-link` (Unix socket only), and
-the host operator's links: `POST /auth/recovery` and
-`POST /auth/sign-in-link` (Unix socket only), and `POST /auth/login/operator`,
-which redeems a sign-in link. `GET /auth/me` reports either a `user` or, for the
-host operator, an `operator` with its Unix user ID. `POST /auth/manage` accepts a tagged `action`; actions on other
-accounts follow the [authorization](authorization.md#managing-accounts) rules.
-Management responses never return existing credential secrets.
-The device protocol uses the device-code interaction pattern; the JSON endpoints
-are piqueld API contracts, not a general-purpose OAuth authorization server.
-
-Authentication rejections use the same request tracing and paired `x-request-id`
-header/error-body ID as other API responses. Authentication storage failures
-return `503 storage_unavailable` with a log-correlated `details.diagnostic_id`;
-they do not attempt to persist a diagnostic in the failing database. See
-[observability](observability.md#history-and-diagnostics).
-
-Authentication metadata shares the existing SQLite database. WebAuthn challenges
-and device requests are short-lived, bounded, server-side state; a daemon restart
-cancels pending ceremonies without invalidating durable credentials. All
-registration/login challenges are browser-bound and single-use. Registration
-requires resident credentials and verified users; assertions are checked against
-the exact configured origin, RP ID, credential, and immutable user handle.
-The pinned `webauthn-rs-core` integration requires OpenSSL and pkg-config for native
-builds; the Nix packages and development shell provide them.
-
-Public registration, login, and device-start requests are limited to 30 starts
-per TCP peer per minute, across all listeners. Requests refused for their Host,
-Fetch Metadata, or Origin do not count. IPv6 peers are grouped by /64
-prefix, and Unix socket callers share one peer bucket. Excess requests receive
-HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work are
-unaffected. There is no daemon-wide limit, so one caller cannot block sign-in for
-everyone else. Client-supplied forwarded IP headers are deliberately ignored: callers behind the
-same external reverse proxy share its allowance. The daemon's own tailnet node
-and [dashboard hostname](ingress.md#dashboard-hostname) gateway pass each
-client's tailnet address. Limits reset on daemon restart, along
-with pending ceremonies and device requests.
-
-Never expose piqueld to the internet, including through a reverse proxy. These
-limits protect a trusted network from accidents, not a public endpoint from
-abuse. Pending ceremonies and device requests have fixed in-memory capacities.
-
-Browser authentication and CLI device-login coverage lives in the
-[Playwright browser suite](../tests/playwright/README.md), including session revocation and
-preservation of unsaved editor drafts during reauthentication.

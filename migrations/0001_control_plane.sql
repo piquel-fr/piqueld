@@ -1,3 +1,10 @@
+-- The initial schema: instance metadata, applications with their status,
+-- operations, informational events and request receipts. An accepted manifest
+-- may have no resolved target yet; preparing an operation publishes it after
+-- planning checks. `promoted` is durable, so restart recovery knows whether
+-- to keep the old target during preparation or continue the new rollout.
+-- Earlier prototype schemas, such as those without the `superseded`
+-- operation state, require a fresh database.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE instance_metadata (
@@ -77,7 +84,8 @@ CREATE TABLE events (
 CREATE INDEX event_application ON events(application_id,id);
 CREATE INDEX event_created_at ON events(created_at_ms);
 
--- Acceptance receipts outlive operation pruning and contain no manifest values.
+-- Acceptance receipts expire after 24 hours, independently of operation and
+-- event retention, and contain no manifest values.
 CREATE TABLE request_receipts (
     request_id TEXT PRIMARY KEY,
     fingerprint TEXT NOT NULL,
