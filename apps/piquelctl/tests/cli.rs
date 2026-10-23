@@ -554,6 +554,51 @@ fn status_works_over_tcp_and_unix_with_clean_json() {
 }
 
 #[test]
+fn resources_and_settings_show_the_daemon_measurements_and_host_settings() {
+    let server = start_server(false, 3, |request| match request.path.as_str() {
+        "/api/v1/system/resources" => Reply::json(json!({
+            "sampled_at_ms": 1_700_000_000_000_i64, "uptime_seconds": 273_600,
+            "memory_bytes": 50_331_648, "cpu_seconds": 12.5, "cpu_percent": null,
+            "database_bytes": 12_582_912, "wal_bytes": 4_194_304,
+            "available_disk_bytes": null, "events": 1234, "diagnostics": 5,
+            "build_output_bytes": 2048, "running_operations": 1, "queued_operations": 2,
+            "pending_deliveries": 3, "failed_deliveries": 0
+        })),
+        "/api/v1/system/configuration" => Reply::json(json!({"groups": {
+            "Docker": {"Socket": "/run/docker.sock"},
+            "Server": {"HTTP listen mode": "unix", "HTTP port": "7845"}
+        }})),
+        path => unreachable!("unexpected request to {path}"),
+    });
+    let output = run_human(&server, &["resources"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "Uptime: 3 d 4 h",
+        "Memory: 48.0 MiB resident",
+        // The daemon's first measurement has no CPU usage yet.
+        "CPU: not measured yet; ask again in 5 seconds",
+        "Database: 12.0 MiB (WAL 4.0 MiB)",
+        "Available disk: unavailable on this host",
+        "Retained build output: 2.0 KiB",
+        "Operations: 1 running, 2 queued",
+        "Notification deliveries: 3 awaiting a retry, 0 failed",
+    ] {
+        assert!(stdout.contains(line), "{stdout}");
+    }
+
+    let output = run_human(&server, &["settings"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Docker:\n  Socket: /run/docker.sock\n\nServer:\n  HTTP listen mode: unix\n  HTTP port: 7845\n"
+    );
+    let settings = assert_json_success(&run(&server, &["settings"]));
+    assert_eq!(settings["groups"]["Server"]["HTTP port"], "7845");
+    assert_eq!(server.finish().len(), 3);
+}
+
+#[test]
 fn list_paginates_and_includes_reconciliation_status() {
     for unix in [false, true] {
         let mut page_number = 0;
