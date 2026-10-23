@@ -9,7 +9,7 @@ use super::{ClientErrorExt, UserError, access::can, confirm, dashboard_context};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use piqueld_client::{
-    ApplicationId, Client, ClientError,
+    ApplicationId, Client, ClientError, DEFAULT_PAGE_SIZE,
     access::{GlobalPermission, Permission},
     observability::{
         ApplicationSelection, CategoryRule, DeliveryState, DestinationKind, DestinationRequest,
@@ -537,7 +537,7 @@ fn Deliveries(refresh: Refresh, cursor: RwSignal<Option<String>>) -> impl IntoVi
         let cursor = cursor.get();
         async move {
             Client::browser()
-                .notification_deliveries(cursor.as_deref())
+                .notification_deliveries(cursor.as_deref(), DEFAULT_PAGE_SIZE)
                 .await
                 .user_error()
         }

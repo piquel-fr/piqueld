@@ -7173,3 +7173,52 @@ async fn notification_destinations_need_their_permissions_and_hide_urls() {
     assert_eq!(f.router.status(&manager, "DELETE", uri).await, 200);
     assert_eq!(f.router.status(&manager, "DELETE", uri).await, 404);
 }
+
+/// Deliveries are listed with `system:read` and retried with
+/// `system:operate`; a delivery that has not failed is refused with 409,
+/// naming why.
+#[tokio::test]
+async fn delivery_retries_need_system_operate_and_name_refusals() {
+    let f = GrantFixture::new().await;
+    let database = database(&f.temp);
+    let reader = seed_account(&database, "reader", &[("system:read", None)]).await;
+    let operator = seed_account(&database, "operator", &[("system:operate", None)]).await;
+    let mut connection = sqlite::connect(&database).await;
+    sqlx::query(
+        "INSERT INTO notification_deliveries(id,event_id,destination,category,state,
+            created_at_ms,retry_started_at_ms,next_attempt_ms,updated_at_ms)
+        SELECT 'delivery-01',MIN(id),'ops','deployment_failures','pending',1,1,1,1 FROM events",
+    )
+    .execute(&mut connection)
+    .await
+    .unwrap();
+    let (status, listed) = f
+        .router
+        .call(
+            &reader,
+            "GET",
+            "/api/v1/notifications/deliveries?limit=1",
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(
+        (status, &listed["data"]["items"][0]["id"]),
+        (200, &"delivery-01".into())
+    );
+    let retry = "/api/v1/notifications/deliveries/delivery-01/retry";
+    assert_eq!(f.router.status(&reader, "POST", retry).await, 403);
+    let (status, error) = f
+        .router
+        .call(&operator, "POST", retry, serde_json::Value::Null)
+        .await;
+    assert_eq!(
+        (status, &error["code"]),
+        (409, &"delivery_not_retryable".into())
+    );
+    assert!(
+        error["message"].as_str().unwrap().contains("pending"),
+        "{error}"
+    );
+    let missing = "/api/v1/notifications/deliveries/missing/retry";
+    assert_eq!(f.router.status(&operator, "POST", missing).await, 404);
+}

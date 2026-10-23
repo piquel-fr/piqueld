@@ -73,15 +73,14 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Events {
             application,
             environment,
-            cursor,
-            limit,
+            page,
         } => console.emit(
             &client
                 .events(
                     application.as_deref(),
                     environment.as_deref(),
-                    cursor.as_deref(),
-                    *limit,
+                    page.cursor.as_deref(),
+                    page.limit,
                 )
                 .await?,
         ),

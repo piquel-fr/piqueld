@@ -107,11 +107,32 @@ piquelctl notification test ops
 ```
 
 `notification test` sends a test notification at once and fails unless the
-receiver acknowledges it; `list` shows destinations without URLs, `delete`
-removes one (`--yes` skips confirmation), `deliveries` lists deliveries newest
-first, and `retry ID` retries a failed one. Changing destinations needs
-`notifications:manage`, listing them `system:read` or `notifications:manage`,
-and retrying `system:operate`.
+receiver acknowledges it; `list` shows destinations without URLs, and `delete`
+removes one (`--yes` skips confirmation). Changing destinations needs
+`notifications:manage`, and listing them `system:read` or `notifications:manage`.
+
+List the latest deliveries, newest first:
+
+```console
+piquelctl notification deliveries --limit 20
+```
+
+Each line shows the delivery's ID, destination, category, subject, state and
+attempts, when it last changed, and its last error. A pending delivery shows
+when it is next attempted instead. The page holds 50 deliveries unless you pass
+`--limit`, up to 100. Pass the printed `--cursor` to read the next page.
+
+Try a failed delivery again, with its destination's current settings:
+
+```console
+piquelctl notification retry <delivery-id>
+```
+
+Listing deliveries needs `system:read`, and retrying them `system:operate`.
+The daemon refuses to retry a delivery that hasn't failed, that its destination
+no longer receives, or whose incident has since closed or opened again. The
+command then fails with `delivery_not_retryable` and exit code 3, and its
+message says why. See [notifications](../guides/observability.md#notifications).
 
 `env telemetry APP ENV on` grants an environment the daemon's
 [telemetry](../guides/observability.md#receiving-telemetry-in-an-application): its

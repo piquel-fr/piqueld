@@ -94,15 +94,17 @@ impl Client {
             .data()
             .await
     }
-    /// Gets one page of webhook delivery outcomes.
+    /// Gets one page of webhook delivery outcomes, newest first.
     /// # Errors
-    /// Returns transport, decoding or API errors.
+    /// Returns invalid page size, transport, decoding or API errors.
     pub async fn notification_deliveries(
         &self,
         cursor: Option<&str>,
+        limit: u16,
     ) -> Result<Page<NotificationDelivery>, ClientError> {
+        check_page_limit("delivery", limit)?;
         self.generated
-            .notification_deliveries(cursor, Some(i64::from(crate::DEFAULT_PAGE_SIZE)))
+            .notification_deliveries(cursor, Some(i64::from(limit)))
             .data()
             .await
     }
@@ -151,7 +153,8 @@ impl Client {
     }
     /// Retries a failed notification under the active destination policy.
     /// # Errors
-    /// Returns transport, disabled destination, decoding or API errors.
+    /// Returns transport, absence, decoding or API errors, including 409
+    /// `delivery_not_retryable` naming why it cannot be retried.
     pub async fn retry_notification(&self, id: &str) -> Result<(), ClientError> {
         self.generated
             .retry_notification_delivery(id)

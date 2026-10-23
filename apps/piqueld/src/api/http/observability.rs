@@ -107,10 +107,12 @@ pub(super) async fn deliveries(
         )
         .await?))
 }
-/// Retries a webhook notification delivery.
+/// Retries a failed webhook notification delivery.
 ///
 /// Schedules another attempt using the current destination configuration.
-#[utoipa::path(post,path="/api/v1/notifications/deliveries/{id}/retry",operation_id="retryNotificationDelivery",params(("id"=String,Path)),responses((status=200,body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+/// Needs `system:operate`. A delivery that exists but cannot be retried fails
+/// with 409 `delivery_not_retryable`, whose message says why.
+#[utoipa::path(post,path="/api/v1/notifications/deliveries/{id}/retry",operation_id="retryNotificationDelivery",params(("id"=String,Path)),responses((status=200,body=Envelope<bool>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn retry_delivery(
     State(state): State<ApiState>,
     Extension(identity): Extension<Identity>,

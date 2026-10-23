@@ -29652,7 +29652,7 @@
     },
     "/api/v1/notifications/deliveries/{id}/retry": {
       "post": {
-        "description": "Schedules another attempt using the current destination configuration.",
+        "description": "Schedules another attempt using the current destination configuration.\nNeeds `system:operate`. A delivery that exists but cannot be retried fails\nwith 409 `delivery_not_retryable`, whose message says why.",
         "operationId": "retryNotificationDelivery",
         "parameters": [
           {
@@ -29705,6 +29705,16 @@
             },
             "description": "Structured, sanitized error"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
           "503": {
             "content": {
               "application/json": {
@@ -29716,7 +29726,7 @@
             "description": "Structured, sanitized error"
           }
         },
-        "summary": "Retries a webhook notification delivery.",
+        "summary": "Retries a failed webhook notification delivery.",
         "x-piqueld-access": "system:operate"
       }
     },

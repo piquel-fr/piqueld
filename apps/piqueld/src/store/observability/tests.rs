@@ -260,7 +260,7 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
             store
                 .retry_delivery(crate::api::Actor::Daemon, &failure.id)
                 .await,
-            Err(StoreError::InvalidInput)
+            Err(StoreError::Retry(RetryError::Closed))
         ));
     }
 }
@@ -318,15 +318,14 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
         store
             .retry_delivery(crate::api::Actor::Daemon, &recovery.id)
             .await,
-        Err(StoreError::InvalidInput)
+        Err(StoreError::Retry(RetryError::Reopened))
     ));
 }
 
-#[tokio::test]
-async fn open_daemon_incidents_remain_manually_retryable() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
-    notify(&store).await;
+/// Opens a daemon incident whose delivery to `test` fails, returning the
+/// delivery's ID.
+async fn failed_daemon_delivery(store: &Store) -> String {
+    notify(store).await;
     let diagnostic = Diagnostic::new(
         new_id("diagnostic"),
         piqueld_core::observability::DiagnosticCode::InternalError,
@@ -342,14 +341,60 @@ async fn open_daemon_incidents_remain_manually_retryable() {
         .complete_delivery(&delivery.id, DeliveryState::Failed, Some("Rejected"), 0)
         .await
         .unwrap();
+    delivery.id
+}
+#[tokio::test]
+async fn open_daemon_incidents_remain_manually_retryable() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let delivery = failed_daemon_delivery(&store).await;
     store
-        .retry_delivery(crate::api::Actor::Daemon, &delivery.id)
+        .retry_delivery(crate::api::Actor::Daemon, &delivery)
         .await
         .unwrap();
     assert_eq!(
         store.deliveries(None, 100).await.unwrap().items[0].state,
         DeliveryState::Pending
     );
+}
+/// Retry names why it refuses a delivery: one that has not failed, or whose
+/// destination no longer receives it.
+#[tokio::test]
+async fn retry_refusals_name_their_reason() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let delivery = failed_daemon_delivery(&store).await;
+    let retry = || store.retry_delivery(crate::api::Actor::Daemon, &delivery);
+    assert!(matches!(
+        store
+            .retry_delivery(crate::api::Actor::Daemon, "missing")
+            .await,
+        Err(StoreError::NotFound)
+    ));
+    retry().await.unwrap();
+    assert!(matches!(
+        retry().await,
+        Err(StoreError::Retry(RetryError::NotFailed(
+            DeliveryState::Pending
+        )))
+    ));
+    store
+        .complete_delivery(&delivery, DeliveryState::Failed, Some("Rejected"), 0)
+        .await
+        .unwrap();
+    put(
+        &store,
+        &DestinationSettings {
+            enabled: false,
+            ..settings()
+        },
+        None,
+    )
+    .await;
+    assert!(matches!(
+        retry().await,
+        Err(StoreError::Retry(RetryError::NotReceived))
+    ));
 }
 /// As after a downgrade across a category a newer version added.
 #[tokio::test]
@@ -402,7 +447,7 @@ async fn an_undeliverable_delivery_does_not_block_the_next() {
         store
             .retry_delivery(crate::api::Actor::Daemon, &poisoned)
             .await,
-        Err(StoreError::InvalidInput)
+        Err(StoreError::Retry(RetryError::UnknownCategory))
     ));
 }
 /// Replaces the settings of the destination `test`, keeping its URL unless
@@ -965,7 +1010,7 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
         store
             .retry_delivery(crate::api::Actor::Daemon, &second.id)
             .await,
-        Err(StoreError::InvalidInput)
+        Err(StoreError::Retry(RetryError::Recovered))
     ));
     assert!(store.claim_delivery().await.unwrap().is_none());
 }
