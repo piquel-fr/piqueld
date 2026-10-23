@@ -10,6 +10,7 @@ use leptos::prelude::*;
 use piqueld_client::{
     ApplicationManifest, Client, FileSource, GitRepository, Mount, RepositoryManifest, Rollout,
     Service, Source, Typed, Volume,
+    access::AppPermission,
     edit::{ApplicationEdit, ServiceEdit, ServiceGeneral, ServiceProcess},
     sync::RepositorySync,
 };
@@ -61,7 +62,8 @@ impl RepositoryDraft {
 
 /// Toggle and fields for loading the application's configuration from a Git
 /// manifest on deploy, and for deploying it on push. Saving is refused while
-/// other form groups have unsaved edits.
+/// other form groups have unsaved edits, read-only without `apps:write`, and
+/// turning deploying on push on also needs `apps:deploy`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn RepositorySettings() -> impl IntoView {
@@ -83,6 +85,15 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                 .as_ref()
                 .map(|manifest| manifest.sync)
         })
+    };
+    // Whether saving would let pushes deploy without `apps:deploy`.
+    let undeployable = move || {
+        let edit =
+            ApplicationEdit::Repository(form.with(|v| v.enabled.then(|| v.manifest.clone())));
+        !context.can(AppPermission::Deploy)
+            && context
+                .saved
+                .with(|saved| edit.deploys_on_push(saved.application.spec().manifest.as_ref()))
     };
     let save = move || {
         if other_edits() {
@@ -121,7 +132,16 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                         "Save or discard edits in other settings before changing the repository connection.",
                     )}
                 </Show>
-                <fieldset class="stack-sm" disabled={move || context.blocked()}>
+                <Show when={undeployable}>
+                    {notice(
+                        Tone::Warn,
+                        "Deploying on push also requires the apps:deploy permission.",
+                    )}
+                </Show>
+                <fieldset
+                    class="stack-sm"
+                    disabled={move || context.blocked() || !context.can(AppPermission::Write)}
+                >
                     <label class="checkbox">
                         <input
                             type="checkbox"
@@ -166,7 +186,7 @@ pub(super) fn RepositorySettings() -> impl IntoView {
                     <p class="hint" hidden={move || !form.with(|v| v.enabled)}>
                         "When on, pushes deploy every preview, and every environment that opted in on its page and follows an unpinned branch, once it was deployed."
                     </p>
-                    {draft.actions(save, other_edits)}
+                    {draft.actions(save, move || other_edits() || undeployable())}
                 </fieldset>
                 <Show when={move || saved_sync().is_some_and(|sync| !sync.is_off())}>
                     <SyncCheck />
@@ -301,6 +321,7 @@ fn SyncCheck() -> impl IntoView {
 /// the payload URL, and a secret generated on demand and shown only once,
 /// on the Source tab, until dismissed or the tab is left. Rotating confirms first, since
 /// the previous secret stops verifying at once, and is never retried.
+/// Generating and rotating need `apps:write`.
 #[component]
 fn WebhookSettings() -> impl IntoView {
     let context = editor();
@@ -349,6 +370,7 @@ fn WebhookSettings() -> impl IntoView {
                 <button
                     type="button"
                     class="btn"
+                    hidden={move || !context.can(AppPermission::Write)}
                     disabled={move || context.blocked() || data.get().is_none()}
                     on:click={generate}
                 >
@@ -434,7 +456,8 @@ fn WebhookSettings() -> impl IntoView {
     }
 }
 
-/// Application title with an inline rename form behind the pencil button.
+/// Application title with an inline rename form behind the pencil button,
+/// shown with `apps:write`.
 #[component]
 pub(super) fn MetadataSettings() -> impl IntoView {
     let context = editor();
@@ -454,7 +477,7 @@ pub(super) fn MetadataSettings() -> impl IntoView {
             class="btn btn-ghost btn-icon"
             aria-label="Rename application"
             title="Rename application"
-            hidden={move || editing.get()}
+            hidden={move || editing.get() || !context.can(AppPermission::Write)}
             disabled={move || context.blocked()}
             on:click={move |_| editing.set(true)}
         >
@@ -631,7 +654,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
                     <p>{section_hint(section)}</p>
                 </div>
             </header>
-            <fieldset disabled={move || context.blocked()}>
+            <fieldset disabled={move || context.blocked() || !context.can(AppPermission::Write)}>
                 {service_fields(section, name.get_value(), form)} {draft.actions(save, || false)}
             </fieldset>
         </section>
@@ -1218,7 +1241,8 @@ fn rollout_fields(form: RwSignal<ServiceForm>) -> AnyView {
     .into_any()
 }
 
-/// "Add service" button and modal that saves a new single-replica image service.
+/// "Add service" button and modal that saves a new single-replica image
+/// service. The button is shown with `apps:write`.
 #[component]
 pub(super) fn NewService() -> impl IntoView {
     let context = editor();
@@ -1254,6 +1278,7 @@ pub(super) fn NewService() -> impl IntoView {
         <button
             type="button"
             class="btn btn-primary"
+            hidden={move || !context.can(AppPermission::Write)}
             disabled={move || context.blocked()}
             on:click={move |_| opened.set(true)}
         >

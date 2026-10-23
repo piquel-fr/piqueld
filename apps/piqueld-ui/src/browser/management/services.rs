@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
-use piqueld_client::{Source, edit::ApplicationEdit};
+use piqueld_client::{Source, access::AppPermission, edit::ApplicationEdit};
 
 const SERVICE_TABS: [&str; 11] = [
     Section::General.title(),
@@ -108,7 +108,7 @@ pub(super) fn ServiceList() -> impl IntoView {
 
 /// Service page: one tab per `Section` settings group plus a scoped log tab, and a
 /// remove button that saves the service's removal and returns to the service list.
-/// Editing is disabled when the application is managed from a Git manifest.
+/// Editing is disabled without `apps:write`, which also hides the remove button.
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
@@ -173,6 +173,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                 <button
                     type="button"
                     class="btn btn-danger"
+                    hidden={move || !context.can(AppPermission::Write)}
                     disabled={move || context.action_blocked()}
                     on:click={remove}
                 >
@@ -181,9 +182,16 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs label="Service sections" options={&SERVICE_TABS} selected={selected} />
+        <Tabs
+            label="Service sections"
+            options={&SERVICE_TABS}
+            selected={selected}
+            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
+        />
         <div class="stack">
-            <Show when={move || selected.get() == "Logs"}>
+            {move || {
+                if selected.get() == "Logs" { None } else { context.read_only_notice() }
+            }} <Show when={move || selected.get() == "Logs"}>
                 <ServiceLogs name={log_service.clone()} />
             </Show> {groups}
         </div>
