@@ -168,6 +168,9 @@ pub(crate) enum Command {
     Builds(BuildArgs),
     /// Inspect or wait for one asynchronous operation.
     Operation(OperationArgs),
+    /// Summarize deployment outcomes, retries, durations, and failure codes
+    /// over a time window, for every readable application or one environment.
+    Analytics(crate::analytics::AnalyticsArgs),
     /// Read one page of informational events, oldest first.
     Events {
         /// Filter by stable application ID: its own events and those of all its
@@ -428,22 +431,26 @@ pub(crate) struct OperationArgs {
     pub(crate) no_wait: bool,
 }
 
-/// Parses a positive integer duration with an optional unit (`ms`, `s`, `m`, `h`;
-/// bare numbers are seconds). Used for `--timeout`, `PIQUELD_TIMEOUT`, and profiles.
+/// Parses a positive integer duration with an optional unit (`ms`, `s`, `m`, `h`,
+/// `d`; bare numbers are seconds). Used for `--timeout`, `PIQUELD_TIMEOUT`,
+/// profiles, and the `analytics` window.
 ///
 /// ```text
-/// "500ms" → 500ms    "30" → 30s    "2m" → 120s    "0s" / "1.5s" / "-1" → error
+/// "500ms" → 500ms    "30" → 30s    "2m" → 120s    "7d" → 604800s    "0s" / "1.5s" / "-1" → error
 /// ```
 pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, String> {
     /// Converts a number of the unit, `None` when it overflows.
     type Unit = fn(u64) -> Option<Duration>;
     // `ms` comes first because it ends with `s`.
-    let units: [(&str, Unit); 4] = [
+    let units: [(&str, Unit); 5] = [
         ("ms", |number| Some(Duration::from_millis(number))),
         ("s", |number| Some(Duration::from_secs(number))),
         ("m", |number| Duration::from_secs(number).checked_mul(60)),
         ("h", |number| {
             Duration::from_secs(number).checked_mul(60 * 60)
+        }),
+        ("d", |number| {
+            Duration::from_secs(number).checked_mul(24 * 60 * 60)
         }),
     ];
     let (number, unit) = units
@@ -451,15 +458,15 @@ pub(crate) fn parse_duration(value: &str) -> std::result::Result<Duration, Strin
         .find_map(|(suffix, unit)| value.strip_suffix(suffix).map(|number| (number, unit)))
         .unwrap_or((value, units[1].1));
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("timeout must be an integer duration such as 500ms, 30s, or 2m".to_owned());
+        return Err("expected an integer duration such as 500ms, 30s, 2m, or 7d".to_owned());
     }
     let duration = number
         .parse()
         .ok()
         .and_then(unit)
-        .ok_or_else(|| "timeout is too large".to_owned())?;
+        .ok_or_else(|| "duration is too large".to_owned())?;
     if duration.is_zero() {
-        return Err("timeout must be greater than zero".to_owned());
+        return Err("duration must be greater than zero".to_owned());
     }
     Ok(duration)
 }

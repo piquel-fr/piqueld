@@ -876,10 +876,7 @@ fn runtime_health(status: &EnvironmentStatusView) -> String {
     let Some(observed) = status.health_observed_at_ms else {
         return health.into();
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |now| i64::try_from(now.as_millis()).unwrap_or(i64::MAX));
-    let seconds = now.saturating_sub(observed).max(0) / 1000;
+    let seconds = crate::support::now_ms().saturating_sub(observed).max(0) / 1000;
     let age = match seconds {
         0..120 => format!("{seconds} s"),
         120..7_200 => format!("{} min", seconds / 60),
@@ -1021,7 +1018,7 @@ report!(CreatedPreviewReport<'_>, self, out, {
 impl HumanWriter<'_> {
     /// Writes `empty` when there are no `rows`, else the `heading` line and
     /// each row.
-    fn table<T>(
+    pub(crate) fn table<T>(
         &mut self,
         rows: &[T],
         empty: &str,

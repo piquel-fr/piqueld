@@ -1,6 +1,6 @@
 //! Event history, diagnostics, daemon statistics and settings, analytics,
 //! and the audit trail.
-use super::format::{bytes, duration, duration_f64, duration_secs, now_ms, timestamp};
+use super::format::{bytes, duration_secs, now_ms, timestamp};
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, metric, notice, when,
 };
@@ -13,8 +13,9 @@ use piqueld_client::{
     Client, DEFAULT_PAGE_SIZE, Event, EventActor,
     access::{GlobalPermission, Permission},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome},
-    observability::{DaemonStats, DeploymentAnalytics, EventFilter, EventScope},
+    observability::{DaemonStats, DeploymentAnalytics, Elapsed, EventFilter, EventScope},
 };
+use std::time::Duration;
 
 /// Revision counter that observability resources track to refetch.
 /// Bumped every 5 seconds while the tab is visible, or on demand.
@@ -31,7 +32,7 @@ impl Refresh {
                     revision.update(|r| *r = r.wrapping_add(1));
                 }
             },
-            std::time::Duration::from_secs(5),
+            Duration::from_secs(5),
         ) {
             on_cleanup(move || handle.clear());
         }
@@ -316,7 +317,7 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
         event.retry.map(|retry| format!("request {retry}")),
         event
             .duration_ms
-            .map(|ms| duration(i64::try_from(ms).unwrap_or(i64::MAX))),
+            .map(|ms| Elapsed(Duration::from_millis(ms)).to_string()),
         event.error_code.clone(),
         event.action_id.clone().map(|id| format!("action {id}")),
         match &event.actor {
@@ -652,7 +653,9 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                 {metric("Failed", a.failed.to_string(), Some("latest attempt"))}
                 {metric(
                     "Mean attempt",
-                    a.mean_duration_ms.map_or_else(|| "—".into(), duration_f64),
+                    a
+                        .mean_duration_ms
+                        .map_or_else(|| "—".into(), |ms| Elapsed::from_millis_f64(ms).to_string()),
                     Some("completed deployment attempts"),
                 )}
             </div>
@@ -697,7 +700,7 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                                             <tr>
                                                 <td>{r.phase}</td>
                                                 <td class="num">{r.count}</td>
-                                                <td class="num">{duration_f64(r.mean_ms)}</td>
+                                                <td class="num">{Elapsed::from_millis_f64(r.mean_ms).to_string()}</td>
                                             </tr>
                                         }
                                     })
