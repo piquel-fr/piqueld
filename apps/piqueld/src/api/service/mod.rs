@@ -912,9 +912,16 @@ impl ApplicationService {
         mutation.check_submission(expected_generation, force, request_id)?;
         let receivers = mutation.changes_receivers();
         let stops = matches!(mutation, Mutation::Stop { .. });
-        let (response, wake) = self
-            .store
-            .accept(actor, mutation, expected_generation, force, request_id)
+        let started = match &mutation {
+            Mutation::Reconcile { id } if self.store.is_stopped(id).await? => Some(id.clone()),
+            _ => None,
+        };
+        // Boxed: acceptance holds a whole mutation across awaits.
+        let (response, wake) =
+            Box::pin(
+                self.store
+                    .accept(actor, mutation, expected_generation, force, request_id),
+            )
             .await?;
         if stops && let Some(ingress) = &self.ingress {
             // Withdraws its routes before answering, so they no longer
@@ -925,6 +932,12 @@ impl ApplicationService {
         }
         if wake {
             self.runtime.trigger_reconciliation();
+        }
+        if let Some(id) = started {
+            // Sync skipped it while stopped, and webhooks don't come again:
+            // list its repository now to deploy the head it missed.
+            self.hints
+                .hint(self.store.get(&id).await?.environment.application_id);
         }
         if receivers {
             // Stops export to a revoked or deleted receiver before

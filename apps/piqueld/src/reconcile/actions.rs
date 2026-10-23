@@ -27,6 +27,7 @@ impl<D: DockerApi> Controller<D> {
         action: &piqueld_core::PlanAction,
         operation: &Operation,
         ownership: &std::collections::BTreeMap<String, String>,
+        stopped: bool,
         cancellation: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
@@ -64,11 +65,11 @@ impl<D: DockerApi> Controller<D> {
                 }
             }
             ActionKind::WaitForService { service } => {
-                self.wait_service(operation, service, false, cancellation, deadline)
+                self.wait_service(operation, service, false, stopped, cancellation, deadline)
                     .await
             }
             ActionKind::WaitForServiceRemoval { service } => {
-                self.wait_service(operation, service, true, cancellation, deadline)
+                self.wait_service(operation, service, true, stopped, cancellation, deadline)
                     .await
             }
             _ => Ok(()),
@@ -291,18 +292,19 @@ impl<D: DockerApi> Controller<D> {
     /// `removed`, no longer exists). A `Failed` convergence ends the wait with
     /// `ServiceUpdateFailed`, and a service that disappeared fails the
     /// attempt, which is retried, rather than waiting out the deadline, which
-    /// yields `ConvergenceTimeout`. Stopping or starting the environment
-    /// meanwhile ends the wait, so the operation replans at once.
+    /// yields `ConvergenceTimeout`. The wait ends early once the environment
+    /// is no longer `stopped` as the plan saw it, so the operation replans at
+    /// once.
     pub(super) async fn wait_service(
         &self,
         operation: &Operation,
         name: &str,
         removed: bool,
+        stopped: bool,
         cancellation: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
         let mut poll = SERVICE_POLL;
-        let stopped = self.store.is_stopped(&operation.environment_id).await?;
         loop {
             if self.store.is_stopped(&operation.environment_id).await? != stopped {
                 return Ok(());
