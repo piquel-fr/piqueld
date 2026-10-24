@@ -6,9 +6,10 @@ watch it run in the dashboard.
 
 ## Before you start
 
-- You have [an account](first-account.md), and `piquelctl` is signed in. On
-  another machine than the host, keep `PIQUELD_URL` set, as when you
-  [signed it in](first-account.md#sign-piquelctl-in).
+- You have [an account](first-account.md), and `piquelctl` is signed in.
+  Run the commands on this page on the host, or on any machine where
+  `piquelctl` is signed in. On another machine, keep `PIQUELD_URL` set, as
+  when you [signed it in](first-account.md#sign-piquelctl-in).
 - The host can pull images from Docker Hub.
 
 ## Write the manifest
@@ -94,13 +95,13 @@ to `/`.
 
 ## Change it
 
-Edit the manifest, for example to run two replicas of `web`. Add `replicas`
-below the service's name:
+Edit the manifest, for example to run two replicas of `web`. Add one line to
+its existing `[[spec.services]]` entry:
 
-```toml
-[[spec.services]]
-name = "web"
-replicas = 2
+```diff
+ [[spec.services]]
+ name = "web"
++replicas = 2
 ```
 
 Then run `piquelctl app apply --file hello.toml --deploy` again.
@@ -127,8 +128,8 @@ piquelctl app delete hello
 
 ## Troubleshooting
 
-- **`piquelctl` times out.** It waits 30 seconds by default, which pulling a
-  large image can take longer than. The deployment carries on: follow it in
+- **`piquelctl` times out.** It waits 30 seconds by default, and pulling a
+  large image can take longer. The deployment carries on: follow it in
   the dashboard, or give `piquelctl` longer, such as
   `piquelctl --timeout 5m app apply --file hello.toml --deploy`.
 - **The deployment fails.** `piquelctl` prints the error. The environment's

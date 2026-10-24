@@ -1,5 +1,8 @@
 # Introduction
 
+Start here to learn what piqueld does, and the concepts the rest of this
+documentation uses.
+
 piqueld runs your applications on one Linux server with Docker. You describe
 each application in a manifest: its services, how to get their images, and how
 to reach them. piqueld builds and deploys it, serves it over HTTPS, and keeps
@@ -40,9 +43,9 @@ You manage it from:
 ## Limits
 
 - piqueld manages a single host. It doesn't run clusters of several machines.
-- Routes expose services over HTTP and HTTPS. piqueld doesn't publish other
-  TCP or UDP ports, though an application's services reach each other on any
-  port.
+- Routes serve applications over HTTPS, and redirect plain HTTP to it.
+  piqueld doesn't publish other TCP or UDP ports, though an application's
+  services reach each other on any port.
 - It doesn't manage registry credentials.
 
 ## Get started
