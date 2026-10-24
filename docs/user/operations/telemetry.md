@@ -57,9 +57,14 @@ any machine where it's signed in.
    the host or a private network. The endpoint can't contain credentials, a
    path or a query.
 
-3. Restart the daemon, which only reads its configuration when it starts:
-   `sudo nixos-rebuild switch` restarts it on NixOS, and elsewhere run
-   `sudo systemctl restart piqueld`.
+3. Restart the daemon, which only reads its configuration when it starts. On
+   NixOS, `sudo nixos-rebuild switch` restarts it. Elsewhere, reload the edited
+   unit first:
+
+   ```console
+   sudo systemctl daemon-reload
+   sudo systemctl restart piqueld
+   ```
 
 piqueld also exports the output and resource usage of every container it runs.
 To export only its own telemetry, set `containers = false` under
@@ -109,9 +114,9 @@ any port.
 
    `piquelctl app service telemetry <app> collector on` does the same.
 
-2. Make the collector listen on `/run/piqueld/telemetry/otlp.sock`, with this
-   receiver in its configuration, mounted as a
-   [file](../reference/manifest.md#files):
+2. Make the collector listen on `/run/piqueld/telemetry/otlp.sock`, and use
+   that receiver in its pipelines. This minimal configuration prints what it
+   receives; replace `debug` with the exporters you use:
 
    ```yaml
    receivers:
@@ -120,7 +125,18 @@ any port.
          grpc:
            endpoint: /run/piqueld/telemetry/otlp.sock
            transport: unix
+   exporters:
+     debug:
+   service:
+     pipelines:
+       traces: { receivers: [otlp], exporters: [debug] }
+       metrics: { receivers: [otlp], exporters: [debug] }
+       logs: { receivers: [otlp], exporters: [debug] }
    ```
+
+   Mount it as a [file](../reference/manifest.md#files) at the path your
+   collector reads, such as `/etc/otelcol-contrib/config.yaml` for the
+   OpenTelemetry Collector's contrib image.
 
 3. Save the manifest:
 

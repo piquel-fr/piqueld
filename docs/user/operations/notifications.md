@@ -53,7 +53,7 @@ Each destination picks its categories:
 | `build_failures` | Build failures | A build fails |
 | `deployment_failures` | Deployment failures | A deployment fails |
 | `service_degradation` | Service degradation | A deployed service stays unhealthy for two minutes |
-| `daemon_failures` | Daemon failures | Docker, the Swarm or the ingress gateway stays unavailable for two minutes, or the daemon hits another error, such as a failed certificate renewal |
+| `daemon_failures` | Daemon failures | Docker, the Swarm or the ingress gateway stays unavailable for two minutes, a certificate piqueld needs keeps failing to renew in its last 14 days, or the daemon hits an internal error |
 | `recovery` | Recoveries | A failure the destination was sent is resolved |
 | `security` | Security events | Access to piqueld changes; see [the audit trail](audit.md#get-alerted) |
 | `daemon_started` | Daemon starts | The daemon starts, including after an update |
@@ -110,18 +110,19 @@ first. Test notifications aren't part of it.
 
 When the receiver can't be reached, times out, or answers 408, 429 or a 5xx
 status, piqueld retries with increasing delays, for up to 24 hours. Any other
-answer fails the delivery at once. To send a failed delivery again, select
+non-2xx answer fails the delivery at once. To send a failed delivery again, select
 **Retry**, or run `piquelctl notification retry <delivery-id>`. Both need the
 `system:operate` permission.
 
 ## When piqueld notifies
 
-- A failure notifies once. Later failures in the same environment and
-  category stay silent until an operation there succeeds.
+- A build or deployment failure notifies once. Later failures in the same
+  environment and category stay silent until an operation there succeeds.
 - Service and dependency problems notify only once they've lasted two minutes,
-  so a quick restart doesn't page you.
-- Each other kind of daemon error notifies only the first time it happens, and
-  no recovery follows.
+  so a quick restart doesn't page you. Once piqueld sees them recover, a new
+  problem notifies again.
+- Each kind of internal daemon error notifies only the first time it happens,
+  and no recovery follows.
 - A recovery goes only to the destinations that were sent the failure.
 - When a deployment fixes a failure, the destination receives the recovery
   instead of a `deployment_succeeded` notification, unless the recovery
@@ -201,6 +202,10 @@ When you write the receiver:
 - **A notification never arrived.** Look it up in the delivery history. If it
   isn't there, check the destination's categories, applications and previews
   with `piquelctl notification list`.
+- **Retrying a delivery is refused.** A delivery can only be sent again while
+  its destination still exists unchanged, is enabled, and still receives its
+  category. A failure can't be sent again once its problem has been resolved,
+  and a recovery can't once the problem has come back.
 - **Destinations disappeared.** Recovering a lost
   [secret key](../reference/configuration.md#secret-storage) deletes them,
   since their URLs were encrypted with it. Add them again.

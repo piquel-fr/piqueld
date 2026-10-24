@@ -45,19 +45,25 @@ runs:
 3. Commit and push your changes to that branch. The application deploys what
    the repository holds, not your local file.
 
-4. Create the application:
+4. Give Grafana's hostname DNS records. With `manage_records = true` on the
+   DNS provider that manages its domain, piqueld creates them when it deploys.
+   Otherwise, create A and AAAA records pointing at the tailnet addresses of
+   piqueld's apps node; see
+   [DNS for private routes](../guides/ingress.md#dns-for-private-routes).
+
+5. Create the application:
 
    ```console
    piquelctl app apply --file examples/observability/application.toml
    ```
 
-5. Grant it telemetry:
+6. Grant it telemetry:
 
    ```console
    piquelctl env telemetry observability production on
    ```
 
-6. Deploy it:
+7. Deploy it:
 
    ```console
    piquelctl app deploy observability --yes
@@ -67,13 +73,13 @@ runs:
    `piquelctl env sync observability production on`. An environment pinned to
    a `commit` never does.
 
-7. Read Grafana's generated `admin` password:
+8. Read Grafana's generated `admin` password:
 
    ```console
    piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
    ```
 
-8. Open the address `piquelctl env url observability` prints, from a device on
+9. Open the address `piquelctl env url observability` prints, from a device on
    your tailnet, and sign in as `admin`.
 
 Grafana sets this password the first time it starts. To change it later,

@@ -540,4 +540,3 @@ include error details. Grant it only to an application whose writers and
 deployers you trust with that, as you would with `system:read`. Its receiving
 service also runs as the daemon's user, which matters only if it escapes its
 container: nothing of the daemon's beyond the socket directory is mounted.
-
