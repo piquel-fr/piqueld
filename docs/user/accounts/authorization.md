@@ -231,7 +231,7 @@ token or login.
 ### Tailnet-bound tokens
 
 With the daemon's [tailnet node](../reference/configuration.md#tailnet-node) enabled, or a
-[dashboard hostname](../guides/ingress.md#dashboard-hostname) set, a token can be bound to
+[dashboard hostname](../networking/private-routes.md#serve-the-dashboard-on-your-own-domain) set, a token can be bound to
 a tailnet user or tag. It is then accepted only through that node, or that
 hostname, from a device signed in as that user or carrying that tag, as
 reported by the node's `tailscaled` (the apps node's, for the dashboard

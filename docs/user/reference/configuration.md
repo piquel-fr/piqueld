@@ -520,7 +520,7 @@ made while disabled, without activating saved-but-undeployed changes.
 `public_addresses` lists the server's public IPv4 and IPv6 addresses. Where a
 DNS provider manages records, direct public routes get A/AAAA records to them;
 without any, those records stay manual. Tunnel mode does not use them. See
-[managed DNS records](../guides/ingress.md#managed-dns-records).
+[managed DNS records](../networking/dns-records.md).
 
 ```toml
 [ingress]
@@ -544,14 +544,14 @@ auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
 `hostname` must be a single DNS label, different from `tailscale.hostname` when
 both nodes run. Without `auth_key_file`, the daemon logs the node's login URL.
 It is read once at startup; while disabled, private routes report `disabled`.
-See [public and private routes](../guides/ingress.md#public-and-private-routes).
+See [public and private routes](../networking/private-routes.md).
 
 `ingress.private.dashboard_hostname` serves the website (dashboard and API) to the
 tailnet on your own domain, through the private listener like a private route.
 An unset `auth.public_url` becomes its HTTPS origin, and applications may not
 route it or its subdomains. It requires `ingress.enabled` and
 `ingress.private.enabled`, and is read once at startup. See
-[dashboard hostname](../guides/ingress.md#dashboard-hostname).
+[dashboard hostname](../networking/private-routes.md#serve-the-dashboard-on-your-own-domain).
 
 `[ingress.tunnel]` serves public routes through a locally managed Cloudflare
 Tunnel instead of ports 80/443, which are then closed:
@@ -564,20 +564,20 @@ credentials_file = "cloudflared-tunnel.json"   # from `cloudflared tunnel create
 
 It is read once at startup. Each public hostname then needs a proxied CNAME to
 `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in plaintext.
-See [Cloudflare Tunnel](../guides/ingress.md#cloudflare-tunnel).
+See [Cloudflare Tunnel](../networking/cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel).
 
 `ingress.webhook_hostname` serves GitHub push webhooks, and nothing else, on a
 dedicated public hostname, for applications whose repository syncs with
 `webhook`. The daemon then always serves the webhook socket; the gateway
 forwards to it while ingress is enabled. It is read once at startup. See
-[push webhooks](../guides/ingress.md#push-webhooks).
+[push webhooks](../networking/webhooks.md).
 
 Gateway certificates, accepted configuration, and the private administration socket
 live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
 Caddy; it receives neither the Docker socket nor the daemon API socket/database.
 The control mount also holds the webhook socket, which serves only webhook
 deliveries.
-See [ingress](../guides/ingress.md) for DNS, networking, lifecycle, and status details.
+See [Serving an application over HTTPS](../networking/routes.md) for DNS, networking, and status details.
 
 ## DNS providers
 
@@ -585,7 +585,7 @@ See [ingress](../guides/ingress.md) for DNS, networking, lifecycle, and status d
 certificates through ACME DNS-01 for hostnames a public CA cannot reach, such as
 private routes, and, with `manage_records = true`, to create and maintain routes'
 A/AAAA/CNAME records in their zones (see
-[managed DNS records](../guides/ingress.md#managed-dns-records)). Credentials are accepted only as `_file` settings; relative
+[managed DNS records](../networking/dns-records.md)). Credentials are accepted only as `_file` settings; relative
 paths resolve against `$CREDENTIALS_DIRECTORY`. They are read once at startup and
 never enter a container. Settings show only their file paths.
 
@@ -617,4 +617,4 @@ providers** in the dashboard's System status panel, or call
 `POST /api/v1/system/dns/refresh`. Replacing a credential file needs a restart.
 A hostname belongs to the provider with the longest matching
 zone; a zone claimed by two providers is a conflict and is not used. See
-[ingress](../guides/ingress.md#dns-01-certificates) for issuance and renewal.
+[DNS-01 certificates](../networking/wildcards.md#dns-01-certificates) for issuance and renewal.

@@ -99,7 +99,7 @@ preview was deployed, and `ApplicationView.sync_check` is the last listing of th
 branches (`checked_at_ms`, and `error` when it failed). Sync deployments are
 ordinary operations whose events carry a `system` actor, `sync:poll` or
 `sync:webhook`, with a `branch_synced` event naming the commit. GitHub
-deliveries never reach this API; see [push webhooks](../guides/ingress.md#push-webhooks).
+deliveries never reach this API; see [push webhooks](../networking/webhooks.md).
 
 Application list items contain `id`, `name`, generation metadata, deletion
 intent, timestamps, and their environments. Read `/api/v1/applications/{id}`
@@ -219,7 +219,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/exports` | `{ "value": [{ "service": "api", "applications": ["notes"], "previews": false }] }`; replaces the services other applications may reach |
 | PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } }, "previews": { "domain": "preview.piquel.fr" } } }`; replaces every variable value, clearing those it omits |
-| PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of the environment with that name |
+| PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](../networking/private-routes.md#make-an-environments-routes-private) ceiling of the environment with that name |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -652,7 +652,7 @@ does not block configuration saves or history reads. `/health` remains a
 process-liveness endpoint. A separate `ingress` object reports gateway health and
 per-route HTTPS readiness, for applications the caller can read, without
 affecting `ready`; see
-[ingress](../guides/ingress.md#status-and-recovery). Each route status carries the
+[ingress](../../dev/architecture/ingress.md#status-and-recovery). Each route status carries the
 route's `name`, when it has one. No registry checks are introduced.
 
 `EnvironmentDetailView.links` reports the [links](manifest.md#links)
@@ -809,7 +809,7 @@ database from backup), or can't be read for another reason, such as an I/O
 error or a key file that is not private to the daemon user (fix the host and
 retry the request that failed). Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
-preserved. Every application's [webhook secret](../guides/ingress.md#push-webhooks) is deleted
+preserved. Every application's [webhook secret](../networking/webhooks.md) is deleted
 too; generate a new one. So is every [notification destination](../guides/observability.md#notifications);
 create them again. Supplying replacement stored values creates new versions, and an
 explicit new deployment is required to adopt them; that deployment also generates

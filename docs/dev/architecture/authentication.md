@@ -36,7 +36,7 @@ HTTP 429 and `Retry-After: 60`; ongoing ceremonies and authenticated API work ar
 unaffected. There is no daemon-wide limit, so one caller cannot block sign-in for
 everyone else. Client-supplied forwarded IP headers are deliberately ignored: callers behind the
 same external reverse proxy share its allowance. The daemon's own tailnet node
-and [dashboard hostname](../../user/guides/ingress.md#dashboard-hostname) gateway pass each
+and [dashboard hostname](../../user/networking/private-routes.md#serve-the-dashboard-on-your-own-domain) gateway pass each
 client's tailnet address. Limits reset on daemon restart, along
 with pending ceremonies and device requests.
 

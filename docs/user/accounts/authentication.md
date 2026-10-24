@@ -25,7 +25,7 @@ The simplest HTTPS origin on a tailnet is piqueld's own
 piqueld terminates TLS itself. Its state lives in the data directory, so moving
 or reinstalling the daemon with that directory keeps the name and passkeys. To use
 your own domain on the tailnet instead, set a
-[dashboard hostname](../guides/ingress.md#dashboard-hostname), which becomes the origin.
+[dashboard hostname](../networking/private-routes.md#serve-the-dashboard-on-your-own-domain), which becomes the origin.
 
 Otherwise, terminate HTTPS at an external reverse proxy and forward requests to
 a configured piqueld listener. Keep both the proxy and piqueld reachable only from trusted
