@@ -1,3 +1,4 @@
+#:schema https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/piqueld-config.schema.json
 # Minimal non-root development configuration.
 # The daemon creates private state with mode 0700. Prepare the runtime directory
 # before starting: mkdir -p -m 0700 /tmp/piqueld-dev-run

@@ -5,6 +5,7 @@
 //! applications named with `--app` (every application when omitted). Grants
 //! are displayed with application names where the caller can read them.
 use crate::{
+    cli::one_of,
     error::{CliError, ErrorKind, Result},
     output::{Console, HumanWriter, Report, reports::report},
 };
@@ -22,25 +23,40 @@ use std::{collections::BTreeMap, io};
 // `account` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum AccountCommand {
-    /// List the accounts you may see with their grants.
+    /// List the accounts you can see, with their grants.
+    ///
+    /// With `accounts:manage`, that is every account, and the host operator's
+    /// live browser sessions, which `token revoke` ends. Otherwise, it is only
+    /// yours.
     List,
-    /// Replace an account's grants (requires accounts:manage and every grant involved).
+    /// Replace an account's grants.
+    ///
+    /// Choose the new grants with `--preset`, `--permission`, or both. Needs
+    /// `accounts:manage`, every grant the account has, and every grant you give
+    /// it. An API token can't change grants.
     Access {
         /// Account username or ID.
         #[arg(value_name = "ACCOUNT")]
         target: String,
         #[command(flatten)]
         grants: GrantArgs,
-        /// Skip interactive confirmation.
+        /// Skip the confirmation prompt.
         #[arg(long, short)]
         yes: bool,
     },
-    /// Create a 24-hour invitation link for a new account with these grants.
+    /// Print a link that creates a new account with the selected grants.
+    ///
+    /// Choose the grants with `--preset`, `--permission`, or both. The link
+    /// works once within 24 hours. Needs `accounts:manage` and every grant it
+    /// hands out. An API token can't create invitations.
     Invite {
         #[command(flatten)]
         grants: GrantArgs,
     },
-    /// Create a 24-hour link that adds a passkey to an existing account.
+    /// Print a link that adds a passkey to an existing account.
+    ///
+    /// The link works once within 24 hours. Needs permission to manage that
+    /// account.
     Enroll {
         /// Account username or ID.
         #[arg(value_name = "ACCOUNT")]
@@ -48,32 +64,45 @@ pub(crate) enum AccountCommand {
     },
 }
 
-/// Grants selected on the command line: a preset, permissions, or both.
+// Grants selected on the command line: a preset, permissions, or both.
 #[derive(Debug, Args)]
 pub(crate) struct GrantArgs {
-    /// Start from a preset: read-only, deploy, developer, or admin.
-    #[arg(long, value_parser = parse_preset)]
+    /// Grant the permissions of this preset.
+    #[arg(long, value_parser = one_of!(Preset::ALL, Preset::parse, GrantArgs::describe_preset))]
     preset: Option<Preset>,
-    /// Grant a permission, e.g. apps:deploy or system:read (repeatable).
-    #[arg(long = "permission", value_name = "PERMISSION", value_parser = parse_permission)]
+    /// Grant this permission.
+    ///
+    /// Repeat it to grant several.
+    #[arg(
+        long = "permission",
+        value_name = "PERMISSION",
+        value_parser = one_of!(Permission::all(), Permission::parse, Permission::description)
+    )]
     permissions: Vec<Permission>,
-    /// Limit application permissions to this application name or ID (repeatable).
+    /// Limit the application permissions to this application, by name or ID.
+    ///
+    /// Repeat it to allow several applications. Without it, the permissions
+    /// apply to every application. Installation-wide permissions, such as
+    /// `system:read`, are never limited.
     #[arg(long = "app", value_name = "NAME_OR_ID")]
     applications: Vec<String>,
 }
 
-fn parse_preset(value: &str) -> std::result::Result<Preset, String> {
-    Preset::parse(value).ok_or_else(|| {
-        let names: Vec<_> = Preset::ALL.iter().map(|preset| preset.as_str()).collect();
-        format!("expected one of {}", names.join(", "))
-    })
-}
-
-fn parse_permission(value: &str) -> std::result::Result<Permission, String> {
-    value.parse().map_err(|error| format!("{error}"))
-}
-
 impl GrantArgs {
+    /// What a preset grants, for `--help`.
+    fn describe_preset(preset: Preset) -> &'static str {
+        match preset {
+            Preset::ReadOnly => "Read applications, their logs and history",
+            Preset::Deploy => "Read and deploy applications, such as for CI",
+            Preset::Developer => {
+                "Everything on applications but deleting them, including running commands in them"
+            }
+            Preset::Admin => {
+                "Every permission, on the selected applications or on the installation"
+            }
+        }
+    }
+
     /// Whether no grant option was given at all.
     pub(crate) fn is_empty(&self) -> bool {
         self.preset.is_none() && self.permissions.is_empty() && self.applications.is_empty()
@@ -133,28 +162,44 @@ impl GrantArgs {
 // `token` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum TokenCommand {
-    /// Create an API token for your account, limited to the selected grants.
+    /// Create an API token for your account, and print it.
+    ///
+    /// The token has only the grants you select, with `--preset`,
+    /// `--permission`, or both, and you must hold them. Use it with
+    /// `PIQUELD_TOKEN`. Keep it safe: it is printed once and never shown
+    /// again. An API token can't create tokens.
     Create {
-        /// Token name.
+        /// Token name, up to 200 bytes.
         name: String,
         #[command(flatten)]
         grants: GrantArgs,
-        /// Lifetime in days.
+        /// Expire the token after this many days, from 1.
+        ///
+        /// The daemon refuses more days than its `auth.max_token_days`.
         #[arg(long, default_value_t = 90, conflicts_with = "no_expiry", value_parser = clap::value_parser!(u32).range(1..))]
         days: u32,
-        /// Never expire (refused when the daemon limits token lifetimes).
+        /// Never expire the token.
+        ///
+        /// The daemon refuses it when it sets `auth.max_token_days`.
         #[arg(long)]
         no_expiry: bool,
-        /// Accept the token only through the daemon's tailnet node, from a
-        /// device of this user (alice@example.com) or with this tag (tag:ci).
-        #[arg(long, value_parser = parse_tailnet)]
+        /// Accept the token only over the tailnet, from this user's devices or
+        /// devices with this tag.
+        ///
+        /// Give a login name, such as `alice@example.com`, or a tag, such as
+        /// `tag:ci`. The daemon needs its tailnet node or a private dashboard
+        /// hostname.
+        #[arg(long, value_name = "USER_OR_TAG", value_parser = parse_tailnet)]
         tailnet: Option<TailnetBinding>,
     },
-    /// List your sessions and tokens.
+    /// List your sessions and API tokens, with their grants and expiry.
     List,
-    /// Revoke one of your sessions or tokens by ID.
+    /// Revoke a session or API token by ID.
+    ///
+    /// Give the ID of one of yours, from `token list`, or of a host operator
+    /// browser session, from `account list`.
     Revoke {
-        /// Credential ID from `token list`.
+        /// Credential ID.
         id: String,
     },
 }
@@ -409,28 +454,29 @@ impl<'a> Report for AccountsReport<'a> {
     }
 }
 
-/// `audit` options: whose requests to show, newest first, or `audit verify`.
+// `audit` options: whose requests to show, newest first, or `audit verify`.
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
 pub(crate) struct AuditArgs {
     #[command(subcommand)]
     command: Option<AuditCommand>,
-    /// Only this account's requests, by username or ID (including deleted
-    /// accounts'); requires audit:read for other accounts. Defaults to
-    /// every visible account. Distinct from the global `--account`, which
-    /// selects the saved login to read with.
-    #[arg(long)]
+    /// Only show the requests of this account, by username or ID, even a
+    /// deleted one.
+    ///
+    /// Accounts other than yours need `audit:read`. Unlike the global
+    /// `--account`, it doesn't choose the login you read with.
+    #[arg(long, value_name = "ACCOUNT")]
     user: Option<String>,
-    /// Only requests made with this credential ID (see `token list`).
+    /// Only show the requests made with this credential ID, from `token list`.
     #[arg(long)]
     credential: Option<String>,
-    /// Only requests with this outcome: allowed, denied, or failed.
-    #[arg(long, value_parser = parse_outcome)]
+    /// Only show the requests with this outcome.
+    #[arg(long, value_parser = one_of!(AuditOutcome::ALL, AuditOutcome::parse, AuditArgs::describe_outcome))]
     outcome: Option<AuditOutcome>,
-    /// Continue after a cursor returned by the previous page.
+    /// Read the page after this cursor, which the previous page printed.
     #[arg(long)]
     cursor: Option<String>,
-    /// Maximum number of requests in the page.
+    /// Show at most this many requests, from 1 to 100.
     #[arg(long, default_value_t = piqueld_client::DEFAULT_PAGE_SIZE, value_parser = clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE)))]
     limit: u16,
 }
@@ -439,20 +485,30 @@ fn parse_tailnet(value: &str) -> std::result::Result<TailnetBinding, String> {
     TailnetBinding::parse(value).map_err(str::to_owned)
 }
 
-fn parse_outcome(value: &str) -> std::result::Result<AuditOutcome, String> {
-    AuditOutcome::parse(value).ok_or_else(|| "expected allowed, denied, or failed".into())
-}
-
-/// `audit` subcommands.
+// `audit` subcommands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum AuditCommand {
-    /// Check the audit trail's hash chain (requires audit:read). Fails when a
-    /// record was edited, inserted, or removed; prints the newest link, which
-    /// you can keep elsewhere to also detect removal of the newest records.
+    /// Check that no one altered the audit trail.
+    ///
+    /// It checks the trail's hash chain, and exits with code 3 when a record
+    /// was edited, inserted or removed. It prints the newest link: keep it
+    /// elsewhere to also detect that the newest records were removed. Needs
+    /// `audit:read`.
     Verify,
 }
 
 impl AuditArgs {
+    /// What an outcome means, for `--help`.
+    fn describe_outcome(outcome: AuditOutcome) -> &'static str {
+        match outcome {
+            AuditOutcome::Allowed => "Authorized, and succeeded",
+            AuditOutcome::Denied => {
+                "Refused: missing credentials or permission, or a target hidden from the caller"
+            }
+            AuditOutcome::Failed => "Authorized, but failed",
+        }
+    }
+
     /// Prints one page of the audit trail, or verifies its chain.
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         if let Some(AuditCommand::Verify) = self.command {

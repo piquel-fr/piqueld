@@ -7,6 +7,9 @@ explicit file is selected with:
 piqueld --config /path/to/config.toml
 ```
 
+[Daemon configuration settings](configuration-settings.md) lists every
+setting with its type and default.
+
 Check a file without starting the daemon:
 
 ```console

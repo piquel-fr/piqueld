@@ -4,9 +4,9 @@ use super::variables::{RenderTarget, Template, Typed};
 use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Visibility};
 use crate::names::string_enum;
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
-use utoipa::{PartialSchema, ToSchema};
+use utoipa::ToSchema;
 
 /// Strict public application manifest request and export shape.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -28,37 +28,9 @@ impl ApplicationManifest {
     /// limits, and cross-references are checked by [`super::parse_toml`].
     #[must_use]
     pub fn json_schema() -> Value {
-        // Rewrites utoipa's `OpenAPI` component refs to draft-7 `definitions` refs.
-        fn relocate_refs(value: &mut Value) {
-            match value {
-                Value::Object(object) => {
-                    if let Some(Value::String(reference)) = object.get_mut("$ref")
-                        && let Some(name) = reference.strip_prefix("#/components/schemas/")
-                    {
-                        *reference = format!("#/definitions/{name}");
-                    }
-                    for value in object.values_mut() {
-                        relocate_refs(value);
-                    }
-                }
-                Value::Array(values) => {
-                    for value in values {
-                        relocate_refs(value);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let mut definitions = Vec::new();
-        Self::schemas(&mut definitions);
-        let mut schema = json!(Self::schema());
-        schema["$schema"] = "http://json-schema.org/draft-07/schema#".into();
-        schema["title"] = "piqueld application manifest".into();
-        schema["definitions"] = json!(definitions.into_iter().collect::<BTreeMap<_, _>>());
+        let mut schema = crate::json_schema::standalone::<Self>("piqueld application manifest");
         schema["properties"]["api_version"]["const"] = APPLICATION_API_VERSION.into();
         schema["properties"]["kind"]["const"] = APPLICATION_KIND.into();
-        relocate_refs(&mut schema);
         schema
     }
 }

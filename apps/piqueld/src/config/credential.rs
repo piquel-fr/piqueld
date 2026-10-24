@@ -6,7 +6,7 @@
 //! loads, except during a [`Resolution::Structural`] check, and must be regular
 //! files.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
@@ -54,10 +54,20 @@ pub struct Credential {
     file: Option<CredentialFile>,
 }
 
-/// The absolute location of a credential file. Relative paths resolve against
-/// `$CREDENTIALS_DIRECTORY` while the configuration loads.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// The path of a file holding a secret, such as an API token. The daemon
+/// reads it once at startup, so restart it after changing the file.
+/// Surrounding whitespace, such as a trailing newline, is removed, and the
+/// file must be a non-empty regular file; symlinks to one are followed.
+/// A relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's
+/// `LoadCredential=` puts credentials, and may not contain `.` or `..`.
+/// Errors and the settings shown by the dashboard name the file, never its
+/// contents.
+//
+// The absolute location of a credential file: relative paths resolve while
+// the configuration loads.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, utoipa::ToSchema)]
 #[serde(try_from = "PathBuf")]
+#[schema(value_type = String)]
 pub struct CredentialFile(PathBuf);
 
 impl CredentialFile {

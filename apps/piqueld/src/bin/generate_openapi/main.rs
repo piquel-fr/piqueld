@@ -1,8 +1,16 @@
 //! Generates or checks the `OpenAPI` specification, its Rust client bindings,
-//! and the standalone application manifest JSON Schema.
+//! the standalone application manifest and daemon configuration JSON
+//! Schemas, and the documentation's command and configuration references.
+
+mod cli_reference;
+mod config_reference;
+mod markdown;
 
 use anyhow::{Context, Result, anyhow, ensure};
+use cli_reference::CliReference;
+use config_reference::ConfigReference;
 use piqueld::api::http::openapi_document;
+use piqueld::config::DaemonConfig;
 use piqueld_core::manifest::ApplicationManifest;
 use serde::Deserialize;
 use serde_json::Value;
@@ -70,11 +78,20 @@ impl Generator {
             "{}\n",
             serde_json::to_string_pretty(&ApplicationManifest::json_schema())?
         );
+        let config_schema = DaemonConfig::json_schema();
+        let config_reference = ConfigReference::render(&config_schema)?;
+        let config_schema = format!("{}\n", serde_json::to_string_pretty(&config_schema)?);
 
         let artifacts = [
             ("docs/openapi-v1.json", document),
             ("docs/application-manifest.schema.json", manifest_schema),
+            ("docs/piqueld-config.schema.json", config_schema),
             ("crates/piqueld-client/src/generated.rs", client),
+            (
+                CliReference::PATH,
+                CliReference::render(piquelctl::command()),
+            ),
+            (ConfigReference::PATH, config_reference),
         ];
         let mut stale = Vec::new();
         for (relative, contents) in artifacts {

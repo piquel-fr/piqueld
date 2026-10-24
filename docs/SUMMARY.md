@@ -22,8 +22,10 @@
 
 - [Application manifest](user/reference/manifest.md)
 - [Daemon configuration](user/reference/configuration.md)
+- [Daemon configuration settings](user/reference/configuration-settings.md)
 - [NixOS module](user/reference/nixos.md)
 - [piquelctl](user/reference/cli.md)
+- [piquelctl commands](user/reference/cli-commands.md)
 - [HTTP API](user/reference/api.md)
 
 # Developer guide

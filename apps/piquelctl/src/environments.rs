@@ -24,49 +24,92 @@ use piqueld_client::{
 #[derive(Debug, Subcommand)]
 pub(crate) enum EnvCommand {
     /// List an application's environments and their status.
+    ///
+    /// Previews are not listed; use `preview list` for them.
     List {
         /// Application name or stable ID.
         application: String,
     },
-    /// Add an environment. It deploys the application's saved manifest or, when
-    /// the application is repository-backed, the manifest on its own branch.
-    /// Environments the manifest declares in `[spec.environments.<name>]` are
-    /// created by saving or fetching it instead.
+    /// Add an environment to an application.
+    ///
+    /// Nothing is deployed until you run `env deploy`, or `env promote` for a
+    /// promoted environment. The environment deploys the application's saved
+    /// manifest or, when the application is repository-backed, the manifest
+    /// on its own branch.
+    ///
+    /// You can't create an environment that the saved manifest has a
+    /// `[spec.environments.<name>]` block for: saving the manifest creates it.
     Create(CreateArgs),
-    /// Make an environment receive releases promoted from another one instead
-    /// of building, or track its own source again. Nothing is deployed.
-    /// Declared environments take `promote_from` from the manifest instead.
+    /// Make an environment receive releases promoted from another one, or
+    /// build its own source again.
+    ///
+    /// Nothing is deployed. A promoted environment never builds: it deploys
+    /// what `env promote` sends it. When the saved manifest sets the
+    /// environment's `promote_from`, `branch`, `commit` or `sync`, change it
+    /// there instead.
     Source(SourceArgs),
-    /// Deploy a release into a promoted environment without building: by
-    /// default the one its source environment currently runs.
+    /// Deploy a release into a promoted environment without building it.
+    ///
+    /// By default, it deploys the release of the source environment's current
+    /// deployment, which must have succeeded and be healthy now. The command
+    /// asks for confirmation and waits for the deployment.
     Promote(PromoteArgs),
-    /// Point an environment of a repository-backed application at another
-    /// branch, or pin or unpin its commit. Its next deployment fetches it.
-    /// Declared environments take `branch` and `commit` from the manifest.
+    /// Point an environment at another branch of the manifest repository, or
+    /// pin or unpin its commit.
+    ///
+    /// Only for repository-backed applications. Nothing is deployed: the
+    /// environment's next deployment fetches the manifest from the new branch
+    /// or commit. A promoted environment has no branch; use `env source
+    /// --tracking` first. When the saved manifest sets the environment's
+    /// `branch`, `commit`, `promote_from` or `sync`, change it there instead.
     Branch(BranchArgs),
-    /// Opt an environment into or out of its application's sync: while it is
-    /// in, pushes to its branch deploy it, from its next deployment if it was
-    /// never deployed. Pinned environments never sync. Declared environments
-    /// take `sync` from the manifest.
+    /// Choose whether pushes to an environment's branch deploy it.
+    ///
+    /// This applies while the application's repository syncs (`app repository
+    /// sync`). An environment that opts in deploys again whenever its branch
+    /// moves past the head of its last deployment; one never deployed starts
+    /// following from its first deployment. A pinned commit never follows
+    /// pushes. When the saved manifest sets the environment's `sync`,
+    /// `branch`, `commit` or `promote_from`, change it there instead. Opting
+    /// in while the repository syncs needs the `apps:deploy` permission too.
     Sync(SyncArgs),
-    /// Grant or revoke the daemon's telemetry. A granted environment's
-    /// receiving service (`app service telemetry`) gets every application's
-    /// traces, metrics and logs; requires telemetry:grant. Revoking stops
-    /// export at once. Either way the socket is mounted or unmounted within
-    /// seconds, which restarts the service. Previews are never granted.
+    /// Grant an environment the daemon's telemetry, or revoke it.
+    ///
+    /// The receiving service of a granted environment, marked with `app
+    /// service telemetry`, gets the traces, metrics and logs of every
+    /// application. Revoking stops the export at once. Either way, the daemon
+    /// mounts or unmounts the telemetry socket within seconds, which restarts
+    /// the service; nothing is deployed. Both need the `telemetry:grant`
+    /// permission. Previews are never granted.
     Telemetry(TelemetryArgs),
-    /// Show one environment and its status.
+    /// Show one environment, the manifest it deploys, and its status.
     Show(EnvironmentArgs),
-    /// Cap the visibility of an environment's routes in the saved manifest:
-    /// `private` keeps every route on the tailnet, `public` restricts nothing.
+    /// Cap the visibility of an environment's routes in the saved manifest.
+    ///
+    /// Each route gets the stricter of its own visibility and this cap. The
+    /// cap is saved in the environment's `[spec.environments.<name>]` block.
+    /// When the manifest has no such blocks yet, it adds one for every
+    /// environment, which declares them all.
     Visibility(VisibilityArgs),
     /// Rename an environment without redeploying it.
+    ///
+    /// The command fails while the manifest the environment deploys has a
+    /// `[spec.environments.<name>]` block for the old or the new name.
     Rename(RenameArgs),
-    /// Confirm and delete an environment; named volumes are retained. Remove
-    /// a declared environment's block from the manifest first.
+    /// Delete an environment, keeping its named volumes.
+    ///
+    /// The command removes the environment's services and network, after
+    /// confirmation, and waits until it is gone. To delete an environment
+    /// that the saved manifest declares, remove its `[spec.environments.<name>]`
+    /// block first.
     Delete(DeleteArgs),
-    /// Deploy the application's saved configuration to an environment, fetching
-    /// the manifest and resolving sources again.
+    /// Deploy an environment from its source.
+    ///
+    /// For a repository-backed application, it fetches the manifest from the
+    /// environment's branch, or from `--branch` or `--commit` for this
+    /// deployment only. Otherwise, it deploys the saved manifest. The command
+    /// asks for confirmation and waits for the deployment. Promoted
+    /// environments deploy with `env promote` instead.
     Deploy {
         #[command(flatten)]
         target: EnvironmentArgs,
@@ -75,8 +118,10 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         revision: RevisionArgs,
     },
-    /// Retry an environment's latest operation once it has ended or failed,
-    /// reusing its saved inputs.
+    /// Retry an environment's latest operation with the inputs it was given.
+    ///
+    /// If the operation is still in progress, the command waits for it
+    /// instead of starting it again.
     Reconcile {
         #[command(flatten)]
         target: EnvironmentArgs,
@@ -87,21 +132,26 @@ pub(crate) enum EnvCommand {
     Secret {
         /// Application name or stable ID.
         application: String,
-        /// Environment name or stable ID; optional when the application has exactly one.
+        /// Environment name or stable ID. You can omit it when the
+        /// application has exactly one environment.
         #[arg(long = "env", value_name = "ENV")]
         environment: Option<String>,
         #[command(subcommand)]
         action: crate::secrets::GeneratedSecretAction,
     },
-    /// Read a bounded snapshot of an environment's Docker logs.
+    /// Print the most recent lines of an environment's Docker logs.
     Logs {
         #[command(flatten)]
         target: EnvironmentArgs,
         #[command(flatten)]
         window: LogArgs,
     },
-    /// Wait until a deployment of an environment is ready. Exits 3 if a newer
-    /// deployment supersedes it, 5 if it fails, and 4 at `--timeout`.
+    /// Wait until a deployment of an environment is ready.
+    ///
+    /// The command never follows a newer deployment. It exits with code 3 if
+    /// a newer deployment or the environment's deletion supersedes it, 5 if
+    /// it fails, and 4 when `--timeout` runs out. Builds usually take longer
+    /// than the default `--timeout`.
     Wait(WaitArgs<EnvironmentArgs>),
     /// Print the URLs of an environment's routes, and whether each is ready.
     Url(UrlArgs<EnvironmentArgs>),
@@ -112,7 +162,8 @@ pub(crate) enum EnvCommand {
 pub(crate) struct EnvironmentArgs {
     /// Application name or stable ID.
     pub(crate) application: String,
-    /// Environment name or stable ID; optional when the application has exactly one.
+    /// Environment name or stable ID. You can omit it when the application
+    /// has exactly one environment.
     pub(crate) environment: Option<String>,
 }
 
@@ -128,13 +179,16 @@ pub(crate) struct NamedEnvironment {
 // Precondition and confirmation flags for environment lifecycle changes.
 #[derive(Debug, Args)]
 pub(crate) struct ChangeFlags {
-    /// Require this application revision.
-    #[arg(long)]
+    /// Change the environment only if the application's generation is still
+    /// `GENERATION`. By default, it must still be the generation the command
+    /// read, so a concurrent change fails the command.
+    #[arg(long, value_name = "GENERATION")]
     expected_generation: Option<u64>,
-    /// Skip the interactive confirmation prompt.
+    /// Skip the confirmation prompt. You need it when not on a terminal.
     #[arg(long)]
     yes: bool,
-    /// Override the revision precondition (does not skip confirmation).
+    /// Change the environment even if the application changed since the
+    /// command read it. It still asks for confirmation.
     #[arg(long, conflicts_with = "expected_generation")]
     force: bool,
 }
@@ -196,12 +250,13 @@ impl EnvCommand {
     }
 }
 
-/// `env sync` arguments.
+// `env sync` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct SyncArgs {
     #[command(flatten)]
     target: NamedEnvironment,
-    /// `on` deploys pushes; `off` deploys only when asked.
+    /// `on` deploys the environment when its branch moves; `off` deploys it
+    /// only when you ask.
     #[arg(value_name = "on|off", action = clap::ArgAction::Set, value_parser = on_off())]
     enabled: bool,
 }
@@ -216,12 +271,13 @@ impl SyncArgs {
     }
 }
 
-/// `env telemetry` arguments.
+// `env telemetry` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct TelemetryArgs {
     #[command(flatten)]
     target: NamedEnvironment,
-    /// `on` grants every application's telemetry; `off` revokes it.
+    /// `on` grants the environment every application's telemetry; `off`
+    /// revokes it.
     #[arg(value_name = "on|off", action = clap::ArgAction::Set, value_parser = on_off())]
     granted: bool,
 }
@@ -237,12 +293,13 @@ impl TelemetryArgs {
     }
 }
 
-/// `env visibility` arguments.
+// `env visibility` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct VisibilityArgs {
     #[command(flatten)]
     target: NamedEnvironment,
-    /// The strictest visibility its routes get.
+    /// The strictest visibility the environment's routes get. `private` keeps
+    /// every route on the tailnet; `public`, the default, restricts nothing.
     #[arg(value_parser = visibility())]
     visibility: Visibility,
     #[command(flatten)]
@@ -278,22 +335,27 @@ async fn list(cli: &Cli, client: &Client, console: &mut Console, application: &s
     console.emit(&rows)
 }
 
-/// `env create` arguments.
+// `env create` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct CreateArgs {
     /// Application name or stable ID.
     application: String,
-    /// New environment name, unique within the application.
+    /// Name of the new environment, unique within the application: 1 to 63
+    /// lowercase letters, digits, or hyphens, starting with a letter and
+    /// ending with a letter or digit.
     name: String,
-    /// Branch of the manifest repository to follow; defaults to the one
-    /// `spec.manifest` names.
+    /// Branch of the manifest repository the environment follows. By default,
+    /// the branch `spec.manifest` names. Only for repository-backed
+    /// applications.
     #[arg(long)]
     branch: Option<String>,
-    /// Pin this full commit instead of following the branch head.
-    #[arg(long, requires = "branch")]
+    /// Deploy this commit of `--branch` instead of the branch's head: a full
+    /// commit hash of 40 or 64 lowercase hexadecimal characters.
+    #[arg(long, value_name = "SHA", requires = "branch")]
     commit: Option<String>,
-    /// Never build: only receive releases promoted from this environment
-    /// (name or stable ID) with `env promote`.
+    /// Make the environment promoted: it never builds, and only receives
+    /// releases promoted from this environment of the application, given by
+    /// name or stable ID, with `env promote`.
     #[arg(long, value_name = "ENV", conflicts_with = "branch")]
     promote_from: Option<String>,
     #[command(flatten)]
@@ -338,15 +400,17 @@ impl CreateArgs {
     }
 }
 
-/// `env branch` arguments.
+// `env branch` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct BranchArgs {
     #[command(flatten)]
     target: NamedEnvironment,
-    /// Branch of the manifest repository to follow.
+    /// Branch of the manifest repository the environment follows.
     branch: String,
-    /// Pin this full commit instead of following the branch head; omit to unpin.
-    #[arg(long)]
+    /// Deploy this commit of the branch instead of the branch's head: a full
+    /// commit hash of 40 or 64 lowercase hexadecimal characters. Without it,
+    /// the environment follows the branch's head, unpinning any commit.
+    #[arg(long, value_name = "SHA")]
     commit: Option<String>,
     #[command(flatten)]
     change: ChangeFlags,
@@ -398,16 +462,18 @@ fn promotion_source(application: &ApplicationView, source: &str) -> Result<Strin
         })
 }
 
-/// `env source` arguments.
+// `env source` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct SourceArgs {
     #[command(flatten)]
     target: NamedEnvironment,
-    /// Receive releases promoted from this environment (name or stable ID).
+    /// Receive releases promoted from this environment of the application,
+    /// given by name or stable ID.
     #[arg(long, value_name = "ENV", required_unless_present = "tracking")]
     promote_from: Option<String>,
-    /// Stop promoting: build the saved manifest, or the branch `spec.manifest`
-    /// names, again. `env branch` picks another branch.
+    /// Stop receiving promoted releases and build again: the saved manifest,
+    /// or the branch `spec.manifest` names. Use `env branch` afterwards to
+    /// follow another branch.
     #[arg(long, conflicts_with = "promote_from")]
     tracking: bool,
     #[command(flatten)]
@@ -450,21 +516,25 @@ impl SourceArgs {
     }
 }
 
-/// `env promote` arguments.
+// `env promote` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct PromoteArgs {
     /// Application name or stable ID.
     application: String,
-    /// Promoted environment name or stable ID.
+    /// Name or stable ID of the promoted environment to deploy.
     environment: String,
-    /// Promote this deployment of the source; refused once it is no longer the
-    /// source's current one.
+    /// Promote the release of this deployment of the source environment. The
+    /// command fails if it is no longer the source's current deployment.
     #[arg(long, value_name = "ID")]
     deployment: Option<String>,
-    /// Deploy this earlier release instead, with the environment's current secrets.
+    /// Deploy this earlier release of the application instead, with the
+    /// environment's current secrets.
     #[arg(long, value_name = "ID", conflicts_with = "deployment")]
     release: Option<String>,
-    /// Show what would be deployed, and what is missing, without deploying.
+    /// Show what would be deployed, and any secret it can't use, without
+    /// deploying. The command exits with code 3 if the promotion would be
+    /// refused. With `--release`, you can plan for any environment, promoted
+    /// or not.
     #[arg(long)]
     plan: bool,
     #[command(flatten)]
@@ -553,12 +623,14 @@ async fn show(client: &Client, console: &mut Console, target: &EnvironmentArgs) 
     Ok(())
 }
 
-/// `env rename` arguments.
+// `env rename` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct RenameArgs {
     #[command(flatten)]
     target: NamedEnvironment,
-    /// New environment name, unique within the application.
+    /// New environment name, unique within the application: 1 to 63
+    /// lowercase letters, digits, or hyphens, starting with a letter and
+    /// ending with a letter or digit.
     new_name: String,
     #[command(flatten)]
     change: ChangeFlags,
@@ -591,7 +663,7 @@ impl RenameArgs {
     }
 }
 
-/// `env delete` arguments.
+// `env delete` arguments.
 #[derive(Debug, Args)]
 pub(crate) struct DeleteArgs {
     #[command(flatten)]

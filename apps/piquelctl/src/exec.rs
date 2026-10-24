@@ -29,25 +29,31 @@ use tokio::{
 pub(crate) struct ExecArgs<T: Args> {
     #[command(flatten)]
     target: T,
-    /// Service whose running task executes the command.
+    /// Service that runs the command, in one of its running tasks.
     service: ServiceName,
     /// Forward standard input to the command.
     #[arg(long, short)]
     interactive: bool,
-    /// Allocate a terminal for interactive programs; implies --interactive.
+    /// Allocate a terminal, for interactive programs such as a shell.
+    ///
+    /// It implies `--interactive`, and needs a terminal on standard input,
+    /// which it switches to raw mode so that keys such as Ctrl-C reach the
+    /// command.
     #[arg(long, short)]
     tty: bool,
-    /// Program and arguments, after `--`.
+    /// Program to run and its arguments, after `--`.
     #[arg(last = true, required = true, value_name = "COMMAND")]
     command: Vec<String>,
 }
 
-/// `app exec`'s target: an application and, when it has several, one of its environments.
+// `app exec`'s target: an application and, when it has several, one of its environments.
 #[derive(Debug, Args)]
 pub(crate) struct ApplicationTarget {
     /// Application name or stable ID.
     name_or_id: String,
-    /// Environment name or stable ID; optional when the application has exactly one.
+    /// Environment name or stable ID.
+    ///
+    /// Optional when the application has only one.
     #[arg(long = "env", value_name = "ENV")]
     environment: Option<String>,
 }

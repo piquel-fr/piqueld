@@ -13,47 +13,104 @@ pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 use piqueld_core::TomlDiagnostic;
 use piqueld_core::manifest::PreviewLimits;
 use piqueld_core::names::{DNS_LABEL, is_label};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use utoipa::ToSchema;
 
-/// Complete host-specific daemon bootstrap configuration.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+/// Implements [`ToSchema`] for `#[serde(try_from = "Raw")]` types as the
+/// schema of `Raw`, the TOML form they are read from.
+macro_rules! schema_from_raw {
+    ($($type:ident => $raw:ty),* $(,)?) => {$(
+        impl utoipa::PartialSchema for $type {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                <$raw as utoipa::PartialSchema>::schema()
+            }
+        }
+
+        impl utoipa::ToSchema for $type {
+            fn name() -> std::borrow::Cow<'static, str> {
+                stringify!($type).into()
+            }
+
+            fn schemas(
+                schemas: &mut Vec<(String, utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>)>,
+            ) {
+                <$raw as utoipa::ToSchema>::schemas(schemas);
+            }
+        }
+    )*};
+}
+pub(crate) use schema_from_raw;
+
+/// The daemon's configuration file, `/etc/piqueld/config.toml` unless
+/// `piqueld --config` selects another. Every setting is optional. The daemon
+/// reads the file once at startup, so restart it to apply a change.
+//
+// Each table documents its own settings and defaults. Tables are defaulted
+// field by field: a container `#[serde(default)]` would make utoipa repeat
+// each whole table as its field's default, which needs every table to be
+// `Serialize` and hides the table's own schema behind a `oneOf`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// API listeners and state directory.
+    /// API listeners and state directories.
+    #[serde(default)]
     pub server: ServerConfig,
-    /// Canonical browser origin for passkeys and invitation links.
+    /// The website's origin and API token lifetimes.
+    #[serde(default)]
     pub auth: AuthConfig,
-    /// Dedicated tailnet node serving the website over HTTPS.
+    /// The daemon's own tailnet node, which serves the website over HTTPS.
+    #[serde(default)]
     pub tailscale: TailscaleConfig,
-    /// Docker Engine connection and bootstrap policy.
+    /// The Docker Engine piqueld manages.
+    #[serde(default)]
     pub docker: DockerConfig,
-    /// Installation-owned HTTP ingress. Read once at startup.
+    /// The managed HTTP gateway that serves applications' routes.
+    #[serde(default)]
     pub ingress: IngressConfig,
-    /// DNS provider accounts used for DNS-01 certificates.
+    /// DNS provider accounts, for certificates and routes' DNS records.
+    #[serde(default)]
     pub dns: DnsConfig,
-    /// Reconciliation scheduling limits.
+    /// How often piqueld checks for drift, and how long operations may take.
+    #[serde(default)]
     pub reconciliation: ReconciliationConfig,
-    /// Retention limits for terminal operation history.
+    /// How long finished operations, events and the audit trail are kept.
+    #[serde(default)]
     pub retention: RetentionConfig,
-    /// Durable build-output bounds.
+    /// How much build output is kept, and for how long.
+    #[serde(default)]
     pub build_history: BuildHistoryConfig,
-    /// Retention and cleanup of the images this installation builds.
+    /// Cleanup of the images this installation builds.
+    #[serde(default)]
     pub images: ImagesConfig,
     /// Export of the daemon's traces, metrics and logs over OTLP.
+    #[serde(default)]
     pub telemetry: TelemetryConfig,
-    /// How many previews may exist and what their services may use.
+    /// How many previews may exist, and the resources their services get.
+    #[serde(default)]
     pub previews: PreviewLimits,
-    /// Snapshots of local worktrees, uploaded by `preview deploy --local`.
+    /// Uploads of local worktrees by `piquelctl preview deploy --local`.
+    #[serde(default)]
     pub snapshots: SnapshotsConfig,
-    /// The disk Git checkouts may take at once.
+    /// The disk space Git checkouts may take.
+    #[serde(default)]
     pub checkouts: CheckoutsConfig,
 }
 
 impl DaemonConfig {
+    /// The standalone JSON Schema of the configuration file, published as
+    /// `docs/piqueld-config.schema.json` for editor completion and inline
+    /// errors. It covers structure only: cross-field rules and ranges are
+    /// checked when the configuration loads.
+    #[must_use]
+    pub fn json_schema() -> Value {
+        piqueld_core::json_schema::standalone::<Self>("piqueld daemon configuration")
+    }
+
     /// Returns the built-in configuration after applying the same validation
     /// used for file-backed configuration.
     ///
@@ -205,16 +262,21 @@ impl DaemonConfig {
     }
 }
 
-/// Canonical website origin and credential limits.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+/// The website's origin and API token lifetimes.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
-    /// HTTPS origin, or HTTP localhost for development. Defaults to the
-    /// dashboard hostname's HTTPS URL when one is set, then to the tailnet
-    /// node's when it is enabled, otherwise localhost.
+    /// The website's canonical origin, such as `https://piqueld.example.com`.
+    /// Passkeys only work on this origin, and API requests that send an
+    /// `Origin` header must match it. It must be HTTPS, except
+    /// `http://localhost` for development. When unset, it is
+    /// `https://` followed by `ingress.private.dashboard_hostname` if that is
+    /// set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is
+    /// set, otherwise `http://localhost:7845`.
     pub public_url: Option<String>,
-    /// Longest lifetime of new API tokens in days; unset allows tokens that
-    /// never expire.
+    /// The longest lifetime, in days, of new API tokens. When unset, tokens
+    /// may have any lifetime, including none. Existing tokens keep theirs.
+    #[schema(minimum = 1)]
     pub max_token_days: Option<u32>,
 }
 
@@ -231,25 +293,34 @@ impl DaemonConfig {
     }
 }
 
-/// The daemon's own tailnet node, which terminates HTTPS for the website.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// The daemon's own tailnet node, which serves the website (dashboard and
+/// API) over HTTPS with a tailnet certificate. The tailnet needs `MagicDNS`
+/// and HTTPS certificates enabled.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct TailscaleConfig {
-    /// Join the tailnet and serve the website on `https_port` of the node.
+    /// Join the tailnet as a node and serve the website on its `https_port`.
+    /// piqueld starts its own `tailscaled` unless `socket` is set, so
+    /// `tailscaled` and `tailscale` must be on `PATH`.
     pub enabled: bool,
-    /// Node name, which becomes `<hostname>.<tailnet>.ts.net`. Unused with
-    /// `socket`, whose node already has a name.
+    /// The node's name, a single DNS label, which becomes
+    /// `<hostname>.<tailnet>.ts.net`. Unused with `socket`, whose node
+    /// already has a name.
     pub hostname: String,
-    /// File holding an auth key for the first login. Without one, the daemon
-    /// logs an interactive login URL. Later starts reuse the node state. It is
-    /// passed to Tailscale by path, so piqueld never reads the key itself.
+    /// A Tailscale auth key for the node's first login. Without one, the
+    /// daemon logs a login URL and waits until the node is approved. Later
+    /// starts reuse the node's state in the data directory. piqueld passes
+    /// the file to Tailscale without reading it, so it only has to exist for
+    /// the first login. Not allowed with `socket`.
     pub auth_key_file: Option<CredentialFile>,
-    /// Socket of a logged-in `tailscaled` to share instead of starting one.
-    /// piqueld only adds `https_port` to its Serve configuration, so several
-    /// daemons can share one node, each on its own port. That `tailscaled`
-    /// must run as the daemon's user.
+    /// The absolute path of the socket of a logged-in `tailscaled` to share
+    /// instead of starting one. piqueld then only adds `https_port` to that
+    /// node's Serve configuration, so several daemons can share one node,
+    /// each on its own port. That `tailscaled` must run as the daemon's user.
+    #[schema(value_type = Option<String>)]
     pub socket: Option<PathBuf>,
-    /// Node port serving the website over HTTPS.
+    /// The node port serving the website over HTTPS.
+    #[schema(value_type = u16, minimum = 1, maximum = 65_535)]
     pub https_port: NonZeroU16,
 }
 
@@ -292,28 +363,40 @@ fn dns_label(name: &str, value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Explicit installation-wide ingress enablement.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+/// The managed Caddy gateway that serves applications' routes.
+// Defaulted field by field, like `DaemonConfig`, for its subtables.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct IngressConfig {
-    /// Start the managed Caddy gateway and expose public routes on ports
-    /// 80/443, or through `tunnel`.
+    /// Run the managed gateway and serve public routes on ports 80 and 443,
+    /// or through `tunnel`. Requires Docker Engine 28 or later. Disabling it
+    /// removes the gateway but keeps routes and certificates.
+    #[serde(default)]
+    #[schema(default = false)]
     pub enabled: bool,
-    /// This server's public IPv4 and IPv6 addresses. Public routes in zones
-    /// whose provider sets `manage_records` get A/AAAA records to them;
-    /// without any, those records stay manual. Unused in tunnel mode.
+    /// This server's public IPv4 and IPv6 addresses, such as
+    /// `["203.0.113.10", "2001:db8::10"]`. Public routes in zones whose DNS
+    /// provider sets `manage_records` get A and AAAA records to them; without
+    /// any, those records stay manual. Unused with `tunnel`.
+    #[serde(default)]
+    #[schema(value_type = Vec<String>, default = json!([]))]
     pub public_addresses: Vec<std::net::IpAddr>,
-    /// ACME account used for DNS-01 certificates.
+    /// The ACME account DNS-01 certificates are ordered with.
+    #[serde(default)]
     pub acme: AcmeConfig,
     /// The apps tailnet node, which serves private routes.
+    #[serde(default)]
     pub private: PrivateIngressConfig,
-    /// The Cloudflare Tunnel that replaces ports 80/443 for public routes.
+    /// The Cloudflare Tunnel that replaces ports 80 and 443 for public routes.
+    #[serde(default)]
     pub tunnel: TunnelConfig,
-    /// Public hostname serving GitHub push webhooks for sync. The daemon
-    /// serves them on a socket in the gateway's control mount, which the
-    /// public listener or the tunnel forwards the webhook path to while
-    /// ingress is enabled. No application may route the hostname or its
-    /// subdomains.
+    /// A public hostname that serves GitHub push webhooks, and nothing else,
+    /// for applications whose repository syncs with `webhook`. No application
+    /// may route it or its subdomains.
+    //
+    // The daemon serves webhooks on a socket in the gateway's control mount,
+    // which the public listener or the tunnel forwards the webhook path to.
+    #[serde(default)]
     pub webhook_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
@@ -343,23 +426,21 @@ impl IngressConfig {
 
 /// The apps tailnet node: a Tailscale container that carries private routes'
 /// traffic to the gateway's private listener. It is separate from the
-/// daemon's own node (`[tailscale]`), with its own ACLs and tags.
+/// daemon's own node (`[tailscale]`), with its own ACLs and tags. Its schema
+/// is that of its TOML form,
+/// `RawPrivateIngressConfig`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(try_from = "RawPrivateIngressConfig")]
 pub struct PrivateIngressConfig {
-    /// Run the node and serve private routes on the tailnet. While disabled,
-    /// private routes report `disabled`.
+    /// Run the node and serve private routes on the tailnet.
     pub enabled: bool,
     /// Node name, which becomes `<hostname>.<tailnet>.ts.net`.
     pub hostname: String,
-    /// Auth key for the first login, read from `auth_key_file`. Without one,
-    /// the node's login URL is relayed to the daemon logs.
+    /// Auth key for the first login, read from `auth_key_file`.
     pub auth_key: Option<Credential>,
-    /// Private hostname serving the website (dashboard and API) to the
-    /// tailnet. The private listener forwards it to a socket in the gateway's
-    /// control mount, which the daemon serves. An unset `auth.public_url`
-    /// becomes its HTTPS origin. No application may route the hostname or its
-    /// subdomains.
+    /// Private hostname serving the website to the tailnet. The private
+    /// listener forwards it to a socket in the gateway's control mount,
+    /// which the daemon serves.
     pub dashboard_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
@@ -374,13 +455,31 @@ impl Default for PrivateIngressConfig {
     }
 }
 
-/// `[ingress.private]` as written: the auth key is given only as a file.
-#[derive(Deserialize)]
+/// The apps tailnet node: a second tailnet node that piqueld runs as a container beside the gateway to serve private
+/// routes to the tailnet. It is separate from the daemon's own node
+/// (`[tailscale]`), so it can have its own ACLs and tags.
+//
+// The table as written: the auth key is given only as a file.
+#[derive(Deserialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 struct RawPrivateIngressConfig {
+    /// Run the apps node and serve private routes on the tailnet. While it is
+    /// disabled, private routes report `disabled`. Private routes get DNS-01
+    /// certificates, so their zones need a `[[dns.providers]]` entry.
     enabled: bool,
+    /// The apps node's name, a single DNS label, which becomes
+    /// `<hostname>.<tailnet>.ts.net`. It must differ from
+    /// `tailscale.hostname` while both nodes run.
     hostname: String,
+    /// A Tailscale auth key for the apps node's first login. Without one,
+    /// the daemon logs the node's login URL.
     auth_key_file: Option<CredentialFile>,
+    /// A private hostname, such as `piqueld.example.com`, on which the
+    /// gateway serves the website (dashboard and API) to the tailnet, with a
+    /// DNS-01 certificate. An unset `auth.public_url` becomes its HTTPS
+    /// origin. No application may route it or its subdomains. Requires
+    /// `ingress.enabled` and `ingress.private.enabled`, and must differ from
+    /// `ingress.webhook_hostname`.
     dashboard_hostname: Option<piqueld_core::manifest::Hostname>,
 }
 
@@ -411,13 +510,19 @@ impl TryFrom<RawPrivateIngressConfig> for PrivateIngressConfig {
     }
 }
 
-/// The CA piqueld itself orders DNS-01 certificates from.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+schema_from_raw!(PrivateIngressConfig => RawPrivateIngressConfig);
+
+/// The certificate authority (CA) piqueld orders
+/// DNS-01 certificates from, for hostnames a public CA cannot reach over
+/// HTTP, such as private routes'. The gateway obtains other certificates
+/// itself.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AcmeConfig {
-    /// ACME directory URL. Defaults to Let's Encrypt production.
+    /// The ACME directory URL of the CA, which must be HTTPS. The default is
+    /// Let's Encrypt's production CA.
     pub directory: String,
-    /// Optional account contact for expiry and policy notices from the CA.
+    /// An email address the CA may send expiry and policy notices to.
     pub email: Option<String>,
 }
 
@@ -452,23 +557,34 @@ impl AcmeConfig {
     }
 }
 
-/// DNS provider accounts, used for DNS-01 certificates and, where
-/// `manage_records` is set, routes' records. Zones are discovered through
-/// each provider's API.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+/// DNS provider accounts. piqueld uses them to obtain
+/// DNS-01 certificates and, where `manage_records` is set, to maintain
+/// routes' DNS records. It discovers each account's zones through the
+/// provider's API at startup and hourly; a hostname belongs to the provider
+/// with the longest matching zone.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DnsConfig {
-    /// Providers in configuration order.
+    /// DNS provider accounts, one `[[dns.providers]]` table each, selected by
+    /// `kind`.
+    // Defaulted alone, like `DaemonConfig`'s tables: providers aren't
+    // `Serialize`, which utoipa needs to document a container default.
+    #[serde(default)]
+    #[schema(default = json!([]))]
     pub providers: Vec<crate::dns::provider::DnsProviderConfig>,
 }
 
-/// Persistent build output policy; metadata remains until application deletion.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// How much output of each build is kept, and for how long. Builds themselves are listed until their application is
+/// deleted.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildHistoryConfig {
-    /// Maximum persisted bytes per build.
+    /// The most output kept per build, in bytes.
+    #[schema(minimum = 1, maximum = 67_108_864)]
     pub log_max_bytes: u32,
-    /// Days to retain output after completion.
+    /// Days a build's output is kept after it finishes. The build stays
+    /// listed, marked as expired.
+    #[schema(minimum = 1, maximum = 3650)]
     pub log_retention_days: u32,
 }
 impl Default for BuildHistoryConfig {
@@ -480,12 +596,14 @@ impl Default for BuildHistoryConfig {
     }
 }
 
-/// Snapshots of local worktrees, uploaded by `preview deploy --local`. Kept
-/// apart from `[previews]`, whose limits the API also reports.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// Uploads of local worktrees by `piquelctl preview deploy --local`.
+// Kept apart from `[previews]`, whose limits the API also reports.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SnapshotsConfig {
-    /// Largest Git bundle one upload may carry, in bytes.
+    /// The largest Git bundle one upload may carry, in bytes. Larger uploads
+    /// fail with `snapshot_too_large`.
+    #[schema(value_type = u64, minimum = 1)]
     pub max_upload_bytes: std::num::NonZeroU64,
 }
 
@@ -498,13 +616,16 @@ impl Default for SnapshotsConfig {
     }
 }
 
-/// The Git checkouts deployments read manifests from and build sources in.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// The Git checkouts deployments read manifests from and build sources in,
+/// under `<data_dir>/checkouts`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CheckoutsConfig {
-    /// Most bytes the working trees of all checkouts may take at once. A
-    /// checkout waits for room; a larger one, or a local snapshot that
-    /// would be, is refused.
+    /// The most bytes all checkouts, history and working tree, may take at
+    /// once. A checkout waits until it fits beside the others,
+    /// and one larger than this, or a local snapshot that would be, is
+    /// refused.
+    #[schema(value_type = u64, minimum = 1)]
     pub max_bytes: std::num::NonZeroU64,
 }
 
@@ -517,14 +638,18 @@ impl Default for CheckoutsConfig {
     }
 }
 
-/// Retention and cleanup of the images this installation builds.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// Cleanup of the images this installation builds.
+/// Cleanup keeps what every environment and preview runs or is deploying,
+/// and removes the rest. It never removes pulled images, images built by
+/// hand, or images other installations built on the same Docker Engine.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImagesConfig {
-    /// Successful deployments per environment whose images are kept for
-    /// restores, besides what environments and previews run or are deploying.
+    /// How many of each environment's latest successful deployments also
+    /// keep their images, so their releases can be deployed again.
     pub keep_deployments: u32,
-    /// Seconds between cleanups; cleanup also runs after each deployment.
+    /// Seconds between cleanups. Cleanup also runs after each operation.
+    #[schema(minimum = 1, maximum = 86_400)]
     pub cleanup_interval_seconds: u64,
 }
 impl Default for ImagesConfig {
@@ -557,37 +682,52 @@ fn absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
     }
 }
 
-/// API listeners and the daemon state directory.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
+/// Where the daemon keeps its state and serves its API. The Unix socket `<runtime_dir>/piqueld.sock` always serves the API;
+/// `listen_mode` adds TCP listeners, which also serve the dashboard.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Private directory holding the database and future user data.
-    #[serde(default = "default_data_dir")]
+    /// The absolute path of the private directory holding the database,
+    /// `secrets.key` and the rest of the daemon's state. Missing directories
+    /// are created with mode `0700`.
+    #[schema(value_type = String)]
     pub data_dir: PathBuf,
-    /// Existing directory holding the group-accessible Unix API socket.
-    #[serde(default = "default_runtime_dir")]
+    /// The absolute path of the directory holding the Unix API socket,
+    /// `piqueld.sock`. It must already exist, owned by the daemon's user,
+    /// with mode `0750` for group access or `0700`. It must differ from
+    /// `data_dir`.
+    #[schema(value_type = String)]
     pub runtime_dir: PathBuf,
-    /// Interfaces exposing the authenticated API over HTTP. Defaults to no TCP.
-    #[serde(default)]
+    /// The TCP addresses that serve the API and dashboard over plain HTTP,
+    /// besides the Unix socket. Every request must still authenticate.
     pub listen_mode: ListenMode,
-    /// Trusted DNS hostnames for TCP requests, in addition to localhost and IP literals.
-    #[serde(default)]
+    /// DNS hostnames, such as `my-host.my-tailnet.ts.net`, that TCP requests
+    /// may use besides `localhost` and IP addresses. Write exact hostnames,
+    /// without schemes, ports or wildcards, and only names trusted
+    /// operators control.
     pub allowed_hosts: Vec<String>,
-    /// Shared port for all selected TCP addresses.
-    #[serde(default = "default_port")]
+    /// The port every TCP listener uses.
+    #[schema(minimum = 1, maximum = 65_535)]
     pub port: u16,
 }
 
-/// Explicit TCP exposure policy; the Unix socket is always independent.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+/// Where the API and dashboard listen over TCP:
+///
+/// - `off`: none, so only the Unix socket serves the API.
+/// - `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.
+/// - `tailscale`: the host's Tailscale addresses, read from its `tailscale`
+///   at startup. If Tailscale isn't running then, piqueld logs a warning and
+///   only tries again when it restarts.
+/// - `both`: loopback and Tailscale addresses.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ListenMode {
-    /// Unix socket only.
+    /// The Unix socket only.
     #[default]
     Off,
     /// IPv4 and IPv6 loopback.
     Localhost,
-    /// Addresses discovered from the local Tailscale daemon at startup.
+    /// The host's Tailscale addresses, discovered at startup.
     Tailscale,
     /// Loopback and Tailscale addresses.
     Both,
@@ -602,18 +742,6 @@ impl std::fmt::Display for ListenMode {
             Self::Both => "both",
         })
     }
-}
-
-const fn default_port() -> u16 {
-    7845
-}
-
-fn default_data_dir() -> PathBuf {
-    PathBuf::from("/var/lib/piqueld")
-}
-
-fn default_runtime_dir() -> PathBuf {
-    PathBuf::from("/run/piqueld")
 }
 
 impl ServerConfig {
@@ -640,22 +768,26 @@ impl ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            data_dir: default_data_dir(),
-            runtime_dir: default_runtime_dir(),
+            data_dir: PathBuf::from("/var/lib/piqueld"),
+            runtime_dir: PathBuf::from("/run/piqueld"),
             listen_mode: ListenMode::default(),
-            port: default_port(),
+            port: 7845,
             allowed_hosts: Vec::new(),
         }
     }
 }
 
-/// Docker Engine connection and bootstrap policy.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// The Docker Engine piqueld deploys to. The daemon
+/// serves its API while Docker is down, and starts deploying once Docker
+/// answers as a single-node Swarm manager.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerConfig {
-    /// Absolute Docker Engine Unix socket path.
+    /// The absolute path of the Docker Engine's Unix socket.
+    #[schema(value_type = String)]
     pub socket: PathBuf,
-    /// Whether an inactive Docker Engine should be initialized as a single-node Swarm.
+    /// Initialize a Docker Engine that is not part of a Swarm as a
+    /// single-node Swarm.
     pub auto_initialize_swarm: bool,
 }
 
@@ -668,15 +800,23 @@ impl Default for DockerConfig {
     }
 }
 
-/// Reconciliation scheduling limits.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// How often piqueld checks that Docker matches what is deployed, and how
+/// long a deployment may take.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ReconciliationConfig {
-    /// Period between full drift scans.
+    /// Seconds between full scans for drift between Docker and what is
+    /// deployed.
+    #[schema(minimum = 1, maximum = 86_400)]
     pub scan_interval_seconds: u64,
-    /// Outer budget for resolving one application's inputs before persistence.
+    /// Seconds a deployment may take to prepare: fetching its manifest, resolving images and building them, including the time
+    /// spent waiting for a build slot.
+    #[schema(minimum = 1, maximum = 86_400)]
     pub prepare_timeout_seconds: u64,
-    /// Maximum time an operation waits without a service converging.
+    /// Seconds a deployment may wait without any service converging. It
+    /// restarts each time a service converges, so each link of
+    /// a startup dependency chain gets the full timeout.
+    #[schema(minimum = 1, maximum = 86_400)]
     pub convergence_timeout_seconds: u64,
 }
 
@@ -690,18 +830,20 @@ impl Default for ReconciliationConfig {
     }
 }
 
-/// Retention limits for terminal operation history.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// How long history is kept. `0` keeps it forever.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RetentionConfig {
-    /// Days a finished operation is retained before pruning.
-    /// `0` disables pruning.
+    /// Days finished operations are kept; `0` keeps them forever. Older ones
+    /// are removed during reconciliation.
     pub finished_operation_days: u64,
-    /// Days informational events are retained; zero disables pruning.
+    /// Days application events are kept; `0` keeps them forever. Deleting an
+    /// application also removes its events.
     pub event_days: u64,
-    /// Days daemon-scoped history is retained; zero disables pruning.
+    /// Days daemon events, about shared infrastructure, are kept; `0` keeps
+    /// them forever.
     pub daemon_event_days: u64,
-    /// Days the audit trail is retained; zero disables pruning.
+    /// Days the audit trail of API requests is kept; `0` keeps it forever.
     pub audit_days: u64,
 }
 

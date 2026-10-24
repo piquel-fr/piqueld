@@ -16,6 +16,7 @@ pub mod event;
 pub mod exec;
 pub mod identity;
 pub mod images;
+pub mod json_schema;
 pub mod links;
 pub mod manifest;
 pub mod names;
