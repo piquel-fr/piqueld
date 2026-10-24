@@ -6,9 +6,12 @@ them on the **Accounts** page or with `piquelctl account access`.
 
 ## Before you start
 
-To change someone's grants, you need `accounts:manage`, every grant their
-account holds, and every grant you give them; see
-[who may manage accounts](#who-may-manage-accounts).
+- To change someone's grants, you need `accounts:manage`, every grant their
+  account holds, and every grant you give them; see
+  [who may manage accounts](#who-may-manage-accounts).
+- Run the `piquelctl` examples on the host, or on any machine where
+  `piquelctl` is [signed in](cli-and-tokens.md) with your account's full
+  access. A limited login or token can't change grants.
 
 ## Grants
 
@@ -272,8 +275,9 @@ receivers of applications you can read.
 ## When access changes take effect
 
 piqueld checks grants on every request, so a change applies at once to every
-session and token of the account. A request already in progress when its
-access is removed can't use that access either.
+session and token of the account. Changes also check your access again just
+before they're saved, so a change already under way when access is removed or
+revoked can't use the access it lost.
 
 Connections that stay open check again while they last: event streams, and
 commands started with `apps:exec`. They notice a grant change, an account
