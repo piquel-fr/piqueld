@@ -341,7 +341,9 @@ pub enum Typed<T> {
 /// A template in a setting of another type, such as an integer: text
 /// containing a `${{` reference. A template that is exactly one reference
 /// takes the variable's own value, which must have the setting's type;
-/// strings are never parsed into numbers.
+/// strings are never parsed into numbers. For example, with `replicas =
+/// "${{ vars.replicas }}"`, the variable `replicas` must be the integer `2`,
+/// not the string `"2"`.
 #[derive(ToSchema)]
 #[schema(pattern = r"\$\{\{")]
 #[expect(dead_code, reason = "describes the wire shape of `Typed::Template`")]

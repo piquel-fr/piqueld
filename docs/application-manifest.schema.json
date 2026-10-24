@@ -167,7 +167,7 @@
     },
     "EnvironmentConfig": {
       "additionalProperties": false,
-      "description": "Declares an environment and where it deploys from. Without\n`promote_from`, the environment builds its own manifest: the saved one, or\na branch of the `spec.manifest` repository. A block that sets none of\n`branch`, `commit`, `promote_from` and `sync` leaves an existing\nenvironment's source as it is.",
+      "description": "Declares an environment and where it deploys from. Without\n`promote_from`, the environment builds its own manifest: the saved one, or\na branch of the `spec.manifest` repository. A block that sets none of\n`branch`, `commit`, `promote_from` and `sync` leaves an existing\nenvironment's source as it is, unless the previous manifest set one of\nthem: removing them returns the environment to the default source.",
       "properties": {
         "branch": {
           "default": null,
@@ -636,11 +636,19 @@
         },
         "status": {
           "default": 308,
-          "description": "HTTP status of the redirect: 301, 302, 303, 307 or 308.",
-          "format": "int32",
-          "maximum": 308,
-          "minimum": 301,
-          "type": "integer"
+          "description": "HTTP status of the redirect.",
+          "oneOf": [
+            {
+              "enum": [
+                301,
+                302,
+                303,
+                307,
+                308
+              ],
+              "type": "integer"
+            }
+          ]
         },
         "to": {
           "$ref": "#/definitions/Template",
@@ -761,7 +769,7 @@
             },
             {
               "$ref": "#/definitions/Typed_u64",
-              "description": "Memory limit in bytes, greater than zero."
+              "description": "Memory limit in bytes, from 1 to 9,223,372,036,854,775,807."
             }
           ]
         }
@@ -859,7 +867,7 @@
     },
     "SecretDeclaration": {
       "additionalProperties": false,
-      "description": "A secret whose value piqueld generates for each environment when one of\nits deployments first needs it. A generated value is never replaced, and\nnever shared with another environment.",
+      "description": "A secret whose value piqueld generates for each environment when one of\nits deployments first needs it. Later deployments and manifest edits keep\nthat value; `piquelctl env secret regenerate` replaces it. A value is never\nshared with another environment.",
       "properties": {
         "generate": {
           "$ref": "#/definitions/SecretGenerator",
@@ -1170,7 +1178,7 @@
       "type": "string"
     },
     "TypedTemplate": {
-      "description": "A template in a setting of another type, such as an integer: text\ncontaining a `${{` reference. A template that is exactly one reference\ntakes the variable's own value, which must have the setting's type;\nstrings are never parsed into numbers.",
+      "description": "A template in a setting of another type, such as an integer: text\ncontaining a `${{` reference. A template that is exactly one reference\ntakes the variable's own value, which must have the setting's type;\nstrings are never parsed into numbers. For example, with `replicas =\n\"${{ vars.replicas }}\"`, the variable `replicas` must be the integer `2`,\nnot the string `\"2\"`.",
       "pattern": "\\$\\{\\{",
       "type": "string"
     },
@@ -1261,7 +1269,7 @@
     },
     "Volume": {
       "additionalProperties": false,
-      "description": "A named volume the services mount. Its data is kept across deployments,\nand when the application is deleted.",
+      "description": "A named volume the services mount. Its data is kept across deployments,\nand when the application is deleted. A preview's volumes are deleted with\nthe preview.",
       "properties": {
         "name": {
           "description": "Name of the volume, unique in the application.",

@@ -43,7 +43,8 @@ the same descriptions. For how the settings work together, read the
 [application manifest](manifest.md) reference and the guides, such as
 [HTTP ingress](../guides/ingress.md).
 
-Each setting is named by its full TOML path:
+Each table's section is headed by the line that starts it in the file, such
+as `[[spec.services]]`. Each setting is named by its full TOML path:
 
 - `[]` stands for each entry of an array of tables: `spec.services[].name` is
   the `name` of each `[[spec.services]]`.
@@ -76,9 +77,10 @@ daemon uses the file, with examples, see
 [daemon configuration](configuration.md); NixOS sets these settings through
 the [NixOS module](nixos.md).
 
-Each setting is named by its full TOML path, where `[]` stands for each entry
-of an array of tables: `dns.providers[].kind` is the `kind` of each
-`[[dns.providers]]`. Settings ending in `_file` take the path of a
+Each table's section is headed by the line that starts it in the file, such
+as `[[dns.providers]]`. Each setting is named by its full TOML path, where `[]`
+stands for each entry of an array of tables: `dns.providers[].kind` is the
+`kind` of each `[[dns.providers]]`. Settings ending in `_file` take the path of a
 [credential file](#credential-file): a relative path resolves against
 `$CREDENTIALS_DIRECTORY`.",
     };
@@ -291,7 +293,7 @@ impl<'a> Renderer<'a> {
         let heading = if path.is_empty() {
             "Top level".to_owned()
         } else {
-            format!("`{path}`")
+            format!("`{}`", Self::header(&path))
         };
         let description = table
             .description
@@ -726,6 +728,18 @@ impl<'a> Renderer<'a> {
             key.to_owned()
         } else {
             format!("{path}.{key}")
+        }
+    }
+
+    /// The TOML header of the table at `path`: `[[spec.services]]` for
+    /// `spec.services[]`, `[spec.services.healthcheck]` for
+    /// `spec.services[].healthcheck`.
+    fn header(path: &str) -> String {
+        let table = path.replace("[]", "");
+        if path.ends_with("[]") {
+            format!("[[{table}]]")
+        } else {
+            format!("[{table}]")
         }
     }
 

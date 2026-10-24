@@ -181,7 +181,8 @@ impl ApplicationSpec {
 /// `promote_from`, the environment builds its own manifest: the saved one, or
 /// a branch of the `spec.manifest` repository. A block that sets none of
 /// `branch`, `commit`, `promote_from` and `sync` leaves an existing
-/// environment's source as it is.
+/// environment's source as it is, unless the previous manifest set one of
+/// them: removing them returns the environment to the default source.
 // `super::declaration` converges environments to these blocks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -656,7 +657,8 @@ fn default_build_context() -> Template {
 }
 
 /// A named volume the services mount. Its data is kept across deployments,
-/// and when the application is deleted.
+/// and when the application is deleted. A preview's volumes are deleted with
+/// the preview.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
@@ -846,7 +848,7 @@ pub struct ResourceLimits {
     /// CPU limit in thousandths of a CPU, from 1 to 1,048,576: `500` is half
     /// a CPU.
     pub cpu_millis: Option<Typed<u32>>,
-    /// Memory limit in bytes, greater than zero.
+    /// Memory limit in bytes, from 1 to 9,223,372,036,854,775,807.
     pub memory_bytes: Option<Typed<u64>>,
 }
 
@@ -865,8 +867,9 @@ pub struct SecretMount {
 }
 
 /// A secret whose value piqueld generates for each environment when one of
-/// its deployments first needs it. A generated value is never replaced, and
-/// never shared with another environment.
+/// its deployments first needs it. Later deployments and manifest edits keep
+/// that value; `piquelctl env secret regenerate` replaces it. A value is never
+/// shared with another environment.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretDeclaration {
@@ -987,9 +990,9 @@ pub struct Redirect {
     /// hostname and no query or fragment. It can't target a hostname the
     /// route serves.
     pub to: Template,
-    /// HTTP status of the redirect: 301, 302, 303, 307 or 308.
+    /// HTTP status of the redirect.
     #[serde(default = "default_redirect_status")]
-    #[schema(minimum = 301, maximum = 308, default = default_redirect_status)]
+    #[schema(value_type = super::RedirectStatus, inline, default = default_redirect_status)]
     pub status: u16,
     /// Whether to append the request's path and query to `to`.
     #[serde(default = "default_preserve_path")]
