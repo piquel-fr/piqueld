@@ -236,10 +236,12 @@ configured localhost or Tailscale TCP listeners and, with a
 The API Unix socket is API-only, and the daemon does not add CORS, browser telemetry,
 or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
-their grants, invitations, passkey enrollment links, and tokens. Pages the
+their grants, invitations, passkey enrollment links, and tokens. See
+[managing accounts](accounts/accounts.md). Pages the
 signed-in account cannot use are hidden, as are most actions needing an
 installation-wide permission it lacks; other actions remain visible, and the
-daemon refuses them with `permission_denied`. See [authorization](accounts/permissions.md).
+daemon refuses them with `permission_denied`. See
+[permissions](accounts/permissions.md#what-people-without-access-see).
 A link from `piquelctl sign-in-link` opens a page that signs the browser in as
 the [host operator](accounts/recovery.md#the-host-operator) for 12 hours, without
 an account. The dashboard then shows "Host operator" as the signed-in user and
@@ -255,7 +257,7 @@ application or environment each request addressed, and each
 session or token links to its own activity. New tokens can be bound to a
 tailnet user or tag; see [tailnet-bound tokens](accounts/cli-and-tokens.md#bind-a-token-to-tailnet-devices). With `audit:read`, **Verify
 integrity** checks the trail's [hash chain](guides/observability.md#tamper-evidence). Log display preferences persist in browser
-local storage. See [managing accounts](accounts/accounts.md).
+local storage.
 
 The application's **Secrets** tab lists the secret store's names, versions and
 who may mount each one, by environment name. It creates or replaces write-only

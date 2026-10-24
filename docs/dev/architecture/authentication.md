@@ -164,9 +164,11 @@ every listener including the Unix socket:
 - a registration or login request without the configured Origin, unless it
   sends none and carries a bearer credential that authenticates.
 
-On TCP, the browser policy in `api/http/browser.rs` runs first and refuses
-requests with an untrusted Host or cross-site Fetch Metadata with 403
-`browser_access_denied`. All API listeners require authentication regardless
+On TCP, including the tailnet node and the dashboard gateway, the browser
+policy in `api/http/browser.rs` runs first. It refuses, with 403
+`browser_access_denied`, requests with an untrusted Host, and unsafe-method
+requests whose `Sec-Fetch-Site` is anything but `same-origin` or `none`,
+`same-site` included. All API listeners require authentication regardless
 of socket group membership or Tailscale connectivity; only the host operator
 on the Unix socket needs none. Public endpoints are the status, setup-link,
 recovery, sign-in-link, ceremony, operator login, and device start and poll
@@ -207,13 +209,14 @@ comparison cannot tell callers apart.
 [saved logins](../../user/accounts/cli-and-tokens.md#saved-logins)), as
 `{"endpoints":{KEY:{"selected":ID,"accounts":{ID:{"username":…,"token":…}}}}}`.
 The key is the resolved URL without a trailing `/`, or `unix:<socket path>`,
-compared as a string. Every read and write holds an exclusive lock on the
-sibling `credentials.json.lock`, which serializes concurrent CLI processes, so
-don't delete it while commands run. Writes go to a temporary file (mode 0600)
-that is synced and renamed over the target; reads refuse a file with any group
-or other permission bit. Logging in again as the same account replaces the
-saved token without revoking the old one. After `logout` removes the selected
-login, the first remaining account, in ID order, becomes the default.
+compared as a string. Each update (login, logout) holds an exclusive lock on
+the sibling `credentials.json.lock` across its read, change and write, which
+serializes concurrent CLI processes, so don't delete it while one runs. Reads
+take no lock, since writes go to a temporary file (mode 0600) that is synced
+and renamed over the target. Reads refuse a file with any group or other
+permission bit. Logging in again as the same account replaces the saved token
+without revoking the old one. After `logout` removes the selected login, the
+first remaining account, in ID order, becomes the default.
 
 The client refuses remote HTTP authentication unless opted in with
 `--allow-insecure-http` or, for library callers,

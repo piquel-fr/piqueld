@@ -1,8 +1,8 @@
 # Managing accounts
 
 Invite people to piqueld, help them add passkeys, and remove their access when
-they leave. You do this on the dashboard's **Accounts** page, and the most
-common tasks with `piquelctl account` too.
+they leave. You do this on the dashboard's **Accounts** page;
+`piquelctl account` covers the most common tasks.
 
 ## Before you start
 
@@ -13,8 +13,6 @@ common tasks with `piquelctl account` too.
 - The `piquelctl` commands on this page run on your machine, signed in as your
   account, as when you
   [signed it in](../getting-started/first-account.md#sign-piquelctl-in).
-  Invitations and enrollment links are issued by an account, so the
-  [host operator](recovery.md#the-host-operator) can't create them.
 
 ## The Accounts page
 
@@ -22,7 +20,7 @@ Open **Accounts** in the dashboard's sidebar. Each account has a card with its
 **Profile**, its **Access**, its **Passkeys**, and its **Sessions and API
 tokens**.
 
-![The Accounts page: the card of alice, with her username and display name, admin on every application, two passkeys named Laptop and Phone, and her sessions](../../images/accounts/accounts-page.png)
+![The Accounts page: the card of alice, with her username and display name, admin on every application, and two passkeys named Laptop and Phone](../../images/accounts/accounts-page.png)
 
 Without `accounts:manage`, the page only shows your own account. With it, the
 page lists every account, the invitation and enrollment links waiting to be
@@ -52,8 +50,10 @@ username and registers its passkey.
    apply to every application, including future ones**, and select them.
 3. Choose a **Preset**, or select permissions one by one.
    [Permissions](permissions.md) says what each one allows.
-4. Select **Create link**, then **Copy to clipboard**.
-5. Send the link to the person it's for, over a channel you trust.
+4. Select **Create link**.
+5. At the top of the **Accounts** page, select **Copy** next to the new link,
+   then **Done**.
+6. Send the link to the person it's for, over a channel you trust.
 
 With `piquelctl`:
 
@@ -109,7 +109,9 @@ When someone has lost their passkeys, or wants to sign in on a device that
 can't share them, send them an enrollment link:
 
 1. On their card, under **Passkeys**, select **Create enrollment link**.
-2. Select **Copy to clipboard**, and send them the link.
+2. At the top of the **Accounts** page, select **Copy** next to the new link,
+   then **Done**.
+3. Send them the link.
 
 Or create it with `piquelctl`:
 
@@ -126,8 +128,10 @@ first; revoke the ones you no longer need under **Pending links**.
 
 ## Rename or remove a passkey
 
-Under **Passkeys**, edit a **Passkey name** and select **Rename**, or select
-**Remove**.
+Under **Passkeys**, edit a **Passkey name** and select **Rename**.
+
+Removing a passkey can't be undone, and the dashboard doesn't ask to confirm.
+To remove one, select **Remove** next to it.
 
 Removing a passkey stops it from signing in, but it doesn't end the sessions
 and tokens already open. If the passkey was lost or stolen,
@@ -138,8 +142,8 @@ and tokens already open. If the passkey was lost or stolen,
 Under **Profile**, change the **Username** or the **Display name**, then select
 **Save profile**.
 
-- A username has 1 to 64 letters, digits, dots, dashes or underscores. It is
-  unique regardless of case: `Alice` and `alice` are the same name.
+- A username has 1 to 64 ASCII letters, digits, dots, dashes or underscores.
+  It is unique regardless of case: `Alice` and `alice` are the same name.
 - A display name is optional, up to 200 bytes.
 
 Renaming an account doesn't change its ID, which the
@@ -159,8 +163,9 @@ shows what it may do, when it was last used, and when it expires.
   your own account.
 - **Activity** opens its requests in the audit trail.
 
-`piquelctl token list` and `piquelctl token revoke` do the same for your own
-account; see [revoke a token](cli-and-tokens.md#revoke-a-token).
+`piquelctl token list` lists your own sessions and tokens, and
+`piquelctl token revoke <id>` revokes one; see
+[revoke a token](cli-and-tokens.md#revoke-a-token).
 
 ## Delete an account
 
@@ -179,18 +184,18 @@ You can delete your own account. `piquelctl` doesn't delete accounts.
   keep `admin` on every application and a passkey, so that someone can always
   sign in and manage piqueld. piqueld refuses to remove the last such
   account's access, its last passkey, or the account itself. Make another
-  account an administrator first.
+  account that has a passkey an administrator first.
 - **The change is refused with `permission_exceeded`.** The account holds
   access you don't, or you're handing out access you don't hold. Ask someone
   who holds it.
-- **A link answers "Sign in with a passkey or run piquelctl login".** It was
-  already used, has expired, or was revoked. It also stops working once its
-  issuer couldn't create it any more: they lost `accounts:manage`, or the
-  access it grants, or for an enrollment link, the right to change that
-  account. Such a link stays under **Pending links** until it expires. Ask for
-  a new link. When the issuer lost their authority, the refusal only comes
-  after the browser saved the passkey, which the person can then delete from
-  their device.
+- **A link answers "API returned 401 Unauthorized: authentication_required
+  (Sign in with a passkey or run piquelctl login)".** It was already used, has
+  expired, or was revoked. Ask for a new link.
+- **The same refusal comes after the browser saved the passkey.** The link's
+  issuer can't create it any more: they lost `accounts:manage` or the access
+  it grants, or, for an enrollment link, the right to change that account.
+  Delete the saved passkey from the device, and ask for a new link. The old
+  link stays under **Pending links** until it expires.
 - **Registration fails with `account_conflict`.** Another account has that
   username, regardless of case. The browser has already saved a passkey by
   then: delete it from the device, and register again with another name.

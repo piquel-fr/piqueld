@@ -26,8 +26,9 @@ leak.
    also open it in the host's browser. Only root and members of the `piqueld`
    group can get the link, because it's only served on the host's socket.
 
-2. Open the link in your browser. Choose a username, and optionally a display
-   name and a name for the passkey.
+2. Open the link in your browser. Choose a **Username**, and optionally a
+   display name. Under **Passkey name**, keep `My passkey` or name the device
+   that keeps it, such as `Laptop`.
 
    ![The "Create your account" page, with the username alice, the display name Alice, and the passkey name Laptop](../../images/getting-started/create-account.png)
 

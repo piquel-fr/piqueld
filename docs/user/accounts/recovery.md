@@ -64,9 +64,10 @@ sessions**, on the **Accounts** page, and in `piquelctl account list`:
 host operator (uid 0) browser session 01a16b51-bcb2-7800-87b6-bb2605a22b2d (admin, expires 1792845081)
 ```
 
-To end one, select **Sign out** in that browser, **Revoke** on the
-**Accounts** page, or run `piquelctl token revoke` with its ID. Revoking one
-needs `admin` on every application, since it acts with that.
+To end one, select the sign-out button next to **Host operator** at the
+bottom of that browser's sidebar, select **Revoke** on the **Accounts** page,
+or run `piquelctl token revoke` with its ID. Revoking one needs
+`accounts:manage` and `admin` on every application, since it acts with that.
 
 ## Someone lost their passkey
 

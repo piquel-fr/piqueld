@@ -18,17 +18,27 @@ jobs and agents an API token that can only do what they need.
 
 ## Sign piquelctl in
 
-`piquelctl login` signs `piquelctl` in with your passkey, through the
-dashboard: [creating your account](../getting-started/first-account.md#sign-piquelctl-in)
-walks through it. It works over SSH too, since the browser can run on another
-machine than the terminal.
+```console
+$ piquelctl login
+Open https://piqueld.<tailnet>.ts.net/dashboard/auth#device
+Enter code: KQ7M-3XHT
+The daemon sees this login coming from: 100.101.102.103
+Waiting for passkey login…
+alice (01a16b4b-ef93-7971-b6f6-e8359d3c4d52)
+```
+
+Open the link, sign in with your passkey, and approve the code:
+[creating your account](../getting-started/first-account.md#sign-piquelctl-in)
+walks through it. `piquelctl` then prints the account it signed in as. This
+works over SSH too, since the browser can run on another machine than the
+terminal.
 
 Anyone who can reach the daemon can start a login, and approving it gives
 their terminal your account's access. Only approve a code from a terminal you
 started yourself, whose address matches **Requested from**. Behind your own
-reverse proxy, every login seems to come from the proxy, so only the code
-tells them apart. Approving a login never creates an account: new people need
-an [invitation](accounts.md#invite-someone) first.
+reverse proxy, every login shows the proxy's address: check that the code is
+the one your terminal printed. Approving a login never creates an account: new
+people need an [invitation](accounts.md#invite-someone) first.
 
 On the daemon's host, root and the daemon's user need no login: they act as
 the [host operator](recovery.md#the-host-operator).
@@ -104,9 +114,8 @@ an account is renamed, select it by ID, or log in again.
 `piquelctl logout` revokes the login and removes it from the file. With
 `--account`, it signs that account out.
 
-While a command uses the file, `piquelctl` locks `credentials.json.lock`, next
-to it, so that several commands can run at once. Don't delete the lock file
-while commands are running.
+`piquelctl` also creates `credentials.json.lock` next to the file. Don't
+delete it while `login` or `logout` is running.
 
 ## Create an API token
 
@@ -122,8 +131,9 @@ lowering your access lowers your tokens' access too.
 3. Enter a **New token name**, such as `ci`.
 4. Under **Expires in days (blank: never)**, keep `90` or enter another number
    of days.
-5. Select **Create token**, then **Copy to clipboard**. The token is only
-   shown once.
+5. Select **Create token**.
+6. At the top of the **Accounts** page, select **Copy** next to the new token,
+   then **Done**. The token isn't shown again.
 
 ![The New API token form: the deploy preset limited to blog, so the effective access is apps:read and apps:deploy on blog, named ci and expiring in 30 days](../../images/accounts/new-api-token.png)
 
@@ -154,8 +164,9 @@ They can't give anyone access, and they can't change their own account. They
 can revoke themselves. So a leaked token never outlives or exceeds its own
 limits.
 
-A token with `accounts:manage` can still change, revoke and delete other
-accounts within its access, short of giving them grants.
+A token with `accounts:manage` can still edit other accounts' profiles and
+passkeys, revoke their sessions and tokens, and delete them, within its
+access. It can't change their grants.
 
 ## Use a token in automation
 
@@ -210,7 +221,7 @@ $ piquelctl token list
 01a16b4c-3504-7053-b78f-e68736555bdf cli piquelctl (expires at Unix 1795393518)
   the account's full access
 …
-01a16b4e-6995-79b2-bfb1-0f72630a4d96 token deploy-ci (expires at Unix 1795393663)
+01a16b4e-6995-79b2-bfb1-0f72630a4d96 token ci (expires at Unix 1795393663)
   apps:read on blog
   apps:deploy on blog
 $ piquelctl token revoke 01a16b4e-6995-79b2-bfb1-0f72630a4d96
@@ -253,8 +264,10 @@ a new token.
 - **"token lifetime exceeds this installation's auth.max_token_days".** Pass a
   `--days` within the limit. The limit also applies to the default 90 days.
 - **Creating a bound token answers "tailnet bindings need the daemon's
-  tailnet node".** Bindings need piqueld's tailnet node or a dashboard
-  hostname.
+  tailnet node (tailscale.enabled) or a dashboard hostname
+  (ingress.private.dashboard_hostname)".** Turn on piqueld's
+  [tailnet node](../reference/configuration.md#tailnet-node) or set a
+  [dashboard hostname](../guides/ingress.md#dashboard-hostname).
 - **A bound token is refused with `tailnet_binding_mismatch`.** Use it
   through piqueld's tailnet address, from a device with that user or tag.
   `tailnet_unavailable` (503) means `tailscaled` didn't answer in time: retry.
