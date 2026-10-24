@@ -136,8 +136,9 @@ any port.
    ```
 
    Or select **Grant telemetry** on the environment's **Overview**. This needs
-   the `telemetry:grant` permission, which an account with `admin` on every
-   application has. No preset includes it.
+   the `telemetry:grant` permission. An account with `admin` on every
+   application has it, and it can be granted on its own; no preset includes
+   it.
 
 5. Deploy it:
 

@@ -5,9 +5,9 @@ fails, a service degrades, or someone gains administrator access.
 
 ## Before you start
 
-- You need the `notifications:manage` permission to add destinations, and
-  `system:read` to see them. Administrators have both; see
-  [permissions](../accounts/authorization.md).
+- You need the `notifications:manage` permission to add and change
+  destinations. Seeing them needs it or `system:read`. Administrators have
+  both; see [permissions](../accounts/authorization.md).
 - A webhook URL: a Discord channel's webhook, or an endpoint of your own that
   accepts JSON. It must use HTTPS, except to `localhost` or a loopback IP
   address.
@@ -175,7 +175,7 @@ answer fails the delivery at once. To send a failed delivery again, select
 
    - `subject` names the application, the environment (or the preview's slug,
      when `preview` is `true`) and the branch, as they were when the
-     notification was sent. Each is `null` when the notification isn't about
+     notification was queued. Each is `null` when the notification isn't about
      one.
    - `message` is the destination's text for the category, or `null`.
    - `event` is the history event behind the notification, including who

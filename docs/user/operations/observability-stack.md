@@ -14,8 +14,8 @@ runs:
 
 ## Before you start
 
-- You're an administrator: granting telemetry needs the `telemetry:grant`
-  permission.
+- The `telemetry:grant` permission, to grant the stack telemetry. Accounts
+  with `admin` on every application have it.
 - Grafana is served on a private route, so piqueld needs
   [managed ingress](../reference/configuration.md#managed-application-ingress)
   with its tailnet node, and a [DNS provider](../reference/configuration.md#dns-providers)

@@ -43,10 +43,12 @@ scope, event kind or error code.
 
 Each failure has a diagnostic. Select **Diagnostic details** to read it:
 
-- a **summary** of what went wrong, and a stable **code**, such as
-  `image_resolution_rejected`;
-- its **causes**, such as the Docker request that failed and its HTTP status;
-- the **next step**, and whether retrying can help.
+- its heading is a stable error code, such as `image_resolution_rejected`, and
+  a summary of what went wrong;
+- a badge says whether it's **retryable** or **needs attention**;
+- **Causes** lists what led to it, such as the Docker request that failed and
+  its HTTP status;
+- **Next action** says what to do.
 
 The **Errors** page links each failure to its environment and to the events of
 its deployment. When a command fails, `piquelctl` prints the same code and
