@@ -22,8 +22,6 @@ export default defineConfig<Options>({
     colorScheme: 'dark',
     locale: 'en-US',
     timezoneId: 'UTC',
-    // Lets screenshots/docs.ts set the font despite the dashboard's CSP.
-    bypassCSP: true,
     trace: 'retain-on-failure',
   },
 });

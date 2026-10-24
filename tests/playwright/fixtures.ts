@@ -104,6 +104,10 @@ export async function auth<T = Record<string, unknown>>(page: Page, path: string
   expect(result.status, JSON.stringify(result.body)).toBe(200);
   return result.body;
 }
+/** A new, never-expiring API token named `name`, with the admin grant, of the signed-in account. */
+export async function adminToken(page: Page, name: string): Promise<string> {
+  return (await auth<Managed>(page, 'manage', { action: 'create_token', grants: [{ permission: 'admin' }], name, days: null })).token;
+}
 /** Opens invitation `link` and fills in its account form, the display and
  * passkey names only when given. */
 export async function fillRegistration(page: Page, link: string, username: string, names: { display?: string; passkey?: string } = {}) {

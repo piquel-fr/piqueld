@@ -202,8 +202,9 @@ impl RegistryState {
     }
 }
 
-/// An [`ImageSource`] view over the fake registry, mirroring the real
-/// engine's canonical repo digest shape.
+/// An [`ImageSource`] view over the fake registry, reporting repo digests
+/// as the real engine does: by the repository's short name on Docker Hub
+/// (`nginx@sha256:…`, `user/app@sha256:…`), by its full name elsewhere.
 struct RegistryView {
     registry: Arc<Mutex<RegistryState>>,
 }
@@ -214,6 +215,11 @@ impl ImageSource for RegistryView {
         let state = self.registry.lock().await;
         let repository =
             image_repository(reference).ok_or(DockerError::Request("image reference"))?;
+        let repository = repository
+            .strip_prefix("docker.io/")
+            .map_or(repository.as_str(), |path| {
+                path.strip_prefix("library/").unwrap_or(path)
+            });
         Ok(Some(vec![format!(
             "{repository}@sha256:{}",
             state.digest(reference)
@@ -426,13 +432,25 @@ impl DockerApi for FakeDocker {
         build: &ImageBuild<'_>,
         _log: Option<&crate::build::BuildLog>,
     ) -> Result<Sha256Digest, DockerError> {
-        assert!(build.context.is_dir());
-        let contents = tokio::fs::read_to_string(&build.dockerfile).await.unwrap();
+        if !build.context.is_dir() {
+            return Err(DockerError::Validation("find the build context"));
+        }
+        let contents = tokio::fs::read_to_string(&build.dockerfile)
+            .await
+            .map_err(|source| DockerError::RequestSource {
+                operation: "read the Dockerfile",
+                source: source.into(),
+            })?;
         if contents.contains("build-fails") {
             return Err(DockerError::Request("build Docker image"));
         }
         self.registry.lock().await.pull("git-build");
-        let id = Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).unwrap();
+        let id = Sha256Digest::parse(format!("sha256:{}", "b".repeat(64))).map_err(|source| {
+            DockerError::RequestSource {
+                operation: "name the built image",
+                source: source.into(),
+            }
+        })?;
         self.add_image(LocalImage {
             id: id.clone(),
             repo_digests: Vec::new(),
@@ -477,10 +495,19 @@ impl DockerApi for FakeDocker {
             reference,
         )
         .await?;
-        let (_, id) = digest.split_once('@').unwrap();
+        let parse = |source: Box<dyn std::error::Error + Send + Sync>| DockerError::RequestSource {
+            operation: "record the pulled image",
+            source,
+        };
+        let (_, id) = digest
+            .split_once('@')
+            .ok_or(DockerError::ImageResolution("split the repository digest"))?;
         self.add_image(LocalImage {
-            id: Sha256Digest::parse(id).unwrap(),
-            repo_digests: vec![piqueld_core::RepositoryDigest::parse(digest.clone()).unwrap()],
+            id: Sha256Digest::parse(id).map_err(|error| parse(error.into()))?,
+            repo_digests: vec![
+                piqueld_core::RepositoryDigest::parse(digest.clone())
+                    .map_err(|error| parse(error.into()))?,
+            ],
             labels: BTreeMap::new(),
             size: 50,
             used: false,

@@ -9,7 +9,7 @@ test('getting started', async ({ page, daemon, cli, passkeys }) => {
   await submitRegistration(page);
   await deployFrom(page, cli, 'user/getting-started/first-app.md');
   await overview(page);
-  await shoot(page, 'getting-started/overview', 760);
+  await shoot(page, 'getting-started/overview', page.getByRole('region', { name: 'Recent deployments' }));
   await environment(page, 'hello', 'production');
-  await shoot(page, 'getting-started/environment', 900);
+  await shoot(page, 'getting-started/environment', page.getByRole('region', { name: 'Observed services' }));
 });

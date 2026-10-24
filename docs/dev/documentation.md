@@ -115,21 +115,24 @@ in a mode where it deploys to an in-memory Docker engine: deployments succeed
 and services report healthy. Each spec seeds example data the way its guide
 does, then saves each page into `docs/images/<section>/`. An image is
 rewritten only when the page looks different, so a run that changes nothing
-leaves the images untouched.
+leaves the images untouched. The daemon runs no ingress gateway, so
+screenshots show HTTPS ingress as disabled, as on a daemon with the default
+configuration.
 
 To add a screenshot, extend the spec of its guide, or add a spec for a new
 guide. `screenshots/docs.ts` holds the helpers:
 
 - one helper per page or state, such as `overview`, which waits for its data
   to settle. Add one for each new page you show.
-- `shoot(page, '<section>/<name>', height)`, which saves the page, 1280 pixels
-  wide, as `docs/images/<section>/<name>.png`. It replaces IDs, digests and
-  dates with fixed ones first, so the images don't change from run to run.
+- `shoot(page, '<section>/<name>', through)`, which saves the page, 1280
+  pixels wide and cut just below the element `through`, as
+  `docs/images/<section>/<name>.png`. It replaces IDs, digests and dates with
+  fixed ones first, so the images don't change from run to run.
 
 ```typescript
 await deployFrom(page, cli, 'user/getting-started/first-app.md');
 await overview(page);
-await shoot(page, 'getting-started/overview', 760);
+await shoot(page, 'getting-started/overview', page.getByRole('region', { name: 'Recent deployments' }));
 ```
 
 Link each image with a relative path, and give it alt text that says what it
