@@ -1,4 +1,4 @@
-# NixOS service
+# NixOS module
 
 Import the flake module and enable the service:
 
@@ -51,7 +51,7 @@ the generated system file now serves all users. Keep intentional user overrides
 in the user configuration file. Profile settings remain in the public Nix store
 and must not contain credentials.
 
-The module runs [`piqueld check-config`](../reference/configuration.md) on the generated
+The module runs [`piqueld check-config`](configuration.md) on the generated
 file while building the system, so an invalid setting fails `nixos-rebuild
 build` instead of `piqueld.service`. Credentials are not read during the check.
 Set `services.piqueld.checkConfig = false;` when the package cannot run on the
@@ -108,7 +108,7 @@ services.piqueld.settings.tailscale = {
 ```
 
 `settings.auth.public_url` defaults to the node's HTTPS URL. See
-[the tailnet node](../reference/configuration.md#tailnet-node) for details.
+[the tailnet node](configuration.md#tailnet-node) for details.
 
 `settings` declares typed options for `server.listen_mode`, `server.port`,
 `server.allowed_hosts`, `auth.public_url`, `auth.max_token_days`, `tailscale.enabled`,
@@ -123,9 +123,9 @@ Tailscale CLI on the service's `PATH`), `ingress.tunnel.enabled`, `ingress.tunne
 (also a systemd credential, required while the tunnel is enabled),
 `ingress.webhook_hostname`, `dns.providers`, all three `reconciliation`
 intervals/timeouts, the `retention` periods, both `build_history` limits,
-the five [`previews`](../reference/configuration.md#previews) limits,
-[`snapshots.max_upload_bytes`](../reference/configuration.md#local-snapshots),
-[`checkouts.max_bytes`](../reference/configuration.md#git-checkouts), both `images` settings,
+the five [`previews`](configuration.md#previews) limits,
+[`snapshots.max_upload_bytes`](configuration.md#local-snapshots),
+[`checkouts.max_bytes`](configuration.md#git-checkouts), both `images` settings,
 `telemetry.endpoint`, `telemetry.headers_file` (a systemd credential),
 and `telemetry.containers`, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero
@@ -149,7 +149,7 @@ services.piqueld.settings.telemetry = {
 };
 ```
 
-[DNS providers](../reference/configuration.md#dns-providers) take their credentials only as
+[DNS providers](configuration.md#dns-providers) take their credentials only as
 files:
 
 ```nix
