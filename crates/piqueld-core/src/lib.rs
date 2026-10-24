@@ -14,7 +14,6 @@ pub mod edit;
 pub mod environment;
 pub mod event;
 pub mod exec;
-pub mod generated;
 pub mod identity;
 pub mod images;
 pub mod json_schema;

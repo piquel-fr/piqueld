@@ -5,7 +5,7 @@
 //! depends on.
 
 use clap::{Arg, ArgAction, Command};
-use piqueld_core::generated::{ArtifactError, Artifacts, Page};
+use piqueld_generated::{ArtifactError, Artifacts, Page};
 use std::fmt::Write as _;
 
 /// The page's introduction, after its title.

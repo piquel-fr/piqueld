@@ -10,8 +10,8 @@ use anyhow::{Context, Result, anyhow, ensure};
 use config_reference::ConfigReference;
 use piqueld::api::http::openapi_document;
 use piqueld::config::DaemonConfig;
-use piqueld_core::generated::Artifacts;
 use piqueld_core::manifest::ApplicationManifest;
+use piqueld_generated::Artifacts;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{

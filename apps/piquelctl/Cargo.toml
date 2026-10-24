@@ -29,7 +29,7 @@ workspace = true
 
 [dev-dependencies]
 # The `cli_reference` example writes the command reference through it.
-piqueld-core.workspace = true
+piqueld-generated.workspace = true
 tempfile.workspace = true
 # Serves exec WebSockets from the blocking test server.
 tokio-tungstenite.workspace = true

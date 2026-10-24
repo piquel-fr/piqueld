@@ -63,7 +63,7 @@ impl Artifacts {
             [flag] if flag == "--check" => true,
             _ => return Err(ArtifactError::Usage(args)),
         };
-        // This crate lives two levels below the root, in `crates/piqueld-core`.
+        // This crate lives two levels below the root, in `crates/piqueld-generated`.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()

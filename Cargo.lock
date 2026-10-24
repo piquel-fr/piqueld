@@ -2596,7 +2596,7 @@ dependencies = [
  "indicatif",
  "parking_lot",
  "piqueld-client",
- "piqueld-core",
+ "piqueld-generated",
  "rustix",
  "serde",
  "serde_json",
@@ -2634,6 +2634,7 @@ dependencies = [
  "parking_lot",
  "piqueld-client",
  "piqueld-core",
+ "piqueld-generated",
  "piqueld-probe",
  "prettyplease",
  "progenitor",
@@ -2702,6 +2703,13 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.8.23",
  "utoipa",
+]
+
+[[package]]
+name = "piqueld-generated"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]

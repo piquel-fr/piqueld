@@ -2,7 +2,7 @@
 //! daemon configuration's JSON Schema (see `DaemonConfig::json_schema`).
 
 use anyhow::{Context, Result};
-use piqueld_core::generated::Page;
+use piqueld_generated::Page;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

@@ -11,7 +11,7 @@ repository.workspace = true
 # wasm32-unknown-unknown target (listed in rust-toolchain.toml) must be installed.
 [features]
 embedded-ui = ["dep:wasm-bindgen-cli-support"]
-openapi-codegen = ["dep:prettyplease", "dep:progenitor", "dep:syn"]
+openapi-codegen = ["dep:piqueld-generated", "dep:prettyplease", "dep:progenitor", "dep:syn"]
 
 [[bin]]
 name = "generate_openapi"
@@ -46,6 +46,7 @@ hyper-util.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 piqueld-core.workspace = true
+piqueld-generated = { workspace = true, optional = true }
 piqueld-probe.workspace = true
 prettyplease = { workspace = true, optional = true }
 progenitor = { workspace = true, optional = true }
