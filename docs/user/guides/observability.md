@@ -536,7 +536,7 @@ A collector deployed as a piqueld application, such as the OpenTelemetry
 Collector, can receive the daemon's telemetry directly. The daemon runs on the
 host and can't reach an overlay network, and piqueld doesn't publish ports, so
 it exports over a Unix socket in a directory it shares with the collector,
-as it does with the [ingress gateway](../../dev/architecture/ingress.md#webhook-and-dashboard-sockets).
+as it does with the ingress gateway.
 
 1. Mark the collector's service in the manifest. At most one service per
    application may (`telemetry_receiver_duplicate`), with one replica

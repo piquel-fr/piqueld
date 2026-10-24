@@ -544,7 +544,7 @@ auth_key_file = "ts-apps-auth-key"   # $CREDENTIALS_DIRECTORY/ts-apps-auth-key
 `hostname` must be a single DNS label, different from `tailscale.hostname` when
 both nodes run. Without `auth_key_file`, the daemon logs the node's login URL.
 It is read once at startup; while disabled, private routes report `disabled`.
-See [public and private routes](../networking/private-routes.md).
+See [private routes](../networking/private-routes.md).
 
 `ingress.private.dashboard_hostname` serves the website (dashboard and API) to the
 tailnet on your own domain, through the private listener like a private route.
@@ -577,7 +577,8 @@ live below `<data_dir>/ingress`. Only dedicated subdirectories are mounted into
 Caddy; it receives neither the Docker socket nor the daemon API socket/database.
 The control mount also holds the webhook socket, which serves only webhook
 deliveries.
-See [Serving an application over HTTPS](../networking/routes.md) for DNS, networking, and status details.
+See [Serving an application over HTTPS](../networking/routes.md) for route
+status, and [managing DNS records](../networking/dns-records.md) for DNS.
 
 ## DNS providers
 

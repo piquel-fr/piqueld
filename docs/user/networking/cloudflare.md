@@ -23,8 +23,8 @@ piqueld calls Cloudflare's API with an API token that has two permissions:
 
 | Permission | piqueld uses it to |
 | --- | --- |
-| Zone Read | list your zones |
-| DNS Write | create, read, update and delete records |
+| **Zone › Zone › Read** (Zone Read in the permissions reference) | list your zones |
+| **Zone › DNS › Edit** (DNS Write in the permissions reference) | create, read, update and delete records |
 
 Limit the token's zone resources to the zones piqueld should use, or allow
 them all. Cloudflare's [Create API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
@@ -103,8 +103,8 @@ Consider the trade-offs first:
   `example.com` and `notes.example.com`, but not deeper names such as
   `x.staging.example.com`; see Cloudflare's
   [Universal SSL limitations](https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations/).
-- **Cloudflare redirects HTTP to HTTPS**, not the gateway, once you turn on
-  its **Always Use HTTPS** setting.
+- **The gateway no longer redirects HTTP to HTTPS.** Turn on Cloudflare's
+  **Always Use HTTPS** to do it instead.
 
 ### Create the tunnel
 
@@ -182,28 +182,41 @@ $ sudo piquelctl status
 ...
 Public listener: healthy: Caddy is running and routing configuration is applied
 Public ingress: Cloudflare Tunnel 6ff42ae2-765d-4adf-8112-31c55c1551ef (connected)
+...
 ```
 
 In the dashboard, **System status** shows a **Cloudflare Tunnel** card,
 **Connected** once the tunnel reaches Cloudflare. A public route is `ready`
 once piqueld reached it through the tunnel over trusted HTTPS.
 
-To serve public routes on ports 80 and 443 again, set `tunnel.enabled = false`
-and restart: piqueld replaces the gateway again, stops `cloudflared`, and
-deletes its copy of the credentials.
+### Leave the tunnel
+
+To serve public routes on ports 80 and 443 again:
+
+1. Set `tunnel.enabled = false`, and rebuild the system or restart the
+   daemon. piqueld replaces the gateway again, stops `cloudflared`, and
+   deletes its copy of the credentials.
+2. Open TCP ports 80 and 443 in the server's firewall, as in
+   [Enable the gateway](routes.md#enable-the-gateway).
+3. Replace each proxied CNAME record to the tunnel with A and AAAA records to
+   your server. If piqueld [manages your DNS records](dns-records.md) and you
+   listed your `public_addresses`, it does that itself.
 
 ## Troubleshooting
 
 - **`dns refresh` reports `Zone discovery failed` with `HTTP 403`.** The token
-  is wrong, expired, or lacks Zone Read.
+  is wrong or expired, or may lack **Zone › Zone › Read**.
+- **`dns refresh` lists `no zones`.** The token's zone resources don't include
+  your zone. Edit the token in Cloudflare, then run `dns refresh` again.
 - **Certificates fail with `write record` and `HTTP 403`.** The token lacks
-  DNS Write on that zone.
+  **Zone › DNS › Edit** on that zone.
 - **A route reports `dns_conflict` after `cloudflared tunnel route dns`.** With
   `manage_records`, piqueld doesn't own records it didn't create. Delete the
   CNAME record, and let piqueld create it.
 - **The tunnel stays `not connected`.** The daemon logs include
   `cloudflared`'s own logs. While it is disconnected, public routes are
-  unreachable, and **HTTPS ingress** in **System status** is unhealthy.
+  unreachable. In the dashboard's **System status**, the **Cloudflare Tunnel**
+  card shows **Disconnected**, and **HTTPS ingress** shows **Unhealthy**.
 - **Startup fails with `is not a cloudflared tunnel credentials file`.** The
   file must be the JSON file `cloudflared tunnel create` wrote, holding
   `AccountTag`, `TunnelSecret` and `TunnelID`, not `cert.pem` or a tunnel
@@ -211,7 +224,9 @@ deletes its copy of the credentials.
 - **A deeper name, such as `x.staging.example.com`, has no valid certificate
   through the tunnel.** Cloudflare's Universal SSL certificate doesn't cover
   it; see the
-  [trade-offs](#serve-public-routes-through-a-cloudflare-tunnel).
+  [trade-offs](#serve-public-routes-through-a-cloudflare-tunnel). Use
+  Cloudflare's Advanced Certificate Manager, or keep tunnel hostnames one
+  level below the zone.
 - **Switching to or from the tunnel doesn't happen.** If an application's
   network is broken, piqueld keeps the gateway in its current mode until the
   network is repaired or that application's routes are removed. Until then,

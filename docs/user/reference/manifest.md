@@ -1353,8 +1353,8 @@ default to `private`.
 visibility = "private"
 ```
 
-See [public and private routes](../networking/private-routes.md) for
-listeners, the apps tailnet node and DNS.
+See [private routes](../networking/private-routes.md) for the apps tailnet
+node and DNS.
 
 Each route either references a service in the same application and its internal
 HTTP port (1–65535), or sets `redirect` instead:

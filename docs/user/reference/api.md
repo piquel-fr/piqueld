@@ -649,11 +649,28 @@ verdicts omit it. HTTP 200 means deployment dependencies are available; HTTP 503
 carries the same structured envelope when they are not. Probes have bounded
 deadlines and do not initialize Swarm or repair resources. Docker being unavailable
 does not block configuration saves or history reads. `/health` remains a
-process-liveness endpoint. A separate `ingress` object reports gateway health and
-per-route HTTPS readiness, for applications the caller can read, without
-affecting `ready`; see
-[ingress](../../dev/architecture/ingress.md#status-and-recovery). Each route status carries the
-route's `name`, when it has one. No registry checks are introduced.
+process-liveness endpoint. No registry checks are introduced.
+
+A separate `ingress` object reports the gateway, without affecting `ready`:
+
+- `enabled`: whether `[ingress]` is enabled.
+- `healthy`: the gateway applied its configuration and, through a Cloudflare
+  Tunnel, the tunnel is connected. An application's broken network clears it.
+- `gateway`: only whether the gateway applied its configuration, whatever one
+  application's network does.
+- `message`: what failed, with the details in the daemon logs.
+- `public`: `{"mode": "direct"}`, or `{"mode": "tunnel"}` with the tunnel's
+  `id`, `connected` and `message`.
+- `private`: the apps node's `enabled`, `healthy`, Tailscale `state`,
+  `dns_name`, `addresses` and `message`.
+- `routes`: each deployed route of the applications the caller can read, with
+  its `environment_id`, `name` when it has one, `hostname`, effective
+  `visibility`, destination, the `dns` records its hostname needs, their
+  `dns_state`, its `state` (`disabled`, `pending`, `ready` or `failed`) and
+  `message`.
+
+The [generated contract](../../openapi-v1.json) describes each field, as
+`IngressStatus`.
 
 `EnvironmentDetailView.links` reports the [links](manifest.md#links)
 the environment's active target takes part in. `imports` lists each import with

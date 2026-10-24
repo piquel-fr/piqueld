@@ -21,13 +21,15 @@ so you can give it its own tags and access rules.
   [OVH](ovh.md). The certificate authority can't reach a private route, so
   piqueld gets its certificates through the provider; see
   [DNS-01 certificates](wildcards.md#dns-01-certificates).
+- Run `piquelctl` on the host, or on any machine where it is signed in.
 
 ## Set it up
 
 1. In the Tailscale admin console, create an
-   [auth key](https://tailscale.com/kb/1085/auth-keys) for the apps node. To
-   control who reaches your private routes with your tailnet's access rules,
-   give the key a tag.
+   [auth key](https://tailscale.com/kb/1085/auth-keys) for the apps node, and
+   give it a [tag](https://tailscale.com/kb/1068/tags). Your tailnet's access
+   rules can then control who reaches your private routes, and the node's key
+   doesn't [expire](https://tailscale.com/kb/1028/key-expiry).
 
 2. Save the key in a file only root can read, such as an agenix or sops-nix
    secret. The node uses it only to join the tailnet the first time.
@@ -81,6 +83,7 @@ so you can give it its own tags and access rules.
    $ sudo piquelctl status
    ...
    Private listener: apps node piqueld-apps.<tailnet>.ts.net (Running, 100.101.102.103, fd7a:115c:a1e0::5a01:4c3d)
+   ...
    ```
 
    In the dashboard, **System status** shows the **Private listener** card
@@ -127,8 +130,9 @@ from the server, without crossing the tailnet.
 
 From a device on your tailnet, open `https://admin.example.com`: your service
 answers, and sees the device's tailnet address in `X-Forwarded-For`. From a
-device off the tailnet, the connection fails. Asked for on your server's public
-address, the hostname gets a 404, without a certificate.
+device off the tailnet, the connection fails. On your server's public address,
+HTTPS connections for the hostname fail, since the gateway has no certificate
+for it there, and plain HTTP gets a 404.
 
 ## Make an environment's routes private
 
@@ -143,19 +147,23 @@ visibility = "private"
 Or with `piquelctl`:
 
 ```console
-piquelctl env visibility hello staging private
+piquelctl env visibility notes staging private
 ```
 
 In the dashboard, open the environment's **Overview**. In its **Visibility**
 card, set **Route visibility** to **Private: every route is tailnet-only**,
 then select **Save visibility**.
 
-![The Visibility card of the staging environment's Overview, with Route visibility set to "Private: every route is tailnet-only"](../../images/networking/environment-visibility.png)
+![The Visibility card of an environment's Overview, with Route visibility set to "Private: every route is tailnet-only" and Save visibility ready to select](../../images/networking/environment-visibility.png)
 
-Deploy the environment to apply it. Each route gets the stricter of its own
-visibility and the environment's, so a cap can make a route private, but never
-public. Environments default to `public`, which restricts nothing. Previews
-default to `private`; set `[spec.previews] visibility` to change it, as
+Deploy the environment to apply it. A
+[promoted environment](../reference/manifest.md#promoted-environments) applies
+it once its source records a new release and you promote it.
+
+Each route gets the stricter of its own visibility and the environment's, so a
+cap can make a route private, but never public. Environments default to
+`public`, which restricts nothing. Previews default to `private`; set
+`[spec.previews] visibility` to change it, as
 [previews](../reference/manifest.md#previews) describes.
 
 For example, with these routes:
@@ -197,10 +205,13 @@ piquelctl app route visibility notes admin.example.com public
 ```
 
 In the dashboard, change the route's **Visibility** on the **Routes** tab,
-then save. When you deploy, a route made private leaves the internet as soon as
-the deployment starts. A route made public is published once its service is
-ready. Its DNS records must change too: piqueld updates the records it
-manages, and you update the others.
+select **Save changes**, then **Deploy to \<environment>**.
+
+When you deploy, a route made private leaves the internet as soon as the
+deployment starts. A route made public is published once its service is ready.
+Its DNS records must change too: you update the records piqueld doesn't
+manage. piqueld deletes the ones it manages, then writes the new ones, so the
+hostname briefly doesn't resolve.
 
 ## DNS for private routes
 
@@ -218,39 +229,50 @@ manages, and you update the others.
 
 The dashboard and API are normally served at piqueld's own address, such as
 `https://piqueld.<tailnet>.ts.net`. You can serve them on your own domain
-instead, through the apps node, like a private route:
+instead, through the apps node. Like a private route, the hostname is then
+only reachable from your tailnet, and gets its certificate through your DNS
+provider. Applications can't route it, or any name below it.
 
-```nix
-services.piqueld.settings.ingress.private.dashboard_hostname = "dashboard.example.com";
-```
-
-Or, in `config.toml`:
-
-```toml
-[ingress.private]
-enabled = true
-dashboard_hostname = "dashboard.example.com"
-```
-
-It needs `ingress.enabled` and `ingress.private.enabled`. Like a private
-route, the hostname is only reachable from your tailnet, needs A and AAAA
-records to the apps node's addresses, and gets its certificate through your
-DNS provider. Applications can't route it, or any name below it.
-
-**Your passkeys stop working when you switch.** Unless you set
-`auth.public_url`, the dashboard's address becomes
+**Switching breaks your passkeys.** The dashboard only works at the address
+`auth.public_url` names, so leave it unset or set it to
 `https://dashboard.example.com`. A passkey only works at the address it was
 created on, so the passkeys you have stop working, at the old address too.
-Before you switch, sign `piquelctl` in to your account. Then, after the
-switch:
+The steps below add a new one.
 
-1. Create a link that adds a passkey to your account:
+1. [Sign `piquelctl` in](../getting-started/first-account.md#sign-piquelctl-in)
+   with your account. The host operator can't create enrollment links.
+
+2. Set the hostname in your configuration, with private routes
+   [enabled](#set-it-up):
+
+   ```nix
+   services.piqueld.settings.ingress.private.dashboard_hostname = "dashboard.example.com";
+   ```
+
+   Or, in `config.toml`:
+
+   ```toml
+   [ingress]
+   enabled = true
+
+   [ingress.private]
+   enabled = true
+   dashboard_hostname = "dashboard.example.com"
+   ```
+
+3. Rebuild the system, or restart the daemon.
+
+4. Create A and AAAA records for the hostname to the apps node's addresses,
+   as for a private route. If piqueld [manages your DNS records](dns-records.md),
+   it creates them.
+
+5. Create a link that adds a passkey to your account:
 
    ```console
    piquelctl account enroll alice
    ```
 
-2. Open the link on a device on your tailnet, and save the new passkey.
+6. Open the link on a device on your tailnet, and save the new passkey.
 
 If no CLI login works any more,
 [recover administrator access](../accounts/authentication.md#recovering-administrator-access).
@@ -271,11 +293,14 @@ the host.
 
 - **Private routes are `disabled` with `Private ingress is disabled in daemon
   TOML ([ingress.private])`.** Enable `[ingress.private]` and restart.
-- **`The apps node needs login`.** The node has no auth key, or the key
-  expired before its first login. The daemon logs a login URL: open it, or set
-  `auth_key_file` and restart.
-- **A route is `failed` with `No DNS-01 certificate`.** No DNS provider covers
-  the hostname's zone; see [renewal and failures](wildcards.md#renewal-and-failures).
+- **`The apps node needs login`.** The node has no auth key, its auth key
+  expired before its first login, or, without a tag, its node key
+  [expired](https://tailscale.com/kb/1028/key-expiry). The daemon logs a login
+  URL: open it, or set `auth_key_file` and restart.
+- **A route is `failed` with `No DNS-01 certificate`.** The rest of the
+  message says why. `no configured DNS provider zone contains …` means no
+  provider covers the zone. Anything else is the latest issuance error; see
+  [renewal and failures](wildcards.md#renewal-and-failures).
 - **`Private HTTPS is not verified yet`.** Check that the hostname's A and AAAA
   records point at the apps node's addresses, and nothing else.
 - **`Swarm address pool <pool> overlaps the tailnet ranges`.** Your Swarm was
@@ -285,3 +310,6 @@ the host.
   `100.64.0.0/10` and `fd7a:115c:a1e0::/48`.
 - **Devices on the tailnet can't resolve the hostname.** Check your router's
   [DNS-rebinding protection](#dns-for-private-routes).
+- **The daemon doesn't start, with `ingress.private.dashboard_hostname requires
+  ingress.enabled and ingress.private.enabled`.** Enable both, as in
+  [Set it up](#set-it-up).

@@ -10,6 +10,7 @@ pages describe.
 - A [Cloudflare](cloudflare.md) or [OVH](ovh.md) account hosting the zone,
   with the credentials those pages describe.
 - For public routes on ports 80 and 443, your server's public IP addresses.
+- Run `piquelctl` on the host, or on any machine where it is signed in.
 
 ## Set it up
 
@@ -74,7 +75,7 @@ piqueld writes a record once the gateway serves the route, and deletes it once
 the gateway no longer does. It checks every 10 seconds whether records need to
 change, and reads them back every 5 minutes to repair any you changed by hand.
 So when the apps node's tailnet addresses change, its records follow within
-seconds.
+about 20 seconds, plus the time the provider takes to publish them.
 
 ## Records piqueld owns
 
@@ -103,9 +104,9 @@ The `DNS` column shows each route's state:
 | State | Meaning |
 | --- | --- |
 | `managed` | piqueld created the records and keeps them current. |
-| `pending` | piqueld will write them, but hasn't yet: the gateway doesn't serve the route yet, the apps node has no tailnet addresses yet, or the provider failed and piqueld retries within a minute. |
+| `pending` | piqueld will write them, but hasn't yet: the gateway doesn't serve the route yet, the apps node has no tailnet addresses yet, private routes are turned off, or the provider failed and piqueld retries within a minute. |
 | `dns_conflict` | Records piqueld doesn't own are in the way. |
-| `manual` | No provider manages the zone, or a public route has no `public_addresses`. You create the records. |
+| `manual` | No provider manages the zone, a public route has no `public_addresses`, the provider couldn't list its zones, or two providers list the zone. You create the records. |
 
 The `RECORDS` column shows what the hostname needs, whoever creates it. The
 dashboard shows the same in the **DNS** and **DNS records** columns of
@@ -142,3 +143,7 @@ records piqueld manages, once the gateway has stopped.
 - **After a restart, every route's DNS state is `pending` for a while.**
   piqueld waits for the gateway to apply its configuration before it changes
   any record.
+- **After reinstalling piqueld with a new database, every route reports
+  `dns_conflict`.** The new installation has a new ID, so it doesn't own the
+  records the old one created. Delete them, with their `_piqueld` TXT records,
+  and piqueld writes its own.

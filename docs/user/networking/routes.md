@@ -18,6 +18,7 @@ see [private routes](private-routes.md).
 - Docker Engine 28 or later on the server.
 - An application whose service serves plain HTTP, such as `hello` from
   [Deploying your first application](../getting-started/first-app.md).
+- Run `piquelctl` on the host, or on any machine where it is signed in.
 
 piqueld doesn't put a sign-in in front of your routes: anyone can open a
 public route, so your application handles its own authentication.
@@ -55,6 +56,7 @@ $ sudo piquelctl status
 ...
 Public listener: healthy: Caddy is running and routing configuration is applied
 Public ingress: ports 80/443
+...
 ```
 
 In the dashboard, **System status** on the **Overview** shows **HTTPS
@@ -95,20 +97,22 @@ You can also add the route without editing a file:
 piquelctl app route add hello hello.example.com web 80 --visibility public --deploy
 ```
 
-In the dashboard, open **Applications**, then **hello**, then its **Routes**
-tab. Select **Add route**, fill in the **Hostname**, set **Visibility** to
-**Public**, **Destination** to **Service**, then the **Service** and its
-**HTTP port**. Select **Save changes**, then **Deploy to production**.
+In the dashboard:
 
-![The Routes tab of an application with four routes, each with its Hostname, Name, Visibility and Destination: three go to the web service on HTTP port 80, one of them private, and www.notes.example.com redirects with status 308, keeping the path and query](../../images/networking/routes-tab.png)
+1. Open **Applications**, then **hello**, then its **Routes** tab.
+2. Select **Add route**.
+3. Fill in the **Hostname**, and set **Visibility** to **Public**.
+4. Set **Destination** to **Service**, then choose the **Service** and its
+   **HTTP port**.
+5. Select **Save changes**.
+6. Select **Deploy to production**.
 
-Removing a service on the **Services** tab also removes its routes from the
-saved configuration.
+![The Routes tab of hello with two public routes, each with its Hostname, Name, Visibility and Destination: hello.example.com goes to the web service on HTTP port 80, and www.hello.example.com redirects to https://hello.example.com with status 308, keeping the path and query](../../images/networking/routes-tab.png)
 
 Saving a route doesn't change what's served; deploying does. piqueld starts
 serving the route once its service is ready. The gateway then gets the
-hostname's certificate from a public certificate authority, Let's Encrypt or
-ZeroSSL, and renews it by itself. It redirects plain HTTP requests to HTTPS.
+hostname's certificate from Let's Encrypt, and renews it by itself. It
+redirects plain HTTP requests to HTTPS.
 
 ## Check that it works
 
@@ -225,7 +229,7 @@ example:
 app.set("trust proxy", process.env.PIQUELD_INGRESS_PROXIES.split(","));
 ```
 
-The application's other routed services connect from that range too, so
+The environment's other routed services connect from that range too, so
 trusting it also trusts them.
 
 ## Turn the gateway off
@@ -240,8 +244,11 @@ While the gateway is off, piqueld deletes the DNS records it
 [manages](dns-records.md), and deletes [DNS-01 certificates](wildcards.md#dns-01-certificates)
 once they expire.
 
-Stopping the daemon, on the other hand, leaves the gateway running: your
-routes stay up, and the gateway keeps renewing its certificates.
+Stopping the daemon, on the other hand, leaves the gateway running, so your
+routes stay up. The gateway keeps renewing the certificates it got itself.
+[DNS-01 certificates](wildcards.md#dns-01-certificates), for wildcards,
+private routes and the dashboard, wait for the daemon to renew them. The
+webhook and dashboard hostnames stop answering, since the daemon serves them.
 
 ## Limits
 
@@ -250,8 +257,12 @@ routes stay up, and the gateway keeps renewing its certificates.
 - A route serves a whole hostname: there is no routing by path, and no TCP or
   UDP port.
 - An application has up to 64 routes.
-- The hostnames of the dashboard and of piqueld's
-  [webhooks](webhooks.md), and the names below them, can't be routed.
+- The hostnames of piqueld's website (`auth.public_url`),
+  [dashboard](private-routes.md#serve-the-dashboard-on-your-own-domain) and
+  [webhooks](webhooks.md), and the names below them, can't be routed. A route
+  that already had one still deploys, but isn't served.
+- Removing a service, with **Remove service** on its page, also removes its
+  routes from the saved configuration.
 
 ## Troubleshooting
 
@@ -269,6 +280,11 @@ routes stay up, and the gateway keeps renewing its certificates.
 - **Saving fails with `hostname_conflict`.** Another environment or
   application already has the hostname, or piqueld uses it itself. See
   [the previous section](#give-each-environment-its-own-hostname).
+- **A route deploys but isn't served, and the daemon logs `route hostname is
+  reserved for the piqueld website or its webhooks; the gateway will not
+  publish it`.** The route had the hostname before piqueld used it itself.
+  Give the route, or piqueld's website, dashboard or webhooks, another
+  hostname; see [Limits](#limits).
 - **Your service sees the same client address for every IPv6 request.** Docker
   forwards IPv6 to an IPv4-only network through a proxy, which hides the
   client. Serve the route over IPv4 only, by removing its AAAA record.

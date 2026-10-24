@@ -417,7 +417,8 @@ impl TryFrom<RawPrivateIngressConfig> for PrivateIngressConfig {
 pub struct AcmeConfig {
     /// ACME directory URL. Defaults to Let's Encrypt production.
     pub directory: String,
-    /// Optional account contact for expiry and policy notices from the CA.
+    /// Optional account contact address, sent only when the account is
+    /// first registered with the CA.
     pub email: Option<String>,
 }
 

@@ -13,9 +13,10 @@ DNS provider for wildcard and [private](private-routes.md) routes.
 - The gateway is enabled; see
   [Serving an application over HTTPS](routes.md#enable-the-gateway).
 - A DNS provider covers the domain: [Cloudflare](cloudflare.md) or
-  [OVH](ovh.md). piqueld needs it to get the wildcard's certificate. With a
-  [Cloudflare Tunnel](cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel), a public wildcard
-  route doesn't.
+  [OVH](ovh.md). piqueld needs it to get the wildcard's certificate. Through a
+  [Cloudflare Tunnel](cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel),
+  a public wildcard route needs no DNS provider.
+- Run `piquelctl` on the host, or on any machine where it is signed in.
 
 ## Add a wildcard route
 
@@ -113,10 +114,11 @@ wildcards' HTTPS, so they don't need DNS-01.
 
 ### Which certificate covers a hostname
 
-A hostname shares the wildcard certificate of its parent domain, when that
-parent is the provider's zone or inside it. Otherwise it gets a certificate of
-its own. A wildcard route uses its own wildcard certificate. With the zone
-`piquel.fr`:
+A private hostname, or the dashboard's, shares the wildcard certificate of its
+parent domain, when that parent is the provider's zone or inside it. Otherwise
+it gets a certificate of its own. A wildcard route uses its own wildcard
+certificate. An exact public hostname gets its own certificate from the
+gateway. With the zone `piquel.fr`:
 
 | Hostname | Certificate |
 | --- | --- |
@@ -124,10 +126,10 @@ its own. A wildcard route uses its own wildcard certificate. With the zone
 | `admin.staging.piquel.fr`, `*.staging.piquel.fr` | `*.staging.piquel.fr` |
 | `piquel.fr` | `piquel.fr`, since its parent `fr` is outside the zone |
 
-All the previews below `dev.piquel.fr` therefore share one certificate,
-`*.dev.piquel.fr`. Exact public routes below a public wildcard keep their own
-certificates from the gateway. Exact private routes below it share the
-wildcard's.
+All the private previews below `dev.piquel.fr` therefore share one
+certificate, `*.dev.piquel.fr`. Exact public routes below a public wildcard
+keep their own certificates from the gateway. Exact private routes below it
+share the wildcard's.
 
 A hostname belongs to the provider with the longest zone containing it. A zone
 that two providers both list is a conflict, and neither uses it.
@@ -135,8 +137,10 @@ that two providers both list is a conflict, and neither uses it.
 ### Choose the certificate authority
 
 piqueld uses Let's Encrypt by default. It registers an account the first time
-it needs a certificate, and accepts the authority's terms of service. Give it
-an email address to receive the authority's expiry and policy notices:
+it needs a certificate, and accepts the authority's terms of service.
+
+`email` is the account's contact address. piqueld sends it only when it first
+registers, so set it before your first DNS-01 certificate:
 
 ```nix
 services.piqueld.settings.ingress.acme.email = "admin@example.com";
@@ -151,7 +155,9 @@ email = "admin@example.com"
 
 `directory` sets another ACME certificate authority, by the HTTPS URL of its
 directory. The default is
-`https://acme-v02.api.letsencrypt.org/directory`.
+`https://acme-v02.api.letsencrypt.org/directory`. piqueld registers without
+external account binding, so the authority must not require it: ZeroSSL, for
+example, can't be the `directory`.
 
 ### Renewal and failures
 
@@ -183,7 +189,8 @@ Each issue, renewal and deletion appears in the daemon's
 [events](../guides/observability.md#history-and-diagnostics). A destination
 that receives [`daemon_failures` notifications](../guides/observability.md#notifications)
 is notified when a certificate that keeps failing to renew is less than 14
-days from expiry, and again once it recovers.
+days from expiry. If it also receives `recovery` notifications, it is notified
+again once the certificate recovers.
 
 ## Troubleshooting
 
@@ -191,9 +198,11 @@ days from expiry, and again once it recovers.
   provider zone contains <hostname>`.** No provider lists the hostname's zone.
   Check the provider's zones with `piquelctl dns refresh`; see
   [Cloudflare](cloudflare.md) or [OVH](ovh.md).
-- **`zone <zone> is claimed by more than one DNS provider`.** Two providers
-  list the same zone. Remove the zone from one of the accounts, or one
-  provider from the configuration.
+- **A route or certificate reports `zone <zone> is claimed by more than one
+  DNS provider`.** `piquelctl dns refresh` prints the same problem as
+  `DNS problem: Zones also claimed by another provider are not used: <zones>`.
+  Two providers list the same zone. Remove the zone from one of the accounts,
+  or one provider from the configuration.
 - **A certificate fails with `was not visible on every authoritative
   nameserver`.** The TXT record didn't reach every nameserver within 10
   minutes. piqueld tries again later.
