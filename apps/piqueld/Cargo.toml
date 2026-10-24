@@ -12,6 +12,9 @@ repository.workspace = true
 [features]
 embedded-ui = ["dep:wasm-bindgen-cli-support"]
 openapi-codegen = ["dep:prettyplease", "dep:progenitor", "dep:syn"]
+# The in-memory Docker engine (`piqueld::docker::fake`) of the integration
+# tests and the browser fixture. Release builds leave it out.
+fake-docker = []
 
 [[bin]]
 name = "generate_openapi"
@@ -72,6 +75,8 @@ uuid.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
+# Tests and examples build against this crate with its fake Docker engine.
+piqueld = { path = ".", features = ["fake-docker"] }
 reqwest = { workspace = true, features = ["http2"] }
 tokio = { workspace = true, features = ["test-util"] }
 piqueld-client.workspace = true

@@ -130,8 +130,19 @@ setup-playwright:
     @docker pull "mcr.microsoft.com/playwright:v$(node -p 'require("./tests/playwright/package.json").devDependencies["@playwright/test"]')-noble"
 
 # The Rust fixture serves the embedded UI/API with isolated state and no Docker backend.
-test-playwright *ARGS:
+test-playwright *ARGS: build-playwright
+    @cargo xtask playwright {{ARGS}}
+
+# Regenerates the dashboard screenshots in docs/images, through the browser
+# suite's fixture with deployments to its fake Docker engine. Not part of
+# validation: see docs/dev/documentation.md.
+docs-screenshots *ARGS: build-playwright
+    @cargo xtask playwright --config screenshots.config.ts {{ARGS}}
+
+# Builds what the browser runs need: the CLI and the Rust fixture, and
+# type-checks the Playwright specs.
+[private]
+build-playwright:
     @cargo build --locked --package piquelctl
     @cargo build --locked --package piqueld --features embedded-ui --example browser_fixture
     @pnpm --dir tests/playwright check
-    @cargo xtask playwright {{ARGS}}

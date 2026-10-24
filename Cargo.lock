@@ -2631,6 +2631,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "parking_lot",
+ "piqueld",
  "piqueld-client",
  "piqueld-core",
  "piqueld-probe",

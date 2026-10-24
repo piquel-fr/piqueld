@@ -6,6 +6,12 @@ each test. Its Docker runtime boundary is stubbed: these tests cover UI/API
 behavior, not actual deployments. Docker reconciliation retains its existing
 Rust integration suite.
 
+`screenshots/` holds the documentation screenshots instead, run by
+`just docs-screenshots` with `screenshots.config.ts`. That configuration sets
+the `fakeDocker` fixture option: the fixture then runs the real controller
+against the in-memory Docker engine of the Rust tests, so deployments succeed.
+See [screenshots](../../docs/dev/documentation.md#screenshots).
+
 ## Setup and execution
 
 Use the repository's normal Rust/dashboard build environment, Node.js 24,

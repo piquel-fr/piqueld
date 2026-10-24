@@ -87,6 +87,8 @@ mod limited;
 mod logs;
 pub(crate) use limited::LimitedDocker;
 mod errors;
+#[cfg(feature = "fake-docker")]
+pub mod fake;
 mod identity;
 mod images;
 mod jobs;
