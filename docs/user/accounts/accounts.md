@@ -191,11 +191,12 @@ You can delete your own account. `piquelctl` doesn't delete accounts.
 - **A link answers "API returned 401 Unauthorized: authentication_required
   (Sign in with a passkey or run piquelctl login)".** It was already used, has
   expired, or was revoked. Ask for a new link.
-- **The same refusal comes after the browser saved the passkey.** The link's
-  issuer can't create it any more: they lost `accounts:manage` or the access
-  it grants, or, for an enrollment link, the right to change that account.
-  Delete the saved passkey from the device, and ask for a new link. The old
-  link stays under **Pending links** until it expires.
+- **The same refusal comes after the browser saved the passkey.** The link
+  expired, was revoked or was used in the meantime, or its issuer can't
+  create it any more: they lost `accounts:manage` or the access it grants, or,
+  for an enrollment link, the right to change that account. Delete the saved
+  passkey from the device, and ask for a new link. A link refused because of
+  its issuer stays under **Pending links** until it expires.
 - **Registration fails with `account_conflict`.** Another account has that
   username, regardless of case. The browser has already saved a passkey by
   then: delete it from the device, and register again with another name.
