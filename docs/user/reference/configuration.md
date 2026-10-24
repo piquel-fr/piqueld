@@ -56,7 +56,7 @@ The Unix API socket is separate, at `<runtime_dir>/piqueld.sock`. It is always
 `0660`, owned by the daemon's user and effective group. Group membership allows
 connections; account authentication is also required, except for root and the
 daemon's own user, who act as the
-[host operator](../accounts/authentication.md#the-host-operator).
+[host operator](../accounts/recovery.md#the-host-operator).
 
 The service manager or installer must create the runtime directory before
 startup. Use daemon ownership and mode `0750` for group access, or `0700` for
@@ -329,7 +329,7 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - piqueld asks its `tailscaled` who each peer is (`tailscale whois`, one
   lookup per address at a time). The [audit trail](../guides/observability.md#audit-trail) records
   that tailnet user or tag and node, cached for a minute per address. API
-  tokens can be [bound to a tailnet identity](../accounts/authorization.md#tailnet-bound-tokens),
+  tokens can be [bound to a tailnet identity](../accounts/cli-and-tokens.md#bind-a-token-to-tailnet-devices),
   which is always checked with a fresh lookup.
 
 Startup fails if the node cannot start or obtain a certificate. While running,
@@ -372,13 +372,15 @@ https_port = 7846         # https://<node>.<tailnet>.ts.net:7846
 `https://<ingress.private.dashboard_hostname>` when that is set, then to the
 tailnet node's URL when `[tailscale]` is enabled, and to `http://localhost:7845`
 otherwise. Remote passkey login requires HTTPS even over Tailscale. See
-[authentication](../accounts/authentication.md) for reverse-proxy setup, the private
-first-account link, invitations, and credential lifetimes.
+[your own reverse proxy](../getting-started/install.md#your-own-reverse-proxy),
+[creating your account](../getting-started/first-account.md),
+[invitations](../accounts/accounts.md#invite-someone), and
+[credential lifetimes](../accounts/cli-and-tokens.md#how-long-credentials-last).
 
 `auth.max_token_days` limits the lifetime of new API tokens. Unset (the default)
 allows any lifetime, including tokens that never expire; with a limit, tokens must
 expire within it. Existing tokens are unaffected. See
-[authorization](../accounts/authorization.md#api-tokens).
+[API tokens](../accounts/cli-and-tokens.md#create-an-api-token).
 
 ```toml
 [auth]

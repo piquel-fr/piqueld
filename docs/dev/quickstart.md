@@ -24,7 +24,7 @@ developer.
 In a second terminal, open the first-account setup link and create an account
 with a passkey, then sign in. The daemon runs as your user, so over its socket
 the CLI also works without `login`, as the
-[host operator](../user/accounts/authentication.md#the-host-operator); `piquelctl sign-in-link`
+[host operator](../user/accounts/recovery.md#the-host-operator); `piquelctl sign-in-link`
 signs a browser in the same way, without a passkey. Over TCP, `login` is
 required:
 

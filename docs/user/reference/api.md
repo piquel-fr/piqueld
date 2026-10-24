@@ -303,7 +303,7 @@ Force overrides both revision and name-based identity preconditions, even if sta
 values were supplied. Forced apply overwrites whichever application currently has
 the manifest name, or creates one if absent. ID-based mutations still target their
 URL's ID. Force never bypasses manifest validation, resource ownership, or rename
-busy/name-collision checks, and needs the same [permissions](../accounts/authorization.md)
+busy/name-collision checks, and needs the same [permissions](../accounts/permissions.md)
 as the change without it.
 
 Reconcile acts on the current intent without requiring preconditions;
@@ -552,10 +552,10 @@ resource. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
 The API requires a session cookie or bearer credential on every transport,
-except from the [host operator](../accounts/authentication.md#the-host-operator) on the Unix
+except from the [host operator](../accounts/recovery.md#the-host-operator) on the Unix
 socket. Only setup/login endpoints and TCP `/health` are public; see
-[authentication](../accounts/authentication.md). What each caller may do is decided by its
-[grants](../accounts/authorization.md); every operation names its requirement in the
+[authentication](../../dev/architecture/authentication.md#credentials-and-cookies). What each caller may do is decided by its
+[grants](../accounts/permissions.md); every operation names its requirement in the
 contract's `x-piqueld-access` extension. TCP requests also validate Host and browser
 Fetch Metadata headers before authentication; DNS names need `server.allowed_hosts` (see
 [configuration](configuration.md)). Rejected requests return
@@ -612,7 +612,7 @@ have no available history. No output is stored by piqueld.
 command in a running task of a service (preferring healthy tasks over those
 still starting) owned by this environment and daemon instance. Requests that
 are not WebSocket handshakes return `426 upgrade_required`. The caller needs
-[`apps:exec`](../accounts/authorization.md) on the environment's application; cookie-authenticated
+[`apps:exec`](../accounts/permissions.md) on the environment's application; cookie-authenticated
 handshakes must send the configured `Origin`, like mutations.
 
 The client's first message is a JSON text message such as `{ "service": "auth",
@@ -634,7 +634,7 @@ big-endian `i64`) or a failure (4): the `u16` HTTP status an equivalent request
 would have returned, then the `ErrorBody` JSON. Failures to start the command,
 such as an invalid request, `404 not_found` or `409 service_not_running`, arrive
 this way too, so browsers can read them. The caller's access is rechecked while
-the command runs (see [authorization](../accounts/authorization.md)); once it is
+the command runs (see [authorization](../accounts/permissions.md)); once it is
 lost, the session ends with the refusal, such as `401 authentication_required`
 or `403`, and the command, like after a disconnect, may keep running. When the daemon shuts down, the connection
 closes without a final message. `piqueld_core::exec` implements the

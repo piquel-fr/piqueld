@@ -97,7 +97,7 @@ request ID, addressed application or environment (with the environment's
 application, when the request was allowed or lacked a permission there, so a
 refusal never reveals who owns an environment hidden from its caller), and the
 permission a refusal lacked. Requests by the
-[host operator](../accounts/authentication.md#the-host-operator) have no account; they
+[host operator](../accounts/recovery.md#the-host-operator) have no account; they
 record `operator` with its Unix user ID instead, shown as
 `host operator (uid 0)`, and its browser session as the credential, if any. Bodies are never recorded. Records copy the account and
 credential, so they outlive both, and application deletion keeps them.
@@ -167,8 +167,8 @@ notify immediately:
 | --- | --- |
 | `admin_granted` | An account receives `admin` on every application: by an account change, an invitation, first-account setup, or an admin recovery link |
 | `privileged_token_created` | An API token is created without expiry or with `admin` |
-| `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [authentication](../accounts/authentication.md#recovering-administrator-access) |
-| `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the host operator; see [authentication](../accounts/authentication.md#the-host-operator) |
+| `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [authentication](../accounts/recovery.md#no-administrator-can-sign-in) |
+| `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the host operator; see [authentication](../accounts/recovery.md#the-host-operator) |
 | `access_denial_burst` | 20 requests from one address and account are refused within a minute; at most once every 10 minutes per address and account while it continues |
 | `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
 | `secret_key_recovered` | The secrets master key was recovered, discarding stored values |
@@ -213,7 +213,7 @@ history intentionally removes that data rather than exposing deletion tombstones
 
 ## API and dashboard
 
-Routes require the permissions described in [authorization](../accounts/authorization.md):
+Routes require the permissions described in [authorization](../accounts/permissions.md):
 application history, diagnostics, and analytics are limited to the applications a
 caller holds `events:read` on, and daemon history requires `system:read`. See the generated
 [OpenAPI document](../../openapi-v1.json) for exact contracts.
@@ -247,7 +247,7 @@ HTTP 410, or a terminal `history_expired` event if pruning happens during the
 stream. A terminal `stream_error` indicates a storage failure. Clients should
 refresh their snapshot before reconnecting after an expired history response.
 Streams recheck the caller's access while open (see
-[authorization](../accounts/authorization.md)): history it may no longer read
+[authorization](../accounts/permissions.md)): history it may no longer read
 stops arriving, and a caller that lost access entirely receives a terminal
 `access_ended` message whose data is the refusal's `ErrorBody`. Streams end
 without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
@@ -556,7 +556,7 @@ as it does with the [ingress gateway](ingress.md).
    Telemetry settings in the dashboard edit it too.
 
 2. Grant the environment telemetry. This needs the `telemetry:grant`
-   [permission](../accounts/authorization.md#telemetry-receivers), held only by `admin`,
+   [permission](../accounts/permissions.md#telemetry), held only by `admin`,
    since the receiving service gets the telemetry of every application:
 
    ```console

@@ -48,7 +48,7 @@ port, for example with `ssh -L`. Use `localhost`, not `127.0.0.1`: browsers
 allow passkeys on `localhost` over HTTP.
 
 The daemon runs as your user, so `just ctl` acts as the
-[host operator](../user/accounts/authentication.md#the-host-operator) without signing in
+[host operator](../user/accounts/recovery.md#the-host-operator) without signing in
 (unless `PIQUELD_TOKEN` or a saved login selects an account), and
 `just ctl sign-in-link` prints a one-time link that signs the browser in the
 same way, even on a new instance. The link works once within 10 minutes; the

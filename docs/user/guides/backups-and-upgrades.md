@@ -12,7 +12,7 @@ secrets and notification destinations in the database can't be decrypted (see
 [secret storage](../reference/configuration.md#secret-storage)). Without the
 tailnet state, the daemon joins the tailnet as a new node, which may get
 another name, and passkeys registered for the
-[tailnet node's origin](../accounts/authentication.md#website-and-initial-setup)
+[tailnet node's origin](../getting-started/install.md#piquelds-own-tailnet-node)
 only work with the old name.
 
 Stop the daemon and copy the directory, keeping its owner and permissions. To
