@@ -23,7 +23,6 @@ zeroize = "1.8"
 piqueld-client = { version = "0.1.0", path = "crates/piqueld-client" }
 piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
 piqueld-probe  = { version = "0.1.0", path = "crates/piqueld-probe"  }
-piquelctl      = { version = "0.1.0", path = "apps/piquelctl"         }
 
 # External
 anstream = "1.0.0"

@@ -58,6 +58,7 @@ pub struct Credential {
 /// reads it once at startup, so restart it after changing the file.
 /// Surrounding whitespace, such as a trailing newline, is removed, and the
 /// file must be a non-empty regular file; symlinks to one are followed.
+/// `tailscale.auth_key_file` is the exception: Tailscale reads it instead.
 /// A relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's
 /// `LoadCredential=` puts credentials, and may not contain `.` or `..`.
 /// Errors and the settings shown by the dashboard name the file, never its

@@ -1,8 +1,11 @@
-//! `docs/user/reference/cli-commands.md`, rendered from `piquelctl`'s clap
-//! model, so it matches `--help` exactly.
+//! Writes `docs/user/reference/cli-commands.md`, rendered from `piquelctl`'s
+//! clap model so it matches `--help` exactly, or with `--check` compares it
+//! with the checked-in page. `just generate` and `just openapi-check` run it
+//! after the daemon's `generate_openapi`, which regenerates the client this
+//! depends on.
 
-use crate::markdown::Page;
 use clap::{Arg, ArgAction, Command};
+use piqueld_core::generated::{ArtifactError, Artifacts, Page};
 use std::fmt::Write as _;
 
 /// The page's introduction, after its title.
@@ -17,16 +20,16 @@ Every command also accepts `-h` (a summary) and `--help` (everything below),
 and `piquelctl --version` prints the CLI's version.";
 
 /// Renders the reference, one section per command, depth first.
-pub struct CliReference {
+struct CliReference {
     page: Page,
 }
 
 impl CliReference {
     /// Where the page is written, relative to the repository root.
-    pub const PATH: &str = "docs/user/reference/cli-commands.md";
+    const PATH: &str = "docs/user/reference/cli-commands.md";
 
     /// Renders the page from the complete command tree, `piquelctl::command()`.
-    pub fn render(mut command: Command) -> String {
+    fn render(mut command: Command) -> String {
         // Building fills in each subcommand's full name and its usage.
         command.build();
         let mut reference = Self {
@@ -84,7 +87,11 @@ impl CliReference {
                     .unwrap_or_default();
                 self.page.item(
                     0,
-                    &format!("[`{name}`](#{}): {about}", name.replace(' ', "-")),
+                    &format!(
+                        "[`{name}`](#{}): {}",
+                        name.replace(' ', "-"),
+                        Page::prose(&about)
+                    ),
                 );
             }
         }
@@ -177,4 +184,11 @@ impl CliReference {
             format!("{help}.")
         }
     }
+}
+
+fn main() -> Result<(), ArtifactError> {
+    Artifacts::from_args()?.sync([(
+        CliReference::PATH,
+        CliReference::render(piquelctl::command()),
+    )])
 }

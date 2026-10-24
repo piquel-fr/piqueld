@@ -79,7 +79,7 @@ pub(crate) struct GrantArgs {
         value_parser = one_of!(Permission::all(), Permission::parse, Permission::description)
     )]
     permissions: Vec<Permission>,
-    /// Limit the application permissions to this application, by name or ID.
+    /// Limit the application permissions to this application.
     ///
     /// Repeat it to allow several applications. Without it, the permissions
     /// apply to every application. Installation-wide permissions, such as

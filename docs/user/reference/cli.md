@@ -35,57 +35,6 @@ built with Cargo. See [connection profiles](#connection-profiles).
 
 ## Commands
 
-```console
-piquelctl profiles
-piquelctl status
-piquelctl app list
-piquelctl app show <name-or-id>
-piquelctl app logs <name-or-id> [--service <name>]
-piquelctl app validate --file application.toml
-piquelctl app exec <name-or-id> <service> [--env <env>] [-i] [-t] -- <command>...
-piquelctl app plan --file application.toml [--env <env>]
-piquelctl app apply --file application.toml
-piquelctl app apply --file application.toml --deploy
-piquelctl app delete <name-or-id> [--environments <names>]
-piquelctl operation <operation-id>
-piquelctl app reconcile <name-or-id>
-piquelctl app deploy <name-or-id>
-piquelctl app rename <name-or-id> <new-name>
-piquelctl app secret <name-or-id> list|set|access|delete
-piquelctl app releases <name-or-id> [--cursor <cursor>]
-piquelctl app repository sync <name-or-id> off|poll|webhook [--interval <seconds>]
-piquelctl app repository webhook show|rotate <name-or-id>
-piquelctl env list <app>
-piquelctl env create <app> <name> [--branch <branch> [--commit <sha>] | --promote-from <env>]
-piquelctl env branch <app> <env> <branch> [--commit <sha>]
-piquelctl env sync <app> <env> on|off
-piquelctl env telemetry <app> <env> on|off
-piquelctl env source <app> <env> (--promote-from <env> | --tracking)
-piquelctl env promote <app> <env> [--deployment <id> | --release <id>] [--plan]
-piquelctl env show <app> [<env>]
-piquelctl env rename <app> <env> <new-name>
-piquelctl env delete <app> <env>
-piquelctl env deploy <app> [<env>] [--branch <branch> | --commit <sha>]
-piquelctl env reconcile <app> [<env>]
-piquelctl env logs <app> [<env>] [--service <name>]
-piquelctl env wait <app> [<env>] [--deployment <id>] [--ready runtime|routes]
-piquelctl env url <app> [<env>] [--route <name>]
-piquelctl env secret <app> [--env <env>] list|regenerate|delete
-piquelctl preview create <app> --branch <branch> [--slot <slot>]
-piquelctl preview deploy <app> <preview> [--slot <slot>]
-piquelctl preview deploy <app> --local [--branch <branch>] [--slot <slot>] [--full-history]
-piquelctl preview list <app>
-piquelctl preview show <app> <preview> [--slot <slot>]
-piquelctl preview logs <app> <preview> [--slot <slot>] [--service <name>]
-piquelctl preview wait <app> <preview> [--slot <slot>] [--deployment <id>] [--ready runtime|routes]
-piquelctl preview url <app> <preview> [--slot <slot>] [--route <name>]
-piquelctl preview exec <app> <preview> <service> [--slot <slot>] [-i] [-t] -- <command>...
-piquelctl preview delete <app> <preview> [--slot <slot>]
-piquelctl preview prune <app> --branch-gone
-piquelctl notification list|set|test|delete|deliveries|retry
-piquelctl events --application <application-id> --limit 50
-```
-
 An application owns the saved manifest; its environments deploy it, each with its
 own deployments, status, volumes, generated secrets, routes, and network. A
 manifest that [declares environments](manifest.md#declared-environments)

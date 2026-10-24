@@ -83,7 +83,7 @@ Sign in with a passkey through your browser, and save the login.
 
 `login` prints a link and a code. Open the link in any browser, even on another machine, and approve the code with your passkey. It waits until the code expires, at most 15 minutes, whatever `--timeout` says. It then saves the login for this daemon in `~/.config/piqueld/credentials.json` (in `$XDG_CONFIG_HOME` when it is set), or in the file `PIQUELD_CREDENTIALS_FILE` names.
 
-Grant options limit what the login may do; without them, it has all your account's access. Here `--app` takes application IDs, not names.
+Grant options limit what the login may do; without them, it has all your account's access. Here `--app` takes application IDs, not names, which cannot be looked up before signing in.
 
 ```text
 piquelctl login [OPTIONS]
@@ -117,7 +117,7 @@ Options:
   - `audit:read`: Read every account's audit trail.
   - `telemetry:grant`: Grant environments every application's telemetry.
   - `notifications:manage`: Manage notification destinations.
-- `--app <NAME_OR_ID>`: Limit the application permissions to this application, by name or ID.
+- `--app <APPLICATION_ID>`: Limit the application permissions to this application.
 
   Repeat it to allow several applications. Without it, the permissions apply to every application. Installation-wide permissions, such as `system:read`, are never limited.
 
@@ -206,7 +206,7 @@ Options:
   - `audit:read`: Read every account's audit trail.
   - `telemetry:grant`: Grant environments every application's telemetry.
   - `notifications:manage`: Manage notification destinations.
-- `--app <NAME_OR_ID>`: Limit the application permissions to this application, by name or ID.
+- `--app <NAME_OR_ID>`: Limit the application permissions to this application.
 
   Repeat it to allow several applications. Without it, the permissions apply to every application. Installation-wide permissions, such as `system:read`, are never limited.
 - `-y, --yes`: Skip the confirmation prompt.
@@ -249,7 +249,7 @@ Options:
   - `audit:read`: Read every account's audit trail.
   - `telemetry:grant`: Grant environments every application's telemetry.
   - `notifications:manage`: Manage notification destinations.
-- `--app <NAME_OR_ID>`: Limit the application permissions to this application, by name or ID.
+- `--app <NAME_OR_ID>`: Limit the application permissions to this application.
 
   Repeat it to allow several applications. Without it, the permissions apply to every application. Installation-wide permissions, such as `system:read`, are never limited.
 
@@ -323,7 +323,7 @@ Options:
   - `audit:read`: Read every account's audit trail.
   - `telemetry:grant`: Grant environments every application's telemetry.
   - `notifications:manage`: Manage notification destinations.
-- `--app <NAME_OR_ID>`: Limit the application permissions to this application, by name or ID.
+- `--app <NAME_OR_ID>`: Limit the application permissions to this application.
 
   Repeat it to allow several applications. Without it, the permissions apply to every application. Installation-wide permissions, such as `system:read`, are never limited.
 - `--days <DAYS>`: Expire the token after this many days, from 1.
@@ -456,7 +456,7 @@ Commands:
 
 Recover from a lost secret key by discarding every value it encrypted.
 
-Use it only when the daemon's `secrets.key` is lost and you have no backup: the daemon refuses while the key still works. It discards the stored and generated secret values of ALL applications and environments and the repository webhook secrets, and deletes every notification destination, since their URLs are encrypted. Running services keep their Docker secrets. Afterwards, set the stored secrets again and deploy, which also generates new values for generated secrets. Needs `system:operate`.
+Use it only when the daemon's `secrets.key` is lost and you have no backup: the daemon refuses while the key still works. It discards the stored and generated secret values of ALL applications and environments and the repository webhook secrets, and deletes every notification destination, since their URLs are encrypted. Running services keep their Docker secrets. Afterwards, set the stored secrets again and deploy, which also generates new values for generated secrets, give each repository a new webhook secret with `app repository webhook rotate`, and add the notification destinations again with `notification set`. Needs `system:operate`.
 
 ```text
 piquelctl secrets recover-key [OPTIONS]
@@ -1860,7 +1860,7 @@ Options:
   - `exclusive`: Keep writable volumes writable, and stop every service that mounts one until the rollout.
 - `--env <KEY=VALUE>`: Environment variable for the job only, added to its service's. Repeat it to set several. They replace the job's own variables, which it keeps when you pass none.
 - `--clear-env`: Remove the job's own environment variables.
-- `--secret <NAME=TARGET>`: Secret for the job only, mounted at `TARGET` under `/run/secrets` in addition to its service's. Repeat it to mount several. They replace the job's own secrets, which it keeps when you pass none.
+- `--secret <NAME=TARGET>`: Secret for the job only, in addition to its service's, mounted at `TARGET`, an absolute path under `/run/secrets/` such as `/run/secrets/db`. Repeat it to mount several. They replace the job's own secrets, which it keeps when you pass none.
 - `--clear-secrets`: Remove the job's own secrets.
 
 ## `piquelctl app job move`
@@ -2868,7 +2868,7 @@ Arguments:
 
 Cap the visibility of an environment's routes in the saved manifest.
 
-Each route gets the stricter of its own visibility and this cap. The cap is saved in the environment's `[spec.environments.<name>]` block. When the manifest has no such blocks yet, it adds one for every environment, which declares them all.
+Each route gets the stricter of its own visibility and this cap. The cap is saved in the environment's `[spec.environments.<name>]` block. `private` adds the block when the manifest has none for the environment; `public`, which is no cap, only changes an existing one.
 
 ```text
 piquelctl env visibility [OPTIONS] <APPLICATION> <ENVIRONMENT> <VISIBILITY>
@@ -2892,7 +2892,7 @@ Options:
 
 Rename an environment without redeploying it.
 
-The command fails while the manifest the environment deploys has a `[spec.environments.<name>]` block for the old or the new name.
+The command fails while the manifest the environment deploys, or the application's saved manifest, has a `[spec.environments.<name>]` block for the old or the new name.
 
 ```text
 piquelctl env rename [OPTIONS] <APPLICATION> <ENVIRONMENT> <NEW_NAME>

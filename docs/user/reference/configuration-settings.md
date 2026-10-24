@@ -11,7 +11,8 @@ daemon uses the file, with examples, see
 [daemon configuration](configuration.md); NixOS sets these settings through
 the [NixOS module](nixos.md).
 
-Every setting is optional unless it says otherwise. Settings ending in
+Every setting is optional unless it says otherwise. The daemon reads the
+file once at startup, so restart it after a change. Settings ending in
 `_file` take the path of a [credential file](#credential-file): a relative
 path resolves against `$CREDENTIALS_DIRECTORY`.
 
@@ -29,11 +30,11 @@ The longest lifetime, in days, of new API tokens. When unset, tokens may have an
 
 Type: string. Default: unset.
 
-The website's canonical origin, such as `https://piqueld.example.com`. Passkeys only work on this origin, and API requests that send an `Origin` header must match it. It must be HTTPS, except `http://localhost` for development. When unset, it is `https://` followed by `ingress.private.dashboard_hostname` if that is set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is set, otherwise `http://localhost:7845`.
+The website's canonical origin, such as `https://piqueld.example.com`. Passkeys only work on this origin, and API mutations and WebSocket upgrades that send an `Origin` header must match it. It must be HTTPS, except `http://localhost` for development. When unset, it is `https://` followed by `ingress.private.dashboard_hostname` if that is set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is set, otherwise `http://localhost:7845`.
 
 ## `[build_history]`
 
-How much output of each build is kept, and for how long. Builds themselves are listed until their application is deleted.
+How much output of each build is kept, and for how long. Builds themselves are listed until their environment is deleted.
 
 ### `build_history.log_max_bytes`
 
@@ -70,7 +71,7 @@ A DNS provider account, selected by `kind`, and whether piqueld manages routes' 
 Type: string. Required. One of:
 
 - `"cloudflare"`: A Cloudflare account.
-- `"ovh"`: An OVH account. The consumer key needs `GET` on `/domain/zone` and `/auth/time`, and `POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on `/domain/zone/*`.
+- `"ovh"`: An OVH account. The consumer key needs `GET` on `/domain/zone`, and `POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server time from `/auth/time`, which needs no permission.
 
 ### `dns.providers[].manage_records`
 
@@ -106,9 +107,7 @@ The consumer key, which authorizes the application on the account.
 
 Type: string, one of `"ovh-eu"`, `"ovh-ca"`, `"ovh-us"`. Required. Only with `kind = "ovh"`.
 
-The API region of the account.
-
-An OVH API region: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us` (United States).
+The API region of the account: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us` (United States).
 
 ## `[docker]`
 
@@ -162,7 +161,7 @@ This server's public IPv4 and IPv6 addresses, such as `["203.0.113.10", "2001:db
 
 Type: string, a [hostname](#hostname). Default: unset.
 
-A public hostname that serves GitHub push webhooks, and nothing else, for applications whose repository syncs with `webhook`. No application may route it or its subdomains.
+A public hostname that serves GitHub push webhooks, and nothing else, for applications whose repository syncs with `webhook`, while `ingress.enabled` is set. No application may route it or its subdomains.
 
 ## `[ingress.acme]`
 
@@ -182,7 +181,7 @@ An email address the CA may send expiry and policy notices to.
 
 ## `[ingress.private]`
 
-The apps tailnet node: a second tailnet node that piqueld runs as a container beside the gateway to serve private routes to the tailnet. It is separate from the daemon's own node (`[tailscale]`), so it can have its own ACLs and tags.
+The apps tailnet node: a second tailnet node, a Tailscale container beside the gateway, that carries private routes' traffic to the gateway's private listener. It is separate from the daemon's own node (`[tailscale]`), so it can have its own ACLs and tags.
 
 ### `ingress.private.auth_key_file`
 
@@ -206,7 +205,7 @@ Run the apps node and serve private routes on the tailnet. While it is disabled,
 
 Type: string. Default: `"piqueld-apps"`.
 
-The apps node's name, a single DNS label, which becomes `<hostname>.<tailnet>.ts.net`. It must differ from `tailscale.hostname` while both nodes run.
+The apps node's name, a single DNS label, which becomes `<hostname>.<tailnet>.ts.net`. It must differ from `tailscale.hostname` while both are enabled.
 
 ## `[ingress.tunnel]`
 
@@ -238,7 +237,7 @@ CPU limit, in millicores, of preview services that set none.
 
 ### `previews.default_memory_bytes`
 
-Type: integer, at least 1. Default: `536870912` (512 MiB).
+Type: integer from 1 to 9223372036854775807. Default: `536870912` (512 MiB).
 
 Memory limit, in bytes, of preview services that set none.
 
@@ -296,7 +295,7 @@ Days the audit trail of API requests is kept; `0` keeps it forever.
 
 Type: integer. Default: `90`.
 
-Days daemon events, about shared infrastructure, are kept; `0` keeps them forever.
+Days events not tied to an application, such as those about shared infrastructure, are kept; `0` keeps them forever.
 
 ### `retention.event_days`
 
@@ -308,7 +307,7 @@ Days application events are kept; `0` keeps them forever. Deleting an applicatio
 
 Type: integer. Default: `10`.
 
-Days finished operations are kept; `0` keeps them forever. Older ones are removed during reconciliation.
+Days finished operations are kept; `0` keeps them forever. Older ones are removed during reconciliation, except each environment's latest operation and those in its deployment history or with job cleanup pending.
 
 ## `[server]`
 
@@ -332,11 +331,9 @@ Type: string, one of `"off"`, `"localhost"`, `"tailscale"`, `"both"`. Default: `
 
 The TCP addresses that serve the API and dashboard over plain HTTP, besides the Unix socket. Every request must still authenticate.
 
-Where the API and dashboard listen over TCP:
-
 - `off`: none, so only the Unix socket serves the API.
 - `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.
-- `tailscale`: the host's Tailscale addresses, read from its `tailscale` at startup. If Tailscale isn't running then, piqueld logs a warning and only tries again when it restarts.
+- `tailscale`: the host's Tailscale addresses, read from its `tailscale` at startup. If Tailscale isn't running then, piqueld logs a warning and only tries again when piqueld restarts.
 - `both`: loopback and Tailscale addresses.
 
 ### `server.port`
@@ -349,7 +346,7 @@ The port every TCP listener uses.
 
 Type: string. Default: `"/run/piqueld"`.
 
-The absolute path of the directory holding the Unix API socket, `piqueld.sock`. It must already exist, owned by the daemon's user, with mode `0750` for group access or `0700`. It must differ from `data_dir`.
+The absolute path of the directory holding the Unix API socket, `piqueld.sock`. It must already exist, owned by the daemon's user and with full access for it. Its group may read or traverse it, as with mode `0750`, `0740` or `0710`, only when it is the daemon's effective group; otherwise use `0700`. Group write and any access by others are refused. Every directory above it must be owned by root or the daemon's user and writable only by its owner, unless sticky, like `/tmp`. It must differ from `data_dir`.
 
 ## `[snapshots]`
 
@@ -369,13 +366,13 @@ The daemon's own tailnet node, which serves the website (dashboard and API) over
 
 Type: string, a [credential file](#credential-file). Default: unset.
 
-A Tailscale auth key for the node's first login. Without one, the daemon logs a login URL and waits until the node is approved. Later starts reuse the node's state in the data directory. piqueld passes the file to Tailscale without reading it, so it only has to exist for the first login. Not allowed with `socket`.
+A Tailscale auth key for the node's first login. Without one, the daemon logs a login URL and waits until the node is approved. Later starts reuse the node's state in the data directory. piqueld passes the file to Tailscale on every start without reading it, so it must exist at every start; its key is only used for the first login. Not allowed with `socket`.
 
 ### `tailscale.enabled`
 
 Type: boolean. Default: `false`.
 
-Join the tailnet as a node and serve the website on its `https_port`. piqueld starts its own `tailscaled` unless `socket` is set, so `tailscaled` and `tailscale` must be on `PATH`.
+Join the tailnet as a node and serve the website on its `https_port`. The `tailscale` CLI must be on `PATH`, and so must `tailscaled` unless `socket` is set, since piqueld otherwise starts its own.
 
 ### `tailscale.hostname`
 
@@ -421,7 +418,7 @@ gRPC metadata sent with every export, such as a collector token, one `name: valu
 
 ### Credential file
 
-The path of a file holding a secret, such as an API token. The daemon reads it once at startup, so restart it after changing the file. Surrounding whitespace, such as a trailing newline, is removed, and the file must be a non-empty regular file; symlinks to one are followed. A relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's `LoadCredential=` puts credentials, and may not contain `.` or `..`. Errors and the settings shown by the dashboard name the file, never its contents.
+The path of a file holding a secret, such as an API token. The daemon reads it once at startup, so restart it after changing the file. Surrounding whitespace, such as a trailing newline, is removed, and the file must be a non-empty regular file; symlinks to one are followed. `tailscale.auth_key_file` is the exception: Tailscale reads it instead. A relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's `LoadCredential=` puts credentials, and may not contain `.` or `..`. Errors and the settings shown by the dashboard name the file, never its contents.
 
 ### Hostname
 
