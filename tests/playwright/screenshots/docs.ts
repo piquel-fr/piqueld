@@ -36,13 +36,19 @@ export const test = base.extend({
 export async function shoot(page: Page, name: string, through?: Locator) {
   const box = await through?.boundingBox();
   await page.setViewportSize({ width: 1280, height: box ? Math.ceil(box.y + box.height) + 12 : 800 });
-  // Stop the dashboard's timers, without running the ones due soon, so no
-  // refresh redraws what `freeze` replaced.
-  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 50);
+  // Stop the dashboard's timers, without running any, so no refresh redraws
+  // what `freeze` replaced. Fixing the time first makes pausing at it skip
+  // nothing, however long the calls take.
+  const now = Date.now();
+  await page.clock.setFixedTime(now);
+  await page.clock.pauseAt(now);
   const frozen = await freeze(page);
   await expect(page).toHaveScreenshot(`${name}.png`.split('/'));
   // A refresh already under way when the clock stopped redraws it anyway.
   expect(frozen, 'a refresh redrew the page while it was saved').toEqual(expect.arrayContaining(await varying(page)));
+  // Catch up with the time spent paused, so later pages read the daemon's
+  // new timestamps as just now.
+  await page.clock.setSystemTime(Date.now());
   await page.clock.resume();
 }
 
