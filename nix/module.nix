@@ -394,7 +394,7 @@ in
           telemetry.containers = lib.mkOption {
             type = lib.types.bool;
             default = true;
-            description = "Also export the stdout/stderr and resource usage of every container piqueld runs, while an endpoint is set.";
+            description = "Also export the stdout/stderr and resource usage of every container piqueld runs, to the endpoint and to granted receiving services.";
           };
         };
       };

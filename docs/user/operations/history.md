@@ -2,6 +2,9 @@
 
 Find out what piqueld did, when, and why something failed.
 
+Run the `piquelctl` commands on this page on the host, or on any machine where
+`piquelctl` is signed in.
+
 ## See what happened
 
 piqueld records every deployment step, configuration change, secret change
@@ -24,8 +27,9 @@ are never part of them.
   Events come oldest first, 50 at a time. Pass the printed cursor with
   `--cursor` to read the next page.
 
-Each line has the event's number, its time in Unix milliseconds, its kind, the
-operation it belongs to, and who caused it. To wait for one operation to
+Each line has the event's number, its time in Unix milliseconds, its kind, and
+then, where they apply, its operation, attempt, phase, resource, error code,
+message, and who caused it. To wait for one operation to
 finish, or see where it is, run `piquelctl operation <operation-id>`. In the
 dashboard, the environment's **Deployments** tab expands each deployment into
 its steps.
@@ -45,23 +49,27 @@ Each failure has a diagnostic. Select **Diagnostic details** to read it:
 - the **next step**, and whether retrying can help.
 
 The **Errors** page links each failure to its environment and to the events of
-its deployment. An API error that has a diagnostic names it in
-`details.diagnostic_id`.
+its deployment. When a command fails, `piquelctl` prints the same code and
+message, with a hint for what to do next.
 
 ## Read logs and build output
 
-- A service's output: `piquelctl app logs <app>`, or the environment's
-  **Logs** tab. These are recent lines read from Docker; for a lasting record,
-  [export them](telemetry.md).
-- A build's output: `piquelctl builds`, or the **Builds** page and each
-  application's **Builds** tab.
+- A service's output: `piquelctl env logs <app> <environment>`, or
+  `piquelctl app logs <app>` when the application has a single environment.
+  In the dashboard, it's on the environment's **Logs** tab. These are recent
+  lines read from Docker; for a lasting record, [export them](telemetry.md).
+- A build's output: `piquelctl builds list` lists recent builds, and
+  `piquelctl builds logs <id>` prints one's output. In the dashboard, see the
+  **Builds** page and each application's **Builds** tab.
 
 ## Watch the daemon itself
 
 The dashboard's **Daemon status** page shows:
 
 - whether the database, the Docker engine, the Swarm manager and HTTPS ingress
-  are ready, and how previews, built images and telemetry export stand;
+  are ready;
+- how many previews run against their limits, what image cleanup removed, and
+  where telemetry is exported;
 - the daemon's uptime, memory, CPU, database size and free disk space;
 - how many events and diagnostics are kept, and how much build output;
 - running and queued operations, and pending and failed notifications.

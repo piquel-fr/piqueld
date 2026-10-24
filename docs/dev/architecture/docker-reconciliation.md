@@ -182,7 +182,7 @@ reconstruct state. Their independent retention defaults to 90 days. Application 
 scopes have separate policies. Action intent is journaled before runtime mutation;
 retries and outcomes retain sanitized diagnostics. Unchanged successful
 observations and raw Docker response bodies are not logged as events. See
-[observability](../../user/operations/history.md) for crash recovery and notification semantics.
+[observability](observability.md) for crash recovery and notification semantics.
 
 Docker requests have deadlines, image resolution checks tag stability, and
 service observation inspects complete specifications. Raw engine error sources

@@ -335,8 +335,9 @@ Native clients without browser headers continue to work. The Unix socket skips
 the TCP hostname and Fetch Metadata checks; authentication and its origin checks
 still apply on every API transport.
 
-See [observability](../operations/history.md) for telemetry export, diagnostic
-ownership and retention semantics. [Notification destinations](../operations/notifications.md)
+See [telemetry](../operations/telemetry.md) for telemetry export, and
+[history and diagnostics](../operations/history.md#how-long-history-is-kept)
+for retention. [Notification destinations](../operations/notifications.md)
 are managed through the API, CLI and dashboard rather than this file; a
 `[notifications]` table is rejected as unknown.
 

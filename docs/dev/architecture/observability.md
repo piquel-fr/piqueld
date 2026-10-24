@@ -184,44 +184,9 @@ history intentionally removes that data rather than exposing deletion tombstones
 
 ## API and dashboard
 
-Routes require the permissions described in [authorization](../../user/accounts/authorization.md):
-application history, diagnostics, and analytics are limited to the applications a
-caller holds `events:read` on, and daemon history requires `system:read`. See the generated
-[OpenAPI document](../../openapi-v1.json) for exact contracts.
-
-| Route | Purpose |
-| --- | --- |
-| `GET /api/v1/events` | Cursor pagination and filtering |
-| `GET /api/v1/events/stream` | Replay and follow committed history through SSE |
-| `GET /api/v1/diagnostics/{id}` | Original event and details for an occurrence |
-| `GET /api/v1/system/resources` | Cached process, storage and queue measurements |
-| `GET /api/v1/analytics/deployments` | Deployment outcomes, retries, durations and failure codes |
-| `GET /api/v1/notifications/destinations` | [Notification destinations](#notifications), without URLs; `system:read` or `notifications:manage` |
-| `PUT /api/v1/notifications/destinations/{name}` | Create or replace a destination |
-| `DELETE /api/v1/notifications/destinations/{name}` | Delete a destination |
-| `POST /api/v1/notifications/destinations/{name}/test` | Send a test notification now |
-| `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
-| `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy |
-
-Event filters: `application_id` (application-wide events and those of all its
-environments), `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,
-`error_code`, `errors_only`, `scope`, `since_ms`, `until_ms`, and `descending`.
-Pages contain at most 100 records and use opaque `v1:<id>` cursors. Oldest-first
-ordering remains the default. Timestamps are Unix milliseconds.
-
-SSE uses the same filters with oldest-first ordering. Set `Last-Event-ID` to the
-last received SSE ID to reconnect (it takes precedence over `cursor`). Without a
-cursor, replay starts at retained history. Events are read from the journal in
-bounded pages; slow clients do not block writers. When the filter excludes newer
-events, the stream sends an ID-only message so `Last-Event-ID` still advances. A stale resume position receives
-HTTP 410, or a terminal `history_expired` event if pruning happens during the
-stream. A terminal `stream_error` indicates a storage failure. Clients should
-refresh their snapshot before reconnecting after an expired history response.
-Streams recheck the caller's access while open (see
-[authorization](../../user/accounts/authorization.md)): history it may no longer read
-stops arriving, and a caller that lost access entirely receives a terminal
-`access_ended` message whose data is the refusal's `ErrorBody`. Streams end
-without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
+The API reference's [event history](../../user/reference/api.md#event-history)
+documents the routes, filters and event stream. The stream reads events from
+the journal in bounded pages, so slow clients never block writers.
 
 The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation
@@ -458,7 +423,7 @@ collector does not accept is dropped rather than retried, so an unreachable
 collector costs one request per second at most. A collector that accepts no
 export for a minute raises one `telemetry_export_failed` daemon diagnostic
 (`dependency_health_changed`), notified under `daemon_failures` once it has
-lasted `failure_threshold_seconds`, and a recovery event once exports succeed
+lasted the two-minute failure threshold, and a recovery event once exports succeed
 again. Telemetry still queued at shutdown gets five seconds to be sent.
 
 `piquelctl status` and the Daemon status page show each destination: its

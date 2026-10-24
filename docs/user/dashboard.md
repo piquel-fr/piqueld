@@ -404,6 +404,7 @@ prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
 
-See [observability](operations/history.md) for diagnostic history, daemon statistics, analytics, telemetry
-export and webhook delivery configuration.
+See [history and diagnostics](operations/history.md) for history, daemon
+statistics and analytics, [telemetry](operations/telemetry.md) for telemetry
+export, and [notifications](operations/notifications.md) for webhook delivery.
 

@@ -14,6 +14,9 @@ Collector or Grafana Alloy, either:
   [receives telemetry directly](#receive-telemetry-in-an-application). The
   [observability stack](observability-stack.md) is a ready-made one.
 
+You change the daemon's configuration on the host. Run `piquelctl` there, or on
+any machine where it's signed in.
+
 ## Send telemetry to a collector
 
 1. If the collector needs a token, save it as gRPC metadata, one `name: value`
@@ -23,17 +26,25 @@ Collector or Grafana Alloy, either:
    authorization: Bearer <token>
    ```
 
-2. Set the collector's address in the daemon's configuration. On NixOS:
+2. Set the collector's address in the daemon's configuration. Give its port:
+   without one, it's 443 for `https://` and 80 for `http://`, not the usual
+   4317. On NixOS, where the module hands the headers file to the daemon:
 
    ```nix
    services.piqueld.settings.telemetry = {
      endpoint = "https://otel.example.com:4317";
-     headers_file = "/run/secrets/otlp-headers"; # optional
+     headers_file = config.age.secrets.otlp-headers.path; # optional
    };
    ```
 
-   In `config.toml`, pass the headers file with `LoadCredential=` in the
-   service's unit, and name it relative to the credentials directory:
+   In `config.toml`, pass the file to the service by adding to its unit's
+   `[Service]` section:
+
+   ```ini
+   LoadCredential=otlp-headers:/etc/piqueld/otlp-headers
+   ```
+
+   Then refer to it by that name:
 
    ```toml
    [telemetry]
@@ -43,13 +54,17 @@ Collector or Grafana Alloy, either:
 
    The endpoint is `https://`, `http://`, or a Unix socket such as
    `unix:///run/otel/otlp.sock`. `http://` isn't encrypted: use it only on
-   the host or a private network. The endpoint can't contain credentials or a
-   path.
+   the host or a private network. The endpoint can't contain credentials, a
+   path or a query.
 
-3. Restart the daemon. It only reads its configuration when it starts.
+3. Restart the daemon, which only reads its configuration when it starts:
+   `sudo nixos-rebuild switch` restarts it on NixOS, and elsewhere run
+   `sudo systemctl restart piqueld`.
 
 piqueld also exports the output and resource usage of every container it runs.
-To export only its own telemetry, set `containers = false`.
+To export only its own telemetry, set `containers = false` under
+`[telemetry]`, or `services.piqueld.settings.telemetry.containers = false;` on
+NixOS.
 
 ## Check that it works
 
@@ -63,8 +78,9 @@ page also shows when the last export succeeded and how many records were
 dropped.
 
 If the collector refuses exports for a minute, piqueld records a
-`telemetry_export_failed` diagnostic, sent to the `daemon_failures`
-[notification](notifications.md) category. Exports never slow down deployments
+`telemetry_export_failed` diagnostic. If that lasts two minutes, it's sent to
+the `daemon_failures` [notification](notifications.md) category, or to
+`service_degradation` for a receiving application. Exports never slow down deployments
 or the API: when the collector can't keep up, records are dropped.
 
 ## Receive telemetry in an application
@@ -106,22 +122,40 @@ any port.
            transport: unix
    ```
 
-3. Deploy the application, then grant its environment the telemetry:
+3. Save the manifest:
+
+   ```console
+   piquelctl app apply --file collector.toml
+   ```
+
+4. Grant the environment telemetry, before deploying it, so the collector
+   finds its socket's directory when it starts:
 
    ```console
    piquelctl env telemetry <app> production on
    ```
 
    Or select **Grant telemetry** on the environment's **Overview**. This needs
-   the `telemetry:grant` permission, which only administrators have.
+   the `telemetry:grant` permission, which an account with `admin` on every
+   application has. No preset includes it.
 
-Within seconds, piqueld mounts the socket's directory into the service, which
-restarts it, and starts exporting. `piquelctl env show <app> production` and
-the environment's **Overview** show whether the daemon is connected.
-`piquelctl env telemetry <app> production off` stops it at once.
+5. Deploy it:
 
-The receiving service runs as the daemon's user, so that the daemon can
-connect to its socket. Previews are never granted telemetry.
+   ```console
+   piquelctl app deploy <app> --yes
+   ```
+
+piqueld mounts the socket's directory into the service and starts exporting.
+`piquelctl env show <app> production` and the environment's **Overview** show
+whether the daemon is connected. `piquelctl env telemetry <app> production off`
+stops it at once, and removes the mount within seconds, which restarts the
+service.
+
+Without an `endpoint`, the containers' telemetry goes to granted receivers
+only. A receiving service's own output never goes back to receivers.
+
+While granted, the receiving service runs as the daemon's user, so that the
+daemon can connect to its socket. Previews are never granted telemetry.
 
 ## What piqueld sends
 
@@ -132,7 +166,7 @@ Every record from the daemon carries `service.name = piqueld`,
 each attempt and each step, such as `building_git`, `run_job`,
 `ensure_service` or `wait_for_service`. Spans carry the application, the
 environment and the failure code as `error.type`. API requests are spans too,
-named after their route.
+named after their method and route, such as `GET /api/v1/environments/{id}`.
 
 **Metrics**, every 30 seconds:
 
@@ -140,12 +174,14 @@ named after their route.
 | --- | --- | --- |
 | `piqueld.deployments` | `application`, `environment`, `outcome` | Finished deployment attempts: `succeeded`, `failed`, `cancelled`, `superseded` |
 | `piqueld.deployment.duration` | same | Their duration in seconds |
-| `piqueld.builds`, `piqueld.build.duration` | `application`, `environment`, `outcome` | Finished builds and their duration |
+| `piqueld.builds`, `piqueld.build.duration` | `application`, `environment`, `outcome` | Finished builds (`succeeded`, `failed`, `unknown`) and their duration |
 | `piqueld.operations` | `state` (`running`, `queued`) | Operations waiting or running |
 | `piqueld.service.replicas` | `application`, `environment`, `service`, `state` (`desired`, `running`, `healthy`) | Replicas of every deployed service |
 | `http.server.request.duration` | `http.request.method`, `http.route`, `http.response.status_code` | API latency in seconds |
 | `piqueld.access.denials` | | API requests refused for a missing credential or permission |
-| `piqueld.uptime`, `process.memory.usage`, `process.cpu.time`, `process.cpu.utilization`, `piqueld.database.size`, `piqueld.disk.available`, `piqueld.events`, `piqueld.diagnostics`, `piqueld.build_output.size`, `piqueld.notification.deliveries` | | What the **Daemon status** page shows |
+| `piqueld.database.size` | `file` (`database`, `wal`) | The database's size in bytes |
+| `piqueld.notification.deliveries` | `state` (`pending`, `failed`) | Notifications waiting or failed |
+| `piqueld.uptime`, `process.memory.usage`, `process.cpu.time`, `process.cpu.utilization`, `piqueld.disk.available`, `piqueld.events`, `piqueld.diagnostics`, `piqueld.build_output.size` | | The rest of what the **Daemon status** page shows |
 
 Prometheus translates the names, such as `piqueld_deployments_total`.
 piqueld doesn't serve a Prometheus scrape endpoint, but Prometheus 3 receives
@@ -156,8 +192,8 @@ history event. Failures are `WARN`, everything else `INFO`.
 
 **Container logs.** Every line a container prints, with `log.iostream` set to
 `stdout` or `stderr`. piqueld doesn't guess a severity from the text. Lines
-longer than 16 KiB are cut, and lines beyond 200 a second per container, in
-bursts of up to 2,000, are dropped. After a restart, piqueld picks up where it
+longer than 16 KiB are cut. Each container can send 200 lines a second, in
+bursts of up to 2,000, and piqueld drops lines beyond that. After a restart, piqueld picks up where it
 left off, as long as Docker still has the lines.
 
 **Container metrics**, every 30 seconds:
@@ -188,7 +224,7 @@ Each container's records say which container they're about:
   says the collector is failing, check that the host can reach the endpoint,
   and the token in the headers file.
 - **The receiving collector keeps restarting.** Its environment probably isn't
-  granted telemetry yet, so the socket's directory is missing. `piquelctl app
-  plan` warns with `telemetry_not_granted` in that case.
+  granted telemetry, so the socket's directory is missing. Deploying it warns
+  with `telemetry_not_granted` in that case.
 - **Records are dropped.** The collector is too slow or unreachable. piqueld
   never waits for it, so it drops what it can't send.

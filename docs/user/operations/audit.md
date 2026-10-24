@@ -8,25 +8,31 @@ record.
 The audit trail records:
 
 - every request piqueld refused, for a missing credential or permission, a
-  rejected browser origin, or too many attempts;
+  rejected browser origin, or too many attempts. Requests for an application
+  the caller can't see are **Denied** with status 404;
 - every change and every sign-in;
-- every command run in a container with `app exec` or `preview exec`;
+- every session that runs a command in a container, with `app exec` or
+  `preview exec`. The command itself isn't recorded, since it can contain
+  secrets;
 - reads of logs, of the daemon's configuration, of downloaded manifests, and
   of the account list.
 
-Each record keeps the request, its outcome (**Allowed**, **Denied** or
-**Failed**), the account and credential that made it, and where it came from:
-a network address, the Unix socket, or a tailnet user and device. Request
-bodies are never recorded. Records outlive the accounts, credentials and
-applications they name.
+Each record keeps the request and its outcome: **Allowed**, **Denied** or
+**Failed**. It names the account and credential that made it, and where it
+came from: a network address, the Unix socket, or a tailnet user and device.
+Request bodies are never recorded. Records outlive the accounts, credentials
+and applications they name.
 
 Routine reads, such as the dashboard refreshing a page, aren't recorded.
+Records are written in the background: if more than 1,024 wait at once, the
+extra ones are dropped, and only the daemon's log mentions them.
 
 ## Read it
 
-The dashboard's **Audit** page lists the trail, newest first, and filters it
-by outcome. On the **Accounts** page, each session and token links to its own
-activity.
+Run `piquelctl` on the host, or on any machine where it's signed in. The
+dashboard's **Audit** page lists the trail, newest first, and filters it
+by outcome. On the **Accounts** page, each session and token's **Activity** link shows its
+requests.
 
 ![The Audit page: a green banner reports the chain intact with 13 records, above a list of requests with their outcome, account and source](../../images/operations/audit.png)
 
@@ -40,11 +46,20 @@ $ piquelctl audit --limit 3
 Next cursor: v1:5
 ```
 
-`--outcome denied` shows only refused requests, and `--credential <id>` only
-the requests of one session or token (`piquelctl token list` shows their IDs).
+To see only refused requests, or only those of one session or token:
 
-Everyone can read their own account's requests. Reading other accounts' needs
-the `audit:read` permission, which administrators have.
+```console
+piquelctl audit --outcome denied
+piquelctl audit --credential <credential-id>
+```
+
+`piquelctl token list` shows your own tokens' IDs. An application's first
+environment shares the application's ID, so a request about `production` names
+`app-…`.
+
+Accounts read their own requests, and API tokens and limited CLI logins only
+their own. Reading anyone else's needs the `audit:read` permission, which an
+account with `admin` on every application has.
 
 ## Check that nobody changed it
 
@@ -60,13 +75,14 @@ Pruned through: none
 Newest: 7 7a625b7a247a086b8e1f4724ff7595dffdfa117145f79e52b881f30a667bc402
 ```
 
-If the chain is broken, the command fails and names the first record that
-doesn't match.
+Both need `audit:read`. If the chain is broken, the command fails and names
+the first record that doesn't match; the change may also be just before it.
 
 The chain can't tell who wrote the database. Someone who controls the host
-could rewrite the whole trail, or delete its newest records. To catch that,
-keep the **Newest** line somewhere piqueld can't change, such as a ticket or a
-scheduled job's log, and check later that it's still part of the chain.
+could rewrite the whole trail, or delete its newest records. To catch the
+latter, keep the **Newest** line somewhere piqueld can't change, such as a
+ticket or a scheduled job's log. If a later check reports a lower **Newest**
+record than the one you kept, records were removed.
 
 ## How long it's kept
 
@@ -87,16 +103,17 @@ happen:
 | `admin_recovery_issued` | `piquelctl recover-admin` issued a [recovery link](../accounts/authentication.md#recovering-administrator-access) |
 | `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the [host operator](../accounts/authentication.md#the-host-operator) |
 | `access_denial_burst` | 20 requests from one address and account are refused within a minute (then at most every 10 minutes while it lasts) |
-| `credential_new_address` | A session, CLI login or token is used from a new network address |
+| `credential_new_address` | A session, CLI login or token is used from a network address it hasn't used before (IPv6 by /64). Its first address, and the Unix socket, don't alert |
 | `secret_key_recovered` | The secret key was recovered, discarding stored values |
-| `notification_destination_changed` | A notification destination was created, changed, disabled or deleted |
+| `notification_destination_changed` | A notification destination was created, changed, disabled, enabled or deleted. A destination whose URL or kind changed doesn't receive it, as it's a new receiver |
 
 An unexpected `admin_recovery_issued` or `operator_sign_in_issued` means
-someone with root on the host is acting: treat it as a host compromise.
+someone with root, or the daemon's user, is acting on the host: treat it as a
+host compromise.
 
 ## Troubleshooting
 
-- **You only see your own requests.** Reading the whole trail needs
+- **You only see your own requests, or verifying is refused.** Both need
   `audit:read`.
 - **`piquelctl audit verify` fails.** The database was changed outside
   piqueld. Compare the first mismatching record, and the records just before

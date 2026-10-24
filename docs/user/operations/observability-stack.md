@@ -16,42 +16,64 @@ runs:
 
 - You're an administrator: granting telemetry needs the `telemetry:grant`
   permission.
-- Grafana is served on a [private route](../reference/manifest.md#routes), so
-  managed ingress and its tailnet node must be set up, with a DNS record for
-  Grafana's hostname.
+- Grafana is served on a private route, so piqueld needs
+  [managed ingress](../reference/configuration.md#managed-application-ingress)
+  with its tailnet node, and a [DNS provider](../reference/configuration.md#dns-providers)
+  that manages Grafana's domain, for its certificate.
 - A Git repository of your own for the stack. Its configuration files are
   mounted from the repository, so the application
-  [deploys from it](../reference/manifest.md#repository-backed-manifests).
+  [deploys from it](../reference/manifest.md#repository-backed-manifests). If
+  it's private, the daemon's user needs credentials to clone it.
+- A checkout of that repository on the machine where you run `piquelctl`.
 
 ## Deploy it
 
 1. Fork piqueld, or copy `examples/observability` into your repository.
+
 2. Edit `examples/observability/application.toml`:
-   - `grafana_hostname`, under `[spec.variables]`: Grafana's hostname;
-   - `[spec.manifest]`: your repository, and the branch to follow or the
-     `commit` to pin;
+   - `grafana_hostname`, under `[spec.variables]`: Grafana's hostname.
+   - `[spec.manifest.repository]`: your repository's URL, and the `branch` to
+     follow or the `commit` to pin.
    - `[[spec.exports]]`: replace the placeholder `my-app` with the
      applications that may send their own telemetry to the collector, or
-     remove it.
-   If you copied the directory elsewhere, also fix each `path`.
-3. Create the application, grant it telemetry, and deploy it:
+     remove it. An importing application can send any telemetry, including
+     records that look like the daemon's, so list only applications you trust.
+     A name that no application holds yet goes to whichever application
+     [takes it first](../reference/manifest.md#links).
+   - each `path`, if you copied the directory elsewhere.
+
+3. Commit and push your changes to that branch. The application deploys what
+   the repository holds, not your local file.
+
+4. Create the application:
 
    ```console
    piquelctl app apply --file examples/observability/application.toml
+   ```
+
+5. Grant it telemetry:
+
+   ```console
    piquelctl env telemetry observability production on
+   ```
+
+6. Deploy it:
+
+   ```console
    piquelctl app deploy observability --yes
    ```
 
    To deploy it again whenever you push to its branch, run
-   `piquelctl env sync observability production on`.
+   `piquelctl env sync observability production on`. An environment pinned to
+   a `commit` never does.
 
-4. Read Grafana's generated `admin` password:
+7. Read Grafana's generated `admin` password:
 
    ```console
    piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
    ```
 
-5. Open the address `piquelctl env url observability` prints, from a device on
+8. Open the address `piquelctl env url observability` prints, from a device on
    your tailnet, and sign in as `admin`.
 
 Grafana sets this password the first time it starts. To change it later,
@@ -81,13 +103,10 @@ OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
 OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
 ```
 
-The collector also accepts OTLP over HTTP on port 4318.
-
-> **Warning:** an importing application can send any telemetry, including
-> records that look like the daemon's. Export the collector only to
-> applications you trust. An export naming an application that doesn't exist
-> yet goes to whichever application [takes that name
-> first](../reference/manifest.md#links).
+An import reaches the environment named like the importing one, so from an
+environment other than `production`, add `environment = "production"` to the
+`[[spec.imports]]` entry. The collector also accepts OTLP over HTTP on port
+4318.
 
 ## Find your data in Grafana
 

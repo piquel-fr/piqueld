@@ -663,7 +663,7 @@ record no history. Health changes of the gateway or the apps node are recorded
 as `ingress_unavailable` diagnostics. With `daemon_failures` notifications
 enabled, a gateway or apps node that stays unhealthy past the failure threshold
 notifies, and its recovery follows; see
-[observability](../operations/history.md).
+[notifications](../operations/notifications.md#choose-what-it-receives).
 
 Deployed route status is separate from application health. A `ready` public route
 means an HTTPS request from the daemon validated a publicly trusted certificate and
