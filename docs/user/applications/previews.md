@@ -6,9 +6,11 @@ reaches staging, then delete it.
 
 ## Before you start
 
-- The application reads its manifest from Git, as described in
-  [deploying on push](deploy-on-push.md). Previews deploy branches of that
-  repository.
+- This page continues with the `notes` application of
+  [setting up staging and production](environments.md#set-up-staging-and-production).
+  Its manifest comes from Git, and its `web` route's hostname is
+  `${{ vars.domain }}`, so each preview gets an address of its own. A
+  preview of an application without routes runs, but has no URL.
 - Creating and deploying previews needs `previews:deploy` on the application,
   and deleting them `previews:delete`. `apps:deploy` and `apps:delete`
   include them; see [preview permissions](../accounts/authorization.md#preview-permissions).
@@ -156,7 +158,8 @@ In the dashboard, select the preview on the **Previews** tab: its
 
 Each preview generates its own values for the secrets the manifest
 generates. A secret you stored with `piquelctl app secret` is only given to
-previews when its access allows them:
+previews when its access allows them. Someone with `secrets:write` on the
+application allows them:
 
 ```console
 piquelctl app secret notes access stripe-test --previews
@@ -171,14 +174,16 @@ feat/login  -  notes-feat-login-2ef7d4  ready  local  following  cbd63457576d  s
 feat/login  agent-2  notes-feat-login-agent-2-503aa8  ready  exists  following  cbd63457576d  succeeded operation-01a16d98b0ac7d409995feeac2fbd5ee  preview-01a16d98b0aa74f38af94b59963c8fb6
 ```
 
-The branch state compares the preview with its branch in the repository:
+The branch state compares the branch in the repository with the commit the
+preview last fetched. It doesn't say whether that deployment succeeded: the
+`LAST OPERATION` column does.
 
 | State | Meaning |
 | --- | --- |
-| `exists` | The branch is at the commit the preview deployed. |
-| `moved` | The branch moved past the commit the preview deployed. |
+| `exists` | The branch is at the commit the preview last fetched. |
+| `moved` | The branch is at another commit, such as a new push or a force-push. |
 | `gone` | The branch was deleted. |
-| `local` | The preview runs a snapshot of a local worktree. |
+| `local` | The preview runs, or is deploying, a snapshot of a local worktree. |
 | `unknown` | piqueld couldn't read the repository. |
 
 ## Delete a preview

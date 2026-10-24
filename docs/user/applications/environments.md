@@ -19,8 +19,12 @@ runs to production without building it again.
   application reads its manifest from Git. See
   [deploying on push](deploy-on-push.md).
 - Adding environments needs `apps:write` on the application, deploying or
-  promoting them `apps:deploy`, and deleting them `apps:delete`; see
-  [permissions](../accounts/authorization.md#grants).
+  promoting them `apps:deploy`, and deleting them `apps:delete`. Creating the
+  application in [Set up staging and production](#set-up-staging-and-production)
+  needs `apps:create`; see [permissions](../accounts/authorization.md#grants).
+- In that section, staging is private: it needs piqueld to serve
+  [private routes](../guides/ingress.md#public-and-private-routes), and you
+  test it from a device on your tailnet.
 
 ## Add an environment
 
@@ -334,7 +338,7 @@ piquelctl app delete notes
 
 ### Promote staging to production
 
-1. Test staging.
+1. Test staging, from a device on your tailnet.
 
 2. See what promoting would change:
 

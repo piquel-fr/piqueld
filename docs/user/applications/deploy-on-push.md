@@ -13,8 +13,9 @@ deploy every push to a branch.
   [signed it in](../getting-started/first-account.md#sign-piquelctl-in).
 - The host can read the repository. For a private one, give the daemon's user
   [an SSH key](git-builds.md#build-from-a-private-repository).
-- Turning on deploying on push needs both `apps:write` and `apps:deploy` on
-  the application; see [permissions](../accounts/authorization.md#grants).
+- Creating the application needs `apps:create`. Turning on deploying on push
+  needs both `apps:write` and `apps:deploy` on the application; see
+  [permissions](../accounts/authorization.md#grants).
 - To deploy on push with a GitHub webhook, GitHub must reach the daemon. It
   needs [HTTP ingress with a webhook hostname](../guides/ingress.md#push-webhooks)
   whose DNS is public, and you need to be able to change the GitHub
@@ -71,18 +72,18 @@ deploy every push to a branch.
    branch = "main"
    ```
 
-3. Create the application from it:
+3. Create the application from it.
 
-   ```console
-   piquelctl app apply --file notes.toml
-   ```
-
-   > Apply this file only once. Applying it again replaces the saved manifest
-   > with one that has no services, and turns
+   > **Warning:** apply this file only to create `notes`. Applying it again
+   > replaces the saved manifest with one that has no services, and turns
    > [deploy on push](#deploy-every-push) off. The next deployment of `main`
    > then removes every service. Change the connection with
    > `piquelctl app repository url`, `path` or `sync`, or on the **Source**
    > tab.
+
+   ```console
+   piquelctl app apply --file notes.toml
+   ```
 
 4. Deploy it:
 
@@ -342,6 +343,12 @@ shows each delivery and piqueld's response: `204` when it was accepted.
   you used it.
 - **`piquelctl app rename` fails with `repository_managed`.** The name must
   match the repository's manifest. Disconnect the application, rename it,
-  and change `metadata.name` in the repository. Then connect it again with
-  `--sync`, reset each environment's branch with `piquelctl env branch`, and
+  and change `metadata.name` in the repository. Then connect it again, with
+  the deploy-on-push mode it had:
+
+  ```console
+  piquelctl app repository connect <new-name> https://github.com/example/notes.git infra/piqueld.toml --sync poll
+  ```
+
+  Finally, reset each environment's branch with `piquelctl env branch`, and
   deploy each one.
