@@ -20,6 +20,8 @@ shared by the environments their access lists allow; generated secret values
 and the deployed snapshot belong to each environment. Values that differ between environments, such as hostnames or replica
 counts, come from [variables](#variables). Which environments exist, and
 where each deploys from, can be [declared](#declared-environments) too.
+[Manifest settings](manifest-settings.md) lists every setting, with its type
+and default.
 
 ```toml
 api_version = "piqueld.dev/v1alpha1"
