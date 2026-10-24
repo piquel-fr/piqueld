@@ -88,13 +88,14 @@ pub(crate) enum EnvCommand {
     ///
     /// Each route gets the stricter of its own visibility and this cap. The
     /// cap is saved in the environment's `[spec.environments.<name>]` block.
-    /// When the manifest has no such blocks yet, it adds one for every
-    /// environment, which declares them all.
+    /// `private` adds the block when the manifest has none for the
+    /// environment; `public`, which is no cap, only changes an existing one.
     Visibility(VisibilityArgs),
     /// Rename an environment without redeploying it.
     ///
-    /// The command fails while the manifest the environment deploys has a
-    /// `[spec.environments.<name>]` block for the old or the new name.
+    /// The command fails while the manifest the environment deploys, or the
+    /// application's saved manifest, has a `[spec.environments.<name>]`
+    /// block for the old or the new name.
     Rename(RenameArgs),
     /// Delete an environment, keeping its named volumes.
     ///

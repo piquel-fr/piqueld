@@ -22,6 +22,11 @@ const GLOBAL: &str = "Global options";
 /// ```text
 /// one_of!(Preset::ALL, Preset::parse)  →  `--preset <PRESET>  [possible values: read-only, …]`
 /// ```
+//
+// Clap's `ValueEnum` would do this, but the orphan rule forbids implementing
+// it here for `piqueld-core` types. Values go through their string form
+// instead: clap only accepts the listed strings, each the `as_str` of a
+// value, so `$parse` cannot fail on them.
 macro_rules! one_of {
     ($values:expr, $parse:path $(, $help:expr)?) => {
         clap::builder::TypedValueParser::map(
@@ -190,7 +195,9 @@ pub(crate) enum Command {
     /// `PIQUELD_CREDENTIALS_FILE` names.
     ///
     /// Grant options limit what the login may do; without them, it has all your
-    /// account's access. Here `--app` takes application IDs, not names.
+    /// account's access. Here `--app` takes application IDs, not names, which
+    /// cannot be looked up before signing in.
+    #[command(mut_arg("applications", |arg| arg.value_name("APPLICATION_ID")))]
     Login {
         #[command(flatten)]
         limit: crate::accounts::GrantArgs,

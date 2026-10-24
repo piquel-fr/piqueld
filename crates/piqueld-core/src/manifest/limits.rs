@@ -28,7 +28,8 @@ pub struct PreviewLimits {
     #[schema(minimum = 1, maximum = 1_048_576)]
     pub default_cpu_millis: u32,
     /// Memory limit, in bytes, of preview services that set none.
-    #[schema(minimum = 1)]
+    // `i64::MAX`, which `validate` enforces; the attribute takes literals only.
+    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_i64)]
     pub default_memory_bytes: u64,
     /// Most replicas a preview service runs; manifests asking for more are
     /// capped with a warning.

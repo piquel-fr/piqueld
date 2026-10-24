@@ -4,7 +4,7 @@
   "definitions": {
     "AcmeConfig": {
       "additionalProperties": false,
-      "description": "The certificate authority (CA) piqueld orders\nDNS-01 certificates from, for hostnames a public CA cannot reach over\nHTTP, such as private routes'. The gateway obtains other certificates\nitself.",
+      "description": "The certificate authority (CA) piqueld orders DNS-01 certificates from,\nfor hostnames a public CA cannot reach over HTTP, such as private\nroutes'. The gateway obtains other certificates itself.",
       "properties": {
         "directory": {
           "default": "https://acme-v02.api.letsencrypt.org/directory",
@@ -38,7 +38,7 @@
         },
         "public_url": {
           "default": null,
-          "description": "The website's canonical origin, such as `https://piqueld.example.com`.\nPasskeys only work on this origin, and API requests that send an\n`Origin` header must match it. It must be HTTPS, except\n`http://localhost` for development. When unset, it is\n`https://` followed by `ingress.private.dashboard_hostname` if that is\nset, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is\nset, otherwise `http://localhost:7845`.",
+          "description": "The website's canonical origin, such as `https://piqueld.example.com`.\nPasskeys only work on this origin, and API mutations and WebSocket\nupgrades that send an `Origin` header must match it. It must be HTTPS,\nexcept `http://localhost` for development. When unset, it is\n`https://` followed by `ingress.private.dashboard_hostname` if that is\nset, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is\nset, otherwise `http://localhost:7845`.",
           "type": [
             "string",
             "null"
@@ -49,7 +49,7 @@
     },
     "BuildHistoryConfig": {
       "additionalProperties": false,
-      "description": "How much output of each build is kept, and for how long. Builds themselves are listed until their application is\ndeleted.",
+      "description": "How much output of each build is kept, and for how long. Builds\nthemselves are listed until their environment is deleted.",
       "properties": {
         "log_max_bytes": {
           "default": 4194304,
@@ -76,7 +76,7 @@
       "properties": {
         "max_bytes": {
           "default": 4294967296,
-          "description": "The most bytes all checkouts, history and working tree, may take at\nonce. A checkout waits until it fits beside the others,\nand one larger than this, or a local snapshot that would be, is\nrefused.",
+          "description": "The most bytes all checkouts, history and working tree, may take at\nonce. A checkout waits until it fits beside the others, and one larger\nthan this, or a local snapshot that would be, is refused.",
           "format": "int64",
           "minimum": 1,
           "type": "integer"
@@ -98,12 +98,12 @@
       "type": "object"
     },
     "CredentialFile": {
-      "description": "The path of a file holding a secret, such as an API token. The daemon\nreads it once at startup, so restart it after changing the file.\nSurrounding whitespace, such as a trailing newline, is removed, and the\nfile must be a non-empty regular file; symlinks to one are followed.\nA relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's\n`LoadCredential=` puts credentials, and may not contain `.` or `..`.\nErrors and the settings shown by the dashboard name the file, never its\ncontents.",
+      "description": "The path of a file holding a secret, such as an API token. The daemon\nreads it once at startup, so restart it after changing the file.\nSurrounding whitespace, such as a trailing newline, is removed, and the\nfile must be a non-empty regular file; symlinks to one are followed.\n`tailscale.auth_key_file` is the exception: Tailscale reads it instead.\nA relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's\n`LoadCredential=` puts credentials, and may not contain `.` or `..`.\nErrors and the settings shown by the dashboard name the file, never its\ncontents.",
       "type": "string"
     },
     "DnsConfig": {
       "additionalProperties": false,
-      "description": "DNS provider accounts. piqueld uses them to obtain\nDNS-01 certificates and, where `manage_records` is set, to maintain\nroutes' DNS records. It discovers each account's zones through the\nprovider's API at startup and hourly; a hostname belongs to the provider\nwith the longest matching zone.",
+      "description": "DNS provider accounts. piqueld uses them to obtain DNS-01 certificates\nand, where `manage_records` is set, to maintain routes' DNS records. It\ndiscovers each account's zones through the provider's API at startup and\nhourly; a hostname belongs to the provider with the longest matching\nzone.",
       "properties": {
         "providers": {
           "default": [],
@@ -209,7 +209,7 @@
     },
     "ImagesConfig": {
       "additionalProperties": false,
-      "description": "Cleanup of the images this installation builds.\nCleanup keeps what every environment and preview runs or is deploying,\nand removes the rest. It never removes pulled images, images built by\nhand, or images other installations built on the same Docker Engine.",
+      "description": "Cleanup of the images this installation builds. Cleanup keeps what every\nenvironment and preview runs or is deploying, and removes the rest. It\nnever removes pulled images, images built by hand, or images other\ninstallations built on the same Docker Engine.",
       "properties": {
         "cleanup_interval_seconds": {
           "default": 3600,
@@ -265,7 +265,7 @@
             },
             {
               "$ref": "#/definitions/Hostname",
-              "description": "A public hostname that serves GitHub push webhooks, and nothing else,\nfor applications whose repository syncs with `webhook`. No application\nmay route it or its subdomains."
+              "description": "A public hostname that serves GitHub push webhooks, and nothing else,\nfor applications whose repository syncs with `webhook`, while\n`ingress.enabled` is set. No application may route it or its\nsubdomains."
             }
           ]
         }
@@ -273,7 +273,7 @@
       "type": "object"
     },
     "ListenMode": {
-      "description": "Where the API and dashboard listen over TCP:\n\n- `off`: none, so only the Unix socket serves the API.\n- `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.\n- `tailscale`: the host's Tailscale addresses, read from its `tailscale`\n  at startup. If Tailscale isn't running then, piqueld logs a warning and\n  only tries again when it restarts.\n- `both`: loopback and Tailscale addresses.",
+      "description": "Where the API and dashboard listen over TCP.",
       "enum": [
         "off",
         "localhost",
@@ -283,7 +283,7 @@
       "type": "string"
     },
     "Ovh": {
-      "description": "An OVH account. The consumer key needs `GET` on\n`/domain/zone` and `/auth/time`, and `POST` and `DELETE` on\n`/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on\n`/domain/zone/*`.",
+      "description": "An OVH account. The consumer key needs `GET` on `/domain/zone`, and\n`POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also\n`GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server time\nfrom `/auth/time`, which needs no permission.",
       "properties": {
         "application_key_file": {
           "$ref": "#/definitions/CredentialFile",
@@ -299,7 +299,7 @@
         },
         "endpoint": {
           "$ref": "#/definitions/OvhEndpoint",
-          "description": "The API region of the account."
+          "description": "The API region of the account: `ovh-eu` (Europe), `ovh-ca` (Canada)\nor `ovh-us` (United States)."
         }
       },
       "required": [
@@ -311,7 +311,7 @@
       "type": "object"
     },
     "OvhEndpoint": {
-      "description": "An OVH API region: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us`\n(United States).",
+      "description": "An OVH API region.",
       "enum": [
         "ovh-eu",
         "ovh-ca",
@@ -335,6 +335,7 @@
           "default": 536870912,
           "description": "Memory limit, in bytes, of preview services that set none.",
           "format": "int64",
+          "maximum": 9223372036854775807,
           "minimum": 1,
           "type": "integer"
         },
@@ -365,7 +366,7 @@
     },
     "PrivateIngressConfig": {
       "additionalProperties": false,
-      "description": "The apps tailnet node: a second tailnet node that piqueld runs as a container beside the gateway to serve private\nroutes to the tailnet. It is separate from the daemon's own node\n(`[tailscale]`), so it can have its own ACLs and tags.",
+      "description": "The apps tailnet node: a second tailnet node, a Tailscale container\nbeside the gateway, that carries private routes' traffic to the\ngateway's private listener. It is separate from the daemon's own node\n(`[tailscale]`), so it can have its own ACLs and tags.",
       "properties": {
         "auth_key_file": {
           "default": null,
@@ -398,7 +399,7 @@
         },
         "hostname": {
           "default": "piqueld-apps",
-          "description": "The apps node's name, a single DNS label, which becomes\n`<hostname>.<tailnet>.ts.net`. It must differ from\n`tailscale.hostname` while both nodes run.",
+          "description": "The apps node's name, a single DNS label, which becomes\n`<hostname>.<tailnet>.ts.net`. It must differ from\n`tailscale.hostname` while both are enabled.",
           "type": "string"
         }
       },
@@ -410,7 +411,7 @@
       "properties": {
         "convergence_timeout_seconds": {
           "default": 120,
-          "description": "Seconds a deployment may wait without any service converging. It\nrestarts each time a service converges, so each link of\na startup dependency chain gets the full timeout.",
+          "description": "Seconds a deployment may wait without any service converging. It\nrestarts each time a service converges, so each link of a startup\ndependency chain gets the full timeout.",
           "format": "int64",
           "maximum": 86400,
           "minimum": 1,
@@ -418,7 +419,7 @@
         },
         "prepare_timeout_seconds": {
           "default": 300,
-          "description": "Seconds a deployment may take to prepare: fetching its manifest, resolving images and building them, including the time\nspent waiting for a build slot.",
+          "description": "Seconds a deployment may take to prepare: fetching its manifest,\nresolving images and building them, including the time spent waiting\nfor a build slot.",
           "format": "int64",
           "maximum": 86400,
           "minimum": 1,
@@ -448,7 +449,7 @@
         },
         "daemon_event_days": {
           "default": 90,
-          "description": "Days daemon events, about shared infrastructure, are kept; `0` keeps\nthem forever.",
+          "description": "Days events not tied to an application, such as those about shared\ninfrastructure, are kept; `0` keeps them forever.",
           "format": "int64",
           "minimum": 0,
           "type": "integer"
@@ -462,7 +463,7 @@
         },
         "finished_operation_days": {
           "default": 10,
-          "description": "Days finished operations are kept; `0` keeps them forever. Older ones\nare removed during reconciliation.",
+          "description": "Days finished operations are kept; `0` keeps them forever. Older ones\nare removed during reconciliation, except each environment's latest\noperation and those in its deployment history or with job cleanup\npending.",
           "format": "int64",
           "minimum": 0,
           "type": "integer"
@@ -472,7 +473,7 @@
     },
     "ServerConfig": {
       "additionalProperties": false,
-      "description": "Where the daemon keeps its state and serves its API. The Unix socket `<runtime_dir>/piqueld.sock` always serves the API;\n`listen_mode` adds TCP listeners, which also serve the dashboard.",
+      "description": "Where the daemon keeps its state and serves its API. The Unix socket\n`<runtime_dir>/piqueld.sock` always serves the API; `listen_mode` adds\nTCP listeners, which also serve the dashboard.",
       "properties": {
         "allowed_hosts": {
           "default": [],
@@ -492,7 +493,7 @@
           "oneOf": [
             {
               "$ref": "#/definitions/ListenMode",
-              "description": "The TCP addresses that serve the API and dashboard over plain HTTP,\nbesides the Unix socket. Every request must still authenticate."
+              "description": "The TCP addresses that serve the API and dashboard over plain HTTP,\nbesides the Unix socket. Every request must still authenticate.\n\n- `off`: none, so only the Unix socket serves the API.\n- `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.\n- `tailscale`: the host's Tailscale addresses, read from its\n  `tailscale` at startup. If Tailscale isn't running then, piqueld\n  logs a warning and only tries again when piqueld restarts.\n- `both`: loopback and Tailscale addresses."
             }
           ]
         },
@@ -506,7 +507,7 @@
         },
         "runtime_dir": {
           "default": "/run/piqueld",
-          "description": "The absolute path of the directory holding the Unix API socket,\n`piqueld.sock`. It must already exist, owned by the daemon's user,\nwith mode `0750` for group access or `0700`. It must differ from\n`data_dir`.",
+          "description": "The absolute path of the directory holding the Unix API socket,\n`piqueld.sock`. It must already exist, owned by the daemon's user and\nwith full access for it. Its group may read or traverse it, as with\nmode `0750`, `0740` or `0710`, only when it is the daemon's effective\ngroup; otherwise use `0700`. Group write and any access by others are\nrefused. Every directory above it must be owned by root or the\ndaemon's user and writable only by its owner, unless sticky, like\n`/tmp`. It must differ from `data_dir`.",
           "type": "string"
         }
       },
@@ -538,13 +539,13 @@
             },
             {
               "$ref": "#/definitions/CredentialFile",
-              "description": "A Tailscale auth key for the node's first login. Without one, the\ndaemon logs a login URL and waits until the node is approved. Later\nstarts reuse the node's state in the data directory. piqueld passes\nthe file to Tailscale without reading it, so it only has to exist for\nthe first login. Not allowed with `socket`."
+              "description": "A Tailscale auth key for the node's first login. Without one, the\ndaemon logs a login URL and waits until the node is approved. Later\nstarts reuse the node's state in the data directory. piqueld passes\nthe file to Tailscale on every start without reading it, so it must\nexist at every start; its key is only used for the first login. Not\nallowed with `socket`."
             }
           ]
         },
         "enabled": {
           "default": false,
-          "description": "Join the tailnet as a node and serve the website on its `https_port`.\npiqueld starts its own `tailscaled` unless `socket` is set, so\n`tailscaled` and `tailscale` must be on `PATH`.",
+          "description": "Join the tailnet as a node and serve the website on its `https_port`.\nThe `tailscale` CLI must be on `PATH`, and so must `tailscaled`\nunless `socket` is set, since piqueld otherwise starts its own.",
           "type": "boolean"
         },
         "hostname": {
@@ -605,7 +606,7 @@
     },
     "TunnelConfig": {
       "additionalProperties": false,
-      "description": "A Cloudflare Tunnel that serves public routes instead of the host's ports 80 and 443, which are then closed.\nEach public hostname needs a proxied CNAME record to\n`<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in\nplaintext.",
+      "description": "A Cloudflare Tunnel that serves public routes instead of the host's ports\n80 and 443, which are then closed. Each public hostname needs a proxied\nCNAME record to `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees\npublic traffic in plaintext.",
       "properties": {
         "credentials_file": {
           "default": null,

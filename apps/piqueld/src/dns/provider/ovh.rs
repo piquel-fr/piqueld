@@ -14,8 +14,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 
-/// An OVH API region: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us`
-/// (United States).
+/// An OVH API region.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OvhEndpoint {
@@ -74,16 +73,17 @@ pub struct Ovh {
     api: String,
 }
 
-/// An OVH account. The consumer key needs `GET` on
-/// `/domain/zone` and `/auth/time`, and `POST` and `DELETE` on
-/// `/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on
-/// `/domain/zone/*`.
+/// An OVH account. The consumer key needs `GET` on `/domain/zone`, and
+/// `POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also
+/// `GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server time
+/// from `/auth/time`, which needs no permission.
 //
 // The TOML form of [`Ovh`], before its credential files are read.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct RawOvh {
-    /// The API region of the account.
+    /// The API region of the account: `ovh-eu` (Europe), `ovh-ca` (Canada)
+    /// or `ovh-us` (United States).
     endpoint: OvhEndpoint,
     /// The application key, which identifies the application.
     application_key_file: CredentialFile,

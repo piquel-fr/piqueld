@@ -67,60 +67,7 @@ users. Both final directories must grant their owner read, write, and execute
 access. Existing directory permissions are never changed.
 
 For the development example, run `mkdir -p -m 0700 /tmp/piqueld-dev-run` first;
-`just dev` handles this automatically. The production defaults are:
-
-| Setting | Default |
-| --- | --- |
-| `server.data_dir` | `/var/lib/piqueld` |
-| `server.runtime_dir` | `/run/piqueld` (must already exist) |
-| `server.listen_mode` | `"off"` |
-| `server.port` | `7845` |
-| `server.allowed_hosts` | `[]` (additional trusted DNS hostnames) |
-| derived socket path | `<runtime_dir>/piqueld.sock` |
-| derived database path | `<data_dir>/piqueld.db` |
-| `auth.public_url` | derived; see [authentication origin](#authentication-origin) |
-| `auth.max_token_days` | none (any lifetime; at least `1` when set) |
-| `tailscale.enabled` | `false` |
-| `tailscale.hostname` | `"piqueld"` |
-| `tailscale.auth_key_file` | none |
-| `tailscale.socket` | none (piqueld starts its own `tailscaled`) |
-| `tailscale.https_port` | `443` |
-| `docker.socket` | `/var/run/docker.sock` |
-| `docker.auto_initialize_swarm` | `true` |
-| `ingress.enabled` | `false` (restart required) |
-| `ingress.public_addresses` | `[]` (direct public routes' records stay manual) |
-| `ingress.acme.directory` | `https://acme-v02.api.letsencrypt.org/directory` |
-| `ingress.acme.email` | none |
-| `ingress.private.enabled` | `false` (restart required) |
-| `ingress.private.hostname` | `"piqueld-apps"` |
-| `ingress.private.auth_key_file` | none |
-| `ingress.private.dashboard_hostname` | none (restart required) |
-| `ingress.tunnel.enabled` | `false` (restart required) |
-| `ingress.tunnel.credentials_file` | none; required while enabled |
-| `ingress.webhook_hostname` | none (restart required) |
-| `dns.providers` | `[]` |
-| `dns.providers[].manage_records` | `false` |
-| `reconciliation.scan_interval_seconds` | `60` |
-| `reconciliation.prepare_timeout_seconds` | `300` |
-| `reconciliation.convergence_timeout_seconds` | `120` |
-| `retention.event_days` | `90` (`0` disables application event pruning) |
-| `retention.daemon_event_days` | `90` (`0` disables daemon event pruning) |
-| `retention.audit_days` | `365` (`0` disables audit trail pruning) |
-| `telemetry.endpoint` | none ([telemetry export](../guides/observability.md#telemetry-export) off) |
-| `telemetry.headers_file` | none |
-| `telemetry.containers` | `true` ([container logs and resource usage](../guides/observability.md#container-telemetry) exported with the daemon's) |
-| `retention.finished_operation_days` | `10` (`0` disables pruning; terminal operations older than the cutoff are pruned during each reconciliation cycle) |
-| `build_history.log_max_bytes` | `4194304` (4 MiB; `1..=67108864`) |
-| `build_history.log_retention_days` | `30` (`1..=3650`) |
-| `previews.max_per_application` | `10` |
-| `previews.max_total` | `30` |
-| `previews.default_cpu_millis` | `500` |
-| `previews.default_memory_bytes` | `536870912` (512 MiB) |
-| `previews.max_replicas` | `1` |
-| `snapshots.max_upload_bytes` | `268435456` (256 MiB) |
-| `checkouts.max_bytes` | `4294967296` (4 GiB) |
-| `images.keep_deployments` | `3` (successful deployments per environment whose built images are kept) |
-| `images.cleanup_interval_seconds` | `3600` (`1..=86400`; cleanup also runs after each operation) |
+`just dev` handles this automatically.
 
 Reconciliation intervals and timeouts are bounded to `1..=86400` seconds.
 The convergence timeout bounds how long a deployment waits without progress:

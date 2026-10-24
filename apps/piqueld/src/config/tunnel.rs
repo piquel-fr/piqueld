@@ -78,10 +78,10 @@ impl TunnelCredentials {
     }
 }
 
-/// A Cloudflare Tunnel that serves public routes instead of the host's ports 80 and 443, which are then closed.
-/// Each public hostname needs a proxied CNAME record to
-/// `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in
-/// plaintext.
+/// A Cloudflare Tunnel that serves public routes instead of the host's ports
+/// 80 and 443, which are then closed. Each public hostname needs a proxied
+/// CNAME record to `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees
+/// public traffic in plaintext.
 //
 // The table as written.
 #[derive(Default, Deserialize, utoipa::ToSchema)]

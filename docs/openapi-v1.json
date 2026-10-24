@@ -9232,6 +9232,7 @@
             "default": 536870912,
             "description": "Memory limit, in bytes, of preview services that set none.",
             "format": "int64",
+            "maximum": 9223372036854775807,
             "minimum": 1,
             "type": "integer"
           },

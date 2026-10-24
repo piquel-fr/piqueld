@@ -865,9 +865,10 @@ pub(crate) struct SetJobArgs {
     /// Remove the job's own environment variables.
     #[arg(long, conflicts_with = "environment")]
     clear_env: bool,
-    /// Secret for the job only, mounted at `TARGET` under `/run/secrets` in
-    /// addition to its service's. Repeat it to mount several. They replace
-    /// the job's own secrets, which it keeps when you pass none.
+    /// Secret for the job only, in addition to its service's, mounted at
+    /// `TARGET`, an absolute path under `/run/secrets/` such as
+    /// `/run/secrets/db`. Repeat it to mount several. They replace the job's
+    /// own secrets, which it keeps when you pass none.
     #[arg(long = "secret", value_name = "NAME=TARGET", value_parser = key_value)]
     secrets: Vec<(String, String)>,
     /// Remove the job's own secrets.

@@ -1,8 +1,8 @@
 //! `docs/user/reference/configuration-settings.md`, rendered from the
 //! daemon configuration's JSON Schema (see `DaemonConfig::json_schema`).
 
-use crate::markdown::Page;
 use anyhow::{Context, Result};
+use piqueld_core::generated::Page;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -18,7 +18,8 @@ daemon uses the file, with examples, see
 [daemon configuration](configuration.md); NixOS sets these settings through
 the [NixOS module](nixos.md).
 
-Every setting is optional unless it says otherwise. Settings ending in
+Every setting is optional unless it says otherwise. The daemon reads the
+file once at startup, so restart it after a change. Settings ending in
 `_file` take the path of a [credential file](#credential-file): a relative
 path resolves against `$CREDENTIALS_DIRECTORY`.";
 
@@ -31,8 +32,16 @@ pub struct ConfigReference<'a> {
     types: BTreeSet<&'a str>,
 }
 
-/// A setting's name, schema, and whether it is required.
-type Property<'a> = (&'a str, &'a Value, bool);
+/// A setting of a table.
+#[derive(Clone, Copy)]
+struct Property<'a> {
+    /// Its name in the table.
+    name: &'a str,
+    /// Its schema.
+    schema: &'a Value,
+    /// Whether the table requires it.
+    required: bool,
+}
 
 /// The settings of a table: its own properties, and for a table selected by
 /// a tag such as `kind`, each variant's.
@@ -96,17 +105,17 @@ impl<'a> ConfigReference<'a> {
         let fields = self.fields(schema)?;
         let variants = self.tag(path, &fields.variants)?;
         let mut tables = Vec::new();
-        for (name, property, required) in Self::sorted(&fields.properties) {
-            let property_path = Self::join(path, name);
-            match self.table_kind(property)? {
+        for property in Self::sorted(&fields.properties) {
+            let property_path = Self::join(path, property.name);
+            match self.table_kind(property.schema)? {
                 Some((table, true)) => tables.push((format!("{property_path}[]"), table)),
                 Some((table, false)) => tables.push((property_path, table)),
-                None => self.setting(&property_path, property, required, None)?,
+                None => self.setting(&property_path, property, None)?,
             }
         }
         for (note, properties) in variants {
-            for (name, property, required) in properties {
-                self.setting(&Self::join(path, name), property, required, Some(&note))?;
+            for property in properties {
+                self.setting(&Self::join(path, property.name), property, Some(&note))?;
             }
         }
         for (path, table) in tables {
@@ -129,12 +138,12 @@ impl<'a> ConfigReference<'a> {
             let (name, value) = fields
                 .properties
                 .iter()
-                .find_map(|(name, property, _)| {
-                    match property["enum"].as_array().map(Vec::as_slice) {
-                        Some([value]) => Some((*name, value.as_str()?)),
+                .find_map(
+                    |property| match property.schema["enum"].as_array().map(Vec::as_slice) {
+                        Some([value]) => Some((property.name, value.as_str()?)),
                         _ => None,
-                    }
-                })
+                    },
+                )
                 .with_context(|| format!("a variant of {path} has no tag"))?;
             tag = Some(name);
             values.push((value, *description, fields));
@@ -159,7 +168,7 @@ impl<'a> ConfigReference<'a> {
             .map(|(value, _, fields)| {
                 let properties = Self::sorted(&fields.properties)
                     .into_iter()
-                    .filter(|(name, ..)| *name != tag)
+                    .filter(|property| property.name != tag)
                     .collect();
                 (format!("Only with `{tag} = \"{value}\"`."), properties)
             })
@@ -167,14 +176,12 @@ impl<'a> ConfigReference<'a> {
     }
 
     /// Adds one setting: its type, default and description. A setting
-    /// taking one of several values is followed by the values' description.
-    fn setting(
-        &mut self,
-        path: &str,
-        schema: &'a Value,
-        required: bool,
-        note: Option<&str>,
-    ) -> Result<()> {
+    /// without a description of its own, taking one of several values, gets
+    /// the values' description.
+    fn setting(&mut self, path: &str, property: Property<'a>, note: Option<&str>) -> Result<()> {
+        let Property {
+            schema, required, ..
+        } = property;
         self.page.heading(3, &format!("`{path}`"));
         let mut summary = format!("Type: {}.", self.type_text(schema)?);
         let default = schema
@@ -192,15 +199,15 @@ impl<'a> ConfigReference<'a> {
             summary.push_str(note);
         }
         self.page.paragraphs(&summary);
-        if let Some(description) =
-            Self::description(schema).or_else(|| Self::description(Self::unwrap(schema)))
-        {
-            self.page.paragraphs(description);
-        }
         let definition = self.resolve(Self::unwrap(schema))?;
-        if definition.get("enum").is_some()
-            && let Some(description) = Self::description(definition)
-        {
+        let description = Self::description(schema)
+            .or_else(|| Self::description(Self::unwrap(schema)))
+            .or_else(|| {
+                definition
+                    .get("enum")
+                    .and_then(|_| Self::description(definition))
+            });
+        if let Some(description) = description {
             self.page.paragraphs(description);
         }
         Ok(())
@@ -209,7 +216,7 @@ impl<'a> ConfigReference<'a> {
     /// `properties` sorted by name, as the schema lists them.
     fn sorted(properties: &[Property<'a>]) -> Vec<Property<'a>> {
         let mut properties = properties.to_vec();
-        properties.sort_by_key(|(name, ..)| *name);
+        properties.sort_by_key(|property| property.name);
         properties
     }
 
@@ -225,8 +232,10 @@ impl<'a> ConfigReference<'a> {
         if let Some(properties) = schema["properties"].as_object() {
             fields
                 .properties
-                .extend(properties.iter().map(|(name, property)| {
-                    (name.as_str(), property, required.contains(&name.as_str()))
+                .extend(properties.iter().map(|(name, schema)| Property {
+                    name,
+                    schema,
+                    required: required.contains(&name.as_str()),
                 }));
         }
         for member in schema["allOf"].as_array().into_iter().flatten() {

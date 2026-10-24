@@ -353,8 +353,10 @@ pub(crate) enum KeyAction {
     /// and the repository webhook secrets, and deletes every notification
     /// destination, since their URLs are encrypted. Running services keep their
     /// Docker secrets. Afterwards, set the stored secrets again and deploy,
-    /// which also generates new values for generated secrets. Needs
-    /// `system:operate`.
+    /// which also generates new values for generated secrets, give each
+    /// repository a new webhook secret with `app repository webhook rotate`,
+    /// and add the notification destinations again with `notification set`.
+    /// Needs `system:operate`.
     RecoverKey {
         /// Skip the confirmation prompt.
         #[arg(long)]
@@ -366,7 +368,7 @@ impl KeyAction {
     /// Discards every stored secret value after printing the scope and confirming.
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let Self::RecoverKey { yes } = self;
-        let message = "Discard stored and generated secret values for ALL applications and environments, and repository webhook secrets, and delete every notification destination? Running services keep their Docker secrets; replacement values and a new deploy are required.";
+        let message = "Discard stored and generated secret values for ALL applications and environments, and repository webhook secrets, and delete every notification destination? Running services keep their Docker secrets. Afterwards, set the secrets again and deploy, rotate repository webhook secrets with `app repository webhook rotate`, and add destinations again with `notification set`.";
         // Print scope even with --yes; the confirmation skips its prompt then.
         console.warning(message)?;
         console.confirm(*yes, message).await?;

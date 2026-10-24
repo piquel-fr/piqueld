@@ -22,9 +22,10 @@ root, configures it.
   second from the daemon's configuration types in `apps/piqueld/src/config`
   (through the configuration schema). To change them, change the `///` doc
   comments, which are also `piquelctl --help` and the schema's descriptions,
-  then run `just generate`. Their layout and introductions are in
-  `apps/piqueld/src/bin/generate_openapi`. `just openapi-check`, which CI
-  runs, fails when a generated file is stale.
+  then run `just generate`. The command reference's layout and
+  introduction are in `apps/piquelctl/examples/cli_reference.rs`, the
+  configuration reference's in `apps/piqueld/src/bin/generate_openapi`.
+  `just openapi-check`, which CI runs, fails when a generated file is stale.
 
 Images go in `docs/images/`; see [screenshots](#screenshots).
 
