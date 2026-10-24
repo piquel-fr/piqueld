@@ -178,15 +178,42 @@ impl Page {
 
     /// Turns doc-comment or help text into Markdown: lines of a paragraph
     /// are joined, except list items, and a `<` outside code spans is
-    /// escaped so it doesn't open an HTML tag.
+    /// escaped so it doesn't open an HTML tag. Fenced code blocks stay as
+    /// they are.
     ///
     /// ```text
     /// "Becomes `<host>.ts.net`, see\n<host>." -> "Becomes `<host>.ts.net`, see \<host>."
     /// ```
     #[must_use]
     pub fn prose(text: &str) -> String {
+        let mut blocks = Vec::new();
+        let mut prose = Vec::new();
+        let mut lines = text.trim().lines();
+        while let Some(line) = lines.next() {
+            if !line.trim_start().starts_with("```") {
+                prose.push(line);
+                continue;
+            }
+            blocks.push(Self::paragraph(&prose));
+            prose.clear();
+            let mut code = vec![line];
+            for line in lines.by_ref() {
+                code.push(line);
+                if line.trim_start().starts_with("```") {
+                    break;
+                }
+            }
+            blocks.push(code.join("\n"));
+        }
+        blocks.push(Self::paragraph(&prose));
+        blocks.retain(|block| !block.is_empty());
+        blocks.join("\n\n")
+    }
+
+    /// [`Self::prose`] for `lines` without code blocks.
+    fn paragraph(lines: &[&str]) -> String {
         let mut joined = String::new();
-        for line in text.trim().lines().map(str::trim) {
+        for line in lines.iter().map(|line| line.trim()) {
             if !joined.is_empty() && !joined.ends_with('\n') {
                 joined.push(if line.is_empty() || line.starts_with("- ") {
                     '\n'
@@ -200,6 +227,7 @@ impl Page {
             joined.push_str(line);
         }
         joined
+            .trim()
             .split('`')
             .enumerate()
             .map(|(index, part)| {
@@ -211,5 +239,19 @@ impl Page {
             })
             .collect::<Vec<_>>()
             .join("`")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Page;
+
+    #[test]
+    fn prose_keeps_code_blocks_as_they_are() {
+        let text = "Text that may\nreference <name>.\n\n```text\n\"${{ a }}\"  -> <a>\n```\nAfter.";
+        assert_eq!(
+            Page::prose(text),
+            "Text that may reference \\<name>.\n\n```text\n\"${{ a }}\"  -> <a>\n```\n\nAfter."
+        );
     }
 }

@@ -8,17 +8,19 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use utoipa::ToSchema;
 
-/// Strict public application manifest request and export shape.
+/// An application: what it runs, and how its environments and previews
+/// deploy it.
+// Strict public request and export shape: unknown fields are errors.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationManifest {
-    /// API version string.
+    /// Version of the manifest format.
     pub api_version: String,
-    /// Resource kind string.
+    /// Kind of resource the manifest describes.
     pub kind: String,
-    /// User-provided metadata.
+    /// The application's identity.
     pub metadata: Metadata,
-    /// Desired application resources.
+    /// What the application runs, and how it deploys.
     pub spec: ApplicationSpec,
 }
 
@@ -35,48 +37,59 @@ impl ApplicationManifest {
     }
 }
 
-/// User-provided application metadata.
+/// The application's identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
-    /// User-facing application name.
+    /// Name of the application. A manifest with another name applies to
+    /// another application, so rename one with `piquelctl app rename`.
     pub name: String,
 }
 
-/// User-provided application resource lists.
+/// What the application runs, and how its environments and previews deploy
+/// it.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ApplicationSpec {
-    /// Optional repository that supplies this application's manifest on Deploy.
+    /// The Git repository each deployment reads the manifest from. Without
+    /// it, deployments use the saved manifest. A manifest read from the
+    /// repository can't change it: its own `spec.manifest` is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<RepositoryManifest>,
-    /// Declared services.
+    /// The application's services, at most 64.
     pub services: Vec<Service>,
-    /// Declared named volumes.
+    /// Named volumes the services mount, at most 64.
     pub volumes: Vec<Volume>,
-    /// HTTP routes by hostname, activated on deployment.
+    /// HTTP routes to the services, at most 64. They take effect when an
+    /// environment deploys them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
-    /// Secrets whose values piqueld generates once per environment.
+    /// Secrets piqueld generates a value for in each environment, at most 64.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretDeclaration>,
-    /// One-shot jobs, run in declared order at their deployment point.
+    /// Containers that run to completion during each deployment, such as
+    /// database migrations, at most 16. They run in the order listed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
-    /// Services other applications may reach over private links.
+    /// Services of this application that other applications may reach, at
+    /// most 64.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<super::links::Export>,
-    /// Services of other applications this application reaches.
+    /// Services of other applications this application reaches, at most 64.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<super::links::Import>,
-    /// Default values of variables referenced as `${{ vars.<name> }}`, used by
-    /// environments that set no value of their own.
+    /// Default value of the variable `<variable>`, referenced as
+    /// `${{ vars.<variable> }}`. An environment's or the previews' own value
+    /// replaces it. Variable names start with a letter or `_`, use letters,
+    /// digits, `_` or `-`, and are at most 63 bytes. Each table of variables
+    /// holds at most 128.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
-    /// Environments declared by this manifest, keyed by environment name.
+    /// Declares the environment `<environment>` and how it deploys, for at
+    /// most 64 environments.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub environments: BTreeMap<String, EnvironmentConfig>,
-    /// Configuration shared by every preview.
+    /// Settings shared by every preview.
     #[serde(skip_serializing_if = "PreviewConfig::is_default")]
     pub previews: PreviewConfig,
 }
@@ -164,35 +177,40 @@ impl ApplicationSpec {
     }
 }
 
-/// Configuration of one environment, `[spec.environments.<name>]`, which
-/// declares it (see [`super::declaration`]). Without `promote_from`, it builds
-/// its own source: the saved manifest, or a branch of `spec.manifest`'s
-/// repository. A block that sets none of `branch`, `commit`, `promote_from`
-/// and `sync` leaves an existing environment's source as it is.
+/// Declares an environment and where it deploys from. Without
+/// `promote_from`, the environment builds its own manifest: the saved one, or
+/// a branch of the `spec.manifest` repository. A block that sets none of
+/// `branch`, `commit`, `promote_from` and `sync` leaves an existing
+/// environment's source as it is.
+// `super::declaration` converges environments to these blocks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnvironmentConfig {
-    /// Branch of the manifest repository it follows; by default the one
-    /// `spec.manifest` names.
+    /// Branch of the manifest repository the environment deploys. By
+    /// default, the branch `spec.manifest` names. Needs `spec.manifest`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// Full commit it deploys instead of its branch's head.
+    /// Full commit the environment deploys instead of its branch's head.
+    /// Without `branch`, by default the commit `spec.manifest` pins. Needs
+    /// `spec.manifest`, and excludes `sync`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// Environment whose releases it receives, by `piquelctl env promote`,
-    /// instead of building.
+    /// Another environment whose releases this one receives with
+    /// `piquelctl env promote`, instead of building. It excludes `branch`,
+    /// `commit` and `sync`, and can't lead back to this environment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub promote_from: Option<String>,
-    /// Whether pushes to its branch deploy it while the repository syncs
-    /// (`spec.manifest.sync`); off when unset.
+    /// Whether pushes to the environment's branch deploy it while
+    /// `spec.manifest.sync` is on. Off when unset. `true` needs
+    /// `spec.manifest`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync: Option<bool>,
-    /// The strictest visibility this environment's routes get. The default,
-    /// `public`, restricts nothing; `private` keeps every route on the tailnet.
+    /// The strictest visibility the environment's routes get. `public`
+    /// restricts nothing; `private` keeps every route on the tailnet.
     #[serde(skip_serializing_if = "Visibility::is_public")]
     pub visibility: Visibility,
-    /// This environment's values: each overrides the `[spec.variables]` default
-    /// of the same name, or declares a variable without a default.
+    /// The environment's value of the variable `<variable>`. It replaces the
+    /// `[spec.variables]` default, or declares a variable without one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
 }
@@ -223,15 +241,15 @@ impl Default for EnvironmentConfig {
     }
 }
 
-/// Configuration shared by previews, `[spec.previews]`.
+/// Settings shared by every preview.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PreviewConfig {
-    /// The strictest visibility preview routes get; `private` by default, so
-    /// previews publish routes only with an explicit `public`.
+    /// The strictest visibility preview routes get. `private` keeps every
+    /// route on the tailnet; `public` restricts nothing.
     pub visibility: Visibility,
-    /// Values for every preview: each overrides the `[spec.variables]`
-    /// default of the same name, or declares a variable without a default.
+    /// The previews' value of the variable `<variable>`. It replaces the
+    /// `[spec.variables]` default, or declares a variable without one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, Variable>,
 }
@@ -244,8 +262,9 @@ impl PreviewConfig {
     }
 }
 
-/// A declared variable value: a string, integer, or boolean. Strings may
-/// reference system variables, but not other variables.
+/// A variable's value: a string, an integer or a boolean. A string may
+/// reference system variables, such as `${{ env.name }}`, but not other
+/// variables.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum Variable {
@@ -253,7 +272,7 @@ pub enum Variable {
     Boolean(bool),
     /// A signed 64-bit integer.
     Integer(i64),
-    /// Text, which may reference system variables.
+    /// Text of at most 65,536 bytes, which may reference system variables.
     String(Template),
 }
 
@@ -321,64 +340,80 @@ impl std::fmt::Display for Variable {
     }
 }
 
-/// Independently selects the manifest that deployments, manual or on push, use.
+/// The Git repository and file each deployment reads the manifest from.
+// Independent of the services' sources.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryManifest {
-    /// Repository and revision containing the manifest.
+    /// The repository holding the manifest, and the branch environments
+    /// deploy by default.
     pub repository: GitRepository,
-    /// Exact TOML or JSON file path relative to the repository root.
+    /// Path of the TOML or JSON manifest file, relative to the repository
+    /// root.
     pub path: String,
-    /// How environments and previews follow pushes. Like the rest of
-    /// `spec.manifest`, ignored in fetched files.
+    /// Whether pushes to the repository deploy environments and previews.
+    #[schema(default = crate::sync::RepositorySync::default)]
     #[serde(default, skip_serializing_if = "crate::sync::RepositorySync::is_off")]
     pub sync: crate::sync::RepositorySync,
 }
 
-/// User-declared application service.
+/// A service: containers running one image, kept at their replica count.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
-    /// Logical service name.
+    /// Name of the service, unique in the application. The application's
+    /// other services reach it by this name.
     pub name: String,
-    /// Explicit image or build source.
+    /// Where the service's image comes from: a prebuilt image, or a Git
+    /// build.
     pub source: Source,
-    /// Desired replica count.
+    /// Number of containers, from 1 to 100.
     #[serde(default = "default_replicas")]
+    #[schema(default = default_replicas)]
     pub replicas: Typed<u16>,
-    /// Environment variables keyed by name.
+    /// The environment variable `<name>` of the service's containers. Names
+    /// use letters, digits and `_`, don't start with a digit, and are at most
+    /// 255 bytes. Values are at most 65,536 bytes. At most 256 variables;
+    /// `PIQUELD_INGRESS_PROXIES` is reserved.
     #[serde(default)]
     pub environment: BTreeMap<String, Template>,
-    /// Container entrypoint command.
+    /// Command that replaces the image's entrypoint, at most 128 elements of
+    /// 4,096 bytes each. When empty, the image's entrypoint runs.
     #[serde(default)]
     pub command: Vec<Template>,
-    /// Arguments passed to the command.
+    /// Arguments that replace the image's default arguments, at most 128
+    /// elements of 4,096 bytes each.
     #[serde(default)]
     pub arguments: Vec<Template>,
-    /// Persistent volume mounts.
+    /// Volumes mounted into the containers, at most 32.
     #[serde(default)]
     pub mounts: Vec<Mount>,
-    /// Secrets mounted as files.
+    /// Secrets mounted as files, at most 64.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretMount>,
-    /// Read-only files mounted into the containers. Their contents are never
-    /// rendered with variables.
+    /// Read-only files mounted into the containers, at most 32. Their
+    /// contents are never rendered with variables. An application's files
+    /// total at most 2 MiB.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<super::ServiceFile>,
-    /// Optional container health check.
+    /// How Docker checks that a container is healthy. Rollouts and the
+    /// services depending on this one wait until it passes.
     pub healthcheck: Option<HealthCheck>,
-    /// Optional CPU and memory limits.
+    /// CPU and memory limits of each container.
     pub resources: Option<ResourceLimits>,
-    /// Services in this application that must be healthy before this one rolls out.
+    /// Services of this application that must be running and healthy before
+    /// this one rolls out, each listed once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
-    /// Optional rollout order and monitor window.
+    /// How Docker replaces the service's containers on each deployment.
     #[serde(default, skip_serializing_if = "super::Rollout::is_default")]
     pub rollout: super::Rollout,
-    /// Whether the service receives the daemon's telemetry on the socket
-    /// directory mounted at `/run/piqueld/telemetry`, once its environment is
-    /// granted it. At most one service per application.
+    /// Whether the service receives the daemon's traces, metrics and logs,
+    /// on a socket in `/run/piqueld/telemetry`, once its environment is
+    /// granted telemetry. At most one service of an application receives
+    /// telemetry, with one replica.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(default = false)]
     pub receives_telemetry: bool,
 }
 
@@ -387,31 +422,41 @@ fn default_replicas() -> Typed<u16> {
     Typed::Literal(1)
 }
 
-/// A container that runs to completion at a defined point in each deployment.
+/// A container that runs to completion during each deployment, such as a
+/// database migration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
-    /// Logical job name.
+    /// Name of the job, unique in the application.
     pub name: String,
-    /// Service whose prepared image, environment, secrets, and mounts the job reuses.
+    /// Service whose image, environment, secrets, volumes, resource limits
+    /// and network the job reuses. The job also waits for the service's
+    /// `depends_on`.
     pub service: String,
-    /// Command replacing the service's command and arguments.
+    /// Command the job runs, instead of its service's command and arguments.
+    /// It can't be empty.
     pub command: Vec<Template>,
-    /// Environment variables only the job's container gets, added to its
-    /// service's. A name the service also sets is an error.
+    /// The environment variable `<name>` of the job's container only, in
+    /// addition to its service's. A name the service also sets is an error.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, Template>,
-    /// Secrets only the job's container mounts, added to its service's. A
-    /// target the service also mounts is an error.
+    /// Secrets only the job's container mounts, in addition to its service's.
+    /// A target the service already uses is an error.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<SecretMount>,
-    /// Deployment point at which the job runs.
+    /// When the job runs. `before-rollout` runs it after every source is
+    /// prepared, before the services roll out.
     pub run: JobRun,
-    /// Seconds the job may run before the deployment fails.
+    /// Seconds the job may run before the deployment fails, from 1 to 86,400.
     #[serde(default = "default_job_timeout")]
+    #[schema(default = default_job_timeout)]
     pub timeout_seconds: u32,
-    /// How the job may use the service's volumes.
+    /// How the job mounts its service's volumes. `read-only` mounts every
+    /// volume read-only, so the job runs beside the services. `exclusive`
+    /// keeps the writable volumes writable, and stops every service mounting
+    /// them while the job runs.
     #[serde(default, skip_serializing_if = "JobVolumeAccess::is_default")]
+    #[schema(default = JobVolumeAccess::default)]
     pub volume_access: JobVolumeAccess,
 }
 
@@ -470,20 +515,24 @@ fn default_job_timeout() -> u32 {
     Job::DEFAULT_TIMEOUT_SECONDS
 }
 
-/// The exhaustive set of deployable service sources.
+/// Where a service's image comes from.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Source {
     /// Pull a prebuilt image from a registry.
     Image {
-        /// Image reference.
+        /// Image reference, such as `ghcr.io/example/notes:1.4.0`, with an
+        /// optional tag or digest. It can't contain a URL scheme or
+        /// credentials.
         image: Template,
     },
-    /// Build a checked-out Git revision.
+    /// Build the image from a Git repository.
     Git {
-        /// Repository and revision to resolve.
+        /// Repository to build: `"self"` for the manifest's own repository,
+        /// at the commit the manifest was read from, or a table naming
+        /// another one. `"self"` needs `spec.manifest`.
         repository: SourceRepository,
-        /// Explicit build instructions.
+        /// How to build the image.
         build: Build,
     },
 }
@@ -495,7 +544,7 @@ pub enum SourceRepository {
     /// `"self"`: the application's manifest repository, at the exact commit its
     /// manifest was read from, so one deployment builds from one revision.
     Manifest(ManifestRepository),
-    /// An independently resolved repository and revision.
+    /// Another repository, and the revision to build.
     Git(GitRepository),
 }
 
@@ -544,15 +593,17 @@ pub enum ManifestRevision {
     Commit(String),
 }
 
-/// Git checkout configuration. Credentials come from the host's Git configuration.
+/// A Git repository and the revision to check out. Git uses the host's
+/// credentials.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitRepository {
-    /// Git clone URL or local repository path.
+    /// Clone URL or local path of the repository. It can't contain
+    /// credentials.
     pub url: String,
-    /// Branch to fetch when no commit is pinned.
+    /// Branch whose head is checked out when no commit is set.
     pub branch: String,
-    /// Optional full commit hash.
+    /// Full commit hash to check out instead of the branch's head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
 }
@@ -573,22 +624,27 @@ impl GitRepository {
     }
 }
 
-/// Explicit build backend, extensible independently from source selection.
+/// How to build a Git source's image.
+// Build backends are selected independently from the source.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Build {
-    /// Build a local container image using Docker.
+    /// Build the image with Docker Buildx, from a Dockerfile.
     Docker {
-        /// Dockerfile path relative to the repository root.
+        /// Path of the Dockerfile, relative to the repository root.
         dockerfile: Template,
-        /// Build context relative to the repository root.
+        /// Build context directory, relative to the repository root.
         #[serde(default = "default_build_context")]
+        #[schema(default = default_build_context)]
         context: Template,
-        /// Values passed as `--build-arg`. They are recorded in image
-        /// metadata, so sensitive values belong in secrets instead.
+        /// The value of the build argument `<name>`, passed with
+        /// `--build-arg`. Docker records it in the image's metadata, so pass
+        /// sensitive values as secrets instead. Build arguments total at most
+        /// 256 KiB.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         args: BTreeMap<String, Template>,
-        /// Multi-stage build target; the final stage when absent.
+        /// Stage of a multi-stage Dockerfile to build. By default, the final
+        /// stage.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<Template>,
     },
@@ -599,78 +655,98 @@ fn default_build_context() -> Template {
     ".".into()
 }
 
-/// User-declared named volume.
+/// A named volume the services mount. Its data is kept across deployments,
+/// and when the application is deleted.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Volume {
-    /// Logical volume name.
+    /// Name of the volume, unique in the application.
     pub name: String,
 }
 
-/// A persistent volume mount in a service.
+/// A volume mounted into a service's containers.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
-    /// Referenced logical volume name.
+    /// Name of a volume in `spec.volumes`.
     pub volume: String,
-    /// Container target path.
+    /// Absolute path of the mount in the container, unique in the service.
+    /// It can't be `/run/piqueld/probe` or `/run/piqueld/telemetry`, or a
+    /// path inside them.
     pub target: String,
-    /// Whether the mount is read-only.
+    /// Whether the containers mount the volume read-only. A writable mount
+    /// makes rollouts stop the old container before starting its
+    /// replacement.
     #[serde(default)]
+    #[schema(default = false)]
     pub read_only: bool,
 }
 
-/// User-declared container health check.
+/// How Docker checks that a service's containers are healthy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum HealthCheck {
-    /// HTTP health endpoint check.
+    /// Send an HTTP `GET` to a port of the container. A 2xx or 3xx status
+    /// passes. The image needs nothing for it.
     Http {
-        /// Container port to probe.
+        /// Container port to request, from 1 to 65535.
         port: Typed<u16>,
-        /// HTTP path to probe.
+        /// Absolute HTTP path to request.
         #[serde(default = "default_health_path")]
+        #[schema(default = default_health_path)]
         path: Template,
-        /// Probe interval in seconds.
+        /// Seconds between checks, from 1 to 3,600.
         #[serde(default = "default_interval")]
+        #[schema(default = default_interval)]
         interval_seconds: Typed<u32>,
-        /// Probe timeout in seconds.
+        /// Seconds a check may take before it fails, from 1 to the interval.
         #[serde(default = "default_timeout")]
+        #[schema(default = default_timeout)]
         timeout_seconds: Typed<u32>,
-        /// Startup grace in seconds, during which failed probes do not count.
+        /// Seconds after a container starts during which failed checks don't
+        /// count, up to 3,600.
         #[serde(
             default = "default_start_period",
             skip_serializing_if = "is_default_start_period"
         )]
+        #[schema(default = default_start_period)]
         start_period_seconds: Typed<u32>,
-        /// Consecutive failed probes that make the container unhealthy.
+        /// Consecutive failed checks that make a container unhealthy, from 1
+        /// to 100.
         #[serde(
             default = "default_retries",
             skip_serializing_if = "is_default_retries"
         )]
+        #[schema(default = default_retries)]
         retries: Typed<u32>,
     },
-    /// Executable command health check.
+    /// Run a command in the container, without a shell. Exit code 0 passes.
     Command {
-        /// Command and arguments to execute.
+        /// Command and arguments to run. It can't be empty.
         command: Vec<Template>,
-        /// Probe interval in seconds.
+        /// Seconds between checks, from 1 to 3,600.
         #[serde(default = "default_interval")]
+        #[schema(default = default_interval)]
         interval_seconds: Typed<u32>,
-        /// Probe timeout in seconds.
+        /// Seconds a check may take before it fails, from 1 to the interval.
         #[serde(default = "default_timeout")]
+        #[schema(default = default_timeout)]
         timeout_seconds: Typed<u32>,
-        /// Startup grace in seconds, during which failed probes do not count.
+        /// Seconds after a container starts during which failed checks don't
+        /// count, up to 3,600.
         #[serde(
             default = "default_start_period",
             skip_serializing_if = "is_default_start_period"
         )]
+        #[schema(default = default_start_period)]
         start_period_seconds: Typed<u32>,
-        /// Consecutive failed probes that make the container unhealthy.
+        /// Consecutive failed checks that make a container unhealthy, from 1
+        /// to 100.
         #[serde(
             default = "default_retries",
             skip_serializing_if = "is_default_retries"
         )]
+        #[schema(default = default_retries)]
         retries: Typed<u32>,
     },
 }
@@ -762,26 +838,29 @@ fn default_timeout() -> Typed<u32> {
     Typed::Literal(super::ValidatedHealthCheck::DEFAULT_TIMEOUT_SECONDS)
 }
 
-/// Optional CPU and memory limits for a service.
+/// CPU and memory limits of each of a service's containers. Set at least
+/// one.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
-    /// CPU limit in millicores.
+    /// CPU limit in thousandths of a CPU, from 1 to 1,048,576: `500` is half
+    /// a CPU.
     pub cpu_millis: Option<Typed<u32>>,
-    /// Memory limit in bytes.
+    /// Memory limit in bytes, greater than zero.
     pub memory_bytes: Option<Typed<u64>>,
 }
 
-/// A secret exposed only as a container file. The name selects the
-/// environment's generated secret when `spec.secrets` declares it, and the
-/// application's store of manually set secrets otherwise.
+/// A secret mounted as a file. A name `spec.secrets` declares mounts the
+/// environment's generated value; any other name mounts a value from the
+/// application's secret store.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretMount {
-    /// Logical secret name. It may reference variables, so each environment
+    /// Name of the secret. It may reference variables, so each environment
     /// can mount its own stored secret, e.g. `${{ vars.stripe_key }}`.
     pub name: Template,
-    /// Absolute normalized destination under /run/secrets.
+    /// Absolute path of the file under `/run/secrets/`, unique in the
+    /// service.
     pub target: String,
 }
 
@@ -791,27 +870,30 @@ pub struct SecretMount {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretDeclaration {
-    /// Logical secret name; it cannot reference variables.
+    /// Name of the secret, unique in the application. It can't reference
+    /// variables.
     pub name: String,
-    /// How the value is generated.
+    /// How piqueld generates the value.
     pub generate: SecretGenerator,
 }
 
-/// The exhaustive set of secret value generators.
+/// How piqueld generates a secret's value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum SecretGenerator {
     /// Random bytes from the operating system, encoded as text.
     Random {
-        /// Number of random bytes before encoding.
+        /// Number of random bytes before encoding, from 16 to 512.
         bytes: u16,
-        /// Text encoding of the random bytes.
+        /// Text encoding of the bytes: lowercase `hex`, or unpadded
+        /// `base64url`.
         #[serde(default)]
+        #[schema(default = SecretEncoding::default)]
         encoding: SecretEncoding,
     },
-    /// RSA private key in PKCS#8 PEM.
+    /// An RSA private key, in PKCS#8 PEM.
     Rsa {
-        /// Modulus size in bits.
+        /// Size of the key in bits: 2048, 3072 or 4096.
         bits: u16,
     },
 }
@@ -829,31 +911,36 @@ pub enum SecretEncoding {
     Base64url,
 }
 
-/// HTTP route input, validated independently of ingress enablement.
-/// A route sets either `service` and `port`, or `redirect`.
+/// An HTTP route: requests for a hostname go to a service, or get a
+/// redirect. A route sets either `service` and `port`, or `redirect`.
+// Validated independently of whether ingress is enabled.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
-    /// Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`
-    /// matching every name one label below `example.com`.
+    /// Hostname the route serves, such as `notes.example.com`, unique in the
+    /// application. A wildcard such as `*.example.com` serves every name one
+    /// label below `example.com` that no exact route claims.
     pub hostname: Template,
-    /// Stable name, unique within the application, that selects this route in
-    /// every environment and preview, e.g. `piquelctl env url --route web`.
-    /// Declared after `hostname`, so routes stay ordered by hostname.
+    // Declared after `hostname`, so routes stay ordered by hostname.
+    /// Name that selects the route in every environment and preview, e.g.
+    /// `piquelctl env url --route web`. It is unique in the application and
+    /// can't reference variables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Who may connect; `private` (tailnet only) by default. Its environment's
-    /// ceiling can make it stricter, never looser.
+    /// Who may connect: `public` for the internet, or `private` for the
+    /// tailnet only. The environment's or the previews' visibility can make
+    /// it stricter, never looser.
     #[serde(default)]
+    #[schema(default = Visibility::default)]
     pub visibility: Visibility,
-    /// Logical service in this application.
+    /// Service of this application that receives the requests. Needs `port`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
-    /// Internal HTTP backend port.
+    /// Port the service serves HTTP on, from 1 to 65535. Needs `service`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(minimum = 1, maximum = 65_535)]
     pub port: Option<u16>,
-    /// Redirect answered by the gateway instead of a service.
+    /// Redirect the gateway answers with, instead of a service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect: Option<Redirect>,
 }
@@ -892,18 +979,21 @@ impl Route {
     }
 }
 
-/// Redirect route input.
+/// A redirect the gateway answers with.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Redirect {
-    /// Absolute `http` or `https` destination URL.
+    /// Absolute `http` or `https` URL to redirect to, with a lowercase
+    /// hostname and no query or fragment. It can't target a hostname the
+    /// route serves.
     pub to: Template,
-    /// 301, 302, 303, 307, or 308.
+    /// HTTP status of the redirect: 301, 302, 303, 307 or 308.
     #[serde(default = "default_redirect_status")]
-    #[schema(minimum = 301, maximum = 308)]
+    #[schema(minimum = 301, maximum = 308, default = default_redirect_status)]
     pub status: u16,
-    /// Appends the request path and query to `to`.
+    /// Whether to append the request's path and query to `to`.
     #[serde(default = "default_preserve_path")]
+    #[schema(default = default_preserve_path)]
     pub preserve_path: bool,
 }
 

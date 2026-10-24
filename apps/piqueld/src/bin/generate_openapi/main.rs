@@ -1,19 +1,20 @@
 //! Generates or checks the `OpenAPI` specification, its Rust client bindings,
 //! the standalone application manifest and daemon configuration JSON
-//! Schemas, and the documentation's configuration reference. `piquelctl`'s
-//! `cli_reference` example renders the command reference; it depends on the
-//! client this generates, so it runs as a separate step.
+//! Schemas, and the documentation's settings references rendered from those
+//! schemas. `piquelctl`'s `cli_reference` example renders the command
+//! reference; it depends on the client this generates, so it runs as a
+//! separate step.
 
-mod config_reference;
+mod settings_reference;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use config_reference::ConfigReference;
 use piqueld::api::http::openapi_document;
 use piqueld::config::DaemonConfig;
 use piqueld_core::manifest::ApplicationManifest;
 use piqueld_generated::Artifacts;
 use serde::Deserialize;
 use serde_json::Value;
+use settings_reference::SettingsPage;
 use std::{
     collections::BTreeSet,
     fs,
@@ -77,12 +78,11 @@ impl Generator {
         .context("parse Progenitor configuration")?;
         let client = self.generate_client(document.clone(), &config)?;
         let document = format!("{}\n", serde_json::to_string_pretty(&document)?);
-        let manifest_schema = format!(
-            "{}\n",
-            serde_json::to_string_pretty(&ApplicationManifest::json_schema())?
-        );
+        let manifest_schema = ApplicationManifest::json_schema();
+        let manifest_settings = SettingsPage::MANIFEST.render(&manifest_schema)?;
+        let manifest_schema = format!("{}\n", serde_json::to_string_pretty(&manifest_schema)?);
         let config_schema = DaemonConfig::json_schema();
-        let config_reference = ConfigReference::render(&config_schema)?;
+        let config_settings = SettingsPage::CONFIG.render(&config_schema)?;
         let config_schema = format!("{}\n", serde_json::to_string_pretty(&config_schema)?);
 
         self.artifacts.sync([
@@ -90,7 +90,8 @@ impl Generator {
             ("docs/application-manifest.schema.json", manifest_schema),
             ("docs/piqueld-config.schema.json", config_schema),
             ("crates/piqueld-client/src/generated.rs", client),
-            (ConfigReference::PATH, config_reference),
+            (SettingsPage::MANIFEST.path, manifest_settings),
+            (SettingsPage::CONFIG.path, config_settings),
         ])?;
         Ok(())
     }

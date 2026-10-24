@@ -82,7 +82,10 @@ pub(crate) trait Provider {
 pub enum DnsProvider {
     /// A Cloudflare account.
     Cloudflare(Cloudflare),
-    /// An OVH account.
+    /// An OVH account. The consumer key needs `GET` on `/domain/zone`, and
+    /// `POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also
+    /// `GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server
+    /// time from `/auth/time`, which needs no permission.
     Ovh(Ovh),
     /// Pebble's `challtestsrv`, which serves TXT records to a test CA.
     #[cfg(test)]

@@ -12,17 +12,22 @@ use std::str::FromStr;
 use utoipa::ToSchema;
 
 /// A read-only file mounted into a service's containers, from exactly one
-/// source: `path` in the manifest's repository, or inline `content`.
+/// source: `path` in the manifest's repository, or inline `content`. Its
+/// content can't be empty, and is at most 500 KiB.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(try_from = "ServiceFileFields")]
 pub struct ServiceFile {
-    /// Absolute, normalized container path of the file.
+    /// Absolute path of the file in the container, unique among the
+    /// service's mount, secret and file targets. It can't be in
+    /// `/run/secrets` or `/run/piqueld`.
     pub target: String,
     /// Where the file's content comes from.
     #[serde(flatten)]
     pub source: FileSource,
-    /// Octal permissions, `"0444"` by default. The file is owned by root.
+    /// Octal permissions, from `"0000"` to `"0777"`. The file is owned by
+    /// root.
     #[serde(default, skip_serializing_if = "FileMode::is_default")]
+    #[schema(default = FileMode::default)]
     pub mode: FileMode,
 }
 
@@ -30,11 +35,11 @@ pub struct ServiceFile {
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FileSource {
-    /// A file in the manifest's own repository, relative to its root, read at
-    /// the exact commit the manifest was fetched from. Only repository-backed
-    /// applications can use it.
+    /// Path of a UTF-8 text file in the manifest's repository, relative to
+    /// its root, read at the commit the manifest was read from. Only
+    /// repository-backed applications can use it.
     Path(String),
-    /// The content itself.
+    /// The file's content, inline.
     Content(String),
 }
 

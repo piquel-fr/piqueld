@@ -5,15 +5,20 @@ use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// Optional `rollout` block of a service. Omitted fields keep their defaults,
-/// so an empty block is equivalent to no block.
+/// How Docker replaces a service's containers during a deployment, one at a
+/// time. An empty block keeps the defaults.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Rollout {
-    /// Update order; derived from the service's mounts when omitted.
+    /// `stop-first` stops the old container before starting its replacement,
+    /// with a short downtime. `start-first` starts the replacement first, so
+    /// both briefly run side by side. When unset, `stop-first` if the service
+    /// mounts a volume writable or receives telemetry, `start-first`
+    /// otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<Typed<RolloutOrder>>,
-    /// Seconds Docker watches each replacement task for failure; 30 when omitted.
+    /// Seconds Docker watches each new container for failure before it
+    /// replaces the next one, from 1 to 3,600. 30 when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitor_seconds: Option<Typed<u32>>,
 }
@@ -50,7 +55,8 @@ impl From<ValidatedRollout> for Rollout {
 
 string_enum! {
     #[serde]
-    /// Whether Docker stops a task before or after starting its replacement.
+    /// Whether Docker stops the old container before or after starting its
+    /// replacement.
     pub enum RolloutOrder {
         /// Stop the old task first: tasks never overlap, at the cost of a short downtime.
         StopFirst => "stop-first",

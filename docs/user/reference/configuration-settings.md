@@ -11,28 +11,117 @@ daemon uses the file, with examples, see
 [daemon configuration](configuration.md); NixOS sets these settings through
 the [NixOS module](nixos.md).
 
-Every setting is optional unless it says otherwise. The daemon reads the
-file once at startup, so restart it after a change. Settings ending in
-`_file` take the path of a [credential file](#credential-file): a relative
-path resolves against `$CREDENTIALS_DIRECTORY`.
+Each setting is named by its full TOML path, where `[]` stands for each entry
+of an array of tables: `dns.providers[].kind` is the `kind` of each
+`[[dns.providers]]`. Settings ending in `_file` take the path of a
+[credential file](#credential-file): a relative path resolves against
+`$CREDENTIALS_DIRECTORY`.
 
-## `[auth]`
+## Top level
+
+The daemon's configuration file, `/etc/piqueld/config.toml` unless `piqueld --config` selects another. Every setting is optional unless it says otherwise. The daemon reads the file once at startup, so restart it to apply a change.
+
+### `auth`
+
+Type: table. Optional.
+
+The website's origin and API token lifetimes.
+
+### `build_history`
+
+Type: table. Optional.
+
+How much build output is kept, and for how long.
+
+### `checkouts`
+
+Type: table. Optional.
+
+The disk space Git checkouts may take.
+
+### `dns`
+
+Type: table. Optional.
+
+DNS provider accounts, for certificates and routes' DNS records.
+
+### `docker`
+
+Type: table. Optional.
+
+The Docker Engine piqueld manages.
+
+### `images`
+
+Type: table. Optional.
+
+Cleanup of the images this installation builds.
+
+### `ingress`
+
+Type: table. Optional.
+
+The managed HTTP gateway that serves applications' routes.
+
+### `previews`
+
+Type: table. Optional.
+
+How many previews may exist, and the resources their services get.
+
+### `reconciliation`
+
+Type: table. Optional.
+
+How often piqueld checks for drift, and how long operations may take.
+
+### `retention`
+
+Type: table. Optional.
+
+How long finished operations, events and the audit trail are kept.
+
+### `server`
+
+Type: table. Optional.
+
+API listeners and state directories.
+
+### `snapshots`
+
+Type: table. Optional.
+
+Uploads of local worktrees by `piquelctl preview deploy --local`.
+
+### `tailscale`
+
+Type: table. Optional.
+
+The daemon's own tailnet node, which serves the website over HTTPS.
+
+### `telemetry`
+
+Type: table. Optional.
+
+Export of the daemon's traces, metrics and logs over OTLP.
+
+## `auth`
 
 The website's origin and API token lifetimes.
 
 ### `auth.max_token_days`
 
-Type: integer, at least 1. Default: unset.
+Type: integer of at least 1. Optional.
 
 The longest lifetime, in days, of new API tokens. When unset, tokens may have any lifetime, including none. Existing tokens keep theirs.
 
 ### `auth.public_url`
 
-Type: string. Default: unset.
+Type: string. Optional.
 
 The website's canonical origin, such as `https://piqueld.example.com`. Passkeys only work on this origin, and API mutations and WebSocket upgrades that send an `Origin` header must match it. It must be HTTPS, except `http://localhost` for development. When unset, it is `https://` followed by `ingress.private.dashboard_hostname` if that is set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is set, otherwise `http://localhost:7845`.
 
-## `[build_history]`
+## `build_history`
 
 How much output of each build is kept, and for how long. Builds themselves are listed until their environment is deleted.
 
@@ -48,30 +137,66 @@ Type: integer from 1 to 3650. Default: `30`.
 
 Days a build's output is kept after it finishes. The build stays listed, marked as expired.
 
-## `[checkouts]`
+## `checkouts`
 
 The Git checkouts deployments read manifests from and build sources in, under `<data_dir>/checkouts`.
 
 ### `checkouts.max_bytes`
 
-Type: integer, at least 1. Default: `4294967296` (4 GiB).
+Type: integer of at least 1. Default: `4294967296` (4 GiB).
 
 The most bytes all checkouts, history and working tree, may take at once. A checkout waits until it fits beside the others, and one larger than this, or a local snapshot that would be, is refused.
 
-## `[dns]`
+## `dns`
 
 DNS provider accounts. piqueld uses them to obtain DNS-01 certificates and, where `manage_records` is set, to maintain routes' DNS records. It discovers each account's zones through the provider's API at startup and hourly; a hostname belongs to the provider with the longest matching zone.
 
-## `[[dns.providers]]`
+### `dns.providers`
+
+Type: array of tables. Optional.
+
+DNS provider accounts, one `[[dns.providers]]` table each, selected by `kind`.
+
+## `dns.providers[]`
 
 A DNS provider account, selected by `kind`, and whether piqueld manages routes' DNS records in its zones.
 
 ### `dns.providers[].kind`
 
-Type: string. Required. One of:
+Type: `"cloudflare"` or `"ovh"`. Required.
 
 - `"cloudflare"`: A Cloudflare account.
 - `"ovh"`: An OVH account. The consumer key needs `GET` on `/domain/zone`, and `POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server time from `/auth/time`, which needs no permission.
+
+### `dns.providers[].api_token_file`
+
+Type: [credential file](#credential-file). Required with `kind = "cloudflare"`.
+
+An API token scoped to Zone:Read and DNS:Edit on the zones piqueld may use.
+
+### `dns.providers[].application_key_file`
+
+Type: [credential file](#credential-file). Required with `kind = "ovh"`.
+
+The application key, which identifies the application.
+
+### `dns.providers[].application_secret_file`
+
+Type: [credential file](#credential-file). Required with `kind = "ovh"`.
+
+The application secret, which signs requests.
+
+### `dns.providers[].consumer_key_file`
+
+Type: [credential file](#credential-file). Required with `kind = "ovh"`.
+
+The consumer key, which authorizes the application on the account.
+
+### `dns.providers[].endpoint`
+
+Type: `"ovh-eu"`, `"ovh-ca"` or `"ovh-us"`. Required with `kind = "ovh"`.
+
+The API region of the account: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us` (United States).
 
 ### `dns.providers[].manage_records`
 
@@ -79,37 +204,7 @@ Type: boolean. Default: `false`.
 
 Create, update and delete routes' A, AAAA and CNAME records in this provider's zones. Off by default, so its zones stay manual.
 
-### `dns.providers[].api_token_file`
-
-Type: string, a [credential file](#credential-file). Required. Only with `kind = "cloudflare"`.
-
-An API token scoped to Zone:Read and DNS:Edit on the zones piqueld may use.
-
-### `dns.providers[].application_key_file`
-
-Type: string, a [credential file](#credential-file). Required. Only with `kind = "ovh"`.
-
-The application key, which identifies the application.
-
-### `dns.providers[].application_secret_file`
-
-Type: string, a [credential file](#credential-file). Required. Only with `kind = "ovh"`.
-
-The application secret, which signs requests.
-
-### `dns.providers[].consumer_key_file`
-
-Type: string, a [credential file](#credential-file). Required. Only with `kind = "ovh"`.
-
-The consumer key, which authorizes the application on the account.
-
-### `dns.providers[].endpoint`
-
-Type: string, one of `"ovh-eu"`, `"ovh-ca"`, `"ovh-us"`. Required. Only with `kind = "ovh"`.
-
-The API region of the account: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us` (United States).
-
-## `[docker]`
+## `docker`
 
 The Docker Engine piqueld deploys to. The daemon serves its API while Docker is down, and starts deploying once Docker answers as a single-node Swarm manager.
 
@@ -125,7 +220,7 @@ Type: string. Default: `"/var/run/docker.sock"`.
 
 The absolute path of the Docker Engine's Unix socket.
 
-## `[images]`
+## `images`
 
 Cleanup of the images this installation builds. Cleanup keeps what every environment and preview runs or is deploying, and removes the rest. It never removes pulled images, images built by hand, or images other installations built on the same Docker Engine.
 
@@ -141,9 +236,15 @@ Type: integer. Default: `3`.
 
 How many of each environment's latest successful deployments also keep their images, so their releases can be deployed again.
 
-## `[ingress]`
+## `ingress`
 
 The managed Caddy gateway that serves applications' routes.
+
+### `ingress.acme`
+
+Type: table. Optional.
+
+The ACME account DNS-01 certificates are ordered with.
 
 ### `ingress.enabled`
 
@@ -151,19 +252,31 @@ Type: boolean. Default: `false`.
 
 Run the managed gateway and serve public routes on ports 80 and 443, or through `tunnel`. Requires Docker Engine 28 or later. Disabling it removes the gateway but keeps routes and certificates.
 
+### `ingress.private`
+
+Type: table. Optional.
+
+The apps tailnet node, which serves private routes.
+
 ### `ingress.public_addresses`
 
-Type: array of strings. Default: `[]`.
+Type: array of strings. Optional.
 
 This server's public IPv4 and IPv6 addresses, such as `["203.0.113.10", "2001:db8::10"]`. Public routes in zones whose DNS provider sets `manage_records` get A and AAAA records to them; without any, those records stay manual. Unused with `tunnel`.
 
+### `ingress.tunnel`
+
+Type: table. Optional.
+
+The Cloudflare Tunnel that replaces ports 80 and 443 for public routes.
+
 ### `ingress.webhook_hostname`
 
-Type: string, a [hostname](#hostname). Default: unset.
+Type: [hostname](#hostname). Optional.
 
 A public hostname that serves GitHub push webhooks, and nothing else, for applications whose repository syncs with `webhook`, while `ingress.enabled` is set. No application may route it or its subdomains.
 
-## `[ingress.acme]`
+## `ingress.acme`
 
 The certificate authority (CA) piqueld orders DNS-01 certificates from, for hostnames a public CA cannot reach over HTTP, such as those of private routes. The gateway obtains other certificates itself.
 
@@ -175,23 +288,23 @@ The ACME directory URL of the CA, which must be HTTPS. The default is Let's Encr
 
 ### `ingress.acme.email`
 
-Type: string. Default: unset.
+Type: string. Optional.
 
 An email address the CA may send expiry and policy notices to.
 
-## `[ingress.private]`
+## `ingress.private`
 
 The apps tailnet node: a second tailnet node, a Tailscale container beside the gateway, that carries private routes' traffic to the gateway's private listener. It is separate from the daemon's own node (`[tailscale]`), so it can have its own ACLs and tags.
 
 ### `ingress.private.auth_key_file`
 
-Type: string, a [credential file](#credential-file). Default: unset.
+Type: [credential file](#credential-file). Optional.
 
 A Tailscale auth key for the apps node's first login. Without one, the daemon logs the node's login URL.
 
 ### `ingress.private.dashboard_hostname`
 
-Type: string, a [hostname](#hostname). Default: unset.
+Type: [hostname](#hostname). Optional.
 
 A private hostname, such as `piqueld.example.com`, on which the gateway serves the website (dashboard and API) to the tailnet, with a DNS-01 certificate. An unset `auth.public_url` becomes its HTTPS origin. No application may route it or its subdomains. Requires `ingress.enabled` and `ingress.private.enabled`, and must differ from `ingress.webhook_hostname`.
 
@@ -207,13 +320,13 @@ Type: string. Default: `"piqueld-apps"`.
 
 The apps node's name, a single DNS label, which becomes `<hostname>.<tailnet>.ts.net`. It must differ from `tailscale.hostname` while both are enabled.
 
-## `[ingress.tunnel]`
+## `ingress.tunnel`
 
 A Cloudflare Tunnel that serves public routes instead of the host's ports 80 and 443, which are then closed. Each public hostname needs a proxied CNAME record to `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees public traffic in plaintext.
 
 ### `ingress.tunnel.credentials_file`
 
-Type: string, a [credential file](#credential-file). Default: unset.
+Type: [credential file](#credential-file). Optional.
 
 The tunnel's credentials file, which `cloudflared tunnel create` writes. piqueld reads it only while the tunnel is enabled.
 
@@ -223,7 +336,7 @@ Type: boolean. Default: `false`.
 
 Serve public routes through the tunnel. Requires `credentials_file`.
 
-## `[previews]`
+## `previews`
 
 How many previews may exist, and what each preview service may use.
 
@@ -259,7 +372,7 @@ Type: integer. Default: `30`.
 
 Previews the whole installation may have; creating more fails with `preview_limit_reached`. `0` refuses every new preview.
 
-## `[reconciliation]`
+## `reconciliation`
 
 How often piqueld checks that Docker matches what is deployed, and how long a deployment may take.
 
@@ -281,7 +394,7 @@ Type: integer from 1 to 86400. Default: `60`.
 
 Seconds between full scans for drift between Docker and what is deployed.
 
-## `[retention]`
+## `retention`
 
 How long history is kept. `0` keeps it forever.
 
@@ -309,13 +422,13 @@ Type: integer. Default: `10`.
 
 Days finished operations are kept; `0` keeps them forever. Older ones are removed during reconciliation, except each environment's latest operation and those in its deployment history or with job cleanup pending.
 
-## `[server]`
+## `server`
 
 Where the daemon keeps its state and serves its API. The Unix socket `<runtime_dir>/piqueld.sock` always serves the API; `listen_mode` adds TCP listeners, which also serve the dashboard.
 
 ### `server.allowed_hosts`
 
-Type: array of strings. Default: `[]`.
+Type: array of strings. Optional.
 
 DNS hostnames, such as `my-host.my-tailnet.ts.net`, that TCP requests may use besides `localhost` and IP addresses. Write exact hostnames, without schemes, ports or wildcards, and only names trusted operators control.
 
@@ -327,7 +440,7 @@ The absolute path of the private directory holding the database, `secrets.key` a
 
 ### `server.listen_mode`
 
-Type: string, one of `"off"`, `"localhost"`, `"tailscale"`, `"both"`. Default: `"off"`.
+Type: `"off"`, `"localhost"`, `"tailscale"` or `"both"`. Default: `"off"`.
 
 The TCP addresses that serve the API and dashboard over plain HTTP, besides the Unix socket. Every request must still authenticate.
 
@@ -348,23 +461,23 @@ Type: string. Default: `"/run/piqueld"`.
 
 The absolute path of the directory holding the Unix API socket, `piqueld.sock`. It must already exist, owned by the daemon's user and with full access for it. Its group may read or traverse it, as with mode `0750`, `0740` or `0710`, only when it is the daemon's effective group; otherwise use `0700`. Group write and any access by others are refused. Every directory above it must be owned by root or the daemon's user and writable only by its owner, unless sticky, like `/tmp`. It must differ from `data_dir`.
 
-## `[snapshots]`
+## `snapshots`
 
 Uploads of local worktrees by `piquelctl preview deploy --local`.
 
 ### `snapshots.max_upload_bytes`
 
-Type: integer, at least 1. Default: `268435456` (256 MiB).
+Type: integer of at least 1. Default: `268435456` (256 MiB).
 
 The largest Git bundle one upload may carry, in bytes. Larger uploads fail with `snapshot_too_large`.
 
-## `[tailscale]`
+## `tailscale`
 
 The daemon's own tailnet node, which serves the website (dashboard and API) over HTTPS with a tailnet certificate. The tailnet needs `MagicDNS` and HTTPS certificates enabled.
 
 ### `tailscale.auth_key_file`
 
-Type: string, a [credential file](#credential-file). Default: unset.
+Type: [credential file](#credential-file). Optional.
 
 A Tailscale auth key for the node's first login. Without one, the daemon logs a login URL and waits until the node is approved. Later starts reuse the node's state in the data directory. piqueld passes the file to Tailscale on every start without reading it, so it must exist at every start; its key is only used for the first login. Not allowed with `socket`.
 
@@ -388,11 +501,11 @@ The node port serving the website over HTTPS.
 
 ### `tailscale.socket`
 
-Type: string. Default: unset.
+Type: string. Optional.
 
 The absolute path of the socket of a logged-in `tailscaled` to share instead of starting one. piqueld then only adds `https_port` to that node's Serve configuration, so several daemons can share one node, each on its own port. That `tailscaled` must run as the daemon's user.
 
-## `[telemetry]`
+## `telemetry`
 
 Export of the daemon's traces, metrics and logs over OTLP/gRPC to a collector. Export is off until `endpoint` is set.
 
@@ -404,13 +517,13 @@ Also export the output and resource usage of every container piqueld runs.
 
 ### `telemetry.endpoint`
 
-Type: string. Default: unset.
+Type: string. Optional.
 
 The OTLP/gRPC collector receiving every signal: `https://host[:port]`, `http://host[:port]` or `unix:///path` for a Unix socket, without credentials or a path.
 
 ### `telemetry.headers_file`
 
-Type: string, a [credential file](#credential-file). Default: unset.
+Type: [credential file](#credential-file). Optional.
 
 gRPC metadata sent with every export, such as a collector token, one `name: value` per line. Requires `endpoint`.
 
@@ -418,8 +531,12 @@ gRPC metadata sent with every export, such as a collector token, one `name: valu
 
 ### Credential file
 
+Type: string.
+
 The path of a file holding a secret, such as an API token. The daemon reads it once at startup, so restart it after changing the file. Surrounding whitespace, such as a trailing newline, is removed, and the file must be a non-empty regular file; symlinks to one are followed. `tailscale.auth_key_file` is the exception: Tailscale reads it instead. A relative path resolves against `$CREDENTIALS_DIRECTORY`, where systemd's `LoadCredential=` puts credentials, and may not contain `.` or `..`. Errors and the settings shown by the dashboard name the file, never its contents.
 
 ### Hostname
+
+Type: string.
 
 A fully qualified public DNS name, such as `app.example.com`, in lowercase ASCII, without a scheme, port, path or wildcard. Write Unicode domains in their IDNA (Punycode) form.

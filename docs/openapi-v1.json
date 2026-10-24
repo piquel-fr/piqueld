@@ -485,23 +485,23 @@
       },
       "ApplicationManifest": {
         "additionalProperties": false,
-        "description": "Strict public application manifest request and export shape.",
+        "description": "An application: what it runs, and how its environments and previews\ndeploy it.",
         "properties": {
           "api_version": {
-            "description": "API version string.",
+            "description": "Version of the manifest format.",
             "type": "string"
           },
           "kind": {
-            "description": "Resource kind string.",
+            "description": "Kind of resource the manifest describes.",
             "type": "string"
           },
           "metadata": {
             "$ref": "#/components/schemas/Metadata",
-            "description": "User-provided metadata."
+            "description": "The application's identity."
           },
           "spec": {
             "$ref": "#/components/schemas/ApplicationSpec",
-            "description": "Desired application resources."
+            "description": "What the application runs, and how it deploys."
           }
         },
         "required": [
@@ -572,19 +572,19 @@
       },
       "ApplicationSpec": {
         "additionalProperties": false,
-        "description": "User-provided application resource lists.",
+        "description": "What the application runs, and how its environments and previews deploy\nit.",
         "properties": {
           "environments": {
             "additionalProperties": {
               "$ref": "#/components/schemas/EnvironmentConfig"
             },
             "default": {},
-            "description": "Environments declared by this manifest, keyed by environment name.",
+            "description": "Declares the environment `<environment>` and how it deploys, for at\nmost 64 environments.",
             "type": "object"
           },
           "exports": {
             "default": [],
-            "description": "Services other applications may reach over private links.",
+            "description": "Services of this application that other applications may reach, at\nmost 64.",
             "items": {
               "$ref": "#/components/schemas/Export"
             },
@@ -592,7 +592,7 @@
           },
           "imports": {
             "default": [],
-            "description": "Services of other applications this application reaches.",
+            "description": "Services of other applications this application reaches, at most 64.",
             "items": {
               "$ref": "#/components/schemas/Import"
             },
@@ -600,7 +600,7 @@
           },
           "jobs": {
             "default": [],
-            "description": "One-shot jobs, run in declared order at their deployment point.",
+            "description": "Containers that run to completion during each deployment, such as\ndatabase migrations, at most 16. They run in the order listed.",
             "items": {
               "$ref": "#/components/schemas/Job"
             },
@@ -615,7 +615,7 @@
                     "$ref": "#/components/schemas/RepositoryManifest"
                   }
                 ],
-                "description": "Optional repository that supplies this application's manifest on Deploy."
+                "description": "The Git repository each deployment reads the manifest from. Without\nit, deployments use the saved manifest. A manifest read from the\nrepository can't change it: its own `spec.manifest` is ignored."
               },
               {
                 "enum": [
@@ -633,13 +633,13 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/PreviewConfig",
-                "description": "Configuration shared by every preview."
+                "description": "Settings shared by every preview."
               }
             ]
           },
           "routes": {
             "default": [],
-            "description": "HTTP routes by hostname, activated on deployment.",
+            "description": "HTTP routes to the services, at most 64. They take effect when an\nenvironment deploys them.",
             "items": {
               "$ref": "#/components/schemas/Route"
             },
@@ -647,7 +647,7 @@
           },
           "secrets": {
             "default": [],
-            "description": "Secrets whose values piqueld generates once per environment.",
+            "description": "Secrets piqueld generates a value for in each environment, at most 64.",
             "items": {
               "$ref": "#/components/schemas/SecretDeclaration"
             },
@@ -655,7 +655,7 @@
           },
           "services": {
             "default": [],
-            "description": "Declared services.",
+            "description": "The application's services, at most 64.",
             "items": {
               "$ref": "#/components/schemas/Service"
             },
@@ -666,12 +666,12 @@
               "$ref": "#/components/schemas/Variable"
             },
             "default": {},
-            "description": "Default values of variables referenced as `${{ vars.<name> }}`, used by\nenvironments that set no value of their own.",
+            "description": "Default value of the variable `<variable>`, referenced as\n`${{ vars.<variable> }}`. An environment's or the previews' own value\nreplaces it. Variable names start with a letter or `_`, use letters,\ndigits, `_` or `-`, and are at most 63 bytes. Each table of variables\nholds at most 128.",
             "type": "object"
           },
           "volumes": {
             "default": [],
-            "description": "Declared named volumes.",
+            "description": "Named volumes the services mount, at most 64.",
             "items": {
               "$ref": "#/components/schemas/Volume"
             },
@@ -1243,25 +1243,30 @@
         ]
       },
       "Build": {
-        "description": "Explicit build backend, extensible independently from source selection.",
+        "description": "How to build a Git source's image.",
         "oneOf": [
           {
-            "description": "Build a local container image using Docker.",
+            "description": "Build the image with Docker Buildx, from a Dockerfile.",
             "properties": {
               "args": {
                 "additionalProperties": {
                   "$ref": "#/components/schemas/Template"
                 },
-                "description": "Values passed as `--build-arg`. They are recorded in image\nmetadata, so sensitive values belong in secrets instead.",
+                "description": "The value of the build argument `<name>`, passed with\n`--build-arg`. Docker records it in the image's metadata, so pass\nsensitive values as secrets instead. Build arguments total at most\n256 KiB.",
                 "type": "object"
               },
               "context": {
-                "$ref": "#/components/schemas/Template",
-                "description": "Build context relative to the repository root."
+                "default": ".",
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Template",
+                    "description": "Build context directory, relative to the repository root."
+                  }
+                ]
               },
               "dockerfile": {
                 "$ref": "#/components/schemas/Template",
-                "description": "Dockerfile path relative to the repository root."
+                "description": "Path of the Dockerfile, relative to the repository root."
               },
               "target": {
                 "oneOf": [
@@ -1271,7 +1276,7 @@
                         "$ref": "#/components/schemas/Template"
                       }
                     ],
-                    "description": "Multi-stage build target; the final stage when absent."
+                    "description": "Stage of a multi-stage Dockerfile to build. By default, the final\nstage."
                   },
                   {
                     "enum": [
@@ -6421,29 +6426,29 @@
       },
       "EnvironmentConfig": {
         "additionalProperties": false,
-        "description": "Configuration of one environment, `[spec.environments.<name>]`, which\ndeclares it (see [`super::declaration`]). Without `promote_from`, it builds\nits own source: the saved manifest, or a branch of `spec.manifest`'s\nrepository. A block that sets none of `branch`, `commit`, `promote_from`\nand `sync` leaves an existing environment's source as it is.",
+        "description": "Declares an environment and where it deploys from. Without\n`promote_from`, the environment builds its own manifest: the saved one, or\na branch of the `spec.manifest` repository. A block that sets none of\n`branch`, `commit`, `promote_from` and `sync` leaves an existing\nenvironment's source as it is.",
         "properties": {
           "branch": {
             "default": null,
-            "description": "Branch of the manifest repository it follows; by default the one\n`spec.manifest` names.",
+            "description": "Branch of the manifest repository the environment deploys. By\ndefault, the branch `spec.manifest` names. Needs `spec.manifest`.",
             "nullable": true,
             "type": "string"
           },
           "commit": {
             "default": null,
-            "description": "Full commit it deploys instead of its branch's head.",
+            "description": "Full commit the environment deploys instead of its branch's head.\nWithout `branch`, by default the commit `spec.manifest` pins. Needs\n`spec.manifest`, and excludes `sync`.",
             "nullable": true,
             "type": "string"
           },
           "promote_from": {
             "default": null,
-            "description": "Environment whose releases it receives, by `piquelctl env promote`,\ninstead of building.",
+            "description": "Another environment whose releases this one receives with\n`piquelctl env promote`, instead of building. It excludes `branch`,\n`commit` and `sync`, and can't lead back to this environment.",
             "nullable": true,
             "type": "string"
           },
           "sync": {
             "default": null,
-            "description": "Whether pushes to its branch deploy it while the repository syncs\n(`spec.manifest.sync`); off when unset.",
+            "description": "Whether pushes to the environment's branch deploy it while\n`spec.manifest.sync` is on. Off when unset. `true` needs\n`spec.manifest`.",
             "nullable": true,
             "type": "boolean"
           },
@@ -6452,7 +6457,7 @@
               "$ref": "#/components/schemas/Variable"
             },
             "default": {},
-            "description": "This environment's values: each overrides the `[spec.variables]` default\nof the same name, or declares a variable without a default.",
+            "description": "The environment's value of the variable `<variable>`. It replaces the\n`[spec.variables]` default, or declares a variable without one.",
             "type": "object"
           },
           "visibility": {
@@ -6460,7 +6465,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Visibility",
-                "description": "The strictest visibility this environment's routes get. The default,\n`public`, restricts nothing; `private` keeps every route on the tailnet."
+                "description": "The strictest visibility the environment's routes get. `public`\nrestricts nothing; `private` keeps every route on the tailnet."
               }
             ]
           }
@@ -7262,21 +7267,22 @@
       },
       "Export": {
         "additionalProperties": false,
-        "description": "A service other applications may reach, `[[spec.exports]]`.",
+        "description": "A service of this application that other applications may reach over a\nprivate link, as `<service>.<application>`.",
         "properties": {
           "applications": {
-            "description": "Applications whose environments may import the service.",
+            "description": "Applications whose environments may import the service: at least one,\nat most 64, each listed once.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "previews": {
-            "description": "Whether previews of those applications may import it too; `false` by\ndefault, so only their environments can.",
+            "default": false,
+            "description": "Whether previews of those applications may import the service too.",
             "type": "boolean"
           },
           "service": {
-            "description": "Service in this application that importers reach.",
+            "description": "Service of this application to export, at most once.",
             "type": "string"
           }
         },
@@ -7331,10 +7337,10 @@
         "description": "Where a file's content comes from.",
         "oneOf": [
           {
-            "description": "A file in the manifest's own repository, relative to its root, read at\nthe exact commit the manifest was fetched from. Only repository-backed\napplications can use it.",
+            "description": "Path of a UTF-8 text file in the manifest's repository, relative to\nits root, read at the commit the manifest was read from. Only\nrepository-backed applications can use it.",
             "properties": {
               "path": {
-                "description": "A file in the manifest's own repository, relative to its root, read at\nthe exact commit the manifest was fetched from. Only repository-backed\napplications can use it.",
+                "description": "Path of a UTF-8 text file in the manifest's repository, relative to\nits root, read at the commit the manifest was read from. Only\nrepository-backed applications can use it.",
                 "type": "string"
               }
             },
@@ -7344,10 +7350,10 @@
             "type": "object"
           },
           {
-            "description": "The content itself.",
+            "description": "The file's content, inline.",
             "properties": {
               "content": {
-                "description": "The content itself.",
+                "description": "The file's content, inline.",
                 "type": "string"
               }
             },
@@ -7380,19 +7386,19 @@
       },
       "GitRepository": {
         "additionalProperties": false,
-        "description": "Git checkout configuration. Credentials come from the host's Git configuration.",
+        "description": "A Git repository and the revision to check out. Git uses the host's\ncredentials.",
         "properties": {
           "branch": {
-            "description": "Branch to fetch when no commit is pinned.",
+            "description": "Branch whose head is checked out when no commit is set.",
             "type": "string"
           },
           "commit": {
-            "description": "Optional full commit hash.",
+            "description": "Full commit hash to check out instead of the branch's head.",
             "nullable": true,
             "type": "string"
           },
           "url": {
-            "description": "Git clone URL or local repository path.",
+            "description": "Clone URL or local path of the repository. It can't contain\ncredentials.",
             "type": "string"
           }
         },
@@ -7431,34 +7437,59 @@
         "type": "array"
       },
       "HealthCheck": {
-        "description": "User-declared container health check.",
+        "description": "How Docker checks that a service's containers are healthy.",
         "oneOf": [
           {
-            "description": "HTTP health endpoint check.",
+            "description": "Send an HTTP `GET` to a port of the container. A 2xx or 3xx status\npasses. The image needs nothing for it.",
             "properties": {
               "interval_seconds": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Probe interval in seconds."
+                "default": 10,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Seconds between checks, from 1 to 3,600."
+                  }
+                ]
               },
               "path": {
-                "$ref": "#/components/schemas/Template",
-                "description": "HTTP path to probe."
+                "default": "/health",
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Template",
+                    "description": "Absolute HTTP path to request."
+                  }
+                ]
               },
               "port": {
                 "$ref": "#/components/schemas/Typed_u16",
-                "description": "Container port to probe."
+                "description": "Container port to request, from 1 to 65535."
               },
               "retries": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Consecutive failed probes that make the container unhealthy."
+                "default": 3,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Consecutive failed checks that make a container unhealthy, from 1\nto 100."
+                  }
+                ]
               },
               "start_period_seconds": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Startup grace in seconds, during which failed probes do not count."
+                "default": 0,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Seconds after a container starts during which failed checks don't\ncount, up to 3,600."
+                  }
+                ]
               },
               "timeout_seconds": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Probe timeout in seconds."
+                "default": 3,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Seconds a check may take before it fails, from 1 to the interval."
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -7474,30 +7505,50 @@
             "type": "object"
           },
           {
-            "description": "Executable command health check.",
+            "description": "Run a command in the container, without a shell. Exit code 0 passes.",
             "properties": {
               "command": {
-                "description": "Command and arguments to execute.",
+                "description": "Command and arguments to run. It can't be empty.",
                 "items": {
                   "$ref": "#/components/schemas/Template"
                 },
                 "type": "array"
               },
               "interval_seconds": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Probe interval in seconds."
+                "default": 10,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Seconds between checks, from 1 to 3,600."
+                  }
+                ]
               },
               "retries": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Consecutive failed probes that make the container unhealthy."
+                "default": 3,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Consecutive failed checks that make a container unhealthy, from 1\nto 100."
+                  }
+                ]
               },
               "start_period_seconds": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Startup grace in seconds, during which failed probes do not count."
+                "default": 0,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Seconds after a container starts during which failed checks don't\ncount, up to 3,600."
+                  }
+                ]
               },
               "timeout_seconds": {
-                "$ref": "#/components/schemas/Typed_u32",
-                "description": "Probe timeout in seconds."
+                "default": 3,
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/Typed_u32",
+                    "description": "Seconds a check may take before it fails, from 1 to the interval."
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -7616,10 +7667,10 @@
       },
       "Import": {
         "additionalProperties": false,
-        "description": "A service of another application this application reaches,\n`[[spec.imports]]`, as `<service>.<application>`.",
+        "description": "A service of another application this application reaches over a private\nlink, as `<service>.<application>`.",
         "properties": {
           "application": {
-            "description": "Application exporting the service.",
+            "description": "Application exporting the service. It may be this application.",
             "type": "string"
           },
           "environment": {
@@ -7642,7 +7693,7 @@
             ]
           },
           "service": {
-            "description": "Exported service of that application.",
+            "description": "Service that application exports, imported at most once.",
             "type": "string"
           }
         },
@@ -7814,10 +7865,10 @@
       },
       "Job": {
         "additionalProperties": false,
-        "description": "A container that runs to completion at a defined point in each deployment.",
+        "description": "A container that runs to completion during each deployment, such as a\ndatabase migration.",
         "properties": {
           "command": {
-            "description": "Command replacing the service's command and arguments.",
+            "description": "Command the job runs, instead of its service's command and arguments.\nIt can't be empty.",
             "items": {
               "$ref": "#/components/schemas/Template"
             },
@@ -7827,37 +7878,43 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Template"
             },
-            "description": "Environment variables only the job's container gets, added to its\nservice's. A name the service also sets is an error.",
+            "description": "The environment variable `<name>` of the job's container only, in\naddition to its service's. A name the service also sets is an error.",
             "type": "object"
           },
           "name": {
-            "description": "Logical job name.",
+            "description": "Name of the job, unique in the application.",
             "type": "string"
           },
           "run": {
             "$ref": "#/components/schemas/JobRun",
-            "description": "Deployment point at which the job runs."
+            "description": "When the job runs. `before-rollout` runs it after every source is\nprepared, before the services roll out."
           },
           "secrets": {
-            "description": "Secrets only the job's container mounts, added to its service's. A\ntarget the service also mounts is an error.",
+            "description": "Secrets only the job's container mounts, in addition to its service's.\nA target the service already uses is an error.",
             "items": {
               "$ref": "#/components/schemas/SecretMount"
             },
             "type": "array"
           },
           "service": {
-            "description": "Service whose prepared image, environment, secrets, and mounts the job reuses.",
+            "description": "Service whose image, environment, secrets, volumes, resource limits\nand network the job reuses. The job also waits for the service's\n`depends_on`.",
             "type": "string"
           },
           "timeout_seconds": {
-            "description": "Seconds the job may run before the deployment fails.",
+            "default": 300,
+            "description": "Seconds the job may run before the deployment fails, from 1 to 86,400.",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
           },
           "volume_access": {
-            "$ref": "#/components/schemas/JobVolumeAccess",
-            "description": "How the job may use the service's volumes."
+            "default": "read-only",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JobVolumeAccess",
+                "description": "How the job mounts its service's volumes. `read-only` mounts every\nvolume read-only, so the job runs beside the services. `exclusive`\nkeeps the writable volumes writable, and stops every service mounting\nthem while the job runs."
+              }
+            ]
           }
         },
         "required": [
@@ -8358,10 +8415,10 @@
       },
       "Metadata": {
         "additionalProperties": false,
-        "description": "User-provided application metadata.",
+        "description": "The application's identity.",
         "properties": {
           "name": {
-            "description": "User-facing application name.",
+            "description": "Name of the application. A manifest with another name applies to\nanother application, so rename one with `piquelctl app rename`.",
             "type": "string"
           }
         },
@@ -8372,18 +8429,19 @@
       },
       "Mount": {
         "additionalProperties": false,
-        "description": "A persistent volume mount in a service.",
+        "description": "A volume mounted into a service's containers.",
         "properties": {
           "read_only": {
-            "description": "Whether the mount is read-only.",
+            "default": false,
+            "description": "Whether the containers mount the volume read-only. A writable mount\nmakes rollouts stop the old container before starting its\nreplacement.",
             "type": "boolean"
           },
           "target": {
-            "description": "Container target path.",
+            "description": "Absolute path of the mount in the container, unique in the service.\nIt can't be `/run/piqueld/probe` or `/run/piqueld/telemetry`, or a\npath inside them.",
             "type": "string"
           },
           "volume": {
-            "description": "Referenced logical volume name.",
+            "description": "Name of a volume in `spec.volumes`.",
             "type": "string"
           }
         },
@@ -9158,14 +9216,14 @@
       },
       "PreviewConfig": {
         "additionalProperties": false,
-        "description": "Configuration shared by previews, `[spec.previews]`.",
+        "description": "Settings shared by every preview.",
         "properties": {
           "variables": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Variable"
             },
             "default": {},
-            "description": "Values for every preview: each overrides the `[spec.variables]`\ndefault of the same name, or declares a variable without a default.",
+            "description": "The previews' value of the variable `<variable>`. It replaces the\n`[spec.variables]` default, or declares a variable without one.",
             "type": "object"
           },
           "visibility": {
@@ -9173,7 +9231,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Visibility",
-                "description": "The strictest visibility preview routes get; `private` by default, so\npreviews publish routes only with an explicit `public`."
+                "description": "The strictest visibility preview routes get. `private` keeps every\nroute on the tailnet; `public` restricts nothing."
               }
             ]
           }
@@ -9594,14 +9652,16 @@
       },
       "Redirect": {
         "additionalProperties": false,
-        "description": "Redirect route input.",
+        "description": "A redirect the gateway answers with.",
         "properties": {
           "preserve_path": {
-            "description": "Appends the request path and query to `to`.",
+            "default": true,
+            "description": "Whether to append the request's path and query to `to`.",
             "type": "boolean"
           },
           "status": {
-            "description": "301, 302, 303, 307, or 308.",
+            "default": 308,
+            "description": "HTTP status of the redirect: 301, 302, 303, 307 or 308.",
             "format": "int32",
             "maximum": 308,
             "minimum": 301,
@@ -9609,7 +9669,7 @@
           },
           "to": {
             "$ref": "#/components/schemas/Template",
-            "description": "Absolute `http` or `https` destination URL."
+            "description": "Absolute `http` or `https` URL to redirect to, with a lowercase\nhostname and no query or fragment. It can't target a hostname the\nroute serves."
           }
         },
         "required": [
@@ -9952,19 +10012,26 @@
       },
       "RepositoryManifest": {
         "additionalProperties": false,
-        "description": "Independently selects the manifest that deployments, manual or on push, use.",
+        "description": "The Git repository and file each deployment reads the manifest from.",
         "properties": {
           "path": {
-            "description": "Exact TOML or JSON file path relative to the repository root.",
+            "description": "Path of the TOML or JSON manifest file, relative to the repository\nroot.",
             "type": "string"
           },
           "repository": {
             "$ref": "#/components/schemas/GitRepository",
-            "description": "Repository and revision containing the manifest."
+            "description": "The repository holding the manifest, and the branch environments\ndeploy by default."
           },
           "sync": {
-            "$ref": "#/components/schemas/RepositorySync",
-            "description": "How environments and previews follow pushes. Like the rest of\n`spec.manifest`, ignored in fetched files."
+            "default": {
+              "mode": "off"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RepositorySync",
+                "description": "Whether pushes to the repository deploy environments and previews."
+              }
+            ]
           }
         },
         "required": [
@@ -9974,7 +10041,7 @@
         "type": "object"
       },
       "RepositorySync": {
-        "description": "How an application follows pushes to its manifest repository. Applies to\nevery preview, and to every environment following an unpinned branch that\nopted in.",
+        "description": "Whether pushes to the manifest repository deploy. It applies to every\npreview, and to every environment that opted in and follows a branch\nwithout a pinned commit.",
         "oneOf": [
           {
             "description": "Deploy only when asked.",
@@ -9992,10 +10059,11 @@
             "type": "object"
           },
           {
-            "description": "List the branch heads every `interval_seconds`.",
+            "description": "List the repository's branch heads every `interval_seconds`.",
             "properties": {
               "interval_seconds": {
-                "description": "Seconds between listings, from 60 to 86400.",
+                "default": 300,
+                "description": "Seconds between listings, from 60 to 86,400.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
@@ -10132,7 +10200,7 @@
       },
       "ResourceLimits": {
         "additionalProperties": false,
-        "description": "Optional CPU and memory limits for a service.",
+        "description": "CPU and memory limits of each of a service's containers. Set at least\none.",
         "properties": {
           "cpu_millis": {
             "oneOf": [
@@ -10142,7 +10210,7 @@
                     "$ref": "#/components/schemas/Typed_u32"
                   }
                 ],
-                "description": "CPU limit in millicores."
+                "description": "CPU limit in thousandths of a CPU, from 1 to 1,048,576: `500` is half\na CPU."
               },
               {
                 "enum": [
@@ -10161,7 +10229,7 @@
                     "$ref": "#/components/schemas/Typed_u64"
                   }
                 ],
-                "description": "Memory limit in bytes."
+                "description": "Memory limit in bytes, greater than zero."
               },
               {
                 "enum": [
@@ -10205,7 +10273,7 @@
       },
       "Rollout": {
         "additionalProperties": false,
-        "description": "Optional `rollout` block of a service. Omitted fields keep their defaults,\nso an empty block is equivalent to no block.",
+        "description": "How Docker replaces a service's containers during a deployment, one at a\ntime. An empty block keeps the defaults.",
         "properties": {
           "monitor_seconds": {
             "default": null,
@@ -10216,7 +10284,7 @@
                     "$ref": "#/components/schemas/Typed_u32"
                   }
                 ],
-                "description": "Seconds Docker watches each replacement task for failure; 30 when omitted."
+                "description": "Seconds Docker watches each new container for failure before it\nreplaces the next one, from 1 to 3,600. 30 when unset."
               },
               {
                 "enum": [
@@ -10236,7 +10304,7 @@
                     "$ref": "#/components/schemas/Typed_RolloutOrder"
                   }
                 ],
-                "description": "Update order; derived from the service's mounts when omitted."
+                "description": "`stop-first` stops the old container before starting its replacement,\nwith a short downtime. `start-first` starts the replacement first, so\nboth briefly run side by side. When unset, `stop-first` if the service\nmounts a volume writable or receives telemetry, `start-first`\notherwise."
               },
               {
                 "enum": [
@@ -10251,7 +10319,7 @@
         "type": "object"
       },
       "RolloutOrder": {
-        "description": "Whether Docker stops a task before or after starting its replacement.",
+        "description": "Whether Docker stops the old container before or after starting its\nreplacement.",
         "enum": [
           "stop-first",
           "start-first"
@@ -10281,19 +10349,19 @@
       },
       "Route": {
         "additionalProperties": false,
-        "description": "HTTP route input, validated independently of ingress enablement.\nA route sets either `service` and `port`, or `redirect`.",
+        "description": "An HTTP route: requests for a hostname go to a service, or get a\nredirect. A route sets either `service` and `port`, or `redirect`.",
         "properties": {
           "hostname": {
             "$ref": "#/components/schemas/Template",
-            "description": "Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`\nmatching every name one label below `example.com`."
+            "description": "Hostname the route serves, such as `notes.example.com`, unique in the\napplication. A wildcard such as `*.example.com` serves every name one\nlabel below `example.com` that no exact route claims."
           },
           "name": {
-            "description": "Stable name, unique within the application, that selects this route in\nevery environment and preview, e.g. `piquelctl env url --route web`.\nDeclared after `hostname`, so routes stay ordered by hostname.",
+            "description": "Name that selects the route in every environment and preview, e.g.\n`piquelctl env url --route web`. It is unique in the application and\ncan't reference variables.",
             "nullable": true,
             "type": "string"
           },
           "port": {
-            "description": "Internal HTTP backend port.",
+            "description": "Port the service serves HTTP on, from 1 to 65535. Needs `service`.",
             "format": "int32",
             "maximum": 65535,
             "minimum": 1,
@@ -10308,7 +10376,7 @@
                     "$ref": "#/components/schemas/Redirect"
                   }
                 ],
-                "description": "Redirect answered by the gateway instead of a service."
+                "description": "Redirect the gateway answers with, instead of a service."
               },
               {
                 "enum": [
@@ -10320,13 +10388,18 @@
             ]
           },
           "service": {
-            "description": "Logical service in this application.",
+            "description": "Service of this application that receives the requests. Needs `port`.",
             "nullable": true,
             "type": "string"
           },
           "visibility": {
-            "$ref": "#/components/schemas/Visibility",
-            "description": "Who may connect; `private` (tailnet only) by default. Its environment's\nceiling can make it stricter, never looser."
+            "default": "private",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Visibility",
+                "description": "Who may connect: `public` for the internet, or `private` for the\ntailnet only. The environment's or the previews' visibility can make\nit stricter, never looser."
+              }
+            ]
           }
         },
         "required": [
@@ -10592,10 +10665,10 @@
         "properties": {
           "generate": {
             "$ref": "#/components/schemas/SecretGenerator",
-            "description": "How the value is generated."
+            "description": "How piqueld generates the value."
           },
           "name": {
-            "description": "Logical secret name; it cannot reference variables.",
+            "description": "Name of the secret, unique in the application. It can't reference\nvariables.",
             "type": "string"
           }
         },
@@ -10633,20 +10706,25 @@
         "type": "object"
       },
       "SecretGenerator": {
-        "description": "The exhaustive set of secret value generators.",
+        "description": "How piqueld generates a secret's value.",
         "oneOf": [
           {
             "description": "Random bytes from the operating system, encoded as text.",
             "properties": {
               "bytes": {
-                "description": "Number of random bytes before encoding.",
+                "description": "Number of random bytes before encoding, from 16 to 512.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
               },
               "encoding": {
-                "$ref": "#/components/schemas/SecretEncoding",
-                "description": "Text encoding of the random bytes."
+                "default": "hex",
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SecretEncoding",
+                    "description": "Text encoding of the bytes: lowercase `hex`, or unpadded\n`base64url`."
+                  }
+                ]
               },
               "type": {
                 "enum": [
@@ -10662,10 +10740,10 @@
             "type": "object"
           },
           {
-            "description": "RSA private key in PKCS#8 PEM.",
+            "description": "An RSA private key, in PKCS#8 PEM.",
             "properties": {
               "bits": {
-                "description": "Modulus size in bits.",
+                "description": "Size of the key in bits: 2048, 3072 or 4096.",
                 "format": "int32",
                 "minimum": 0,
                 "type": "integer"
@@ -10756,14 +10834,14 @@
       },
       "SecretMount": {
         "additionalProperties": false,
-        "description": "A secret exposed only as a container file. The name selects the\nenvironment's generated secret when `spec.secrets` declares it, and the\napplication's store of manually set secrets otherwise.",
+        "description": "A secret mounted as a file. A name `spec.secrets` declares mounts the\nenvironment's generated value; any other name mounts a value from the\napplication's secret store.",
         "properties": {
           "name": {
             "$ref": "#/components/schemas/Template",
-            "description": "Logical secret name. It may reference variables, so each environment\ncan mount its own stored secret, e.g. `${{ vars.stripe_key }}`."
+            "description": "Name of the secret. It may reference variables, so each environment\ncan mount its own stored secret, e.g. `${{ vars.stripe_key }}`."
           },
           "target": {
-            "description": "Absolute normalized destination under /run/secrets.",
+            "description": "Absolute path of the file under `/run/secrets/`, unique in the\nservice.",
             "type": "string"
           }
         },
@@ -10876,24 +10954,24 @@
       },
       "Service": {
         "additionalProperties": false,
-        "description": "User-declared application service.",
+        "description": "A service: containers running one image, kept at their replica count.",
         "properties": {
           "arguments": {
-            "description": "Arguments passed to the command.",
+            "description": "Arguments that replace the image's default arguments, at most 128\nelements of 4,096 bytes each.",
             "items": {
               "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           },
           "command": {
-            "description": "Container entrypoint command.",
+            "description": "Command that replaces the image's entrypoint, at most 128 elements of\n4,096 bytes each. When empty, the image's entrypoint runs.",
             "items": {
               "$ref": "#/components/schemas/Template"
             },
             "type": "array"
           },
           "depends_on": {
-            "description": "Services in this application that must be healthy before this one rolls out.",
+            "description": "Services of this application that must be running and healthy before\nthis one rolls out, each listed once.",
             "items": {
               "type": "string"
             },
@@ -10903,11 +10981,11 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/Template"
             },
-            "description": "Environment variables keyed by name.",
+            "description": "The environment variable `<name>` of the service's containers. Names\nuse letters, digits and `_`, don't start with a digit, and are at most\n255 bytes. Values are at most 65,536 bytes. At most 256 variables;\n`PIQUELD_INGRESS_PROXIES` is reserved.",
             "type": "object"
           },
           "files": {
-            "description": "Read-only files mounted into the containers. Their contents are never\nrendered with variables.",
+            "description": "Read-only files mounted into the containers, at most 32. Their\ncontents are never rendered with variables. An application's files\ntotal at most 2 MiB.",
             "items": {
               "$ref": "#/components/schemas/ServiceFile"
             },
@@ -10921,7 +10999,7 @@
                     "$ref": "#/components/schemas/HealthCheck"
                   }
                 ],
-                "description": "Optional container health check."
+                "description": "How Docker checks that a container is healthy. Rollouts and the\nservices depending on this one wait until it passes."
               },
               {
                 "enum": [
@@ -10933,23 +11011,29 @@
             ]
           },
           "mounts": {
-            "description": "Persistent volume mounts.",
+            "description": "Volumes mounted into the containers, at most 32.",
             "items": {
               "$ref": "#/components/schemas/Mount"
             },
             "type": "array"
           },
           "name": {
-            "description": "Logical service name.",
+            "description": "Name of the service, unique in the application. The application's\nother services reach it by this name.",
             "type": "string"
           },
           "receives_telemetry": {
-            "description": "Whether the service receives the daemon's telemetry on the socket\ndirectory mounted at `/run/piqueld/telemetry`, once its environment is\ngranted it. At most one service per application.",
+            "default": false,
+            "description": "Whether the service receives the daemon's traces, metrics and logs,\non a socket in `/run/piqueld/telemetry`, once its environment is\ngranted telemetry. At most one service of an application receives\ntelemetry, with one replica.",
             "type": "boolean"
           },
           "replicas": {
-            "$ref": "#/components/schemas/Typed_u16",
-            "description": "Desired replica count."
+            "default": 1,
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Typed_u16",
+                "description": "Number of containers, from 1 to 100."
+              }
+            ]
           },
           "resources": {
             "oneOf": [
@@ -10959,7 +11043,7 @@
                     "$ref": "#/components/schemas/ResourceLimits"
                   }
                 ],
-                "description": "Optional CPU and memory limits."
+                "description": "CPU and memory limits of each container."
               },
               {
                 "enum": [
@@ -10972,10 +11056,10 @@
           },
           "rollout": {
             "$ref": "#/components/schemas/Rollout",
-            "description": "Optional rollout order and monitor window."
+            "description": "How Docker replaces the service's containers on each deployment."
           },
           "secrets": {
-            "description": "Secrets mounted as files.",
+            "description": "Secrets mounted as files, at most 64.",
             "items": {
               "$ref": "#/components/schemas/SecretMount"
             },
@@ -10983,7 +11067,7 @@
           },
           "source": {
             "$ref": "#/components/schemas/Source",
-            "description": "Explicit image or build source."
+            "description": "Where the service's image comes from: a prebuilt image, or a Git\nbuild."
           }
         },
         "required": [
@@ -11001,11 +11085,16 @@
           {
             "properties": {
               "mode": {
-                "$ref": "#/components/schemas/FileMode",
-                "description": "Octal permissions, `\"0444\"` by default. The file is owned by root."
+                "default": "0444",
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/FileMode",
+                    "description": "Octal permissions, from `\"0000\"` to `\"0777\"`. The file is owned by\nroot."
+                  }
+                ]
               },
               "target": {
-                "description": "Absolute, normalized container path of the file.",
+                "description": "Absolute path of the file in the container, unique among the\nservice's mount, secret and file targets. It can't be in\n`/run/secrets` or `/run/piqueld`.",
                 "type": "string"
               }
             },
@@ -11015,7 +11104,7 @@
             "type": "object"
           }
         ],
-        "description": "A read-only file mounted into a service's containers, from exactly one\nsource: `path` in the manifest's repository, or inline `content`."
+        "description": "A read-only file mounted into a service's containers, from exactly one\nsource: `path` in the manifest's repository, or inline `content`. Its\ncontent can't be empty, and is at most 500 KiB."
       },
       "ServiceGeneral": {
         "additionalProperties": false,
@@ -11186,14 +11275,14 @@
         "type": "object"
       },
       "Source": {
-        "description": "The exhaustive set of deployable service sources.",
+        "description": "Where a service's image comes from.",
         "oneOf": [
           {
             "description": "Pull a prebuilt image from a registry.",
             "properties": {
               "image": {
                 "$ref": "#/components/schemas/Template",
-                "description": "Image reference."
+                "description": "Image reference, such as `ghcr.io/example/notes:1.4.0`, with an\noptional tag or digest. It can't contain a URL scheme or\ncredentials."
               },
               "type": {
                 "enum": [
@@ -11209,15 +11298,15 @@
             "type": "object"
           },
           {
-            "description": "Build a checked-out Git revision.",
+            "description": "Build the image from a Git repository.",
             "properties": {
               "build": {
                 "$ref": "#/components/schemas/Build",
-                "description": "Explicit build instructions."
+                "description": "How to build the image."
               },
               "repository": {
                 "$ref": "#/components/schemas/SourceRepository",
-                "description": "Repository and revision to resolve."
+                "description": "Repository to build: `\"self\"` for the manifest's own repository,\nat the commit the manifest was read from, or a table naming\nanother one. `\"self\"` needs `spec.manifest`."
               },
               "type": {
                 "enum": [
@@ -11244,7 +11333,7 @@
           },
           {
             "$ref": "#/components/schemas/GitRepository",
-            "description": "An independently resolved repository and revision."
+            "description": "Another repository, and the revision to build."
           }
         ]
       },
@@ -11773,15 +11862,15 @@
         "type": "object"
       },
       "TypedTemplate": {
-        "description": "Schema of a template in a typed field: text containing `${{`.",
+        "description": "A template in a setting of another type, such as an integer: text\ncontaining a `${{` reference. A template that is exactly one reference\ntakes the variable's own value, which must have the setting's type;\nstrings are never parsed into numbers.",
         "pattern": "\\$\\{\\{",
         "type": "string"
       },
       "Typed_RolloutOrder": {
-        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "description": "A value written directly, or a template rendered for each environment.\n\nA template that is exactly one reference takes the variable's own value;\nany other template renders to text. The value must have the setting's\ntype: strings are never parsed into numbers.",
         "oneOf": [
           {
-            "description": "Whether Docker stops a task before or after starting its replacement.",
+            "description": "Whether Docker stops the old container before or after starting its\nreplacement.",
             "enum": [
               "stop-first",
               "start-first"
@@ -11795,7 +11884,7 @@
         ]
       },
       "Typed_u16": {
-        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "description": "A value written directly, or a template rendered for each environment.\n\nA template that is exactly one reference takes the variable's own value;\nany other template renders to text. The value must have the setting's\ntype: strings are never parsed into numbers.",
         "oneOf": [
           {
             "format": "int32",
@@ -11809,7 +11898,7 @@
         ]
       },
       "Typed_u32": {
-        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "description": "A value written directly, or a template rendered for each environment.\n\nA template that is exactly one reference takes the variable's own value;\nany other template renders to text. The value must have the setting's\ntype: strings are never parsed into numbers.",
         "oneOf": [
           {
             "format": "int32",
@@ -11823,7 +11912,7 @@
         ]
       },
       "Typed_u64": {
-        "description": "A typed value: a literal, or a template rendered for each environment.\n\nA template that is exactly one reference yields the variable's own value;\nany other template yields text. The result must then decode as `T`, so\nstrings are never parsed into numbers.",
+        "description": "A value written directly, or a template rendered for each environment.\n\nA template that is exactly one reference takes the variable's own value;\nany other template renders to text. The value must have the setting's\ntype: strings are never parsed into numbers.",
         "oneOf": [
           {
             "format": "int64",
@@ -12667,7 +12756,7 @@
         "type": "object"
       },
       "Variable": {
-        "description": "A declared variable value: a string, integer, or boolean. Strings may\nreference system variables, but not other variables.",
+        "description": "A variable's value: a string, an integer or a boolean. A string may\nreference system variables, such as `${{ env.name }}`, but not other\nvariables.",
         "oneOf": [
           {
             "description": "A boolean.",
@@ -12680,7 +12769,7 @@
           },
           {
             "$ref": "#/components/schemas/Template",
-            "description": "Text, which may reference system variables."
+            "description": "Text of at most 65,536 bytes, which may reference system variables."
           }
         ]
       },
@@ -12750,7 +12839,7 @@
         "type": "object"
       },
       "Visibility": {
-        "description": "Who may connect to a route: everyone, or only tailnet devices. It says\nnothing about how traffic arrives; the installation decides that.\n\nVariants are ordered from least to most restrictive, so the stricter of\ntwo visibilities is their maximum.",
+        "description": "Who may connect to a route: everyone, or only tailnet devices.",
         "enum": [
           "public",
           "private"
@@ -12772,10 +12861,10 @@
       },
       "Volume": {
         "additionalProperties": false,
-        "description": "User-declared named volume.",
+        "description": "A named volume the services mount. Its data is kept across deployments,\nand when the application is deleted.",
         "properties": {
           "name": {
-            "description": "Logical volume name.",
+            "description": "Name of the volume, unique in the application.",
             "type": "string"
           }
         },

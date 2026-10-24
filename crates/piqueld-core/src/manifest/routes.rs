@@ -195,11 +195,10 @@ pub struct VisibilityError;
 
 string_enum! {
     #[serde]
-    /// Who may connect to a route: everyone, or only tailnet devices. It says
-    /// nothing about how traffic arrives; the installation decides that.
-    ///
-    /// Variants are ordered from least to most restrictive, so the stricter of
-    /// two visibilities is their maximum.
+    /// Who may connect to a route: everyone, or only tailnet devices.
+    // It says nothing about how traffic arrives; the installation decides
+    // that. Variants are ordered from least to most restrictive, so the
+    // stricter of two visibilities is their maximum.
     #[derive(Default, Hash, Ord, PartialOrd)]
     pub enum Visibility {
         /// Reachable from the internet.

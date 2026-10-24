@@ -98,6 +98,7 @@ jobs:
               - docs/**/*.json
               - docs/user/reference/cli-commands.md
               - docs/user/reference/configuration-settings.md
+              - docs/user/reference/manifest-settings.md
             deny:
               - *workspace
               - deny.toml
