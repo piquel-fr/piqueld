@@ -11,6 +11,12 @@
 
 # User guide
 
+- [Configuring services](user/applications/services.md)
+- [Secrets and variables](user/applications/secrets-and-variables.md)
+- [Volumes and files](user/applications/volumes-and-files.md)
+- [Running jobs before a rollout](user/applications/jobs.md)
+- [Connecting applications](user/applications/links.md)
+- [Running commands in a container](user/applications/commands.md)
 - [Accounts and sign-in](user/accounts/authentication.md)
 - [Permissions](user/accounts/authorization.md)
 - [Dashboard](user/dashboard.md)
