@@ -739,7 +739,7 @@ It runs in the application's only environment; with several, `--env ENV` names
 one. `preview exec` runs it in a preview instead, addressed like `preview logs`. The command runs inside the task, so it shares the task's image, environment,
 secrets, mounts and networks. It works over every transport, uses account
 authentication and needs no SSH access; the account (or token) needs
-[`apps:exec`](../accounts/permissions.md) on the application. Output streams to stdout and stderr, and
+[`apps:exec`](../accounts/permissions.md#application-permissions) on the application. Output streams to stdout and stderr, and
 `piquelctl` exits with the command's exit code. `-i` forwards standard input.
 `-t` allocates a terminal, implies `-i`, requires a terminal on standard input
 and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
@@ -837,7 +837,7 @@ lists accounts (and live host operator browser sessions), replaces their grants
 and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
 manages API tokens for your account (`--tailnet` binds one to a tailnet user
 or tag), and `login` accepts the same grant options
-to ask for a limited session; see [authorization](../accounts/permissions.md).
+to ask for a limited session; see [ask for less access](../accounts/cli-and-tokens.md#ask-for-less-access).
 `piquelctl audit` reads the [audit trail](../guides/observability.md#audit-trail), one line
 per request with the application or environment it addressed, filtered
 by `--user` (a username, or any account ID, including a deleted account's),

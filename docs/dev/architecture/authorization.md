@@ -10,9 +10,10 @@ sign in.
 `piqueld_core::access` holds the model, shared by the daemon, the dashboard
 and the CLI:
 
-- `Permission` is `admin`, an `AppPermission`, or a `GlobalPermission`. Each
-  comes from one `permissions!` table of wire name and description, which the
-  dashboard's grant editor shows next to each checkbox.
+- `Permission` is `admin`, an `AppPermission`, or a `GlobalPermission`. The
+  latter two each come from a `permissions!` table of wire names and
+  descriptions, and `Permission::description` adds `admin`'s. The dashboard's
+  grant editor shows each description next to its checkbox.
 - A `Scope` is every application (including later ones) or a set of
   application IDs. Installation-wide permissions can only have the whole
   installation as their scope, which the types enforce.
@@ -44,9 +45,10 @@ grants (`Grants::intersection`), so demoting an account demotes its tokens.
     create and deploy in one step, or to enable deploying on push.
   - `Target::Named` is an existing application named by the caller, such as
     in a manifest. One the caller cannot read is refused as if it were being
-    created, with 403 naming `apps:create` or, for holders of it,
-    `apps:write`, so callers without `apps:create` cannot tell taken names
-    apart.
+    created: 403 naming the first permission creating it would need and the
+    caller lacks, `apps:create` or, for a change that deploys, `apps:deploy`,
+    and `apps:write` for callers holding both. So callers who could not
+    create the application cannot tell taken names apart.
   - `Target::Preview` lets previews permissions stand in for the permissions
     they cover (`AppPermission::on_previews`): `previews:deploy` reads a
     preview's logs. Deploying and deleting previews have their own routes,
@@ -62,7 +64,8 @@ grants (`Grants::intersection`), so demoting an account demotes its tokens.
   `accounts:manage` and every grant the target holds (`Grants::covers`);
   `Grants::may_grant` approves handing out grants the caller holds. `admin` is
   only covered by `admin`, because it includes permissions added later.
-  Refusals answer 403 `permission_exceeded`.
+  Lacking `accounts:manage` answers 403 `permission_denied`; a failed
+  `covers` check answers 403 `permission_exceeded`.
 
 Routes with an application `{id}` check the permission on it; routes without
 one (analytics, operations) need the permission on some application and
@@ -120,22 +123,24 @@ token's binding, which each recheck looks up afresh.
   entirely, it ends with an `access_ended` message whose data is the
   `ErrorBody` the request would now get.
 - A command session that lost access ends with a `Failed` frame carrying the
-  refusal (401 or 403), which is audited. Like a disconnect, this only stops
-  the stream: the command itself may keep running in the task.
+  refusal, such as 401, 403, or 404 once the application is hidden, which is
+  audited. A 503 `tailnet_unavailable` from a bound token's lookup ends it
+  too, unaudited. Like a disconnect, this only stops the stream: the command
+  itself may keep running in the task.
 - Both end, without a message, when the daemon shuts down.
 
 ## Limited credentials
 
 API tokens are always limited (`scoped`), even with `admin` on every
-application; CLI logins are limited when they asked for less access. A limited
-credential is refused with 403 `credential_scoped` (`Denied::Scoped`) when it
-would create credentials (tokens, passkeys, invitations, enrollment links, CLI
-login approvals), set grants on any account, or change its own account. It may
-revoke itself. With `accounts:manage` and a covering scope, it can still edit
-other accounts' profiles, delete them, remove or rename their passkeys, and
-revoke their credentials and invitations. A limited credential without
-`audit:read` reads only its own requests in the audit trail, rather than its
-account's.
+application; CLI logins are limited whenever they asked for any grants, even
+ones equal to the account's full access. A limited credential is refused with
+403 `credential_scoped` (`Denied::Scoped`) when it would create credentials
+(tokens, passkeys, invitations, enrollment links, CLI login approvals), set
+grants on any account, or change its own account. It may revoke itself. With
+`accounts:manage` and a covering scope, it can still edit other accounts'
+profiles, delete them, remove or rename their passkeys, and revoke their
+credentials and invitations. A limited credential without `audit:read` reads
+only its own requests in the audit trail, rather than its account's.
 
 Deleting an application removes the grants on it once the application row is
 finally deleted, after its last environment. Limited credentials, tokens and
@@ -159,9 +164,10 @@ checks that the issuer could still create the link: still holds
 `accounts:manage` and every grant the invitation hands out, or may still
 change the enrollment's target account. A refused link answers a plain 401
 `authentication_required`, like an expired one, and stays listed until it
-expires. Creating a link needs a credential with its account's full access;
-revoking one needs the authority to have created it, but no full-access
-credential. Deleting the issuer deletes its links (`ON DELETE CASCADE`), and
+expires. Creating a link needs a credential with its account's full access.
+Revoking one needs the authority to have created it, and a full-access
+credential only for an enrollment link to the caller's own account, like every
+change to it. Deleting the issuer deletes its links (`ON DELETE CASCADE`), and
 deleting an enrollment's target account deletes its enrollment links.
 
 ## Lockout protection
@@ -203,8 +209,10 @@ the daemon's tailnet node (`tailscale.enabled`) or a dashboard hostname
 token, `FreshTailnet::check` looks the connection's peer up afresh through the
 node's `tailscaled` (the apps node's, for the dashboard hostname) on every
 request, again when an `app exec` command arrives, and on every lease recheck.
-The lookup times out after 5 seconds with 503 `tailnet_unavailable`; any
-other mismatch, including requests from the Unix socket or other listeners,
+A lookup that times out answers 503 `tailnet_unavailable`: `LOOKUP_TIMEOUT`,
+5 seconds, applies both to waiting behind another lookup of the same address
+and to its own query, so the worst case is about 10 seconds. Any other
+mismatch, including requests from the Unix socket or other listeners,
 which have no peer, answers 401 `tailnet_binding_mismatch`, and the refusal is
 audited. Tagged nodes have no login, so a user binding never matches them.
 CLI logins cannot be bound.

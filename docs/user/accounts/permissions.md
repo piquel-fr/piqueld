@@ -43,45 +43,6 @@ On every application, `read-only` and `developer` also add `system:read`.
 `developer` includes `apps:exec`, because someone who deploys their own
 configuration can already reach everything a command in a container could.
 
-## Application permissions
-
-These permissions can be limited to applications. Each one also lets its
-holder read the application, so a token that may only deploy can still follow
-its deployments.
-
-| Permission | Allows |
-| --- | --- |
-| `admin` | On the applications it lists: every permission in this table. On every application: everything, including the installation-wide permissions and permissions added in later versions |
-| `apps:read` | Reading configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, the push webhook's address, and the names of secrets and which environments may mount them |
-| `apps:write` | Editing configuration, applying and planning manifests, renaming the application, adding and renaming environments, changing an environment's branch or source, opting environments into or out of sync, and generating webhook secrets |
-| `apps:deploy` | Deploying, promoting releases into and reconciling environments, and everything `previews:deploy` allows. With `apps:write`, saving and deploying in one step, and turning on [deploying on push](../reference/manifest.md#deploying-on-push) |
-| `apps:delete` | Deleting the application, its environments and its previews |
-| `previews:deploy` | Creating and deploying [previews](#let-agents-and-ci-manage-previews), including from a local worktree, and reading their logs |
-| `previews:delete` | Deleting and pruning previews |
-| `secrets:write` | Storing, regenerating and deleting secret values, and choosing which environments may mount them |
-| `logs:read` | Reading runtime, build and job logs, which may contain sensitive output |
-| `apps:exec` | Running commands in running containers, with `piquelctl app exec` and `preview exec`. A command reaches everything its container can, including secret values |
-| `events:read` | Reading the application's history, diagnostics and deployment analytics |
-
-## Installation-wide permissions
-
-These permissions always apply to the whole installation.
-
-| Permission | Allows |
-| --- | --- |
-| `apps:create` | Creating applications; see [who may create applications](#who-may-create-applications) |
-| `system:read` | Reading the daemon's configuration, resources, history and diagnostics, notification destinations and deliveries, and DNS providers and certificates |
-| `system:operate` | Recovering from a [lost secret key](../reference/configuration.md#recovering-from-a-lost-key), retrying notification deliveries, and checking DNS providers |
-| `accounts:manage` | Managing other accounts and invitations; see [who may manage accounts](#who-may-manage-accounts) |
-| `audit:read` | Reading every account's [audit trail](../guides/observability.md#audit-trail), and verifying its integrity. Everyone reads their own |
-| `telemetry:grant` | Granting and revoking an environment's [telemetry](#telemetry) |
-| `notifications:manage` | Creating, changing, testing and deleting [notification destinations](../guides/observability.md#notifications) |
-
-Every signed-in account may read the daemon's status and readiness, and the
-[OpenAPI document](../../openapi-v1.json), which names what each operation
-needs in its `x-piqueld-access` extension: `public`, `authenticated`, or a
-permission.
-
 ## Give an account access
 
 1. On the account's card on the **Accounts** page, under **Access**, select
@@ -94,10 +55,11 @@ permission.
 
 ![Editing carol's grants: the read-only preset selects apps:read, logs:read and events:read, limited to the blog application](../../images/accounts/grant-editor.png)
 
-The applications you select apply to every application permission.
-Installation-wide permissions always apply everywhere. Choose the applications
-before the preset: a preset adds `system:read` when it covers every
-application at the moment you choose it.
+The applications you select apply to every
+[application permission](#application-permissions).
+[Installation-wide permissions](#installation-wide-permissions) always apply
+everywhere. Choose the applications before the preset: a preset adds
+`system:read` when it covers every application at the moment you choose it.
 
 With `piquelctl`:
 
@@ -124,6 +86,45 @@ limited logins:
 For example, `--preset deploy --permission secrets:write --app blog` lets an
 account deploy blog and change its secrets.
 
+## Application permissions
+
+These permissions can be limited to applications. Each one also lets its
+holder read the application, so a token that may only deploy can still follow
+its deployments.
+
+| Permission | Allows |
+| --- | --- |
+| `admin` | On the applications it lists: every permission in this table. On every application: everything, including the installation-wide permissions and permissions added in later versions |
+| `apps:read` | Reading configuration, environments, previews, releases, status, deployments, operations, builds and job runs, promotion plans, the push webhook's address, and the names of secrets and which environments may mount them |
+| `apps:write` | Editing configuration, applying and planning manifests, renaming the application, adding and renaming environments, changing an environment's branch or source, opting environments out of sync, and into it (with `apps:deploy` when the application deploys on push), and generating webhook secrets |
+| `apps:deploy` | Deploying, promoting releases into and reconciling environments, and everything `previews:deploy` allows. With `apps:write`, saving and deploying in one step, turning on [deploying on push](../reference/manifest.md#deploying-on-push), or opting an environment into it |
+| `apps:delete` | Deleting the application, its environments and its previews |
+| `previews:deploy` | Creating and deploying [previews](#let-agents-and-ci-manage-previews), including from a local worktree, and reading their logs |
+| `previews:delete` | Deleting and pruning previews |
+| `secrets:write` | Storing, regenerating and deleting secret values, and choosing which environments may mount them |
+| `logs:read` | Reading runtime, build and job logs, which may contain sensitive output |
+| `apps:exec` | Running commands in running containers, with `piquelctl app exec` and `preview exec`. A command reaches everything its container can, including secret values |
+| `events:read` | Reading the application's history, diagnostics and deployment analytics |
+
+## Installation-wide permissions
+
+These permissions always apply to the whole installation.
+
+| Permission | Allows |
+| --- | --- |
+| `apps:create` | Creating applications; see [who may create applications](#who-may-create-applications) |
+| `system:read` | Reading the daemon's configuration, resources, history and diagnostics, notification destinations and deliveries, and DNS providers and certificates |
+| `system:operate` | Recovering from a [lost secret key](../reference/configuration.md#recovering-from-a-lost-key), retrying notification deliveries, and checking DNS providers |
+| `accounts:manage` | Managing other accounts and invitations; see [who may manage accounts](#who-may-manage-accounts) |
+| `audit:read` | Reading every account's [audit trail](../guides/observability.md#audit-trail), and verifying its integrity. Everyone reads their own |
+| `telemetry:grant` | Granting and revoking an environment's [telemetry](#telemetry) |
+| `notifications:manage` | Creating, changing, testing and deleting [notification destinations](../guides/observability.md#notifications). A destination can select any application, so this reveals every application's notifications |
+
+Every signed-in account may read the daemon's status and readiness, and the
+[OpenAPI document](../../openapi-v1.json), which names what each operation
+needs in its `x-piqueld-access` extension: `public`, `authenticated`, or a
+permission.
+
 ## Let agents and CI manage previews
 
 Agents and CI jobs that create, test and delete [previews](../introduction.md#concepts)
@@ -141,12 +142,16 @@ and prune them, including previews created later. Like every application
 permission, it can read blog, including its environments' status and
 deployments.
 
-It can't touch blog's long-lived environments: it can't deploy, promote into,
-reconcile or delete them, or read their logs. It can't change blog's
-configuration, environments or secrets, delete blog, or run commands
-anywhere. Reconciling a preview needs `apps:deploy`. Running commands in a preview still needs `apps:exec`, which reaches
-the secrets previews mount, and reading history, previews' included, needs
-`events:read`.
+It can't:
+
+- deploy, promote into, reconcile or delete blog's long-lived environments,
+  or read their logs
+- change blog's configuration, environments or secrets
+- delete blog
+
+Reconciling a preview needs `apps:deploy`. Running commands in a preview needs
+`apps:exec`, which reaches the secrets previews mount. Reading history,
+including a preview's, needs `events:read`.
 
 `apps:deploy` and `apps:delete` include the previews permissions, so people who
 hold them can hand the previews permissions out. People who hold only the
@@ -195,7 +200,7 @@ since those credentials never hand out lasting access.
 
 Everyone may manage their own account: edit its profile, add, rename and
 remove its passkeys, see and revoke its sessions and tokens, create tokens for
-it, lower its grants, and delete it.
+it, lower its grants (with `piquelctl account access`), and delete it.
 
 Changing another account needs `accounts:manage` and every grant that account
 holds. This covers its profile, grants, passkeys, sessions and tokens,
@@ -213,12 +218,14 @@ the same authority as creating it.
 
 At least one account must keep `admin` on every application and a passkey.
 Changes that would remove the last such account are refused with 409
-`account_lockout`. If every administrator still loses access, the host
-operator can [create a new one](recovery.md#no-administrator-can-sign-in). The
-[host operator](recovery.md#the-host-operator) holds `admin` on every
+`account_lockout`.
+
+The [host operator](recovery.md#the-host-operator) holds `admin` on every
 application without being an account, so it doesn't count, and these rules
-apply to the changes it makes too. Revoking a host operator browser session
-needs `accounts:manage` and `admin` on every application.
+apply to the changes it makes too. If every administrator still loses access,
+it can [create a new one](recovery.md#no-administrator-can-sign-in). Revoking
+a host operator browser session needs `accounts:manage` and `admin` on every
+application.
 
 ## Links between applications
 
@@ -265,8 +272,8 @@ receivers of applications you can read.
 ## When access changes take effect
 
 piqueld checks grants on every request, so a change applies at once to every
-session and token of the account. Even a change submitted just before can't
-use the access it lost.
+session and token of the account. A request already in progress when its
+access is removed can't use that access either.
 
 Connections that stay open check again while they last: event streams, and
 commands started with `apps:exec`. They notice a grant change, an account
@@ -277,8 +284,8 @@ matches a token's [binding](cli-and-tokens.md#bind-a-token-to-tailnet-devices).
 
 - An event stream stops sending history you may no longer read. When you lose
   access entirely, it ends with an `access_ended` message.
-- A command that lost access ends with the refusal (401 or 403). As with a
-  disconnect, the command itself may keep running in its container.
+- A command that lost access ends with the refusal, such as 401, 403 or 404.
+  As with a disconnect, the command itself may keep running in its container.
 
 Both also end when the daemon shuts down.
 
