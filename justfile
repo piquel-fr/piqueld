@@ -144,7 +144,8 @@ test-playwright *ARGS: build-playwright
 docs-screenshots *ARGS: build-playwright
     @cargo xtask playwright --config screenshots.config.ts {{ARGS}}
 
-# The CLI and Rust fixture the browser runs use, and the type-checked tests.
+# Builds what the browser runs need: the CLI and the Rust fixture, and
+# type-checks the Playwright specs.
 [private]
 build-playwright:
     @cargo build --locked --package piquelctl

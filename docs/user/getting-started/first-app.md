@@ -69,10 +69,10 @@ To see what a deployment would change before you run it, use
 
 ```console
 $ piquelctl app show hello
-hello (app-01a16b1282cf755287920502b5793cd1)
+hello (app-f11d73eef37c18041cd376261d46daa1)
 
 Configuration revision: 1
-Environment: production (app-01a16b1282cf755287920502b5793cd1): ready, deploys from saved
+Environment: production (app-f11d73eef37c18041cd376261d46daa1): ready, deploys from saved
 
 Service: web
   Replicas: 1

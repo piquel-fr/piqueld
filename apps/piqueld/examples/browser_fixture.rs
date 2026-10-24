@@ -1,5 +1,5 @@
 //! Isolated UI/API fixture for Playwright. Docker execution is deliberately
-//! stubbed: nothing ever deploys. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER` set,
+//! stubbed: nothing ever deploys. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER=1`,
 //! the real controller deploys to the in-memory engine of
 //! [`piqueld::docker::fake`] instead, so deployments succeed and services
 //! report healthy, as the documentation screenshots show them.
@@ -103,30 +103,61 @@ impl RuntimeBoundary for Runtime {
     fn trigger_reconciliation(&self) {}
 }
 
-/// The API over `store`, served by the real controller and a fake Docker
-/// engine, and the controller's work, which runs until aborted.
-fn reconciled(store: Arc<Store>) -> (ApiState, JoinHandle<anyhow::Result<()>>) {
-    let config = piqueld::config::DaemonConfig::default();
-    let controller = Controller::new(Arc::new(FakeDocker::default()), Arc::clone(&store))
-        .with_config(&config.reconciliation);
-    let wake = Arc::new(tokio::sync::Notify::new());
-    let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)))
-        .with_image_status(controller.image_status());
-    let run = tokio::spawn(async move {
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let (result, ()) = tokio::join!(
-            controller.run(
-                wake,
-                std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds),
-                config.retention.finished_operation_days,
-                config.retention.event_days,
-                cancellation.clone(),
-            ),
-            controller.run_image_cleanup(cancellation),
-        );
-        result.context("reconciling against the fake Docker engine")
-    });
-    (state, run)
+/// What the fixture's API deploys to: the fake Docker engine when
+/// `PIQUELD_PLAYWRIGHT_FAKE_DOCKER` is `1` or `true`, nothing otherwise.
+enum Backend {
+    /// The stubbed [`Runtime`]: nothing ever deploys.
+    Stub,
+    /// The real controller, deploying to [`FakeDocker`].
+    FakeDocker,
+}
+
+impl Backend {
+    fn from_env() -> Self {
+        match std::env::var("PIQUELD_PLAYWRIGHT_FAKE_DOCKER").as_deref() {
+            Ok("1" | "true") => Self::FakeDocker,
+            _ => Self::Stub,
+        }
+    }
+
+    /// The API over `store`, and the work behind it, which runs until aborted
+    /// and returns only once it fails.
+    fn serve(self, store: Arc<Store>) -> (ApiState, JoinHandle<anyhow::Result<()>>) {
+        let Self::FakeDocker = self else {
+            let state = ApiState::new(store, Arc::new(Runtime));
+            return (state, tokio::spawn(std::future::pending()));
+        };
+        let config = piqueld::config::DaemonConfig::default();
+        let controller = Controller::new(Arc::new(FakeDocker::default()), Arc::clone(&store))
+            .with_config(&config.reconciliation);
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)))
+            .with_image_status(controller.image_status());
+        let run = tokio::spawn(async move {
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            // Image cleanup runs until cancelled: stop it once the
+            // reconciler stops, so its error ends the fixture.
+            let reconcile = async {
+                let result = controller
+                    .run(
+                        wake,
+                        std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds),
+                        config.retention.finished_operation_days,
+                        config.retention.event_days,
+                        cancellation.child_token(),
+                    )
+                    .await;
+                cancellation.cancel();
+                result
+            };
+            let (result, ()) = tokio::join!(
+                reconcile,
+                controller.run_image_cleanup(cancellation.child_token()),
+            );
+            result.context("reconciling against the fake Docker engine")
+        });
+        (state, run)
+    }
 }
 
 #[tokio::main]
@@ -138,12 +169,7 @@ async fn main() -> anyhow::Result<()> {
     let auth = piqueld::auth::Auth::new(&store, &origin)?;
     let setup = dir.join("setup-link");
     auth.prepare_setup(&setup).await?;
-    let (state, mut controller) = if std::env::var_os("PIQUELD_PLAYWRIGHT_FAKE_DOCKER").is_some() {
-        reconciled(store)
-    } else {
-        let state = ApiState::new(store, Arc::new(Runtime));
-        (state, tokio::spawn(std::future::pending()))
-    };
+    let (state, mut controller) = Backend::from_env().serve(store);
     let router = piqueld::api::http::web_router(state.clone(), UiAssets::resolve(), auth.clone());
     let mut server = tokio::spawn(async move {
         axum::serve(

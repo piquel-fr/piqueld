@@ -1,7 +1,7 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
-import type { Page } from '@playwright/test';
-import { test as base, expect, auth, fillRegistration, applicationTab, rewrite, type Cli, type Managed } from '../fixtures.js';
+import type { Locator, Page } from '@playwright/test';
+import { test as base, expect, adminToken, fillRegistration, applicationTab, rewrite, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -14,48 +14,62 @@ export const test = base.extend({
   page: async ({ page }, use) => {
     await page.clock.install();
     // The browser image has no system UI font: its fallback has no bold
-    // face, which the dashboard doesn't synthesize. The configuration
-    // bypasses the dashboard's CSP for this style.
-    await page.addInitScript(() => document.addEventListener('DOMContentLoaded', () => {
-      const style = document.createElement('style');
-      style.textContent = ':root { font-family: "Liberation Sans", sans-serif !important; }';
-      document.head.append(style);
-    }));
+    // face, which the dashboard doesn't synthesize. The stylesheet itself
+    // sets one, so the dashboard's CSP still applies.
+    await page.route(url => url.pathname.startsWith('/dashboard/') && url.pathname.endsWith('.css'), async route => {
+      const response = await route.fetch();
+      const body = `${await response.text()}\n:root { font-family: "Liberation Sans", sans-serif !important; }\n`;
+      await route.fulfill({ response, body });
+    });
     // The fixture runs no ingress gateway, which reads as unhealthy. Report
     // it as a daemon with the default configuration does: disabled.
     await rewrite(page, '/api/v1/system/readiness', data => {
-      Object.assign(data.ingress, { healthy: true, message: 'Ingress is disabled in daemon TOML; its listeners are stopped' });
+      if (!data.ingress.enabled) Object.assign(data.ingress, { healthy: true, message: 'Ingress is disabled in daemon TOML; its listeners are stopped' });
     });
     await use(page);
   },
 });
 
-/** Saves the page as docs/images/`name`.png, `height` pixels tall, once
- * `freeze` has made its content the same on every run. */
-export async function shoot(page: Page, name: string, height = 800) {
-  await page.setViewportSize({ width: 1280, height });
-  // Stop the dashboard's timers, so no refresh redraws what `freeze` replaced.
-  await page.clock.pauseAt(Date.now() + 1_000);
-  await freeze(page);
+/** Saves the page as docs/images/`name`.png, cut 12 pixels below the
+ * bottom of `through`, or 800 pixels tall without it, once `freeze` has
+ * made its content the same on every run. */
+export async function shoot(page: Page, name: string, through?: Locator) {
+  const box = await through?.boundingBox();
+  await page.setViewportSize({ width: 1280, height: box ? Math.ceil(box.y + box.height) + 12 : 800 });
+  // Stop the dashboard's timers, without running the ones due soon, so no
+  // refresh redraws what `freeze` replaced.
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 50);
+  const frozen = await freeze(page);
   await expect(page).toHaveScreenshot(`${name}.png`.split('/'));
+  // A refresh already under way when the clock stopped redraws it anyway.
+  expect(frozen, 'a refresh redrew the page while it was saved').toEqual(expect.arrayContaining(await varying(page)));
   await page.clock.resume();
 }
 
+// The text that differs on every run: random IDs and digests, and dates.
+const identifier = String.raw`\b[0-9a-f]{32,64}\b`;
+const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M\b`;
+const fixedDate = '10/24/2026, 9:41:07 AM';
+
+/** Each distinct ID, digest and date the page shows. */
+async function varying(page: Page): Promise<string[]> {
+  return page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], `${identifier}|${date}`);
+}
+
 /** Replaces the text that differs on every run: each random ID or digest by
- * one derived from its order on the page, and each date by a fixed one. */
-async function freeze(page: Page) {
-  const identifiers = /\b[0-9a-f]{32,64}\b/g;
-  const found = await page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], identifiers.source);
-  const stable = Object.fromEntries(found.map((value, index) =>
+ * one derived from its order on the page, and each date by a fixed one.
+ * Returns the replacements. */
+async function freeze(page: Page): Promise<string[]> {
+  const identifiers = (await varying(page)).filter(value => new RegExp(`^${identifier}$`).test(value));
+  const stable = Object.fromEntries(identifiers.map((value, index) =>
     [value, createHash('sha256').update(`piqueld ${index}`).digest('hex').slice(0, value.length)]));
-  await page.evaluate(({ identifiers, stable }) => {
+  await page.evaluate(({ pattern, stable, fixedDate }) => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      node.nodeValue = node.nodeValue!
-        .replace(new RegExp(identifiers, 'g'), value => stable[value] ?? value)
-        .replace(/\b\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M\b/g, '10/24/2026, 9:41:07 AM');
+      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string) => id ? stable[id] ?? id : fixedDate);
     }
-  }, { identifiers: identifiers.source, stable });
+  }, { pattern: `(${identifier})|${date}`, stable, fixedDate });
+  return [...Object.values(stable), fixedDate];
 }
 
 /** The "Create your account" page of setup `link`, filled in for alice. */
@@ -72,8 +86,7 @@ export async function deployFrom(page: Page, cli: Cli, guide: string) {
   if (!manifest) throw new Error(`${guide} shows no TOML manifest`);
   const file = join(cli.daemon.directory, 'manifest.toml');
   await writeFile(file, manifest);
-  const { token } = await auth<Managed>(page, 'manage', { action: 'create_token', grants: [{ permission: 'admin' }], name: 'Screenshots', days: null });
-  const applied = await cli.run(['app', 'apply', '--file', file, '--deploy', '--yes'], token);
+  const applied = await cli.run(['app', 'apply', '--file', file, '--deploy', '--yes'], await adminToken(page, 'Screenshots'));
   expect(applied.code, applied.stderr).toBe(0);
 }
 

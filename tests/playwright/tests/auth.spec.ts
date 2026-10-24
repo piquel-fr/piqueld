@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { test, expect, api, auth, register, proof, Passkeys, type Session, type Directory, type Managed, type Ceremony } from '../fixtures.js';
+import { test, expect, api, auth, adminToken, register, proof, Passkeys, type Session, type Directory, type Managed, type Ceremony } from '../fixtures.js';
 
 test('setup gates anonymous access, closes permanently, and supports username-less login', async ({ page, daemon, passkeys }) => {
   void passkeys;
@@ -158,7 +158,7 @@ test('CLI device approval, private credentials, API tokens, revocation and expir
     expect((await stat(cli.env.PIQUELD_CREDENTIALS_FILE!)).mode & 0o777).toBe(0o600);
     expect((await cli.run(['logout'])).code).toBe(0);
     expect((await cli.run(['whoami'])).code).not.toBe(0);
-    const { token } = await auth<Managed>(page, 'manage', { action: 'create_token', grants: [{ permission: 'admin' }], name: 'Test', days: null });
+    const token = await adminToken(page, 'Test');
     expect(token).toMatch(/^pqd_/);
     expect((await cli.run(['whoami'], token)).code).toBe(0);
     await page.goto('/dashboard/accounts');
