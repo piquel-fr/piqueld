@@ -84,8 +84,9 @@ deployments**.
 
 ![The dashboard's Overview: one healthy application, System status showing the database, Docker Engine and Swarm manager ready, and hello's deployment succeeded](../../images/getting-started/overview.png)
 
-Open **Applications**, then **hello**, then **production**. **Observed
-services** lists `web` with one healthy replica.
+Open **Applications**, then **hello**, then **production** on its
+**Environments** tab. **Observed services** lists `web` with one healthy
+replica.
 
 ![The production environment of hello: its state is Ready, and web is Converged with 1 of 1 replicas healthy](../../images/getting-started/environment.png)
 

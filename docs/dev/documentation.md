@@ -101,13 +101,43 @@ default, and an example.
 Show the dashboard where it helps the reader find their way, such as the first
 time a guide uses a page.
 
-- Take screenshots of a [development instance](development.md) (`just dev`)
-  holding realistic example data, with the browser 1280 pixels wide.
-- Save them as PNG files in `docs/images/<section>/`, named after what they
-  show, and link them with relative paths.
-- Give each one alt text that says what it shows, for readers who can't see
-  it.
-- Retake a screenshot when the page it shows changes.
+Screenshots are generated, never taken by hand, so they always match the
+dashboard. Regenerate them all after changing a page they show:
+
+```console
+just setup-playwright   # once
+just docs-screenshots
+```
+
+The recipe runs the specs in `tests/playwright/screenshots/` with the daemon
+of the [browser tests](https://github.com/piquel-fr/piqueld/tree/main/tests/playwright),
+in a mode where it deploys to an in-memory Docker engine: deployments succeed
+and services report healthy. Each spec seeds example data the way its guide
+does, then saves each page into `docs/images/<section>/`. An image is
+rewritten only when the page looks different, so a run that changes nothing
+leaves the images untouched.
+
+To add a screenshot, extend the spec of its guide, or add a spec for a new
+guide. `screenshots/docs.ts` holds the helpers:
+
+- one helper per page or state, such as `overview`, which waits for its data
+  to settle. Add one for each new page you show.
+- `shoot(page, '<section>/<name>', height)`, which saves the page, 1280 pixels
+  wide, as `docs/images/<section>/<name>.png`. It replaces IDs, digests and
+  dates with fixed ones first, so the images don't change from run to run.
+
+```typescript
+await deployFrom(page, cli, 'user/getting-started/first-app.md');
+await overview(page);
+await shoot(page, 'getting-started/overview', 760);
+```
+
+Link each image with a relative path, and give it alt text that says what it
+shows, for readers who can't see it:
+
+```markdown
+![The dashboard's Overview: one healthy application and its succeeded deployment](../../images/getting-started/overview.png)
+```
 
 ## Links
 
