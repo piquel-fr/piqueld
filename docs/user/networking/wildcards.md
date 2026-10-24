@@ -201,8 +201,10 @@ again once the certificate recovers.
 - **A route or certificate reports `zone <zone> is claimed by more than one
   DNS provider`.** `piquelctl dns refresh` prints the same problem as
   `DNS problem: Zones also claimed by another provider are not used: <zones>`.
-  Two providers list the same zone. Remove the zone from one of the accounts,
-  or one provider from the configuration.
+  Two configured providers can see the same zone. Make sure only one does:
+  narrow one token's zone resources, or remove the duplicate provider from
+  piqueld's configuration, then restart the daemon. Don't delete the zone
+  from your DNS host: that can break the domain's DNS.
 - **A certificate fails with `was not visible on every authoritative
   nameserver`.** The TXT record didn't reach every nameserver within 10
   minutes. piqueld tries again later.

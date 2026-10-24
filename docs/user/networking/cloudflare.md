@@ -62,8 +62,13 @@ list each permission.
    manage_records = true
    ```
 
-3. Rebuild the system, or restart the daemon. piqueld reads the token only
-   when it starts.
+3. Restart the daemon, which reads the token only when it starts. On NixOS,
+   rebuild the system. Elsewhere, reload the unit you edited first:
+
+   ```console
+   sudo systemctl daemon-reload
+   sudo systemctl restart piqueld
+   ```
 
 ### Check that it works
 
@@ -158,8 +163,14 @@ hostnames to it in Cloudflare.
    credentials_file = "cloudflared-tunnel"
    ```
 
-2. Rebuild the system, or restart the daemon. piqueld replaces the gateway to
-   switch to the tunnel, which briefly interrupts your routes.
+2. Restart the daemon. It replaces the gateway to switch to the tunnel, which
+   briefly interrupts your routes. On NixOS, rebuild the system. Elsewhere,
+   reload the unit you edited first:
+
+   ```console
+   sudo systemctl daemon-reload
+   sudo systemctl restart piqueld
+   ```
 
 3. Point each public hostname at the tunnel with a proxied CNAME record to
    `<tunnel-id>.cfargotunnel.com`:
@@ -169,7 +180,8 @@ hostnames to it in Cloudflare.
    ```
 
    If piqueld [manages your DNS records](dns-records.md), it creates them.
-   Otherwise, create them in Cloudflare, or with
+   Otherwise, create them in Cloudflare, or, on the machine where you ran
+   `cloudflared tunnel login`, with
    `cloudflared tunnel route dns piqueld notes.example.com`.
    `piquelctl app route list` shows the record each route needs.
 

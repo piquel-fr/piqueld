@@ -79,8 +79,13 @@ doesn't expire, or replace the keys before they do.
    manage_records = true
    ```
 
-3. Rebuild the system, or restart the daemon. piqueld reads the files only
-   when it starts.
+3. Restart the daemon, which reads the files only when it starts. On NixOS,
+   rebuild the system. Elsewhere, reload the unit you edited first:
+
+   ```console
+   sudo systemctl daemon-reload
+   sudo systemctl restart piqueld
+   ```
 
 ## Check that it works
 

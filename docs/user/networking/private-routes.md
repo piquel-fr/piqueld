@@ -74,7 +74,13 @@ so you can give it its own tags and access rules.
    `hostname` is the node's name on the tailnet: one DNS label, different
    from the name of piqueld's own node.
 
-4. Rebuild the system, or restart the daemon.
+4. Restart the daemon. On NixOS, rebuild the system. Elsewhere, reload the
+   unit you edited first:
+
+   ```console
+   sudo systemctl daemon-reload
+   sudo systemctl restart piqueld
+   ```
 
 5. On the host, check that the node joined the tailnet, and note its
    addresses:
@@ -131,8 +137,9 @@ from the server, without crossing the tailnet.
 From a device on your tailnet, open `https://admin.example.com`: your service
 answers, and sees the device's tailnet address in `X-Forwarded-For`. From a
 device off the tailnet, the connection fails. On your server's public address,
-HTTPS connections for the hostname fail, since the gateway has no certificate
-for it there, and plain HTTP gets a 404.
+plain HTTP for the hostname gets a 404, and HTTPS fails, since the gateway has
+no certificate for it there. If a public wildcard route covers the hostname,
+HTTPS connects with the wildcard's certificate and also gets a 404.
 
 ## Make an environment's routes private
 
@@ -210,8 +217,9 @@ select **Save changes**, then **Deploy to \<environment>**.
 When you deploy, a route made private leaves the internet as soon as the
 deployment starts. A route made public is published once its service is ready.
 Its DNS records must change too: you update the records piqueld doesn't
-manage. piqueld deletes the ones it manages, then writes the new ones, so the
-hostname briefly doesn't resolve.
+manage, and piqueld updates the ones it manages once the gateway has the new
+routes. It may delete and recreate them on the way, and cached answers can
+delay the change.
 
 ## DNS for private routes
 

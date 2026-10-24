@@ -591,8 +591,10 @@ private routes, enable `[ingress.private]`, deploy a disposable private route,
 and point its A/AAAA records at the node's addresses. From a tailnet device,
 the route must answer over trusted HTTPS, `http://` must redirect, and the
 backend must see the device's tailnet address in `X-Forwarded-For`. From a
-device off the tailnet, connecting must fail, and the same hostname on the
-server's public address must answer 404 without a certificate. The same
+device off the tailnet, connecting must fail. On the server's public address,
+plain HTTP for the hostname must answer 404, and HTTPS must fail during the
+TLS handshake, unless a public wildcard covers the hostname: then TLS succeeds
+with the wildcard's certificate and the request gets 404. The same
 applies to the dashboard hostname: from a tailnet device, the website must
 load over trusted HTTPS, passkey login must work, and the audit trail must name
 the device's tailnet user.
