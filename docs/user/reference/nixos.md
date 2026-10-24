@@ -65,7 +65,7 @@ to the socket without sudo. Membership permits only a socket connection; run
 `piquelctl login` to authenticate an account before `piquelctl status` or other
 API operations. It grants no direct access to private state or permission to
 replace the socket. Root (`sudo piquelctl …`) and the `piqueld` user act as the
-[host operator](../accounts/authentication.md#the-host-operator) without logging in.
+[host operator](../accounts/recovery.md#the-host-operator) without logging in.
 Only the existing `piqueld.service` is needed; no proxy or socket unit is required.
 
 Custom `runtimeDir` values must be dedicated directories below `/run`. Configure
@@ -92,7 +92,7 @@ Tailscale is unavailable at startup, piqueld warns and requires a restart to
 activate remote listening. Ensure your firewall and tailnet policy permit the
 selected port on the Tailscale interface. All callers must authenticate. Configure
 `settings.auth.public_url` with a stable HTTPS hostname and terminate TLS externally;
-see [authentication](../accounts/authentication.md).
+see [your own reverse proxy](../getting-started/install.md#your-own-reverse-proxy).
 
 For HTTPS without a proxy, let piqueld join the tailnet as its own node instead.
 piqueld runs a dedicated, unprivileged `tailscaled` from

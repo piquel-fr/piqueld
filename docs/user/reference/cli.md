@@ -787,7 +787,7 @@ It runs in the application's only environment; with several, `--env ENV` names
 one. `preview exec` runs it in a preview instead, addressed like `preview logs`. The command runs inside the task, so it shares the task's image, environment,
 secrets, mounts and networks. It works over every transport, uses account
 authentication and needs no SSH access; the account (or token) needs
-[`apps:exec`](../accounts/authorization.md) on the application. Output streams to stdout and stderr, and
+[`apps:exec`](../accounts/permissions.md) on the application. Output streams to stdout and stderr, and
 `piquelctl` exits with the command's exit code. `-i` forwards standard input.
 `-t` allocates a terminal, implies `-i`, requires a terminal on standard input
 and puts it in raw mode, so Ctrl-C reaches the command. `--timeout` bounds the
@@ -875,7 +875,7 @@ link (`--open` also opens it in the default browser); only the Unix socket serve
 it. Use `piquelctl login` for passkey login through the browser, `whoami` to inspect
 the current account and its grants, and `logout` to revoke it. On the daemon host,
 root and the daemon's own user need no login: without a token, they act over the
-Unix socket as the [host operator](../accounts/authentication.md#the-host-operator), with
+Unix socket as the [host operator](../accounts/recovery.md#the-host-operator), with
 `admin` on every application, and `whoami` prints `host operator (uid 0)`. Run
 that way, `piquelctl sign-in-link` prints a one-time link (valid for 10
 minutes) that signs a browser in as the host operator for 12 hours; it raises a
@@ -885,7 +885,7 @@ lists accounts (and live host operator browser sessions), replaces their grants
 and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
 manages API tokens for your account (`--tailnet` binds one to a tailnet user
 or tag), and `login` accepts the same grant options
-to ask for a limited session; see [authorization](../accounts/authorization.md).
+to ask for a limited session; see [authorization](../accounts/permissions.md).
 `piquelctl audit` reads the [audit trail](../guides/observability.md#audit-trail), one line
 per request with the application or environment it addressed, filtered
 by `--user` (a username, or any account ID, including a deleted account's),
@@ -893,9 +893,9 @@ by `--user` (a username, or any account ID, including a deleted account's),
 [hash chain](../guides/observability.md#tamper-evidence). When no administrator can sign
 in, `sudo piquelctl recover-admin` on the daemon host prints a one-time link
 that creates a new administrator; see
-[recovering administrator access](../accounts/authentication.md#recovering-administrator-access). Saved credentials are separate
+[recovering administrator access](../accounts/recovery.md#no-administrator-can-sign-in). Saved credentials are separate
 from profiles. `PIQUELD_TOKEN` supplies an automation token; `--account` selects
-a saved account. See [authentication](../accounts/authentication.md) for details.
+a saved account. See [signing in from the CLI](../accounts/cli-and-tokens.md) for details.
 
 `app deploy` and `env deploy` fetch a repository-backed environment's manifest
 from its branch, then explicitly resolve image or Git build sources. They

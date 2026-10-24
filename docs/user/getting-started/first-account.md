@@ -37,7 +37,7 @@ leak.
 The dashboard opens, signed in. Your account has `admin` on every application.
 The link only works once: when the first account exists, setup is closed for
 good. Invite other people from the dashboard's **Accounts** page; see
-[accounts and invitations](../accounts/authentication.md#accounts-and-invitations).
+[accounts and invitations](../accounts/accounts.md#invite-someone).
 
 To sign in later, open the dashboard and select **Sign in with a passkey**.
 You don't need to type your username.
@@ -46,7 +46,7 @@ You don't need to type your username.
 
 On the host, `piquelctl` connects to the daemon's socket. Root doesn't need to
 sign in there: `sudo piquelctl` acts as the
-[host operator](../accounts/authentication.md#the-host-operator). Members of
+[host operator](../accounts/recovery.md#the-host-operator). Members of
 the `piqueld` group sign in as themselves.
 
 On another machine, first tell `piquelctl` the dashboard's address, in the
@@ -88,7 +88,7 @@ Next, [deploy your first application](first-app.md).
 
 - **`piquelctl setup-link` says setup is already completed.** An account
   exists already. If nobody can sign in with it any more, see
-  [recovering administrator access](../accounts/authentication.md#recovering-administrator-access).
+  [recovering administrator access](../accounts/recovery.md#no-administrator-can-sign-in).
 - **The browser won't create or use the passkey.** Passkeys need HTTPS, or
   `localhost`, and only work at the address they were created on: the one you
   [chose when installing piqueld](install.md#choose-how-to-reach-the-dashboard).

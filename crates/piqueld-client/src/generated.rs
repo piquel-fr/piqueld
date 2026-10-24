@@ -9767,7 +9767,7 @@ impl Client {
       stream ends and history must be reloaded before reconnecting;
     - a final `access_ended` message whose data is the `ErrorBody` of the
       request that would now be refused, once the caller loses access (see
-      docs/user/accounts/authorization.md for how soon).
+      docs/user/accounts/permissions.md for how soon).
 
     The stream also ends, without a message, when the daemon shuts down.
 
