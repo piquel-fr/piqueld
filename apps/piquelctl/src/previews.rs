@@ -24,59 +24,86 @@ use piqueld_client::{
 // `preview` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum PreviewCommand {
-    /// Create and deploy a preview of a branch of the manifest repository. For
-    /// an existing preview of that branch and slot, show it without redeploying.
+    /// Create a preview of a branch and deploy it.
+    ///
+    /// Only for repository-backed applications. If the preview of that
+    /// branch and slot already exists, the command shows it and its latest
+    /// deployment without deploying it again. It fails when a new preview
+    /// would exceed the daemon's preview limits.
     Create {
         /// Application name or stable ID.
         application: String,
-        /// Branch to deploy.
+        /// Branch of the manifest repository to deploy.
         #[arg(long)]
         branch: String,
-        /// Distinguishes several previews of one branch, e.g. one per agent.
+        /// Distinguishes several previews of one branch, such as one per
+        /// agent: 1 to 63 lowercase letters, digits, or hyphens, starting
+        /// with a letter and ending with a letter or digit.
         #[arg(long)]
         slot: Option<String>,
-        /// Return after the daemon accepts the deployment.
+        /// Return once the daemon accepts the deployment, without waiting for
+        /// it to finish.
         #[arg(long)]
         no_wait: bool,
     },
-    /// Deploy the head of a preview's branch again, or with `--local` a
-    /// snapshot of the current Git worktree.
+    /// Deploy the head of a preview's branch again, or a snapshot of your Git
+    /// worktree with `--local`.
+    ///
+    /// Deploying the branch's head replaces a local snapshot the preview runs.
     Deploy(DeployArgs),
     /// List an application's previews with their status and branch state.
     List {
         /// Application name or stable ID.
         application: String,
     },
-    /// Show one preview, its URLs, and whether its branch exists, moved, or is gone.
+    /// Show one preview, its URLs, and the state of its branch.
+    ///
+    /// The branch is `exists`, `moved` (past the deployed commit), `gone`,
+    /// `local` (the preview runs or is deploying a local snapshot), or
+    /// `unknown` (the repository can't be read).
     Show(PreviewArgs),
-    /// Read a bounded snapshot of a preview's Docker logs.
+    /// Print the most recent lines of a preview's Docker logs.
     Logs {
         #[command(flatten)]
         target: PreviewArgs,
         #[command(flatten)]
         window: LogArgs,
     },
-    /// Wait until a deployment of a preview is ready. Exits 3 if a newer
-    /// deployment supersedes it, 5 if it fails, and 4 at `--timeout`.
+    /// Wait until a deployment of a preview is ready.
+    ///
+    /// The command never follows a newer deployment. It exits with code 3 if
+    /// a newer deployment or the preview's deletion supersedes it, 5 if it
+    /// fails, and 4 when `--timeout` runs out. Builds usually take longer
+    /// than the default `--timeout`.
     Wait(WaitArgs<PreviewArgs>),
     /// Print the URLs of a preview's routes, and whether each is ready.
     Url(UrlArgs<PreviewArgs>),
     /// Run a one-off command in a running task of a preview's service,
     /// streaming its output.
+    ///
+    /// `piquelctl` exits with the command's exit code. `--timeout` limits
+    /// each request, not the session.
     Exec(ExecArgs<PreviewArgs>),
-    /// Confirm and delete a preview with every volume it ever created.
+    /// Delete a preview and every volume it created.
+    ///
+    /// The volumes' data is lost. The command asks for confirmation and
+    /// waits until the preview is gone.
     Delete {
         #[command(flatten)]
         target: PreviewArgs,
         #[command(flatten)]
         flags: PreviewDeletionFlags,
     },
-    /// Confirm and delete the previews whose branch the repository confirms
-    /// is gone. Previews whose branch state is unknown are kept.
+    /// Delete the previews whose branch is gone from the repository.
+    ///
+    /// The command lists them and asks for confirmation. The daemon checks
+    /// each branch again and keeps any preview it can no longer confirm is
+    /// gone. Previews whose branch state is `unknown` or `local` are kept.
+    /// Their volumes are deleted with them.
     Prune {
         /// Application name or stable ID.
         application: String,
-        /// Select previews whose branch no longer exists.
+        /// Select the previews whose branch no longer exists. Required.
         #[arg(long, required = true)]
         branch_gone: bool,
         #[command(flatten)]
@@ -84,47 +111,56 @@ pub(crate) enum PreviewCommand {
     },
 }
 
-/// What `preview deploy` deploys, and where.
+// What `preview deploy` deploys, and where.
 #[derive(Debug, Args)]
 pub(crate) struct DeployArgs {
     /// Application name or stable ID.
     application: String,
-    /// Preview ID, slug, or branch. With `--local`, the preview of the
-    /// current branch is used instead.
+    /// Preview ID, slug, or branch. Omit it with `--local`.
     #[arg(required_unless_present = "local", conflicts_with = "local")]
     preview: Option<String>,
-    /// The preview's slot, when addressing it by branch or with `--local`.
+    /// The preview's slot. Give it to address a preview with a slot by its
+    /// branch, or to choose the preview `--local` deploys to.
     #[arg(long)]
     slot: Option<String>,
-    /// Deploy a snapshot of the current Git worktree: its committed,
-    /// uncommitted, and untracked files, except ignored ones, which are sent
-    /// only as committed. Lists the uncommitted files it sends. Creates the
-    /// preview of its branch and `--slot` if needed. Never changes the
-    /// repository.
+    /// Deploy a snapshot of the Git worktree of the current directory,
+    /// without pushing it.
+    ///
+    /// The snapshot has the worktree's committed, uncommitted, and untracked
+    /// files. Ignored files are left out, or sent as committed when they are
+    /// tracked. The command lists the uncommitted files it sends, and deploys
+    /// to the preview of the current branch and `--slot`, creating it if
+    /// needed. Your repository is never changed. A large first upload may
+    /// need a longer `--timeout`.
     #[arg(long)]
     local: bool,
-    /// Upload every commit of HEAD with the snapshot, for a daemon that
-    /// cannot fetch a base from the application's repository. Without it,
-    /// only the commits since a pushed base are sent.
+    /// Upload every commit of `HEAD` with the snapshot.
+    ///
+    /// By default, the command sends only the commits since the nearest
+    /// ancestor of `HEAD` that a remote-tracking branch has, and the daemon
+    /// fetches that ancestor from the application's repository. Use this
+    /// when there is no such ancestor, or the daemon can't fetch it.
     #[arg(long, requires = "local")]
     full_history: bool,
-    /// The branch the snapshot is deployed as, instead of the current one;
-    /// required when HEAD is detached.
+    /// Deploy the snapshot as the preview of this branch instead of the
+    /// current one. Required when `HEAD` is detached.
     #[arg(long, requires = "local")]
     branch: Option<String>,
-    /// Return after the daemon accepts the deployment.
+    /// Return once the daemon accepts the deployment, without waiting for it
+    /// to finish.
     #[arg(long)]
     no_wait: bool,
 }
 
-/// An application and one of its previews.
+// An application and one of its previews.
 #[derive(Debug, Args)]
 pub(crate) struct PreviewArgs {
     /// Application name or stable ID.
     application: String,
-    /// Preview ID, slug, or branch.
+    /// Preview ID, slug, or branch, matched in that order.
     preview: String,
-    /// The preview's slot, when addressing it by branch.
+    /// The preview's slot. Needed to address a preview with a slot by its
+    /// branch.
     #[arg(long)]
     slot: Option<String>,
 }
@@ -132,10 +168,11 @@ pub(crate) struct PreviewArgs {
 // Confirmation and waiting flags for preview deletions.
 #[derive(Debug, Args)]
 pub(crate) struct PreviewDeletionFlags {
-    /// Skip the interactive confirmation prompt.
+    /// Skip the confirmation prompt. You need it when not on a terminal.
     #[arg(long)]
     yes: bool,
-    /// Return after the daemon accepts the deletion.
+    /// Return once the daemon accepts the deletion, without waiting for it
+    /// to finish.
     #[arg(long)]
     no_wait: bool,
 }

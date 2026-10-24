@@ -197,13 +197,13 @@ pub(crate) async fn wait_for_accepted(
     })
 }
 
-/// How ready `wait` waits for a deployment to be.
+// How ready `wait` waits for a deployment to be; `///` on variants is help.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum Readiness {
-    /// The deployment succeeded, and its runtime is observed with every
-    /// service healthy.
+    /// The deployment succeeded, and the daemon observes every service
+    /// healthy.
     Runtime,
-    /// Runtime, and every URL of its rendered routes is ready.
+    /// As `runtime`, and every URL of its routes is ready.
     Routes,
 }
 
@@ -237,13 +237,11 @@ pub(crate) trait Target {
 pub(crate) struct WaitArgs<T: Args> {
     #[command(flatten)]
     target: T,
-    /// Deployment to wait for; by default the latest one when `wait` starts.
-    /// A newer deployment ends the wait with exit code 3.
-    #[arg(long)]
+    /// ID of the deployment to wait for. By default, the latest deployment
+    /// when the command starts.
+    #[arg(long, value_name = "ID")]
     deployment: Option<String>,
-    /// `runtime`: it succeeded and its runtime is observed with every service
-    /// healthy;
-    /// `routes`: also every URL of its routes is ready.
+    /// How ready the deployment must be before the command returns.
     #[arg(long, value_enum, default_value_t = Readiness::Runtime)]
     ready: Readiness,
 }
@@ -334,8 +332,9 @@ fn superseded(deployment: &str, newer: Option<&str>) -> CliError {
 pub(crate) struct UrlArgs<T: Args> {
     #[command(flatten)]
     target: T,
-    /// Only the URL of the route with this name.
-    #[arg(long)]
+    /// Print only the URL of the route with this name, with a warning while
+    /// it is pending.
+    #[arg(long, value_name = "NAME")]
     route: Option<String>,
 }
 

@@ -1,8 +1,16 @@
 //! Generates or checks the `OpenAPI` specification, its Rust client bindings,
-//! and the standalone application manifest JSON Schema.
+//! the standalone application manifest and daemon configuration JSON
+//! Schemas, and the documentation's configuration reference. `piquelctl`'s
+//! `cli_reference` example renders the command reference; it depends on the
+//! client this generates, so it runs as a separate step.
+
+mod config_reference;
 
 use anyhow::{Context, Result, anyhow, ensure};
+use config_reference::ConfigReference;
 use piqueld::api::http::openapi_document;
+use piqueld::config::DaemonConfig;
+use piqueld_core::generated::Artifacts;
 use piqueld_core::manifest::ApplicationManifest;
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,7 +18,6 @@ use std::{
     collections::BTreeSet,
     fs,
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -34,19 +41,19 @@ struct Replacement {
     rust_type: String,
 }
 
-/// Runs both stages before updating either checked-in artifact.
+/// Renders every artifact before writing or checking any of them.
 struct Generator {
-    /// Repository root that artifact paths are relative to.
-    root: PathBuf,
+    /// Where the artifacts go, and whether to check them instead.
+    artifacts: Artifacts,
 }
 
 impl Generator {
-    /// Renders the `OpenAPI` document and generated client, then writes both, or
-    /// with `check` compares them against the checked-in files and fails listing
-    /// any that are stale or missing.
+    /// Renders all the artifacts, then writes them, or in check mode compares
+    /// them against the checked-in files and fails listing any that are stale
+    /// or missing.
     ///
-    /// Every path must live under `/api/`.
-    fn run(&self, check: bool) -> Result<()> {
+    /// Every `OpenAPI` path must live under `/api/`.
+    fn run(&self) -> Result<()> {
         let document = openapi_document();
         let paths = document
             .get("paths")
@@ -60,8 +67,12 @@ impl Generator {
         }
 
         let config: Config = serde_json::from_slice(
-            &fs::read(self.root.join("tools/client-codegen/config.json"))
-                .context("read Progenitor configuration")?,
+            &fs::read(
+                self.artifacts
+                    .root()
+                    .join("tools/client-codegen/config.json"),
+            )
+            .context("read Progenitor configuration")?,
         )
         .context("parse Progenitor configuration")?;
         let client = self.generate_client(document.clone(), &config)?;
@@ -70,36 +81,17 @@ impl Generator {
             "{}\n",
             serde_json::to_string_pretty(&ApplicationManifest::json_schema())?
         );
+        let config_schema = DaemonConfig::json_schema();
+        let config_reference = ConfigReference::render(&config_schema)?;
+        let config_schema = format!("{}\n", serde_json::to_string_pretty(&config_schema)?);
 
-        let artifacts = [
+        self.artifacts.sync([
             ("docs/openapi-v1.json", document),
             ("docs/application-manifest.schema.json", manifest_schema),
+            ("docs/piqueld-config.schema.json", config_schema),
             ("crates/piqueld-client/src/generated.rs", client),
-        ];
-        let mut stale = Vec::new();
-        for (relative, contents) in artifacts {
-            let path = self.root.join(relative);
-            if check {
-                match fs::read_to_string(&path) {
-                    Ok(existing) if existing == contents => println!("{relative} is up to date"),
-                    Ok(_) => stale.push(relative),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        stale.push(relative);
-                    }
-                    Err(error) => {
-                        return Err(error).with_context(|| format!("read {}", path.display()));
-                    }
-                }
-            } else {
-                fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
-                println!("wrote {relative}");
-            }
-        }
-        ensure!(
-            stale.is_empty(),
-            "generated artifacts are out of date: {}; run just generate",
-            stale.join(", ")
-        );
+            (ConfigReference::PATH, config_reference),
+        ])?;
         Ok(())
     }
 
@@ -147,7 +139,7 @@ impl Generator {
     fn rustfmt(&self, source: &str) -> Result<String> {
         let mut child = Command::new("rustfmt")
             .args(["--edition", "2024", "--emit", "stdout", "--config-path"])
-            .arg(&self.root)
+            .arg(self.artifacts.root())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -273,16 +265,8 @@ impl Generator {
 }
 
 fn main() -> Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    ensure!(
-        args.is_empty() || args == ["--check"],
-        "usage: generate_openapi [--check]"
-    );
     Generator {
-        root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .context("locate repository root")?,
+        artifacts: Artifacts::from_args()?,
     }
-    .run(!args.is_empty())
+    .run()
 }

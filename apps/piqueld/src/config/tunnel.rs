@@ -10,7 +10,7 @@
 //! The credentials file is read once at startup, like other `_file` settings,
 //! and must hold the tunnel's `AccountTag`, `TunnelSecret` and `TunnelID`.
 
-use super::{Credential, CredentialError, CredentialFile};
+use super::{Credential, CredentialError, CredentialFile, schema_from_raw};
 use serde::Deserialize;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -78,13 +78,23 @@ impl TunnelCredentials {
     }
 }
 
-/// `[ingress.tunnel]` as written.
-#[derive(Default, Deserialize)]
+/// A Cloudflare Tunnel that serves public routes instead of the host's ports
+/// 80 and 443, which are then closed. Each public hostname needs a proxied
+/// CNAME record to `<tunnel-id>.cfargotunnel.com`, and Cloudflare sees
+/// public traffic in plaintext.
+//
+// The table as written.
+#[derive(Default, Deserialize, utoipa::ToSchema)]
 #[serde(default, deny_unknown_fields)]
 struct RawTunnelConfig {
+    /// Serve public routes through the tunnel. Requires `credentials_file`.
     enabled: bool,
+    /// The tunnel's credentials file, which `cloudflared tunnel create`
+    /// writes. It is read only while the tunnel is enabled.
     credentials_file: Option<CredentialFile>,
 }
+
+schema_from_raw!(TunnelConfig => RawTunnelConfig);
 
 impl TryFrom<RawTunnelConfig> for TunnelConfig {
     type Error = TunnelConfigError;

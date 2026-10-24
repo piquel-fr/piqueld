@@ -11,21 +11,30 @@ use utoipa::ToSchema;
 ///
 /// Counts are checked when a preview is created, so lowering one below the
 /// current count keeps every existing preview running and only refuses new
-/// ones. Bounds apply when a preview's manifest is rendered, so a preview
-/// picks up changed bounds on its next deployment.
+/// ones. Resource bounds apply when a preview's manifest is rendered, so a
+/// preview picks up changed bounds on its next deployment. Environments are
+/// never bounded.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PreviewLimits {
-    /// Previews one application may have.
+    /// Previews one application may have; creating more fails with
+    /// `preview_limit_reached`. `0` refuses every new preview.
     pub max_per_application: u32,
-    /// Previews the whole installation may have.
+    /// Previews the whole installation may have; creating more fails with
+    /// `preview_limit_reached`. `0` refuses every new preview.
     pub max_total: u32,
     /// CPU limit, in millicores, of preview services that set none.
+    // The bounds are `MAX_CPU_MILLIS`, which `validate` enforces.
+    #[schema(minimum = 1, maximum = 1_048_576)]
     pub default_cpu_millis: u32,
     /// Memory limit, in bytes, of preview services that set none.
+    // `i64::MAX`, which `validate` enforces; the attribute takes literals only.
+    #[schema(minimum = 1, maximum = 9_223_372_036_854_775_807_i64)]
     pub default_memory_bytes: u64,
     /// Most replicas a preview service runs; manifests asking for more are
     /// capped with a warning.
+    // The bounds are `REPLICAS`, which `validate` enforces.
+    #[schema(minimum = 1, maximum = 100)]
     pub max_replicas: u16,
 }
 

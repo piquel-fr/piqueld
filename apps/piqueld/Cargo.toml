@@ -15,7 +15,7 @@ openapi-codegen = ["dep:prettyplease", "dep:progenitor", "dep:syn"]
 
 [[bin]]
 name = "generate_openapi"
-path = "src/bin/generate_openapi.rs"
+path = "src/bin/generate_openapi/main.rs"
 required-features = ["openapi-codegen"]
 
 [dependencies]

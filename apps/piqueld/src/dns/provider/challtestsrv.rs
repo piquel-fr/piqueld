@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 /// A `challtestsrv` management API serving fixed zones.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, utoipa::ToSchema)]
 pub struct Challtestsrv {
     /// Management API base URL, such as `http://127.0.0.1:8055`.
     pub(crate) management: String,

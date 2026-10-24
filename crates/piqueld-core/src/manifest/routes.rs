@@ -11,7 +11,9 @@ use std::{fmt, num::NonZeroU16};
 use utoipa::ToSchema;
 
 validated_string!(
-    /// Canonical ASCII public DNS hostname; Unicode domains use their IDNA form.
+    /// A fully qualified public DNS name, such as `app.example.com`, in
+    /// lowercase ASCII, without a scheme, port, path or wildcard. Write
+    /// Unicode domains in their IDNA (Punycode) form.
     Hostname, HostnameError,
     "hostname must be an exact public DNS name (use ASCII/Punycode, without a scheme, path, wildcard, or port)",
     |value: &str| value.len() <= 253

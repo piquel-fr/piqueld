@@ -2596,6 +2596,7 @@ dependencies = [
  "indicatif",
  "parking_lot",
  "piqueld-client",
+ "piqueld-core",
  "rustix",
  "serde",
  "serde_json",

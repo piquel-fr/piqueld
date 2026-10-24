@@ -48,6 +48,67 @@ fn host_paths_and_listener_settings_are_validated() {
     }
 }
 
+/// The schema's ranges are enforced when the configuration loads, in every
+/// table, so the published schema and settings reference never accept a
+/// value loading refuses.
+#[test]
+fn schema_ranges_are_enforced() {
+    /// Checks the ranges of the settings in `schema`, the table at `path`
+    /// (`ingress.acme`), and in its subtables, returning how many it
+    /// checked. The entries of an `array` table, such as `[[dns.providers]]`,
+    /// need settings this cannot fill in, so they must have no range.
+    fn check(definitions: &Value, schema: &Value, path: &str, array: bool) -> usize {
+        let schema = match schema["$ref"].as_str() {
+            Some(reference) => &definitions[reference.trim_start_matches("#/definitions/")],
+            None => schema,
+        };
+        let mut checked = ["allOf", "oneOf"]
+            .into_iter()
+            .flat_map(|key| schema[key].as_array().into_iter().flatten())
+            .map(|member| check(definitions, member, path, array))
+            .sum();
+        for (setting, property) in schema["properties"].as_object().into_iter().flatten() {
+            let (nested, array) = match property["type"].as_str() {
+                Some("array") => (&property["items"], true),
+                _ => (property, array),
+            };
+            if nested.get("$ref").is_some() || nested.get("oneOf").is_some() {
+                let path = if path.is_empty() {
+                    setting.clone()
+                } else {
+                    format!("{path}.{setting}")
+                };
+                checked += check(definitions, nested, &path, array);
+                continue;
+            }
+            let load =
+                |value: u64| DaemonConfig::from_toml(&format!("[{path}]\n{setting} = {value}"));
+            let minimum = property["minimum"].as_u64().filter(|minimum| *minimum > 0);
+            let maximum = property["maximum"].as_u64();
+            for (bound, outside) in [
+                (minimum, minimum.map(|minimum| minimum - 1)),
+                (maximum, maximum.map(|maximum| maximum + 1)),
+            ] {
+                let (Some(bound), Some(outside)) = (bound, outside) else {
+                    continue;
+                };
+                assert!(
+                    !array,
+                    "{path}.{setting}: ranges in array tables go unchecked"
+                );
+                assert!(load(bound).is_ok(), "{path}.{setting} rejects {bound}");
+                assert!(load(outside).is_err(), "{path}.{setting} accepts {outside}");
+                checked += 1;
+            }
+        }
+        checked
+    }
+
+    let schema = DaemonConfig::json_schema();
+    let checked = check(&schema["definitions"], &schema, "", false);
+    assert!(checked > 10, "only {checked} bounds were found");
+}
+
 #[test]
 fn tcp_defaults_to_off_with_or_without_a_server_table() {
     for source in ["", "[server]", "[server]\ndata_dir = '/tmp/p'"] {

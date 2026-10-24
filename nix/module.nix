@@ -377,7 +377,7 @@ in
           checkouts.max_bytes = lib.mkOption {
             type = lib.types.ints.positive;
             default = 4294967296;
-            description = "Most bytes the working trees of all Git checkouts may take at once; a checkout waits for room, and a larger one, or a local snapshot that would be, is refused.";
+            description = "Most bytes all Git checkouts, history and working tree, may take at once; a checkout waits for room, and a larger one, or a local snapshot that would be, is refused.";
           };
           telemetry.endpoint = lib.mkOption {
             type = lib.types.nullOr (lib.types.strMatching "(https?://|unix:///).+");

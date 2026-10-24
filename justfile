@@ -60,9 +60,11 @@ doc-test:
 deny:
     @cargo deny check
 
-# Check generated artifacts against freshly generated endpoint and manifest metadata.
+# Check generated artifacts against freshly generated endpoint, manifest,
+# configuration, and command-line metadata.
 openapi-check:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi -- --check
+    @cargo run --package piquelctl --example cli_reference -- --check
 
 boundary:
     @cargo xtask boundary
@@ -93,9 +95,12 @@ dev *ARGS:
 ctl *ARGS:
     @cargo xtask dev ctl "$@"
 
-# Generate the OpenAPI document, client, and manifest JSON Schema together.
+# Generate the OpenAPI document and client, the manifest and configuration JSON
+# Schemas, and the configuration reference page together, then the CLI
+# reference page, whose generator builds on the regenerated client.
 generate:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
+    @cargo run --package piquelctl --example cli_reference
 
 # Builds the documentation book into target/book, failing on any mdBook
 # warning, then checks every link and heading anchor in it and in the
