@@ -663,7 +663,7 @@ record no history. Health changes of the gateway or the apps node are recorded
 as `ingress_unavailable` diagnostics. With `daemon_failures` notifications
 enabled, a gateway or apps node that stays unhealthy past the failure threshold
 notifies, and its recovery follows; see
-[observability](observability.md).
+[notifications](../operations/notifications.md#when-piqueld-notifies).
 
 Deployed route status is separate from application health. A `ready` public route
 means an HTTPS request from the daemon validated a publicly trusted certificate and

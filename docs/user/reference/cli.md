@@ -134,7 +134,7 @@ deployment stays until the branch moves. `env sync … off` opts it out again;
 `env sync` needs no revision and asks no confirmation. Turning sync on, or
 opting in while it is on, needs `apps:deploy` too.
 
-`notification` manages [notification destinations](../guides/observability.md#notifications).
+`notification` manages [notification destinations](../operations/notifications.md).
 `notification set NAME` creates a destination, or changes one; options it
 omits keep the current settings, and a new destination receives every category
 but `deployment_succeeded` about every application, without previews. The URL is read from `--url-file`
@@ -162,7 +162,7 @@ first, and `retry ID` retries a failed one. Changing destinations needs
 and retrying `system:operate`.
 
 `env telemetry APP ENV on` grants an environment the daemon's
-[telemetry](../guides/observability.md#receiving-telemetry-in-an-application): its
+[telemetry](../operations/telemetry.md#receive-telemetry-in-an-application): its
 receiving service, marked with `app service telemetry APP SERVICE on`, gets
 the traces, metrics and logs of every application. It needs `telemetry:grant`,
 which no preset includes. `off` revokes it, which stops export at once. Either
@@ -886,11 +886,11 @@ and passkey enrollment (`enroll`) links. `piquelctl token create|list|revoke`
 manages API tokens for your account (`--tailnet` binds one to a tailnet user
 or tag), and `login` accepts the same grant options
 to ask for a limited session; see [authorization](../accounts/authorization.md).
-`piquelctl audit` reads the [audit trail](../guides/observability.md#audit-trail), one line
+`piquelctl audit` reads the [audit trail](../operations/audit.md), one line
 per request with the application or environment it addressed, filtered
 by `--user` (a username, or any account ID, including a deleted account's),
 `--credential`, and `--outcome`; `piquelctl audit verify` checks its
-[hash chain](../guides/observability.md#tamper-evidence). When no administrator can sign
+[hash chain](../operations/audit.md#check-that-nobody-changed-it). When no administrator can sign
 in, `sudo piquelctl recover-admin` on the daemon host prints a one-time link
 that creates a new administrator; see
 [recovering administrator access](../accounts/authentication.md#recovering-administrator-access). Saved credentials are separate

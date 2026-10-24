@@ -20,7 +20,7 @@ Applications, and Builds; the Observe section (Events, Errors, Analytics,
 Notifications); and the System section (Daemon status, Host settings, Accounts,
 Audit). Notifications, Daemon status and Host settings need `system:read`;
 retrying a failed notification delivery needs `system:operate`.
-Notifications lists [destinations](guides/observability.md#notifications) and
+Notifications lists [destinations](operations/notifications.md) and
 deliveries. With `notifications:manage` it adds, edits, tests and deletes
 destinations: their kind, URL (write-only), categories with an optional message
 each, applications and previews.
@@ -176,7 +176,7 @@ events such as edits and renames; a deleted environment's events remain until
 the application is deleted. Events has an **Errors only** filter. An environment's Overview shows the runtime status, the latest operation,
 a URLs card, a Links card when it imports services or others import its
 services, a Telemetry card when it is granted the daemon's
-[telemetry](guides/observability.md#receiving-telemetry-in-an-application) or
+[telemetry](operations/telemetry.md#receive-telemetry-in-an-application) or
 deploys a service receiving it (whether it is granted, which service receives
 it, and whether the daemon is connected), observed services, and
 reconciliation diagnostics. The Links card
@@ -250,11 +250,11 @@ those sessions act with `admin` on everything, only accounts holding that can
 revoke them. When the session expires or is revoked, the dashboard asks to sign
 in again over the current page, keeping unsaved edits; signing in as another
 account or the host operator reloads the dashboard without them.
-The Audit page shows the [audit trail](guides/observability.md#audit-trail), naming the
+The Audit page shows the [audit trail](operations/audit.md), naming the
 application or environment each request addressed, and each
 session or token links to its own activity. New tokens can be bound to a
 tailnet user or tag; see [tailnet-bound tokens](accounts/authorization.md#tailnet-bound-tokens). With `audit:read`, **Verify
-integrity** checks the trail's [hash chain](guides/observability.md#tamper-evidence). Log display preferences persist in browser
+integrity** checks the trail's [hash chain](operations/audit.md#check-that-nobody-changed-it). Log display preferences persist in browser
 local storage. See [authentication](accounts/authentication.md).
 
 The application's **Secrets** tab lists the secret store's names, versions and
@@ -404,6 +404,7 @@ prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
 
-See [observability](guides/observability.md) for diagnostic history, daemon statistics, analytics, telemetry
-export and webhook delivery configuration.
+See [history and diagnostics](operations/history.md) for history, daemon
+statistics and analytics, [telemetry](operations/telemetry.md) for telemetry
+export, and [notifications](operations/notifications.md) for webhook delivery.
 

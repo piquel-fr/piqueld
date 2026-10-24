@@ -137,10 +137,10 @@ approve CLI logins. The dashboard shows it as "Host operator" and hides those
 actions. It is not an account, so every account rule still holds: in particular,
 some account must keep `admin` and a passkey.
 
-**How it is recorded.** History and the [audit trail](../guides/observability.md#audit-trail)
+**How it is recorded.** History and the [audit trail](../operations/audit.md)
 attribute its requests to the host operator and its Unix user, e.g.
 `host operator (uid 0)`, and to its browser session, if any. Issuing a sign-in
-link raises a [`security` notification](../guides/observability.md#security-notifications)
+link raises a [`security` notification](../operations/audit.md#get-alerted)
 ("A host operator sign-in link was issued over the Unix socket to uid 0"), and
 the daemon logs a warning. Live host operator browser sessions are listed on
 the dashboard's **Accounts** page and by `piquelctl account list`; revoke one
@@ -176,10 +176,10 @@ first account exists; use `piquelctl setup-link` then.
   never logged.
 
 **How it is recorded.** Issuing a link and redeeming it each raise a
-[`security` notification](../guides/observability.md#security-notifications) to
+[`security` notification](../operations/audit.md#get-alerted) to
 administrators ("An admin recovery link was issued over the Unix socket to uid
 0", then "… became an administrator by an admin recovery link"). Both appear in
-daemon history, the request appears in the [audit trail](../guides/observability.md#audit-trail),
+daemon history, the request appears in the [audit trail](../operations/audit.md),
 and the daemon logs a warning. An unexpected recovery notification means
 someone with root on the host is acting; treat it as a host compromise.
 
@@ -269,7 +269,7 @@ renewed. All API listeners require account authentication, regardless of socket
 group membership or Tailscale connectivity; only the
 [host operator](#the-host-operator) on the Unix socket needs none. The daemon
 serves no unauthenticated metrics; it pushes them instead, see
-[telemetry export](../guides/observability.md#telemetry-export).
+[telemetry export](../operations/telemetry.md).
 
 Successful registrations, passkey logins, device approvals (with the requesting
 peer address), and account-management actions are logged at `info` level with the

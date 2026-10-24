@@ -119,7 +119,7 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/applications/{id}/rename` | Rename an idle application without redeployment; 409 `repository_managed` for a repository-backed one |
 | POST | `/api/v1/applications/{id}/environments` | Add an environment: `{ "name": "staging", "branch": "main", "commit": null, "expected_generation": 3 }`; `branch` defaults to the one `spec.manifest` names and requires a repository-backed application. `"promote_from": "env-..."` instead creates a promoted environment; it excludes `branch` and `commit` (400 `source_invalid`). A `commit` without `branch` is 400 `revision_invalid`. 409 `environment_declared` for a name the saved manifest declares |
 | PUT | `/api/v1/environments/{id}/branch` | Follow another branch, or pin or unpin a commit, without redeploying: `{ "branch": "release", "commit": null, "expected_generation": 3 }`; 409 `environment_promoted` for a promoted environment |
-| PUT | `/api/v1/environments/{id}/telemetry` | Grant or revoke an environment's [telemetry](../guides/observability.md#receiving-telemetry-in-an-application): `{ "granted": true }`; needs `telemetry:grant` and no `expected_generation`. Revoking stops export at once. 404 for previews, which are never granted |
+| PUT | `/api/v1/environments/{id}/telemetry` | Grant or revoke an environment's [telemetry](../operations/telemetry.md#receive-telemetry-in-an-application): `{ "granted": true }`; needs `telemetry:grant` and no `expected_generation`. Revoking stops export at once. 404 for previews, which are never granted |
 | PUT | `/api/v1/environments/{id}/sync` | Opt an environment into or out of its application's sync: `{ "enabled": true }`; needs no `expected_generation`, and opting in while it syncs needs `apps:deploy` too. 404 for previews, which follow their application |
 | GET | `/api/v1/applications/{id}/webhook` | `WebhookView`: the payload URL to configure in GitHub (absent until the daemon sets `ingress.webhook_hostname`) and when the secret was generated |
 | POST | `/api/v1/applications/{id}/webhook/secret` | Generate a new webhook secret, replacing the previous one (`apps:write`); the `WebhookSecret` response is the only time it is shown |
@@ -145,7 +145,7 @@ when the complete normalized manifest is needed.
 | DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
-| GET | `/api/v1/events/stream` | Replay and follow history as server-sent events; see [observability](../guides/observability.md#api-and-dashboard) |
+| GET | `/api/v1/events/stream` | Replay and follow history as server-sent events; see [event history](#event-history) |
 | GET | `/api/v1/environments/{id}/exec` | WebSocket streaming a command in a running service task |
 
 ### Local snapshots
@@ -539,7 +539,7 @@ runtime actions. Execution computes its own unredacted plan after preparation.
 Plans cannot freeze mutable tags or runtime state.
 
 Events accept optional `cursor`, `limit` (1–100, default 50), and the filters
-listed in [observability](../guides/observability.md#api-and-dashboard), such as
+listed in [event history](#event-history), such as
 `application_id` and `environment_id`. They survive ordinary operation pruning
 and environment deletion, and are removed with their application.
 Application-level facts (edits, renames) are recorded once, without an
@@ -664,6 +664,46 @@ older environments). A connected import reports the exporter's current name.
 `importers` lists the environments reaching its exported services, only from
 applications the caller can read. Daemons older than links omit the field.
 
+### Event history
+
+Routes require the permissions described in [authorization](../accounts/authorization.md):
+application history, diagnostics, and analytics are limited to the applications a
+caller holds `events:read` on, and daemon history requires `system:read`. See the generated
+[OpenAPI document](../../openapi-v1.json) for exact contracts.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/v1/events` | Cursor pagination and filtering |
+| `GET /api/v1/events/stream` | Replay and follow committed history through SSE |
+| `GET /api/v1/diagnostics/{id}` | Original event and details for an occurrence |
+| `GET /api/v1/system/resources` | Cached process, storage and queue measurements |
+| `GET /api/v1/analytics/deployments` | Deployment outcomes, retries, durations and failure codes |
+| `GET /api/v1/notifications/destinations` | [Notification destinations](../operations/notifications.md), without URLs; `system:read` or `notifications:manage` |
+| `PUT /api/v1/notifications/destinations/{name}` | Create or replace a destination |
+| `DELETE /api/v1/notifications/destinations/{name}` | Delete a destination |
+| `POST /api/v1/notifications/destinations/{name}/test` | Send a test notification now |
+| `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
+| `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy |
+
+Event filters: `application_id` (application-wide events and those of all its
+environments), `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,
+`error_code`, `errors_only`, `scope`, `since_ms`, `until_ms`, and `descending`.
+Pages contain at most 100 records and use opaque `v1:<id>` cursors. Oldest-first
+ordering remains the default. Timestamps are Unix milliseconds.
+
+SSE uses the same filters with oldest-first ordering. Set `Last-Event-ID` to the
+last received SSE ID to reconnect (it takes precedence over `cursor`). Without a
+cursor, replay starts at retained history. When the filter excludes newer
+events, the stream sends an ID-only message so `Last-Event-ID` still advances. A stale resume position receives
+HTTP 410, or a terminal `history_expired` event if pruning happens during the
+stream. A terminal `stream_error` indicates a storage failure. Clients should
+refresh their snapshot before reconnecting after an expired history response.
+Streams recheck the caller's access while open (see
+[authorization](../accounts/authorization.md)): history it may no longer read
+stops arriving, and a caller that lost access entirely receives a terminal
+`access_ended` message whose data is the refusal's `ErrorBody`. Streams end
+without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
+
 ### URL readiness
 
 `EnvironmentDetailView.urls` lists a `RouteUrl` for every route the current
@@ -715,8 +755,10 @@ metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
 Metadata survives operation pruning and is deleted with its environment.
 
-See [observability](../guides/observability.md) for diagnostic history, daemon statistics, analytics, telemetry
-export, and [notification destinations](../guides/observability.md#notifications) and their deliveries.
+See [history and diagnostics](../operations/history.md) for history, daemon
+statistics and analytics, [telemetry](../operations/telemetry.md) for telemetry
+export, and [notifications](../operations/notifications.md) for destinations
+and their deliveries.
 
 Manually set secrets live in one store per application; generated secrets
 belong to their environment. Secret endpoints expose metadata only:
@@ -810,7 +852,7 @@ error or a key file that is not private to the daemon user (fix the host and
 retry the request that failed). Discarded versions are
 marked unavailable; metadata, running Docker services and their secrets are
 preserved. Every application's [webhook secret](../guides/ingress.md#push-webhooks) is deleted
-too; generate a new one. So is every [notification destination](../guides/observability.md#notifications);
+too; generate a new one. So is every [notification destination](../operations/notifications.md);
 create them again. Supplying replacement stored values creates new versions, and an
 explicit new deployment is required to adopt them; that deployment also generates
 new values for discarded generated secrets it mounts. Deployments that need
