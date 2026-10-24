@@ -9,7 +9,10 @@ use crate::{
     },
     support::{read_text, retry_transport},
 };
-use clap::{Args, Subcommand, builder::TypedValueParser};
+use clap::{
+    Args, Subcommand,
+    builder::{PossibleValue, PossibleValuesParser, TypedValueParser},
+};
 use piqueld_client::{
     ApplicationView, ApplyApplicationRequest, ApplyOptions, Build, Client, Export, FileMode,
     FileSource, GitRepository, HealthCheck, Import, Job, JobRun, JobVolumeAccess, Mount, Redirect,
@@ -30,15 +33,21 @@ pub(crate) enum SyncMode {
 }
 
 impl SyncMode {
-    /// Parses `off`, `poll`, or `webhook`, listing them in help and completions.
+    /// Parses `off`, `poll`, or `webhook`, listing them with their help in
+    /// help and completions.
     fn parser() -> impl TypedValueParser<Value = Self> {
-        clap::builder::PossibleValuesParser::new(["off", "poll", "webhook"]).map(
-            |value| match value.as_str() {
-                "poll" => Self::Poll,
-                "webhook" => Self::Webhook,
-                _ => Self::Off,
-            },
-        )
+        PossibleValuesParser::new([
+            PossibleValue::new("off").help("Deploy only when asked."),
+            PossibleValue::new("poll").help("List the branches every `--interval` seconds."),
+            PossibleValue::new("webhook").help(
+                "List the branches when GitHub reports a push (see `app repository webhook`).",
+            ),
+        ])
+        .map(|value| match value.as_str() {
+            "poll" => Self::Poll,
+            "webhook" => Self::Webhook,
+            _ => Self::Off,
+        })
     }
 
     /// The setting, polling every `interval` seconds, by default 300.
@@ -78,9 +87,19 @@ fn key_value(value: &str) -> std::result::Result<(String, String), String> {
         .ok_or_else(|| "expected `=` between the two parts".to_owned())
 }
 
+/// Parses `read-only` or `exclusive`, listing them with their help in help
+/// and completions.
 fn volume_access() -> impl TypedValueParser<Value = JobVolumeAccess> {
-    clap::builder::PossibleValuesParser::new(JobVolumeAccess::ALL.map(JobVolumeAccess::as_str))
-        .map(|value| value.parse().expect("every listed value parses"))
+    crate::cli::one_of!(JobVolumeAccess::ALL, JobVolumeAccess::parse, |access| {
+        match access {
+            JobVolumeAccess::ReadOnly => {
+                "Mount every volume read-only, so the job runs beside the services."
+            }
+            JobVolumeAccess::Exclusive => {
+                "Keep writable volumes writable, and stop every service that mounts one until the rollout."
+            }
+        }
+    })
 }
 
 // Flags shared by every edit: deployment, generation precondition, and confirmation.
@@ -90,13 +109,16 @@ fn volume_access() -> impl TypedValueParser<Value = JobVolumeAccess> {
 pub(crate) struct EditFlags {
     #[command(flatten)]
     deployment: DeploymentArgs,
-    /// Require the inspected saved generation.
-    #[arg(long)]
+    /// Save only if the application's saved generation is still `GENERATION`.
+    /// By default, it must still be the generation the command read, so a
+    /// concurrent change fails the save instead of being overwritten.
+    #[arg(long, value_name = "GENERATION")]
     expected_generation: Option<u64>,
-    /// Override the saved generation precondition.
+    /// Save even if the application changed since the command read it. It
+    /// still asks for confirmation.
     #[arg(long, conflicts_with = "expected_generation")]
     force: bool,
-    /// Skip interactive confirmation.
+    /// Skip the confirmation prompt. You need it when not on a terminal.
     #[arg(long)]
     yes: bool,
 }
@@ -105,7 +127,7 @@ pub(crate) struct EditFlags {
 pub(crate) struct ServiceTarget {
     /// Application name or stable ID.
     app: String,
-    /// Logical service name.
+    /// Service name.
     service: String,
     #[command(flatten)]
     flags: EditFlags,
@@ -117,141 +139,297 @@ impl ServiceTarget {
         (self, ApplicationEdit::Service { name, edit })
     }
 }
-// Declares service-edit argument structs taking one required positional value.
-macro_rules! service_value_args {
-    ($($name:ident: $ty:ty;)*) => {$ (
+// Declares edit argument structs: a flattened target followed by one `value`,
+// whose doc comment and `#[arg]` attributes each struct gives, so every
+// command documents its own value. Values that accept `${{ }}` references
+// take `Template` or `Typed` types.
+macro_rules! value_args {
+    ($($name:ident($target:ty) { $(#[$attr:meta])* value: $ty:ty $(,)? })*) => {$(
         #[derive(Debug, Args)]
         pub(crate) struct $name {
             #[command(flatten)]
-            target: ServiceTarget,
-            /// New setting value.
+            target: $target,
+            $(#[$attr])*
             value: $ty,
         }
     )*};
 }
-// Values that accept `${{ }}` references take `Template` or `Typed` types.
-service_value_args! {
-    TextArgs: String;
-    TemplateArgs: Template;
-    ReplicasArgs: Typed<u16>;
-    SecondsArgs: Typed<u32>;
+value_args! {
+    RenameArgs(ServiceTarget) {
+        /// New service name.
+        #[arg(value_name = "NEW_NAME")]
+        value: String,
+    }
+    ReplicasArgs(ServiceTarget) {
+        /// Number of replicas, from 1 to 100, or a variable reference such as
+        /// `${{ vars.web_replicas }}`.
+        #[arg(value_name = "REPLICAS")]
+        value: Typed<u16>,
+    }
+    CommandArgs(ServiceTarget) {
+        /// Entrypoint elements, after `--`. Each one is passed as is, spaces
+        /// included, and may reference variables.
+        #[arg(last = true, value_name = "COMMAND")]
+        value: Vec<Template>,
+    }
+    ArgumentsArgs(ServiceTarget) {
+        /// Argument elements, after `--`. Each one is passed as is, spaces
+        /// included, and may reference variables.
+        #[arg(last = true, value_name = "ARGUMENTS")]
+        value: Vec<Template>,
+    }
+    DependsOnArgs(ServiceTarget) {
+        /// Names of other services of the application, after `--`.
+        #[arg(last = true, value_name = "SERVICES")]
+        value: Vec<String>,
+    }
+    ImageArgs(ServiceTarget) {
+        /// Image reference, such as `nginx:stable`. It may reference
+        /// variables.
+        #[arg(value_name = "IMAGE")]
+        value: Template,
+    }
+    GitUrlArgs(ServiceTarget) {
+        /// Git clone URL, or a path on the daemon's host.
+        #[arg(value_name = "URL")]
+        value: String,
+    }
+    GitBranchArgs(ServiceTarget) {
+        /// Branch name.
+        #[arg(value_name = "BRANCH")]
+        value: String,
+    }
+    DockerfileArgs(ServiceTarget) {
+        /// Dockerfile path, relative to the repository root.
+        #[arg(value_name = "PATH")]
+        value: Template,
+    }
+    ContextArgs(ServiceTarget) {
+        /// Build context directory, relative to the repository root.
+        #[arg(value_name = "PATH")]
+        value: Template,
+    }
+    MountPathArgs(ServiceTarget) {
+        /// Container path of the mount.
+        #[arg(value_name = "PATH")]
+        value: String,
+    }
+    FilePathArgs(ServiceTarget) {
+        /// Container path of the file.
+        #[arg(value_name = "TARGET")]
+        value: String,
+    }
+    HealthPortArgs(ServiceTarget) {
+        /// Container port, from 1 to 65535.
+        #[arg(value_name = "PORT")]
+        value: Typed<u16>,
+    }
+    HealthPathArgs(ServiceTarget) {
+        /// Request path, starting with `/`.
+        #[arg(value_name = "PATH")]
+        value: Template,
+    }
+    HealthCommandArgs(ServiceTarget) {
+        /// Command elements, after `--`.
+        #[arg(last = true, value_name = "COMMAND")]
+        value: Vec<Template>,
+    }
+    HealthIntervalArgs(ServiceTarget) {
+        /// Seconds between checks, from 1 to 3600.
+        #[arg(value_name = "SECONDS")]
+        value: Typed<u32>,
+    }
+    HealthTimeoutArgs(ServiceTarget) {
+        /// Seconds before a check counts as failed, from 1 to the interval.
+        #[arg(value_name = "SECONDS")]
+        value: Typed<u32>,
+    }
+    HealthStartPeriodArgs(ServiceTarget) {
+        /// Seconds after the container starts, up to 3600.
+        #[arg(value_name = "SECONDS")]
+        value: Typed<u32>,
+    }
+    HealthRetriesArgs(ServiceTarget) {
+        /// Consecutive failed checks, from 1 to 100.
+        #[arg(value_name = "RETRIES")]
+        value: Typed<u32>,
+    }
+    RepositoryUrlArgs(RepositoryTarget) {
+        /// Git clone URL, or a path on the daemon's host.
+        #[arg(value_name = "URL")]
+        value: String,
+    }
+    RepositoryPathArgs(RepositoryTarget) {
+        /// Path of the manifest file, relative to the repository root.
+        #[arg(value_name = "PATH")]
+        value: String,
+    }
 }
-#[derive(Debug, Args)]
-pub(crate) struct StringsArgs {
-    #[command(flatten)]
-    target: ServiceTarget,
-    /// Elements after --, preserving spaces. Omit to clear the array.
-    #[arg(last = true)]
-    value: Vec<String>,
-}
-#[derive(Debug, Args)]
-pub(crate) struct TemplatesArgs {
-    #[command(flatten)]
-    target: ServiceTarget,
-    /// Elements after --, preserving spaces. Omit to clear the array.
-    #[arg(last = true)]
-    value: Vec<Template>,
-}
-// Declares service-edit argument structs whose value is either given or `--clear`ed.
+// Declares service-edit argument structs whose value is either given or
+// removed with `--clear`; each struct documents both.
 macro_rules! optional_args {
-    ($($name:ident: $ty:ty;)*) => {$ (
+    ($($name:ident {
+        $(#[$value_attr:meta])* value: $ty:ty,
+        $(#[$clear_attr:meta])* clear $(,)?
+    })*) => {$(
         #[derive(Debug, Args)]
         pub(crate) struct $name {
             #[command(flatten)]
             target: ServiceTarget,
-            /// New value, or use --clear to remove the setting.
+            $(#[$value_attr])*
             #[arg(required_unless_present = "clear", conflicts_with = "clear")]
             value: Option<$ty>,
-            /// Remove the setting.
+            $(#[$clear_attr])*
             #[arg(long)]
             clear: bool,
         }
     )*};
 }
-optional_args! { CommitArgs: String; CpuArgs: Typed<u32>; MemoryArgs: Typed<u64>; }
+optional_args! {
+    CommitArgs {
+        /// Full commit hash to build.
+        #[arg(value_name = "COMMIT")]
+        value: String,
+        /// Remove the pinned commit and build the branch head again.
+        clear,
+    }
+    CpuArgs {
+        /// CPU limit in millicores, from 1 to 1048576, where 1000 is one CPU.
+        #[arg(value_name = "MILLICORES")]
+        value: Typed<u32>,
+        /// Remove the CPU limit.
+        clear,
+    }
+    MemoryArgs {
+        /// Memory limit in bytes, such as `268435456` for 256 MiB.
+        #[arg(value_name = "BYTES")]
+        value: Typed<u64>,
+        /// Remove the memory limit.
+        clear,
+    }
+}
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServiceCommand {
-    /// Add a service using an image or --git URL.
+    /// Add a service that runs an image, or builds a Git repository with
+    /// `--git`.
+    ///
+    /// The new service runs one replica and has no other settings. Adding a
+    /// service whose name is taken fails.
     Add(AddServiceArgs),
-    /// Remove a service from saved configuration.
+    /// Remove a service.
+    ///
+    /// Its routes, jobs and export are removed with it, and other services
+    /// stop depending on it. The volumes it mounts keep their data.
     Remove(ServiceTarget),
-    /// Rename a service declaration; deploy replaces its runtime service.
-    Rename(TextArgs),
-    /// Set desired replicas.
+    /// Rename a service.
+    ///
+    /// Its routes, jobs, export and the services depending on it follow the
+    /// new name. Applications importing it must import the new name. The next
+    /// deployment replaces the running service.
+    Rename(RenameArgs),
+    /// Set the number of replicas the service runs.
     Replicas(ReplicasArgs),
-    /// Switch sources or edit individual Git/build settings.
+    /// Set where the service's image comes from: a prebuilt image or a Git
+    /// build.
+    ///
+    /// `image` and `git` replace the source. The other commands change one
+    /// setting of the current Git source.
     Source {
         #[command(subcommand)]
         command: SourceCommand,
     },
-    /// Set or remove individual environment variables.
+    /// Set or remove one environment variable of a service.
     Env {
         #[command(subcommand)]
         command: EnvironmentCommand,
     },
-    /// Set entrypoint elements after --; omit elements to clear.
-    Command(TemplatesArgs),
-    /// Set argument elements after --; omit elements to clear.
-    Arguments(TemplatesArgs),
-    /// Set services that must be healthy before this one rolls out, after --;
-    /// omit services to clear.
-    DependsOn(StringsArgs),
-    /// Replace the rollout order and monitor window; omitted flags use their defaults.
+    /// Replace the image's entrypoint with the elements after `--`.
+    ///
+    /// Put the command's options before `--`. Without elements, the service
+    /// uses the image's own entrypoint.
+    Command(CommandArgs),
+    /// Replace the image's default arguments with the elements after `--`.
+    ///
+    /// Put the command's options before `--`. Without elements, the service
+    /// uses the image's own arguments.
+    Arguments(ArgumentsArgs),
+    /// Set the services that must be healthy before this one rolls out.
+    ///
+    /// List them after `--`. Without any, the service depends on none. Jobs of
+    /// the service wait for them too.
+    DependsOn(DependsOnArgs),
+    /// Set the order and monitor window of the service's rollouts.
+    ///
+    /// A flag you omit returns to its default, so running it without flags
+    /// restores both defaults.
     Rollout(RolloutArgs),
-    /// Make the service receive the daemon's telemetry from every
-    /// application, over the socket mounted at /run/piqueld/telemetry, in
-    /// environments granted it with `env telemetry`. At most one service per
-    /// application.
+    /// Choose whether the service receives the daemon's own telemetry.
+    ///
+    /// With `on`, the service receives the traces, metrics and logs of every
+    /// application on a socket mounted at `/run/piqueld/telemetry`, in
+    /// environments granted telemetry with `env telemetry`. At most one
+    /// service per application can receive it, and it must run one replica.
     Telemetry(ReceivesTelemetryArgs),
-    /// Add, replace, or remove a volume mount by target path.
+    /// Mount a volume into a service, or remove a mount.
     Mount {
         #[command(subcommand)]
         command: MountCommand,
     },
-    /// Configure or edit a health check.
+    /// Set, change, or remove a service's health check.
+    ///
+    /// The commands that change one setting need a health check of the
+    /// matching kind first.
     Health {
         #[command(subcommand)]
         command: HealthCommand,
     },
-    /// Set CPU millicores, or --clear.
+    /// Set the service's CPU limit, or remove it with `--clear`.
     Cpu(CpuArgs),
-    /// Set memory bytes, or --clear.
+    /// Set the service's memory limit, or remove it with `--clear`.
     Memory(MemoryArgs),
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum SourceCommand {
-    /// Switch to a prebuilt image.
-    Image(TemplateArgs),
-    /// Switch to a Git/Docker build source.
+    /// Run a prebuilt image, replacing the service's source.
+    Image(ImageArgs),
+    /// Build a Git repository with Docker, replacing the service's source.
+    ///
+    /// Build settings you don't pass get their defaults.
     Git(GitSourceArgs),
-    /// Change the Git clone URL.
-    Url(TextArgs),
-    /// Change the Git branch.
-    Branch(TextArgs),
-    /// Pin a commit, or --clear to follow the branch.
+    /// Change the repository the service builds.
+    Url(GitUrlArgs),
+    /// Change the branch the service builds.
+    Branch(GitBranchArgs),
+    /// Pin the commit the service builds, or follow the branch again with
+    /// `--clear`.
     Commit(CommitArgs),
-    /// Change the Dockerfile path.
-    Dockerfile(TemplateArgs),
-    /// Change the build context path.
-    Context(TemplateArgs),
+    /// Change the Dockerfile the service builds.
+    Dockerfile(DockerfileArgs),
+    /// Change the directory the service's build uses as its context.
+    Context(ContextArgs),
 }
 #[derive(Debug, Args)]
 pub(crate) struct RolloutArgs {
     #[command(flatten)]
     target: ServiceTarget,
-    /// stop-first or start-first. Omit to stop first only when a volume is mounted writable.
-    #[arg(long)]
+    /// `stop-first` stops the old task before starting its replacement, and
+    /// `start-first` starts the replacement first. By default, the order is
+    /// `stop-first` when the service mounts a volume writable, else
+    /// `start-first`.
+    #[arg(long, value_name = "ORDER")]
     order: Option<Typed<RolloutOrder>>,
-    /// Seconds to watch each replacement task for failure, 1-3600. Omit for the 30-second default.
-    #[arg(long)]
+    /// Seconds Docker watches each replacement task for failure, from 1 to
+    /// 3600. By default, 30.
+    #[arg(long, value_name = "SECONDS")]
     monitor_seconds: Option<Typed<u32>>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct ReceivesTelemetryArgs {
     #[command(flatten)]
     target: ServiceTarget,
-    /// `on` receives telemetry once the environment is granted it; `off` never.
+    /// `on` to receive telemetry where the environment is granted it, `off`
+    /// to never receive it.
     #[arg(value_name = "on|off", action = clap::ArgAction::Set, value_parser = on_off())]
     enabled: bool,
 }
@@ -259,11 +437,13 @@ pub(crate) struct ReceivesTelemetryArgs {
 pub(crate) struct AddServiceArgs {
     #[command(flatten)]
     target: ServiceTarget,
-    /// Container image reference, or select --git instead.
+    /// Image to run, such as `nginx:stable`. It may reference variables.
+    /// Omit it when you pass `--git`.
     #[arg(required_unless_present = "git", conflicts_with = "git")]
     image: Option<Template>,
-    /// Build this Git repository with Docker.
-    #[arg(long)]
+    /// Build this Git repository with Docker instead of running an image.
+    /// It takes a clone URL, or a path on the daemon's host.
+    #[arg(long, value_name = "URL")]
     git: Option<String>,
     // Boxed to keep the CLI command enum small.
     #[command(flatten)]
@@ -273,8 +453,8 @@ pub(crate) struct AddServiceArgs {
 pub(crate) struct GitSourceArgs {
     #[command(flatten)]
     target: ServiceTarget,
-    /// Git clone URL or host path.
-    #[arg(id = "git")]
+    /// Git clone URL, or a path on the daemon's host.
+    #[arg(id = "git", value_name = "URL")]
     url: String,
     // Boxed to keep the CLI command enum small.
     #[command(flatten)]
@@ -284,23 +464,29 @@ pub(crate) struct GitSourceArgs {
 // positional URL of `source git`).
 #[derive(Debug, Args)]
 pub(crate) struct GitBuildArgs {
-    /// Branch to fetch when no commit is pinned.
+    /// Branch to build when no commit is pinned.
     #[arg(long, requires = "git", default_value = "main")]
     branch: String,
-    /// Pin a full commit hash instead of following the branch.
+    /// Build this full commit hash instead of the branch head.
     #[arg(long, requires = "git")]
     commit: Option<String>,
-    /// Dockerfile path relative to the repository root.
-    #[arg(long, requires = "git", default_value = "Dockerfile")]
+    /// Dockerfile path, relative to the repository root.
+    #[arg(
+        long,
+        requires = "git",
+        value_name = "PATH",
+        default_value = "Dockerfile"
+    )]
     dockerfile: Template,
-    /// Build context relative to the repository root.
-    #[arg(long, requires = "git", default_value = ".")]
+    /// Build context directory, relative to the repository root.
+    #[arg(long, requires = "git", value_name = "PATH", default_value = ".")]
     context: Template,
-    /// Docker build argument; repeat for several. Values are not secret.
+    /// Docker build argument. Repeat it to set several. Values aren't secret:
+    /// Docker records them in the image.
     #[arg(long = "build-arg", value_name = "KEY=VALUE", requires = "git", value_parser = key_value)]
     build_args: Vec<(String, String)>,
-    /// Multi-stage build target.
-    #[arg(long, requires = "git")]
+    /// Dockerfile stage to build. By default, Docker builds the last stage.
+    #[arg(long, requires = "git", value_name = "STAGE")]
     target: Option<Template>,
 }
 impl GitBuildArgs {
@@ -327,16 +513,19 @@ impl GitBuildArgs {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum EnvironmentCommand {
-    /// Set one variable without changing other entries.
+    /// Set an environment variable, keeping the service's others.
     Set {
         #[command(flatten)]
         target: ServiceTarget,
         /// Variable name.
         key: String,
-        /// Variable value; may reference manifest variables with `${{ vars.<name> }}`.
+        /// Variable value. It may reference variables, such as
+        /// `${{ vars.<name> }}`.
         value: Template,
     },
-    /// Remove one variable.
+    /// Remove an environment variable.
+    ///
+    /// Removing one the service doesn't set fails.
     Remove {
         #[command(flatten)]
         target: ServiceTarget,
@@ -346,34 +535,39 @@ pub(crate) enum EnvironmentCommand {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum MountCommand {
-    /// Add or replace the mount at a container target path.
+    /// Mount a volume at a container path, replacing any mount at that path.
     Set {
         #[command(flatten)]
         target: ServiceTarget,
-        /// Declared named volume.
+        /// Name of a volume the application declares, with `app volume add`.
         volume: String,
-        /// Container target path.
+        /// Absolute container path to mount it at.
         path: String,
-        /// Mount the volume read-only.
+        /// Mount the volume read-only. A writable mount makes the service's
+        /// rollouts stop the old task first.
         #[arg(long)]
         read_only: bool,
     },
-    /// Remove the mount at a container target path.
-    Remove(TextArgs),
+    /// Remove the mount at a container path.
+    Remove(MountPathArgs),
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum FileCommand {
-    /// List the read-only files services mount, as saved.
+    /// List the files the application's services mount, as saved.
     List {
         /// Application name or stable ID.
         app: String,
-        /// Only this service's files.
+        /// List only this service's files.
         service: Option<String>,
     },
-    /// Add a read-only file, or replace the file at the same target.
+    /// Mount a read-only file into a service, replacing any file at the same
+    /// path.
+    ///
+    /// Give its content with exactly one of `--content`, `--from` or `--path`.
+    /// A file holds at most 500 KiB and can't be empty.
     Add(AddFileArgs),
-    /// Remove the file at a container target path.
-    Remove(TextArgs),
+    /// Remove the file at a container path.
+    Remove(FilePathArgs),
 }
 #[derive(Debug, Args)]
 pub(crate) struct AddFileArgs {
@@ -384,7 +578,8 @@ pub(crate) struct AddFileArgs {
     file: String,
     #[command(flatten)]
     source: FileSourceArgs,
-    /// Octal permissions of the root-owned file.
+    /// Octal permissions of the file, from `0000` to `0777`, such as `0440`.
+    /// Root owns the file.
     #[arg(long, default_value_t = FileMode::default())]
     mode: FileMode,
 }
@@ -392,14 +587,16 @@ pub(crate) struct AddFileArgs {
 #[derive(Debug, Args)]
 #[group(required = true, multiple = false)]
 pub(crate) struct FileSourceArgs {
-    /// The file's content. It is never rendered with variables.
-    #[arg(long)]
+    /// The file's content. Variables in it are never rendered.
+    #[arg(long, value_name = "TEXT")]
     content: Option<String>,
-    /// Read the content from this local file now, and save it inline.
+    /// Read the content from this local file now, and save it in the
+    /// manifest.
     #[arg(long, value_name = "LOCAL_FILE")]
     from: Option<std::path::PathBuf>,
     /// Read the content from this file in the manifest's repository, relative
-    /// to its root, each time a deployment fetches the manifest.
+    /// to its root, each time a deployment fetches the manifest. Only
+    /// repository-backed applications can use it.
     #[arg(long, value_name = "REPOSITORY_PATH")]
     path: Option<String>,
 }
@@ -452,58 +649,69 @@ impl FileCommand {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum HealthCommand {
-    /// Configure an HTTP health check.
+    /// Replace the health check with an HTTP check.
+    ///
+    /// The check sends a `GET` request to the port inside the container and
+    /// passes on a 2xx or 3xx status. It needs nothing in the image.
     Http {
         #[command(flatten)]
         target: ServiceTarget,
-        /// Container port to probe.
+        /// Container port to probe, from 1 to 65535.
         port: Typed<u16>,
-        /// HTTP request path.
+        /// Request path, starting with `/`.
         #[arg(long, default_value = "/health")]
         path: Template,
         #[command(flatten)]
         timing: HealthTimingArgs,
     },
-    /// Configure a command health check; command elements follow --.
+    /// Replace the health check with a command, given after `--`.
+    ///
+    /// The command runs inside the container, without a shell, and passes when
+    /// it exits with status 0. Put the command's options before `--`.
     Command {
         #[command(flatten)]
         target: ServiceTarget,
         #[command(flatten)]
         timing: HealthTimingArgs,
-        /// Command elements after --, preserving spaces.
-        #[arg(last = true, required = true)]
+        /// Command elements, after `--`. Each one is passed as is, spaces
+        /// included.
+        #[arg(last = true, required = true, value_name = "COMMAND")]
         elements: Vec<Template>,
     },
-    /// Remove the configured health check.
+    /// Remove the health check.
     Clear(ServiceTarget),
-    /// Set the HTTP port.
-    Port(ReplicasArgs),
-    /// Set the HTTP path.
-    Path(TemplateArgs),
-    /// Set command elements for an existing command health check.
-    CommandElements(TemplatesArgs),
-    /// Set the check interval in seconds.
-    Interval(SecondsArgs),
-    /// Set the check timeout in seconds.
-    Timeout(SecondsArgs),
-    /// Set the startup grace in seconds, during which failed checks do not count.
-    StartPeriod(SecondsArgs),
-    /// Set how many consecutive failed checks make the container unhealthy.
-    Retries(SecondsArgs),
+    /// Change the port of an HTTP health check.
+    Port(HealthPortArgs),
+    /// Change the request path of an HTTP health check.
+    Path(HealthPathArgs),
+    /// Change the command of a command health check, given after `--`.
+    CommandElements(HealthCommandArgs),
+    /// Change the seconds between health checks.
+    Interval(HealthIntervalArgs),
+    /// Change the seconds before a health check counts as failed.
+    Timeout(HealthTimeoutArgs),
+    /// Change the seconds after the container starts during which failed
+    /// checks don't count.
+    StartPeriod(HealthStartPeriodArgs),
+    /// Change how many consecutive failed checks make the container unhealthy.
+    Retries(HealthRetriesArgs),
 }
-/// When a new health check probes and how many failures it tolerates.
+// When a new health check probes and how many failures it tolerates.
 #[derive(Debug, Args)]
 pub(crate) struct HealthTimingArgs {
-    /// Seconds between checks.
-    #[arg(long, default_value = "10")]
+    /// Seconds between checks, from 1 to 3600.
+    #[arg(long, value_name = "SECONDS", default_value = "10")]
     interval: Typed<u32>,
-    /// Seconds before a check counts as failed.
-    #[arg(long, default_value = "3")]
+    /// Seconds before a check counts as failed, from 1 to the interval.
+    #[arg(long, value_name = "SECONDS", default_value = "3")]
     check_timeout: Typed<u32>,
-    /// Seconds after the container starts during which failed checks do not count.
-    #[arg(long, default_value = "0")]
+    /// Seconds after the container starts during which failed checks don't
+    /// count, up to 3600. A passing check makes the container healthy at
+    /// once.
+    #[arg(long, value_name = "SECONDS", default_value = "0")]
     start_period: Typed<u32>,
-    /// Consecutive failed checks that make the container unhealthy.
+    /// Consecutive failed checks that make the container unhealthy, from 1 to
+    /// 100.
     #[arg(long, default_value = "3")]
     retries: Typed<u32>,
 }
@@ -511,23 +719,30 @@ pub(crate) struct HealthTimingArgs {
 pub(crate) struct VolumeArgs {
     /// Application name or stable ID.
     app: String,
-    /// Named volume.
+    /// Volume name.
     volume: String,
     #[command(flatten)]
     flags: EditFlags,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum VolumeCommand {
-    /// Declare a named volume. No Docker volume is created until deployment.
+    /// Declare a named volume that services can mount.
+    ///
+    /// Each environment and preview gets its own Docker volume when it next
+    /// deploys.
     Add(VolumeArgs),
-    /// Remove a declaration; mounted volumes must first be unmounted. Data is retained.
+    /// Remove a volume declaration.
+    ///
+    /// Remove the volume's mounts first. Docker keeps the volume and its data.
     Remove(VolumeArgs),
 }
 #[derive(Debug, Args)]
 pub(crate) struct RouteTarget {
     /// Application name or stable ID.
     app: String,
-    /// Fully qualified DNS hostname, exact or a wildcard such as `*.example.com`.
+    /// Hostname of the route: an exact name, or a wildcard such as
+    /// `*.example.com`. It may reference variables, such as
+    /// `${{ vars.domain }}`.
     hostname: String,
     #[command(flatten)]
     flags: EditFlags,
@@ -536,15 +751,17 @@ pub(crate) struct RouteTarget {
 pub(crate) struct AddRouteArgs {
     #[command(flatten)]
     target: RouteTarget,
-    /// Backend service name.
+    /// Service that serves the route.
     service: String,
-    /// Internal HTTP port.
+    /// HTTP port the service listens on inside its container.
     port: u16,
-    /// Who may connect: everyone, or only tailnet devices. The environment's
-    /// ceiling can make it stricter.
+    /// `public` serves everyone, `private` only devices on the tailnet. The
+    /// environment's visibility ceiling can make it stricter.
     #[arg(long, default_value = "private", value_parser = visibility())]
     visibility: Visibility,
-    /// Stable route name, unique within the application, e.g. for `env url --route`.
+    /// Stable route name, unique within the application. It selects the
+    /// route in every environment and preview, such as with
+    /// `env url --route`.
     #[arg(long)]
     name: Option<String>,
 }
@@ -552,18 +769,24 @@ pub(crate) struct AddRouteArgs {
 pub(crate) struct RedirectRouteArgs {
     #[command(flatten)]
     target: RouteTarget,
-    /// Absolute http(s) destination URL.
+    /// Destination: an absolute `http` or `https` URL, without query or
+    /// fragment. It may reference variables.
+    #[arg(value_name = "URL")]
     to: Template,
-    /// HTTP status: 301, 302, 303, 307, or 308.
+    /// HTTP status of the redirect: `301`, `302`, `303`, `307` or `308`.
     #[arg(long, default_value_t = RedirectStatus::PermanentRedirect.into())]
     status: u16,
-    /// Drop the request path and query instead of appending them to the destination.
+    /// Drop the request path and query instead of appending them to the
+    /// destination.
     #[arg(long)]
     no_preserve_path: bool,
-    /// Who may connect: everyone, or only tailnet devices.
+    /// `public` serves everyone, `private` only devices on the tailnet. The
+    /// environment's visibility ceiling can make it stricter.
     #[arg(long, default_value = "private", value_parser = visibility())]
     visibility: Visibility,
-    /// Stable route name, unique within the application, e.g. for `env url --route`.
+    /// Stable route name, unique within the application. It selects the
+    /// route in every environment and preview, such as with
+    /// `env url --route`.
     #[arg(long)]
     name: Option<String>,
 }
@@ -571,36 +794,43 @@ pub(crate) struct RedirectRouteArgs {
 pub(crate) struct RouteNameArgs {
     #[command(flatten)]
     target: RouteTarget,
-    /// New stable route name, unique within the application; omit to remove it.
+    /// New route name, unique within the application. Omit it to remove the
+    /// name.
     name: Option<String>,
 }
 #[derive(Debug, Args)]
 pub(crate) struct RouteVisibilityArgs {
     #[command(flatten)]
     target: RouteTarget,
-    /// `public` or `private` (tailnet only).
+    /// `public` serves everyone, `private` only devices on the tailnet.
     #[arg(value_parser = visibility())]
     visibility: Visibility,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum RouteCommand {
-    /// List an application's deployed routes: visibility, the DNS records
-    /// their hostnames need, and their state.
+    /// List the application's deployed routes in every environment.
+    ///
+    /// Each route shows its visibility, its state, and the DNS records its
+    /// hostname needs.
     List {
         /// Application name or stable ID.
         app: String,
     },
-    /// Add an HTTPS route to an application.
+    /// Add an HTTPS route to a service.
     Add(AddRouteArgs),
-    /// Add an HTTPS route the gateway answers with a redirect.
+    /// Add an HTTPS route that the gateway answers with a redirect.
     Redirect(RedirectRouteArgs),
-    /// Change who may connect to a route. Changing it withdraws the route from
-    /// its old listener as the next deployment starts.
+    /// Change who can connect to a route.
+    ///
+    /// The next deployment withdraws the route from its old listener as it
+    /// starts.
     Visibility(RouteVisibilityArgs),
-    /// Name a route, or remove its name. Names select the same route in
-    /// every environment and preview, e.g. `env url --route NAME`.
+    /// Name a route, or remove its name.
+    ///
+    /// A name selects the same route in every environment and preview, such
+    /// as with `env url --route NAME`.
     Name(RouteNameArgs),
-    /// Remove an HTTPS route by hostname.
+    /// Remove a route.
     Remove(RouteTarget),
 }
 #[derive(Debug, Args)]
@@ -616,34 +846,36 @@ pub(crate) struct JobTarget {
 pub(crate) struct SetJobArgs {
     #[command(flatten)]
     target: JobTarget,
-    /// Service whose image, environment, secrets, mounts, and startup dependencies the job reuses.
+    /// Service whose image, environment, secrets, mounts and startup
+    /// dependencies the job reuses.
     service: String,
-    /// Seconds before the job fails the deployment. Defaults to the job's
-    /// current timeout, or 300 for a new job.
-    #[arg(long)]
+    /// Seconds the job may run before it fails the deployment, from 1 to
+    /// 86400. By default, the job's current timeout, or 300 for a new job.
+    #[arg(long, value_name = "SECONDS")]
     timeout_seconds: Option<u32>,
-    /// read-only mounts every volume read-only, so the job runs beside the
-    /// services. exclusive keeps writable volumes writable and stops every
-    /// service mounting them until the rollout. Defaults to the job's current
-    /// access, or read-only for a new job.
-    #[arg(long, value_parser = volume_access())]
+    /// How the job mounts its service's volumes. By default, the job's current
+    /// access, or `read-only` for a new job.
+    #[arg(long, value_name = "ACCESS", value_parser = volume_access())]
     volume_access: Option<JobVolumeAccess>,
-    /// Environment variable only the job gets, added to its service's; repeat
-    /// for several. Replaces the job's own variables, which are kept otherwise.
+    /// Environment variable for the job only, added to its service's. Repeat
+    /// it to set several. They replace the job's own variables, which it keeps
+    /// when you pass none.
     #[arg(long = "env", value_name = "KEY=VALUE", value_parser = key_value)]
     environment: Vec<(String, String)>,
     /// Remove the job's own environment variables.
     #[arg(long, conflicts_with = "environment")]
     clear_env: bool,
-    /// Secret only the job mounts, added to its service's; repeat for several.
-    /// Replaces the job's own secrets, which are kept otherwise.
+    /// Secret for the job only, mounted at `TARGET` under `/run/secrets` in
+    /// addition to its service's. Repeat it to mount several. They replace
+    /// the job's own secrets, which it keeps when you pass none.
     #[arg(long = "secret", value_name = "NAME=TARGET", value_parser = key_value)]
     secrets: Vec<(String, String)>,
     /// Remove the job's own secrets.
     #[arg(long, conflicts_with = "secrets")]
     clear_secrets: bool,
-    /// Command elements after --, replacing the service's command and arguments.
-    #[arg(last = true, required = true)]
+    /// Command the job runs, after `--`. It replaces the service's command
+    /// and arguments.
+    #[arg(last = true, required = true, value_name = "COMMAND")]
     command: Vec<Template>,
 }
 impl SetJobArgs {
@@ -681,24 +913,30 @@ impl SetJobArgs {
 pub(crate) struct MoveJobArgs {
     #[command(flatten)]
     target: JobTarget,
-    /// 1-based position in the run order; past the end moves the job last.
+    /// New 1-based position in the run order. A position past the end moves
+    /// the job last.
     #[arg(value_parser = clap::value_parser!(u32).range(1..))]
     position: u32,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum JobCommand {
-    /// Add a job that runs before rollout, or replace the job with this name in place.
+    /// Add a job that runs before each rollout, or replace the job with this
+    /// name.
+    ///
+    /// A new job runs after the existing ones, and a replaced job keeps its
+    /// position. Jobs run in order, after their service's dependencies are
+    /// healthy, and the other services wait until every job succeeds.
     Set(SetJobArgs),
     /// Move a job to another position in the run order.
     Move(MoveJobArgs),
-    /// Remove a job by name.
+    /// Remove a job.
     Remove(JobTarget),
 }
 #[derive(Debug, Args)]
 pub(crate) struct ExportTarget {
     /// Application name or stable ID.
     app: String,
-    /// Exported service of the application.
+    /// Service of the application to export.
     service: String,
     #[command(flatten)]
     flags: EditFlags,
@@ -707,10 +945,12 @@ pub(crate) struct ExportTarget {
 pub(crate) struct SetExportArgs {
     #[command(flatten)]
     target: ExportTarget,
-    /// Applications whose environments may import the service, comma-separated.
-    #[arg(long, value_delimiter = ',', required = true)]
+    /// Applications whose environments may import the service. Separate
+    /// several with commas, or repeat the option.
+    #[arg(long, value_delimiter = ',', required = true, value_name = "APPS")]
     applications: Vec<String>,
-    /// Let previews of those applications import it too.
+    /// Let previews of those applications import it too. Without it,
+    /// previews can't, even if they could before.
     #[arg(long)]
     previews: bool,
 }
@@ -722,6 +962,9 @@ pub(crate) enum ExportCommand {
         app: String,
     },
     /// Export a service to other applications, or replace who may import it.
+    ///
+    /// Their services reach it as `<service>.<application>` once both sides
+    /// have deployed the link.
     Set(SetExportArgs),
     /// Stop exporting a service.
     Remove(ExportTarget),
@@ -730,7 +973,7 @@ pub(crate) enum ExportCommand {
 pub(crate) struct ImportTarget {
     /// Application name or stable ID.
     app: String,
-    /// Application exporting the service.
+    /// Application that exports the service.
     application: String,
     /// Exported service of that application.
     service: String,
@@ -741,22 +984,26 @@ pub(crate) struct ImportTarget {
 pub(crate) struct AddImportArgs {
     #[command(flatten)]
     target: ImportTarget,
-    /// Environment of that application to reach, e.g. `staging` or
-    /// `${{ vars.auth_env }}`. By default, the one named like the importing
-    /// environment.
-    #[arg(long)]
+    /// Environment of the exporting application to reach, such as `staging`
+    /// or `${{ vars.auth_env }}`. By default, the one named like the
+    /// importing environment.
+    #[arg(long, value_name = "ENV")]
     environment: Option<Template>,
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum ImportCommand {
-    /// List the services the application imports, as saved. `env show`
-    /// reports whether each connects.
+    /// List the services the application imports, as saved.
+    ///
+    /// `env show` reports whether each one connects.
     List {
         /// Application name or stable ID.
         app: String,
     },
-    /// Import a service of another application, or replace the environment
-    /// it reaches.
+    /// Import another application's exported service, or change the
+    /// environment it reaches.
+    ///
+    /// The application's services reach it as `<service>.<application>`
+    /// once both sides have deployed the link.
     Add(AddImportArgs),
     /// Stop importing a service.
     Remove(ImportTarget),
@@ -768,68 +1015,79 @@ pub(crate) struct RepositoryTarget {
     #[command(flatten)]
     flags: EditFlags,
 }
-#[derive(Debug, Args)]
-pub(crate) struct RepositoryText {
-    #[command(flatten)]
-    target: RepositoryTarget,
-    /// New setting value.
-    value: String,
-}
 #[derive(Debug, Subcommand)]
 pub(crate) enum RepositoryCommand {
-    /// Read configuration from a manifest in Git. Every environment follows
-    /// `--branch`, as do environments created later without one; change an
-    /// environment's branch with `env branch`. Edits made here afterwards
-    /// are deployed from that branch until a push changes the manifest.
+    /// Connect the application to a manifest file in a Git repository.
+    ///
+    /// Deployments then fetch the manifest from the repository. Every
+    /// environment follows `--branch`, as do environments created later
+    /// without their own, unless the manifest declares the environment's
+    /// branch. Change an environment's branch with `env branch`. You can
+    /// still edit the application: deployments of the connection's branch
+    /// deploy your edits until a push changes the manifest file.
     Connect {
         #[command(flatten)]
         target: RepositoryTarget,
-        /// Git clone URL or host path.
+        /// Git clone URL, or a path on the daemon's host.
         // A distinct id keeps clap from storing this in the global `--url` endpoint.
         #[arg(id = "repository_url", value_name = "URL")]
         url: String,
-        /// Manifest file path relative to the repository root.
+        /// Path of the manifest file, relative to the repository root.
         path: String,
-        /// Branch environments follow unless created with their own.
+        /// Branch the environments follow.
         #[arg(long, default_value = "main")]
         branch: String,
-        /// Pin a full commit hash instead of following the branch.
+        /// Pin this full commit hash instead of following the branch.
         #[arg(long)]
         commit: Option<String>,
-        /// Deploy on push: `poll` lists the branches every `--interval`
-        /// seconds, `webhook` when GitHub reports a push.
-        #[arg(long = "sync", value_parser = SyncMode::parser(), default_value = "off")]
+        /// Whether to deploy pushes, as `app repository sync` sets it.
+        #[arg(
+            long = "sync",
+            value_name = "MODE",
+            value_parser = SyncMode::parser(),
+            default_value = "off"
+        )]
         sync: SyncMode,
-        /// Seconds between polls, from 60 to 86400; 300 by default.
-        #[arg(long)]
+        /// Seconds between polls with `--sync poll`, from 60 to 86400. By
+        /// default, 300.
+        #[arg(long, value_name = "SECONDS")]
         interval: Option<u32>,
     },
-    /// Stop fetching from Git and retain saved configuration for local editing.
+    /// Stop reading the manifest from Git, keeping the saved manifest.
+    ///
+    /// Edits are kept, and environments that followed a branch deploy the
+    /// saved manifest. Declared environments lose their `branch`, `commit`
+    /// and `sync`. It
+    /// fails while services mount files from the repository: give them
+    /// inline content first.
     Disconnect(RepositoryTarget),
-    /// Change the repository URL every environment fetches from.
-    Url(RepositoryText),
-    /// Change the manifest file path every environment reads.
-    Path(RepositoryText),
-    /// Deploy on push: every preview, and every environment that opted in
+    /// Change the repository every environment fetches the manifest from.
+    Url(RepositoryUrlArgs),
+    /// Change the manifest file every environment reads.
+    Path(RepositoryPathArgs),
+    /// Choose whether environments and previews deploy pushes.
+    ///
+    /// While sync is on, every preview, and every environment that opted in
     /// with `env sync` and follows an unpinned branch, redeploys when its
-    /// branch moves past the head of its last deployment. `poll` lists the branches every `--interval`
-    /// seconds; `webhook` lists them when GitHub reports a push (see
-    /// `app repository webhook`); `off` deploys only when asked.
+    /// branch moves past the head of its last deployment.
     Sync {
         #[command(flatten)]
         target: RepositoryTarget,
+        /// How to detect pushes.
         #[arg(value_parser = SyncMode::parser())]
         mode: SyncMode,
-        /// Seconds between polls, from 60 to 86400; 300 by default.
-        #[arg(long)]
+        /// Seconds between polls with `poll`, from 60 to 86400. By default,
+        /// 300.
+        #[arg(long, value_name = "SECONDS")]
         interval: Option<u32>,
     },
     /// Discard the edits made since the manifest was last read from the
-    /// repository (`app show` lists them), saving that manifest again.
-    /// Deployments of the connection's branch deploy the saved manifest
-    /// until a push changes the manifest there.
+    /// repository, saving that manifest again.
+    ///
+    /// `app show` lists the edits. Deployments of the connection's branch
+    /// then deploy the manifest as read, until a push changes it.
     Reset(RepositoryTarget),
-    /// Show or generate the GitHub webhook that reports pushes to sync.
+    /// Show the GitHub webhook that reports pushes, or generate its secret.
     Webhook {
         #[command(subcommand)]
         command: WebhookCommand,
@@ -840,16 +1098,21 @@ pub(crate) enum RepositoryCommand {
 pub(crate) enum WebhookCommand {
     /// Show the payload URL to configure in GitHub, and when the secret was
     /// generated.
+    ///
+    /// The URL appears once the daemon sets `ingress.webhook_hostname`.
     Show {
         /// Application name or stable ID.
         app: String,
     },
     /// Generate a new webhook secret, replacing the previous one, and print
-    /// it. It is shown only once.
+    /// it.
+    ///
+    /// The previous secret stops working at once. The new one is shown only
+    /// this time.
     Rotate {
         /// Application name or stable ID.
         app: String,
-        /// Skip interactive confirmation.
+        /// Skip the confirmation prompt. You need it when not on a terminal.
         #[arg(long)]
         yes: bool,
     },
@@ -861,10 +1124,12 @@ pub(crate) struct VariableTarget {
     app: String,
     /// Variable name, referenced as `${{ vars.<name> }}`.
     name: String,
-    /// Environment name whose value changes; omit to change the default.
+    /// Change the variable's value in this environment instead of its
+    /// default. The environment must exist.
     #[arg(long = "env", value_name = "ENV")]
     environment: Option<String>,
-    /// Change the value every preview uses, `[spec.previews.variables]`.
+    /// Change the variable's value in every preview,
+    /// `[spec.previews.variables]`, instead of its default.
     #[arg(long, conflicts_with = "environment")]
     previews: bool,
     #[command(flatten)]
@@ -872,20 +1137,27 @@ pub(crate) struct VariableTarget {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum VariableCommand {
-    /// Set a variable's default, or with --env its value in one environment,
-    /// or with --previews its value in previews.
+    /// Set a variable's default value, or its value in one environment or in
+    /// previews.
+    ///
+    /// An environment's or the previews' value overrides the default.
     Set {
         #[command(flatten)]
         target: VariableTarget,
-        /// `true`, `false`, and integers keep their type, and anything else is
-        /// text, which may reference system variables such as `${{ env.name }}`.
+        /// `true`, `false` and integers keep their type, and anything else is
+        /// text. Text may reference system variables, such as
+        /// `${{ env.name }}`. Text in double quotes stays text, without the
+        /// quotes.
         value: String,
-        /// Keep the value as text even when it looks like a boolean or integer.
+        /// Keep the value as text even when it looks like a boolean or an
+        /// integer.
         #[arg(long)]
         string: bool,
     },
-    /// Remove a variable's default, or with --env its value in one
-    /// environment, or with --previews its value in previews.
+    /// Remove a variable's default value, or its value in one environment or
+    /// in previews.
+    ///
+    /// Removing a value that isn't set fails.
     Unset(VariableTarget),
 }
 

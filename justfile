@@ -60,7 +60,8 @@ doc-test:
 deny:
     @cargo deny check
 
-# Check generated artifacts against freshly generated endpoint and manifest metadata.
+# Check generated artifacts against freshly generated endpoint, manifest,
+# configuration, and command-line metadata.
 openapi-check:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi -- --check
 
@@ -93,7 +94,8 @@ dev *ARGS:
 ctl *ARGS:
     @cargo xtask dev ctl "$@"
 
-# Generate the OpenAPI document, client, and manifest JSON Schema together.
+# Generate the OpenAPI document and client, the manifest and configuration JSON
+# Schemas, and the CLI and configuration reference pages together.
 generate:
     @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
 

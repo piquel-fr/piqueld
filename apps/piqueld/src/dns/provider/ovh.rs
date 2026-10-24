@@ -7,15 +7,16 @@
 //! X-Ovh-Signature: "$1$" + hex(sha1(secret + "+" + consumer + "+" + METHOD + "+" + url + "+" + body + "+" + time))
 //! ```
 use super::{ApiError, Found, Provider, Record, RecordId, Zone, send};
-use crate::config::{Credential, CredentialError, CredentialFile};
+use crate::config::{Credential, CredentialError, CredentialFile, schema_from_raw};
 use piqueld_core::manifest::Hostname;
 use reqwest::Method;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 
-/// The OVH API region an account belongs to.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+/// An OVH API region: `ovh-eu` (Europe), `ovh-ca` (Canada) or `ovh-us`
+/// (United States).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OvhEndpoint {
     /// OVH Europe.
@@ -73,15 +74,26 @@ pub struct Ovh {
     api: String,
 }
 
-/// TOML form of [`Ovh`], before its credential files are read.
-#[derive(Deserialize)]
+/// An OVH account. The consumer key needs `GET` on
+/// `/domain/zone` and `/auth/time`, and `POST` and `DELETE` on
+/// `/domain/zone/*`; with `manage_records`, also `GET` and `PUT` on
+/// `/domain/zone/*`.
+//
+// The TOML form of [`Ovh`], before its credential files are read.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct RawOvh {
+    /// The API region of the account.
     endpoint: OvhEndpoint,
+    /// The application key, which identifies the application.
     application_key_file: CredentialFile,
+    /// The application secret, which signs requests.
     application_secret_file: CredentialFile,
+    /// The consumer key, which authorizes the application on the account.
     consumer_key_file: CredentialFile,
 }
+
+schema_from_raw!(Ovh => RawOvh);
 
 impl TryFrom<RawOvh> for Ovh {
     type Error = CredentialError;

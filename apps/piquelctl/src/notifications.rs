@@ -2,12 +2,16 @@
 //! the delivery history. Destination URLs come from a file or stdin, never
 //! shell arguments or output.
 use crate::{
+    cli::one_of,
     commands::{fold_applications, resolve_application},
     error::{CliError, ErrorKind, Result},
     output::{Console, reports::report},
     support::read_input,
 };
-use clap::{Args, Subcommand};
+use clap::{
+    Args, Subcommand,
+    builder::{PossibleValue, PossibleValuesParser, TypedValueParser},
+};
 use piqueld_client::{
     ApplicationId, Client, Page,
     observability::{
@@ -25,34 +29,50 @@ use std::{
 // `notification` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum NotificationCommand {
-    /// List destinations and what each receives; URLs cannot be read back.
+    /// List notification destinations and what each receives.
+    ///
+    /// Their URLs are never shown. Needs `system:read` or
+    /// `notifications:manage`.
     List,
-    /// Create a destination, or change one. Unset options keep the current
-    /// settings; a new destination receives every category but
-    /// successful deployments about every application, without previews.
+    /// Create a notification destination, or change one.
+    ///
+    /// Options you omit keep the current settings. A new destination needs
+    /// `--url-file` or `--url-stdin`. It receives every category but
+    /// `deployment_succeeded`, about every application, without previews.
+    /// Changing its URL or kind cancels its pending deliveries. Needs
+    /// `notifications:manage`.
     Set(SetArgs),
     /// Send a test notification to a destination now.
+    ///
+    /// It fails unless the receiver acknowledges it. The test skips the
+    /// delivery queue and history. Needs `notifications:manage`.
     Test {
         /// Destination name.
         name: String,
     },
-    /// Delete a destination, cancelling its pending deliveries.
+    /// Delete a notification destination and cancel its pending deliveries.
+    ///
+    /// The delivery history keeps its name. Needs `notifications:manage`.
     Delete {
         /// Destination name.
         name: String,
-        /// Skip interactive confirmation.
+        /// Skip the confirmation prompt.
         #[arg(long, short)]
         yes: bool,
     },
-    /// List deliveries, newest first.
+    /// List notification deliveries, newest first.
+    ///
+    /// Needs `system:read`.
     Deliveries {
-        /// Continue after a cursor returned by the previous page.
+        /// Read the page after this cursor, which the previous page printed.
         #[arg(long)]
         cursor: Option<String>,
     },
-    /// Retry a failed delivery (requires system:operate).
+    /// Try a failed delivery again, with the destination's current settings.
+    ///
+    /// Needs `system:operate`.
     Retry {
-        /// Delivery ID.
+        /// Delivery ID, from `notification deliveries`.
         id: String,
     },
 }
@@ -62,43 +82,57 @@ pub(crate) enum NotificationCommand {
 pub(crate) struct SetArgs {
     /// Destination name.
     name: String,
-    /// Payload format: json or discord.
-    #[arg(long, value_parser = parse_kind)]
+    /// Payload format.
+    ///
+    /// A new destination defaults to `json`.
+    #[arg(long, value_parser = one_of!(DestinationKind::ALL, DestinationKind::parse, SetArgs::describe_kind))]
     kind: Option<DestinationKind>,
-    /// Read the webhook URL from this file; required for a new destination.
-    #[arg(long, conflicts_with = "url_stdin")]
+    /// Read the webhook URL from this file.
+    #[arg(long, value_name = "PATH", conflicts_with = "url_stdin")]
     url_file: Option<PathBuf>,
-    /// Read the webhook URL from stdin.
+    /// Read the webhook URL from standard input.
     #[arg(long)]
     url_stdin: bool,
-    /// Send notifications to it (true), or stop and cancel pending
-    /// deliveries (false).
+    /// Whether to send notifications.
+    ///
+    /// `false` pauses the destination and cancels its pending deliveries.
+    /// `true` resumes it, without sending what happened meanwhile.
     #[arg(long, value_name = "BOOL")]
     enabled: Option<bool>,
-    /// Receive only these categories (comma-separated; '' for none).
-    #[arg(long, value_delimiter = ',', value_parser = parse_category_or_empty)]
+    /// Receive only these categories: comma-separated, or `''` for none.
+    ///
+    /// A category that stays keeps its message.
+    #[arg(long, value_delimiter = ',', value_parser = SetArgs::categories())]
     categories: Option<Vec<Option<NotificationCategory>>>,
-    /// Send TEXT with each notification of CATEGORY, such as a Discord role
-    /// mention `<@&ROLE_ID>`; also receives the category (repeatable).
+    /// Send TEXT with each notification of CATEGORY, and receive that category.
+    ///
+    /// TEXT has 1 to 1000 characters, such as a Discord role mention
+    /// `<@&ROLE_ID>`. CATEGORY is one of the values `--categories` accepts.
+    /// Repeat it for several categories.
     #[arg(long = "message", value_name = "CATEGORY=TEXT", value_parser = parse_message)]
     messages: Vec<(NotificationCategory, NotificationMessage)>,
-    /// Stop sending text with CATEGORY's notifications (repeatable).
-    #[arg(long = "no-message", value_name = "CATEGORY", value_parser = parse_category)]
+    /// Stop sending text with this category's notifications.
+    ///
+    /// Repeat it for several categories.
+    #[arg(
+        long = "no-message",
+        value_name = "CATEGORY",
+        value_parser = one_of!(NotificationCategory::ALL, NotificationCategory::parse)
+    )]
     no_messages: Vec<NotificationCategory>,
-    /// Receive notifications only about these applications (comma-separated
-    /// names or IDs; '' for none). Daemon notifications are always received.
+    /// Receive notifications only about these applications: comma-separated
+    /// names or IDs, or `''` for none.
+    ///
+    /// Daemon-wide notifications, such as daemon failures and security events,
+    /// arrive either way.
     #[arg(long, value_delimiter = ',', conflicts_with = "all_apps")]
     apps: Option<Vec<String>>,
-    /// Receive notifications about every application, including later ones.
+    /// Receive notifications about every application, including ones created later.
     #[arg(long)]
     all_apps: bool,
-    /// Receive notifications about previews.
+    /// Whether to receive notifications about previews.
     #[arg(long, value_name = "BOOL")]
     previews: Option<bool>,
-}
-
-fn parse_kind(value: &str) -> std::result::Result<DestinationKind, String> {
-    DestinationKind::parse(value).ok_or_else(|| "expected json or discord".to_owned())
 }
 
 fn parse_category(value: &str) -> std::result::Result<NotificationCategory, String> {
@@ -109,15 +143,6 @@ fn parse_category(value: &str) -> std::result::Result<NotificationCategory, Stri
             .collect();
         format!("expected one of {}", names.join(", "))
     })
-}
-
-/// A category, or `None` for the empty value that `--categories ''` gives.
-fn parse_category_or_empty(
-    value: &str,
-) -> std::result::Result<Option<NotificationCategory>, String> {
-    (!value.is_empty())
-        .then(|| parse_category(value))
-        .transpose()
 }
 
 fn parse_message(
@@ -131,6 +156,27 @@ fn parse_message(
 }
 
 impl SetArgs {
+    /// Parses `--categories` values: a category, or `None` for the empty
+    /// value `--categories ''` gives, which clap doesn't list.
+    fn categories() -> impl TypedValueParser<Value = Option<NotificationCategory>> {
+        let listed =
+            NotificationCategory::ALL.map(|category| PossibleValue::new(category.as_str()));
+        PossibleValuesParser::new(
+            listed
+                .into_iter()
+                .chain([PossibleValue::new("").hide(true)]),
+        )
+        .map(|value| NotificationCategory::parse(&value))
+    }
+
+    /// What a payload format is, for `--help`.
+    fn describe_kind(kind: DestinationKind) -> &'static str {
+        match kind {
+            DestinationKind::Json => "Versioned JSON describing the event",
+            DestinationKind::Discord => "A Discord webhook message",
+        }
+    }
+
     /// `current` settings, or a new destination's, with the options applied.
     /// Application names resolve to IDs, so renames keep their selection.
     async fn apply(
@@ -363,3 +409,38 @@ report!(Page<NotificationDelivery>, self, out, {
     }
     out.next_cursor(self.next_cursor.as_deref())
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+
+    /// `--categories ''` selects no category, though clap doesn't list the
+    /// empty value among the categories.
+    #[test]
+    fn empty_categories_select_none() {
+        let categories = |value: &str| {
+            let arguments = [
+                "piquelctl",
+                "notification",
+                "set",
+                "ops",
+                "--categories",
+                value,
+            ];
+            let cli = crate::cli::Cli::try_parse_from(arguments).unwrap();
+            let crate::cli::Command::Notification {
+                command: NotificationCommand::Set(set),
+            } = cli.command
+            else {
+                panic!("notification set command");
+            };
+            set.categories
+        };
+        assert_eq!(categories(""), Some(vec![None]));
+        assert_eq!(
+            categories("recovery"),
+            Some(vec![Some(NotificationCategory::Recovery)])
+        );
+    }
+}

@@ -48,6 +48,46 @@ fn host_paths_and_listener_settings_are_validated() {
     }
 }
 
+/// The schema's ranges are the ones loading enforces, so the published
+/// schema and settings reference never drift from validation.
+#[test]
+fn schema_ranges_are_the_validated_ones() {
+    let schema = DaemonConfig::json_schema();
+    let mut checked = 0;
+    for (table, property) in schema["properties"].as_object().unwrap() {
+        let name = property["$ref"]
+            .as_str()
+            .and_then(|reference| reference.strip_prefix("#/definitions/"))
+            .unwrap();
+        let settings = schema["definitions"][name]["properties"]
+            .as_object()
+            .unwrap();
+        for (setting, property) in settings {
+            let load =
+                |value: u64| DaemonConfig::from_toml(&format!("[{table}]\n{setting} = {value}"));
+            if let Some(minimum) = property["minimum"].as_u64().filter(|minimum| *minimum > 0) {
+                assert!(load(minimum).is_ok(), "{table}.{setting} rejects {minimum}");
+                assert!(
+                    load(minimum - 1).is_err(),
+                    "{table}.{setting} accepts {}",
+                    minimum - 1
+                );
+                checked += 1;
+            }
+            if let Some(maximum) = property["maximum"].as_u64() {
+                assert!(load(maximum).is_ok(), "{table}.{setting} rejects {maximum}");
+                assert!(
+                    load(maximum + 1).is_err(),
+                    "{table}.{setting} accepts {}",
+                    maximum + 1
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 10, "only {checked} bounds were found");
+}
+
 #[test]
 fn tcp_defaults_to_off_with_or_without_a_server_table() {
     for source in ["", "[server]", "[server]\ndata_dir = '/tmp/p'"] {

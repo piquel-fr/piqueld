@@ -4,6 +4,9 @@
 public `piqueld-client` contracts and talks to the daemon over a Unix socket by
 default.
 
+[piquelctl commands](cli-commands.md) lists every command with its arguments
+and options.
+
 ## macOS support
 
 On Apple Silicon, Nix users can run `nix build .#cli` or
