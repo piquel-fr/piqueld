@@ -1,7 +1,8 @@
 # Applications
 
-These guides build and ship applications, once you've
-[deployed your first one](../getting-started/first-app.md).
+These guides cover what an application can do once you've
+[deployed your first one](../getting-started/first-app.md): its services and
+configuration, then building and shipping it.
 
 - [Building images from Git](git-builds.md): build a service's image from a
   repository with a Dockerfile.

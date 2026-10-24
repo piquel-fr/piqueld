@@ -113,10 +113,10 @@ Saving changes the application's manifest but not what's running: select
 ## Next steps
 
 - Put the website on an HTTPS address with a [route](../guides/ingress.md).
-- Add a `staging` environment with
-  [declared environments](../reference/manifest.md#declared-environments).
-- Build images from a Git repository with
-  [Git build sources](../reference/manifest.md#git-build-sources).
+- Add a `staging` environment, as in
+  [environments and promotion](../applications/environments.md).
+- Build images from a Git repository, as in
+  [building images from Git](../applications/git-builds.md).
 
 When you're done, delete the application. This removes its containers and
 history, and deletes its previews with their volumes. Its environments' named
