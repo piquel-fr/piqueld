@@ -12,6 +12,12 @@
 # User guide
 
 - [Applications](user/applications/README.md)
+  - [Configuring services](user/applications/services.md)
+  - [Secrets and variables](user/applications/secrets-and-variables.md)
+  - [Volumes and files](user/applications/volumes-and-files.md)
+  - [Running jobs before a rollout](user/applications/jobs.md)
+  - [Connecting applications](user/applications/links.md)
+  - [Running commands in a container](user/applications/commands.md)
   - [Building images from Git](user/applications/git-builds.md)
   - [Deploying on push](user/applications/deploy-on-push.md)
   - [Environments and promotion](user/applications/environments.md)

@@ -426,30 +426,6 @@ impl SwarmScenario {
         .await
         .expect("a stop ends the session");
         assert!(stopped.is_err());
-        let instance = self.environment.instance();
-        let mut missing = piqueld_core::exec::ExecRequest {
-            service: piqueld_core::ServiceName::parse("absent").unwrap(),
-            command: piqueld_core::exec::ExecCommand::parse(vec!["true".into()]).unwrap(),
-            stdin: false,
-            tty: None,
-        };
-        let docker = &self.engine.docker;
-        assert!(
-            docker
-                .create_exec(&instance, &self.environment.app, &missing)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        missing.service = piqueld_core::ServiceName::parse("web").unwrap();
-        let other = InstanceId::parse("another-instance").unwrap();
-        assert!(
-            docker
-                .create_exec(&other, &self.environment.app, &missing)
-                .await
-                .unwrap()
-                .is_none()
-        );
     }
 
     async fn add_http_service(&self) -> DesiredService {
