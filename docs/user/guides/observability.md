@@ -536,7 +536,7 @@ A collector deployed as a piqueld application, such as the OpenTelemetry
 Collector, can receive the daemon's telemetry directly. The daemon runs on the
 host and can't reach an overlay network, and piqueld doesn't publish ports, so
 it exports over a Unix socket in a directory it shares with the collector,
-as it does with the [ingress gateway](ingress.md).
+as it does with the ingress gateway.
 
 1. Mark the collector's service in the manifest. At most one service per
    application may (`telemetry_receiver_duplicate`), with one replica
@@ -649,7 +649,7 @@ adjust each `path`. Then:
 
 1. Edit the manifest: `grafana_hostname`, a hostname for Grafana's private
    route, which needs a DNS record like any
-   [private route](ingress.md#public-and-private-routes); the applications the
+   [private route](../networking/private-routes.md); the applications the
    collector is exported to; and `spec.manifest`, which should name your
    repository and either follow a branch or pin the `commit` of a release tag.
 2. Create the application, grant it telemetry, and deploy it:

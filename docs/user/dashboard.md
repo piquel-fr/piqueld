@@ -158,7 +158,7 @@ edits hostnames, each with an optional [name](reference/manifest.md#routes)
 and pointing at a service port or a redirect with a public or
 private visibility, and shows each deployed route's name, effective visibility, the DNS
 records its hostname needs, whether piqueld
-[manages them](guides/ingress.md#managed-dns-records) (`manual`, `managed`, `pending` or
+[manages them](networking/dns-records.md) (`manual`, `managed`, `pending` or
 `dns_conflict`), HTTPS readiness and diagnostics in every environment and preview.
 Each environment's Overview sets its visibility ceiling. System status shows a
 Previews card with the previews against their limits, installation-wide and for
@@ -232,7 +232,7 @@ read-only. There is no raw manifest editor or deployment restoration workflow.
 The browser bundle uses HTTP DTOs and shared typed lifecycle records and
 fetches same-origin `/api/v1` resources. The daemon serves it only on the
 configured localhost or Tailscale TCP listeners and, with a
-[dashboard hostname](guides/ingress.md#dashboard-hostname), through private ingress.
+[dashboard hostname](networking/private-routes.md#serve-the-dashboard-on-your-own-domain), through private ingress.
 The API Unix socket is API-only, and the daemon does not add CORS, browser telemetry,
 or a public binding. Passkey login
 establishes an HTTP-only session cookie; the Accounts page manages accounts and
