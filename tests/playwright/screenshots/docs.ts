@@ -274,11 +274,18 @@ export class Piquelctl {
     return result.stdout;
   }
 
+  /** Writes `content` to file `name` for a command to read, and returns
+   * its path. */
+  async write(name: string, content: string): Promise<string> {
+    const file = join(this.cli.daemon.directory, name);
+    await writeFile(file, content);
+    return file;
+  }
+
   /** Saves TOML `manifest` with `piquelctl app apply`, deploying it unless
    * `deploy` is false. */
   async apply(manifest: string, deploy = true) {
-    const file = join(this.cli.daemon.directory, 'manifest.toml');
-    await writeFile(file, manifest);
+    const file = await this.write('manifest.toml', manifest);
     await this.run(['app', 'apply', '--file', file, '--yes', ...deploy ? ['--deploy'] : []]);
   }
 }
@@ -326,6 +333,14 @@ export async function saveChanges(page: Page) {
   const save = page.getByRole('button', { name: 'Save changes', exact: true }).locator('visible=true');
   await save.click();
   await expect(save).toHaveCount(0);
+}
+
+/** Service `name` of application `app`, on its tab `tab`. */
+export async function service(page: Page, app: string, name: string, tab: string) {
+  await application(page, app, 'Services');
+  await page.locator('a.list-row', { hasText: name }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
+  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: tab, exact: true }).click();
 }
 
 /** Environment `name` of application `app`, reached as a reader would, once

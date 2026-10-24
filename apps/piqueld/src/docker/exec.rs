@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use piqueld_core::{
     EnvironmentId, InstanceId,
     exec::{ExecInput, ExecOutput, ExecRequest},
+    resource::TaskState,
 };
 use std::{collections::HashMap, convert::Infallible};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
@@ -64,20 +65,13 @@ impl BollardDocker {
             ))
             .await
             .or_request("list exec tasks")?;
-        // Swarm reports a task as starting until its health check passes, but
-        // its container already runs; prefer healthy tasks.
         let Some((_, task, container)) = tasks
             .into_iter()
             .filter_map(|task| {
-                let status = task.status?;
-                let preference = match status.state? {
-                    bollard::models::TaskState::RUNNING => 0,
-                    bollard::models::TaskState::STARTING => 1,
-                    _ => return None,
-                };
-                Some((preference, task.id?, status.container_status?.container_id?))
+                let rank = Self::exec_rank(&Self::task_state(&task))?;
+                Some((rank, task.id?, task.status?.container_status?.container_id?))
             })
-            .min_by_key(|(preference, ..)| *preference)
+            .min_by_key(|(rank, ..)| *rank)
         else {
             return Ok(None);
         };
@@ -105,6 +99,18 @@ impl BollardDocker {
             task,
             tty,
         }))
+    }
+
+    /// How [`Self::create_task_exec`] ranks a task Docker wants running, by
+    /// its `state`: lower first, or `None` when its container doesn't run.
+    /// Swarm reports a task as starting until its health check passes, but
+    /// its container already runs; healthy tasks come first.
+    pub(super) const fn exec_rank(state: &TaskState) -> Option<u8> {
+        match state {
+            TaskState::Running => Some(0),
+            TaskState::Starting => Some(1),
+            _ => None,
+        }
     }
 
     /// Streams a created command until it exits and returns its exit code.

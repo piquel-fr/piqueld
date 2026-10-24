@@ -130,11 +130,11 @@ just docs-screenshots
 
 The recipe runs the specs in `tests/playwright/screenshots/` with the daemon
 of the [browser tests](https://github.com/piquel-fr/piqueld/tree/main/tests/playwright),
-in a mode where it deploys to an in-memory Docker engine: deployments succeed
-and services report healthy. Each spec seeds example data the way its guide
-does, then saves each page into `docs/images/<section>/`. The daemon runs no
-ingress gateway, so
-screenshots show HTTPS ingress as disabled, as on a daemon with the default
+in a mode where it deploys to an in-memory Docker engine: deployments succeed,
+services report healthy, and commands run in them exit with 0. Each spec
+seeds example data the way its guide does, then saves each page into
+`docs/images/<section>/`. The daemon runs no ingress gateway, so screenshots
+show HTTPS ingress as disabled, as on a daemon with the default
 configuration. It shows webhook URLs on `hooks.example.com`, as the guides
 configure it, but nothing listens there.
 
