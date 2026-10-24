@@ -1,5 +1,5 @@
-import { test, expect, call, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
-import type { Page, Route } from '@playwright/test';
+import { test, expect, call, rewrite, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import type { Page } from '@playwright/test';
 
 /** A repository-backed application following `main`, optionally with a `staging` environment on `release`. */
 async function createRepositoryApplication(page: Page, staging = false) {
@@ -15,17 +15,6 @@ async function createRepositoryApplication(page: Page, staging = false) {
     })
     : null;
   return { app: saved.application_id as string, staging: sibling?.id as string };
-}
-
-/** Rewrites the JSON `data` of GET responses whose path is exactly `path`. */
-async function rewrite(page: Page, path: string, edit: (data: Record<string, any>) => void) {
-  await page.route(url => url.pathname === path, async (route: Route) => {
-    if (route.request().method() !== 'GET') return route.continue();
-    const response = await route.fetch();
-    const body = await response.json();
-    edit(body.data);
-    await route.fulfill({ response, json: body });
-  });
 }
 
 test('each environment of a repository-backed application follows its own branch', async ({ page, account }) => {

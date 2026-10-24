@@ -1,10 +1,16 @@
-//! Isolated UI/API fixture for Playwright. Docker execution is deliberately stubbed.
+//! Isolated UI/API fixture for Playwright. Docker execution is deliberately
+//! stubbed: nothing ever deploys. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER` set,
+//! the real controller deploys to the in-memory engine of
+//! [`piqueld::docker::fake`] instead, so deployments succeed and services
+//! report healthy, as the documentation screenshots show them.
+use anyhow::Context as _;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use piqueld::{
     api::http::{ApiState, UiAssets},
     application::{BoundaryError, RuntimeBoundary},
-    docker::{DockerError, Exec, ExecIo},
+    docker::{DockerError, Exec, ExecIo, fake::FakeDocker},
+    reconcile::Controller,
     store::{Store, StoredEnvironment},
 };
 use piqueld_core::{
@@ -12,6 +18,7 @@ use piqueld_core::{
     resource::ResolvedApplication,
 };
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 struct Runtime;
 #[async_trait]
 impl RuntimeBoundary for Runtime {
@@ -96,6 +103,32 @@ impl RuntimeBoundary for Runtime {
     fn trigger_reconciliation(&self) {}
 }
 
+/// The API over `store`, served by the real controller and a fake Docker
+/// engine, and the controller's work, which runs until aborted.
+fn reconciled(store: Arc<Store>) -> (ApiState, JoinHandle<anyhow::Result<()>>) {
+    let config = piqueld::config::DaemonConfig::default();
+    let controller = Controller::new(Arc::new(FakeDocker::default()), Arc::clone(&store))
+        .with_config(&config.reconciliation);
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)))
+        .with_image_status(controller.image_status());
+    let run = tokio::spawn(async move {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let (result, ()) = tokio::join!(
+            controller.run(
+                wake,
+                std::time::Duration::from_secs(config.reconciliation.scan_interval_seconds),
+                config.retention.finished_operation_days,
+                config.retention.event_days,
+                cancellation.clone(),
+            ),
+            controller.run_image_cleanup(cancellation),
+        );
+        result.context("reconciling against the fake Docker engine")
+    });
+    (state, run)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let dir = std::path::PathBuf::from(std::env::var("PIQUELD_PLAYWRIGHT_DATA_DIR")?);
@@ -105,7 +138,12 @@ async fn main() -> anyhow::Result<()> {
     let auth = piqueld::auth::Auth::new(&store, &origin)?;
     let setup = dir.join("setup-link");
     auth.prepare_setup(&setup).await?;
-    let state = ApiState::new(store, Arc::new(Runtime));
+    let (state, mut controller) = if std::env::var_os("PIQUELD_PLAYWRIGHT_FAKE_DOCKER").is_some() {
+        reconciled(store)
+    } else {
+        let state = ApiState::new(store, Arc::new(Runtime));
+        (state, tokio::spawn(std::future::pending()))
+    };
     let router = piqueld::api::http::web_router(state.clone(), UiAssets::resolve(), auth.clone());
     let mut server = tokio::spawn(async move {
         axum::serve(
@@ -130,12 +168,13 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown.send(result);
     });
     let result = tokio::select! {
-        result = &mut server => result?,
-        result = &mut unix_server => result?,
-        result = stopped => result?.map(|_| ()),
+        result = &mut server => result?.map_err(anyhow::Error::from),
+        result = &mut unix_server => result?.map_err(anyhow::Error::from),
+        result = &mut controller => result?,
+        result = stopped => result?.map(|_| ()).map_err(anyhow::Error::from),
     };
     server.abort();
     unix_server.abort();
-    result?;
-    Ok(())
+    controller.abort();
+    result
 }
