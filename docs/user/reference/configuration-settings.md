@@ -333,7 +333,7 @@ The TCP addresses that serve the API and dashboard over plain HTTP, besides the 
 
 - `off`: none, so only the Unix socket serves the API.
 - `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.
-- `tailscale`: the host's Tailscale addresses, read from its `tailscale` at startup. If Tailscale isn't running then, piqueld logs a warning and only tries again when piqueld restarts.
+- `tailscale`: the host's Tailscale addresses, read with `tailscale status` at startup. If Tailscale isn't running then, piqueld logs a warning and tries again only after a restart.
 - `both`: loopback and Tailscale addresses.
 
 ### `server.port`

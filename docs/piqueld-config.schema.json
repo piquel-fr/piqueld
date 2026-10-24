@@ -493,7 +493,7 @@
           "oneOf": [
             {
               "$ref": "#/definitions/ListenMode",
-              "description": "The TCP addresses that serve the API and dashboard over plain HTTP,\nbesides the Unix socket. Every request must still authenticate.\n\n- `off`: none, so only the Unix socket serves the API.\n- `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.\n- `tailscale`: the host's Tailscale addresses, read from its\n  `tailscale` at startup. If Tailscale isn't running then, piqueld\n  logs a warning and only tries again when piqueld restarts.\n- `both`: loopback and Tailscale addresses."
+              "description": "The TCP addresses that serve the API and dashboard over plain HTTP,\nbesides the Unix socket. Every request must still authenticate.\n\n- `off`: none, so only the Unix socket serves the API.\n- `localhost`: IPv4 and IPv6 loopback, `127.0.0.1` and `::1`.\n- `tailscale`: the host's Tailscale addresses, read with\n  `tailscale status` at startup. If Tailscale isn't running then,\n  piqueld logs a warning and tries again only after a restart.\n- `both`: loopback and Tailscale addresses."
             }
           ]
         },
