@@ -14,19 +14,20 @@ use crate::names::string_enum;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-/// How an application follows pushes to its manifest repository. Applies to
-/// every preview, and to every environment following an unpinned branch that
-/// opted in.
+/// Whether pushes to the manifest repository deploy. It applies to every
+/// preview, and to every environment that opted in and follows a branch
+/// without a pinned commit.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
 pub enum RepositorySync {
     /// Deploy only when asked.
     #[default]
     Off,
-    /// List the branch heads every `interval_seconds`.
+    /// List the repository's branch heads every `interval_seconds`.
     Poll {
-        /// Seconds between listings, from 60 to 86400.
+        /// Seconds between listings, from 60 to 86,400.
         #[serde(default = "RepositorySync::default_interval")]
+        #[schema(default = RepositorySync::default_interval)]
         interval_seconds: u32,
     },
     /// List the branch heads when GitHub reports a push.
