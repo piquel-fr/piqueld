@@ -1,0 +1,6 @@
+# The build context is the repository root; the Dockerfile only reads these.
+*
+!flake.nix
+!flake.lock
+!book.toml
+!docs
