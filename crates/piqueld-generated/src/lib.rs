@@ -190,16 +190,16 @@ impl Page {
         let mut prose = Vec::new();
         let mut lines = text.trim().lines();
         while let Some(line) = lines.next() {
-            if !line.trim_start().starts_with("```") {
+            let Some(fence) = Fence::open(line) else {
                 prose.push(line);
                 continue;
-            }
+            };
             blocks.push(Self::paragraph(&prose));
             prose.clear();
             let mut code = vec![line];
             for line in lines.by_ref() {
                 code.push(line);
-                if line.trim_start().starts_with("```") {
+                if fence.closes(line) {
                     break;
                 }
             }
@@ -242,6 +242,34 @@ impl Page {
     }
 }
 
+/// The marker of a fenced code block in [`Page::prose`]: three or more
+/// backticks or tildes.
+#[derive(Clone, Copy)]
+struct Fence {
+    /// The marker's character, `` ` `` or `~`.
+    marker: char,
+    /// How many times the opening line repeats it.
+    len: usize,
+}
+
+impl Fence {
+    /// The fence `line` opens, if it is an opening fence.
+    fn open(line: &str) -> Option<Self> {
+        let line = line.trim_start();
+        let marker = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+        let len = line.chars().take_while(|&c| c == marker).count();
+        (len >= 3).then_some(Self { marker, len })
+    }
+
+    /// Whether `line` closes the fence: only its marker, at least as many
+    /// times as the opening line.
+    fn closes(self, line: &str) -> bool {
+        let line = line.trim();
+        let len = line.chars().take_while(|&c| c == self.marker).count();
+        len >= self.len && len == line.chars().count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Page;
@@ -252,6 +280,15 @@ mod tests {
         assert_eq!(
             Page::prose(text),
             "Text that may reference \\<name>.\n\n```text\n\"${{ a }}\"  -> <a>\n```\n\nAfter."
+        );
+    }
+
+    #[test]
+    fn prose_closes_code_blocks_only_on_a_matching_fence() {
+        let text = "````markdown\n```text\n<a>\n```\n````\nAfter <b>.\n\n~~~\n<c>\n~~~";
+        assert_eq!(
+            Page::prose(text),
+            "````markdown\n```text\n<a>\n```\n````\n\nAfter \\<b>.\n\n~~~\n<c>\n~~~"
         );
     }
 }
