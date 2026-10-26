@@ -44,6 +44,8 @@ macro_rules! scenarios {
         $test!(an_image_in_two_repositories_lists_both_digests);
         $test!(job_runs_report_their_status_and_output_per_operation);
         $test!(observations_report_only_their_environment);
+        $test!(observations_report_volumes_named_like_their_environment);
+        $test!(removing_job_runs_removes_only_the_selected_runs_of_their_environment);
     };
 }
 pub(crate) use scenarios;
@@ -62,8 +64,19 @@ pub struct Environment {
 impl Environment {
     /// A new environment whose services run [`IMAGE`] as `docker` resolves it.
     pub async fn new(docker: &impl DockerApi) -> Self {
-        let suffix = uuid::Uuid::now_v7().simple().to_string();
-        let app = EnvironmentId::parse(format!("app-{}", &suffix[..16])).unwrap();
+        Self::named(docker, format!("app-{}", uuid::Uuid::now_v7().simple())).await
+    }
+
+    /// A new environment whose ID starts with this one's, so its resources'
+    /// names start with this one's readable name prefix.
+    pub async fn look_alike(&self, docker: &impl DockerApi) -> Self {
+        Self::named(docker, format!("{}-look-alike", self.app)).await
+    }
+
+    /// The environment `app`, whose services run [`IMAGE`] as `docker`
+    /// resolves it.
+    async fn named(docker: &impl DockerApi, app: String) -> Self {
+        let app = EnvironmentId::parse(app).unwrap();
         let mut labels =
             Ownership::scope(&InstanceId::parse("integration-instance").unwrap(), &app);
         labels.insert(
@@ -201,6 +214,16 @@ impl Environment {
         }
         .for_operation(operation)
     }
+
+    /// The `migrate` job's run by `operation`, which prints `migrated`.
+    pub fn migration(&self, operation: &str) -> piqueld_core::DesiredJobRun {
+        self.job(
+            &self.service("web"),
+            operation,
+            "echo migrated",
+            JobVolumeAccess::ReadOnly,
+        )
+    }
 }
 
 /// An adapter and the environment a scenario changes through it.
@@ -223,7 +246,7 @@ impl<D: DockerApi> Contract<D> {
     /// service converged with healthy running tasks; ensuring them again
     /// changes nothing Docker reports.
     pub async fn ensured_resources_are_observed_and_ensuring_again_changes_nothing(&self) {
-        let service = self.ensure_web().await;
+        let service = self.ensure_web(&self.environment).await;
         let observed = self.converged(&service).await;
         let network = self.environment.network();
         let volume = self.environment.volume();
@@ -246,7 +269,7 @@ impl<D: DockerApi> Contract<D> {
 
     /// An updated service is observed with the change once it converged.
     pub async fn service_updates_are_observed(&self) {
-        let service = self.ensure_web().await;
+        let service = self.ensure_web(&self.environment).await;
         self.converged(&service).await;
         let mut updated = service.clone();
         updated.replicas = 2;
@@ -262,7 +285,7 @@ impl<D: DockerApi> Contract<D> {
     /// Detaching a network changes only the service's networks. A missing
     /// service or network, or one already detached, counts as detached.
     pub async fn detaching_a_network_changes_only_the_service_networks(&self) {
-        let service = self.ensure_web().await;
+        let service = self.ensure_web(&self.environment).await;
         self.converged(&service).await;
         let network = self.environment.network();
         let detach = async |service: &str, network: &str| {
@@ -290,10 +313,10 @@ impl<D: DockerApi> Contract<D> {
     /// A network fails removal, as a retryable request, while a service is
     /// attached to it. Once removed, services and networks are no longer
     /// observed, and removing them again succeeds; while Swarm is still
-    /// removing the network, removing it again may fail as a retryable
-    /// request.
+    /// removing the network, removing it again may fail (see
+    /// [`Self::still_removing`]).
     pub async fn removing_services_and_networks_is_idempotent(&self) {
-        let service = self.ensure_web().await;
+        let service = self.ensure_web(&self.environment).await;
         self.converged(&service).await;
         let network = self.environment.network();
         let labels = &self.environment.labels;
@@ -328,16 +351,17 @@ impl<D: DockerApi> Contract<D> {
             }
         })
         .await;
-        // Swarm removes the network in the background. Until it's gone, the
-        // Engine still inspects it but fails deleting it as a 500 "not
-        // found", which the adapter reports as a retryable request failure;
-        // the fake removes it at once.
+        // Swarm removes the network in the background; the fake removes it
+        // at once.
         if let Err(error) = self
             .docker
             .remove_network(network.name.as_str(), labels)
             .await
         {
-            assert_eq!(Self::diagnostic(error), DiagnosticCode::DockerRequestFailed);
+            assert!(
+                Self::still_removing(&error),
+                "removing the network again failed: {error:?}"
+            );
         }
         let observed = self
             .until("the network is no longer observed", async || {
@@ -442,78 +466,69 @@ impl<D: DockerApi> Contract<D> {
     /// run replaces it, and removing every run leaves none.
     pub async fn job_runs_report_their_status_and_output_per_operation(&self) {
         self.ensure_storage(&self.environment).await;
-        let service = self.environment.service("web");
-        let job = |operation| {
-            self.environment.job(
-                &service,
-                operation,
-                "echo migrated",
-                JobVolumeAccess::ReadOnly,
-            )
-        };
-        let (first, second) = (job("operation-1"), job("operation-2"));
-        assert_eq!(
-            self.docker.job_status(&first).await.unwrap(),
-            JobStatus::Missing
-        );
-        assert_eq!(
-            self.docker.job_output(&first).await.unwrap(),
-            JobOutput::default()
-        );
+        let first = self.environment.migration("operation-1");
+        let second = self.environment.migration("operation-2");
+        self.missing(&first).await;
 
         self.docker.start_job(&first).await.unwrap();
-        assert_eq!(
-            self.finished(&first).await,
-            JobStatus::Finished {
-                exit_code: Some(0),
-                error: None
-            }
-        );
-        assert_eq!(
-            self.docker.job_output(&first).await.unwrap(),
-            JobOutput {
-                chunks: vec![(LogStream::Stdout, b"migrated\n".to_vec())],
-                truncated: false,
-            }
-        );
+        self.succeeded(&first).await;
 
         self.docker.start_job(&second).await.unwrap();
-        assert_eq!(
-            self.docker.job_status(&first).await.unwrap(),
-            JobStatus::Missing
-        );
-        self.finished(&second).await;
+        self.missing(&first).await;
+        self.succeeded(&second).await;
         self.docker
             .remove_jobs(&self.environment.labels, JobRuns::All)
             .await
             .unwrap();
-        assert_eq!(
-            self.docker.job_status(&second).await.unwrap(),
-            JobStatus::Missing
-        );
+        self.missing(&second).await;
+    }
+
+    /// Removing job runs removes only the selected runs of the environment
+    /// the ownership labels name, so other environments keep theirs.
+    pub async fn removing_job_runs_removes_only_the_selected_runs_of_their_environment(&self) {
+        let other = Environment::new(&self.docker).await;
+        let ours = self.environment.migration("operation-1");
+        let theirs = other.migration("operation-1");
+        for (environment, run) in [(&self.environment, &ours), (&other, &theirs)] {
+            self.ensure_storage(environment).await;
+            self.docker.start_job(run).await.unwrap();
+        }
+        let labels = &self.environment.labels;
+        for unselected in [JobRuns::Of("operation-2"), JobRuns::Except("operation-1")] {
+            self.docker.remove_jobs(labels, unselected).await.unwrap();
+            self.succeeded(&ours).await;
+        }
+        self.docker.remove_jobs(labels, JobRuns::All).await.unwrap();
+        self.missing(&ours).await;
+        self.succeeded(&theirs).await;
     }
 
     /// Observing an environment reports none of another's resources.
     pub async fn observations_report_only_their_environment(&self) {
         let other = Environment::new(&self.docker).await;
-        for environment in [&self.environment, &other] {
-            self.ensure_storage(environment).await;
-        }
-        let observed = self.observe().await;
-        let names = |observed: &ObservedApplication| {
-            observed
-                .networks
-                .iter()
-                .map(|network| network.name.clone())
-                .chain(observed.volumes.iter().map(|volume| volume.name.clone()))
-                .collect::<Vec<_>>()
-        };
+        assert_ne!(other.app, self.environment.app);
+        let service = self.ensure_web(&self.environment).await;
+        self.ensure_web(&other).await;
         assert_eq!(
-            names(&observed),
+            Self::names(&self.observe().await),
             [
+                service.name.to_string(),
                 self.environment.network().name.to_string(),
                 self.environment.volume().name.to_string()
             ]
+        );
+    }
+
+    /// Observing an environment also reports another's volume whose name
+    /// starts with its readable name prefix, as only labels tell them apart,
+    /// so planning sees it as an ownership conflict. That environment's
+    /// network and service, named for their owner, aren't reported.
+    pub async fn observations_report_volumes_named_like_their_environment(&self) {
+        let look_alike = self.environment.look_alike(&self.docker).await;
+        self.ensure_web(&look_alike).await;
+        assert_eq!(
+            Self::names(&self.observe().await),
+            [look_alike.volume().name.to_string()]
         );
     }
 
@@ -529,10 +544,10 @@ impl<D: DockerApi> Contract<D> {
             .unwrap();
     }
 
-    /// Ensures the environment's network, volume, and `web` service.
-    async fn ensure_web(&self) -> DesiredService {
-        let service = self.environment.service("web");
-        self.ensure_storage(&self.environment).await;
+    /// Ensures the network, volume, and `web` service of `environment`.
+    async fn ensure_web(&self, environment: &Environment) -> DesiredService {
+        let service = environment.service("web");
+        self.ensure_storage(environment).await;
         self.docker.ensure_service(&service).await.unwrap();
         service
     }
@@ -562,15 +577,44 @@ impl<D: DockerApi> Contract<D> {
         .await
     }
 
-    /// Waits until `job` stopped and returns its status.
-    async fn finished(&self, job: &piqueld_core::DesiredJobRun) -> JobStatus {
-        self.until("the job finishes", async || {
-            match self.docker.job_status(job).await.unwrap() {
-                JobStatus::Running { .. } => None,
-                status => Some(status),
+    /// Waits until `job` stopped, and checks that it succeeded and printed
+    /// `migrated`.
+    async fn succeeded(&self, job: &piqueld_core::DesiredJobRun) {
+        let status = self
+            .until("the job finishes", async || {
+                match self.docker.job_status(job).await.unwrap() {
+                    JobStatus::Running { .. } => None,
+                    JobStatus::Missing => panic!("{} has no run", job.operation()),
+                    status @ JobStatus::Finished { .. } => Some(status),
+                }
+            })
+            .await;
+        assert_eq!(
+            status,
+            JobStatus::Finished {
+                exit_code: Some(0),
+                error: None
             }
-        })
-        .await
+        );
+        assert_eq!(
+            self.docker.job_output(job).await.unwrap(),
+            JobOutput {
+                chunks: vec![(LogStream::Stdout, b"migrated\n".to_vec())],
+                truncated: false,
+            }
+        );
+    }
+
+    /// Checks that `job` has no run, and so no output.
+    async fn missing(&self, job: &piqueld_core::DesiredJobRun) {
+        assert_eq!(
+            self.docker.job_status(job).await.unwrap(),
+            JobStatus::Missing
+        );
+        assert_eq!(
+            self.docker.job_output(job).await.unwrap(),
+            JobOutput::default()
+        );
     }
 
     /// Checks `check` until it returns `Some`, within [`CONVERGENCE`], and
@@ -593,6 +637,17 @@ impl<D: DockerApi> Contract<D> {
         self.docker.observe(&self.environment.app).await.unwrap()
     }
 
+    /// The names of the services, networks, and volumes in `observed`.
+    fn names(observed: &ObservedApplication) -> Vec<String> {
+        observed
+            .services
+            .iter()
+            .map(|service| service.name.clone())
+            .chain(observed.networks.iter().map(|network| network.name.clone()))
+            .chain(observed.volumes.iter().map(|volume| volume.name.clone()))
+            .collect()
+    }
+
     /// `service` in `observed`.
     fn service<'a>(
         observed: &'a ObservedApplication,
@@ -603,6 +658,27 @@ impl<D: DockerApi> Contract<D> {
             .iter()
             .find(|observed| observed.name == service.name.as_str())
             .unwrap_or_else(|| panic!("{} is observed", service.name))
+    }
+
+    /// Whether `error` is the Engine failing to delete a network Swarm is
+    /// still removing in the background: it still inspects the network but
+    /// fails deleting it with a 500 "network … not found". The adapter
+    /// should count that network as removed instead.
+    fn still_removing(error: &DockerError) -> bool {
+        let DockerError::RequestSource {
+            operation: "delete network",
+            source,
+        } = error
+        else {
+            return false;
+        };
+        matches!(
+            source.downcast_ref(),
+            Some(bollard::errors::Error::DockerResponseServerError {
+                status_code: 500,
+                message,
+            }) if message.starts_with("network ") && message.ends_with(" not found")
+        )
     }
 
     /// How the controller classifies `error`.

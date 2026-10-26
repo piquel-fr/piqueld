@@ -51,5 +51,8 @@ fake behaves like the real engine. Both suites run each of them:
 `fake_docker.rs` against the fake, in the `rust` job, and
 `docker_integration.rs` against the engine, in the `docker-integration` job.
 When the controller starts relying on another engine behavior, add a scenario
-for it. When a scenario passes against the fake but fails against the engine,
-fix the fake.
+for it.
+
+When a scenario passes against the fake but fails against the engine, check
+what Docker actually does. Then fix whichever is wrong: the fake, the adapter,
+or the scenario.

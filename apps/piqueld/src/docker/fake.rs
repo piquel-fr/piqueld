@@ -3,8 +3,8 @@
 //! converged, unless a test arms one of its failure knobs.
 
 use super::{
-    DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, LocalImage,
-    SwarmState, resolve_image_digest,
+    BollardDocker, DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus,
+    LocalImage, SwarmState, resolve_image_digest,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
@@ -104,8 +104,18 @@ pub struct Secret {
     pub labels: BTreeMap<String, String>,
 }
 
-/// A job run's operation, exit code, and deadline.
-pub type JobRunState = (String, i64, std::time::SystemTime);
+/// A job run, as its Swarm job service records it.
+#[derive(Clone, Debug)]
+pub struct JobRunState {
+    /// The operation that started it.
+    pub operation: String,
+    /// The exit code it reports once finished.
+    pub exit_code: i64,
+    /// When it times out.
+    pub deadline: std::time::SystemTime,
+    /// The ownership labels of the environment that started it.
+    pub labels: BTreeMap<String, String>,
+}
 
 /// A started job with the services, networks, and volumes it could see.
 #[derive(Debug, PartialEq, Eq)]
@@ -290,7 +300,7 @@ impl FakeDocker {
             .lock()
             .await
             .get(job.container.name.as_str())
-            .filter(|(operation, ..)| operation == job.operation())
+            .filter(|run| run.operation == job.operation())
             .cloned()
     }
 
@@ -325,7 +335,7 @@ impl FakeDocker {
         labels_match && spec_hash_valid
     }
 
-    /// Whether a secret labelled `observed` belongs to the environment
+    /// Whether a secret or job run labelled `observed` belongs to the environment
     /// `expected` names by its managed, instance, and application labels.
     fn scope_matches(
         observed: &BTreeMap<String, String>,
@@ -656,26 +666,24 @@ impl DockerApi for FakeDocker {
         for network in &mut observed.networks {
             network.in_use = Self::attached(&observed.services, &network.name);
         }
-        observed.linked_networks = observed
-            .networks
-            .iter()
-            .filter(|network| {
-                network
-                    .labels
-                    .get(piqueld_core::resource::LINK_LABEL)
-                    .map(String::as_str)
-                    == Some(application.as_str())
-            })
-            .cloned()
-            .collect();
-        let belongs = |labels: &BTreeMap<String, String>| {
-            labels
-                .get(APPLICATION_LABEL)
-                .is_some_and(|id| id == application.as_str())
+        // As the adapter observes: see `BollardDocker::relevant`.
+        let relevant = |name: &str, labels: &BTreeMap<String, String>| {
+            BollardDocker::relevant(name, labels, application)
         };
-        observed.services.retain(|service| belongs(&service.labels));
-        observed.networks.retain(|network| belongs(&network.labels));
-        observed.volumes.retain(|volume| belongs(&volume.labels));
+        observed
+            .services
+            .retain(|service| relevant(&service.name, &service.labels));
+        observed
+            .volumes
+            .retain(|volume| relevant(&volume.name, &volume.labels));
+        (observed.networks, observed.linked_networks) = observed
+            .networks
+            .into_iter()
+            .filter(|network| {
+                relevant(&network.name, &network.labels)
+                    || BollardDocker::linked(&network.labels, application)
+            })
+            .partition(|network| relevant(&network.name, &network.labels));
         Ok(observed)
     }
 
@@ -814,11 +822,13 @@ impl DockerApi for FakeDocker {
             .push(format!("job {}", job.logical_name));
         self.jobs.lock().await.insert(
             job.container.name.to_string(),
-            (
-                job.operation().into(),
-                self.job_exit.load(Ordering::SeqCst),
-                std::time::SystemTime::now() + Duration::from_secs(u64::from(job.timeout_seconds)),
-            ),
+            JobRunState {
+                operation: job.operation().into(),
+                exit_code: self.job_exit.load(Ordering::SeqCst),
+                deadline: std::time::SystemTime::now()
+                    + Duration::from_secs(u64::from(job.timeout_seconds)),
+                labels: job.container.labels.clone(),
+            },
         );
         if self.lose_job_start.swap(false, Ordering::SeqCst) {
             return Err(DockerError::Request("start job"));
@@ -830,7 +840,12 @@ impl DockerApi for FakeDocker {
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobStatus, DockerError> {
-        let Some((_, exit_code, deadline)) = self.run(job).await else {
+        let Some(JobRunState {
+            exit_code,
+            deadline,
+            ..
+        }) = self.run(job).await
+        else {
             return Ok(JobStatus::Missing);
         };
         if self.fail_job_status.load(Ordering::SeqCst) {
@@ -866,9 +881,10 @@ impl DockerApi for FakeDocker {
         })
     }
 
+    /// Removes the selected runs of the environment `ownership` labels.
     async fn remove_jobs(
         &self,
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
         runs: JobRuns<'_>,
     ) -> Result<(), DockerError> {
         if matches!(runs, JobRuns::Of(_)) {
@@ -878,10 +894,9 @@ impl DockerApi for FakeDocker {
                 return Err(DockerError::Request("remove jobs"));
             }
         }
-        self.jobs
-            .lock()
-            .await
-            .retain(|_, (operation, ..)| !runs.selects(Some(operation)));
+        self.jobs.lock().await.retain(|_, run| {
+            !(Self::scope_matches(&run.labels, ownership) && runs.selects(Some(&run.operation)))
+        });
         Ok(())
     }
 

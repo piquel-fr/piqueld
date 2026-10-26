@@ -18,7 +18,9 @@ mod sqlite;
 use application_fixture::TestApplications;
 use async_trait::async_trait;
 use piqueld::api::Actor::Daemon;
-use piqueld::docker::fake::{FakeDocker, Gate, JobStart, RegistryState, observed_service};
+use piqueld::docker::fake::{
+    FakeDocker, Gate, JobRunState, JobStart, RegistryState, observed_service,
+};
 use piqueld::docker::{DockerApi, DockerError, ImageSource, LocalImage, resolve_image_digest};
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
@@ -3685,8 +3687,8 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
     });
     scanned.unwrap();
     // The daemon stays down past the run's deadline.
-    for (_, _, deadline) in harness.docker.jobs.lock().await.values_mut() {
-        *deadline = std::time::SystemTime::now() - Duration::from_secs(1);
+    for run in harness.docker.jobs.lock().await.values_mut() {
+        run.deadline = std::time::SystemTime::now() - Duration::from_secs(1);
     }
     harness.reopen().await;
     let result = tokio::time::timeout(Duration::from_secs(30), harness.scan_result(&operation))
@@ -3700,12 +3702,20 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
 async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let harness = ControllerHarness::new().await;
     let mut input = manifest_with_jobs(&["migrate"], 300);
+    let first = harness.apply(input.clone(), None).await;
     // A run left by an earlier operation is removed before jobs start.
     harness.docker.jobs.lock().await.insert(
         "leftover".into(),
-        ("earlier-operation".into(), 0, std::time::SystemTime::now()),
+        JobRunState {
+            operation: "earlier-operation".into(),
+            exit_code: 0,
+            deadline: std::time::SystemTime::now(),
+            labels: piqueld_core::resource::Ownership::scope(
+                harness.store.instance_id(),
+                &first.environment_id,
+            ),
+        },
     );
-    let first = harness.apply(input.clone(), None).await;
     harness.finish(&first).await;
     // The first job sees its network and volume but no service yet.
     assert_eq!(
