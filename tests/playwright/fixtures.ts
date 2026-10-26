@@ -1,4 +1,4 @@
-import { test as base, expect, type Page, type CDPSession } from '@playwright/test';
+import { test as base, expect, type Page, type CDPSession, type Route } from '@playwright/test';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -104,13 +104,28 @@ export async function auth<T = Record<string, unknown>>(page: Page, path: string
   expect(result.status, JSON.stringify(result.body)).toBe(200);
   return result.body;
 }
-export async function register(page: Page, link: string, username: string): Promise<User> {
+/** A new, never-expiring API token named `name`, with the admin grant, of the signed-in account. */
+export async function adminToken(page: Page, name: string): Promise<string> {
+  return (await auth<Managed>(page, 'manage', { action: 'create_token', grants: [{ permission: 'admin' }], name, days: null })).token;
+}
+/** Opens invitation `link` and fills in its account form, the display and
+ * passkey names only when given. */
+export async function fillRegistration(page: Page, link: string, username: string, names: { display?: string; passkey?: string } = {}) {
   await page.goto(link);
   await page.getByLabel('Username', { exact: true }).fill(username);
+  if (names.display) await page.getByLabel('Display name (optional)', { exact: true }).fill(names.display);
+  if (names.passkey) await page.getByLabel('Passkey name', { exact: true }).fill(names.passkey);
+}
+/** Creates the account of the filled-in form, with a passkey, and returns it once signed in. */
+export async function submitRegistration(page: Page): Promise<User> {
   await page.getByRole('button', { name: 'Create account with a passkey', exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/$/);
   await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
   return (await auth<Session>(page, 'me')).user;
+}
+export async function register(page: Page, link: string, username: string): Promise<User> {
+  await fillRegistration(page, link, username);
+  return submitRegistration(page);
 }
 export async function proof(page: Page, ceremony: Ceremony, registration = false) {
   const credential = await page.evaluate(async ({ options, registration }) => {
@@ -142,6 +157,17 @@ export async function call(page: Page, method: string, path: string, body?: unkn
   }, { method, path, body, headers });
 }
 
+/** Rewrites the JSON `data` of GET responses whose path is exactly `path`. */
+export async function rewrite(page: Page, path: string, edit: (data: Record<string, any>) => void) {
+  await page.route(url => url.pathname === path, async (route: Route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    edit(body.data);
+    await route.fulfill({ response, json: body });
+  });
+}
+
 /** The manifest of application `name`, running one `web` service from
  * `nginx:alpine`, with the rest of `spec`. */
 export const webManifest = (name: string, spec: Record<string, unknown> = {}) => ({
@@ -161,10 +187,20 @@ export const title = (page: Page) => page.locator('.detail-title h1');
 /** The header of an application, environment, or service page, with its actions. */
 export const head = (page: Page) => page.locator('.detail-head');
 
-export const test = base.extend<{ daemon: Daemon; passkeys: Passkeys; account: User; cli: Cli; browserErrors: void }>({
-  daemon: async ({}, use, testInfo) => {
+/** Fixture options a configuration can set under `use`. */
+export type Options = {
+  /** Deploy to the fixture's in-memory Docker engine, so deployments succeed,
+   * instead of never deploying. */
+  fakeDocker: boolean;
+};
+
+export const test = base.extend<Options & { daemon: Daemon; passkeys: Passkeys; account: User; cli: Cli; browserErrors: void }>({
+  fakeDocker: [false, { option: true }],
+  daemon: async ({ fakeDocker }, use, testInfo) => {
     const directory = await mkdtemp(join(tmpdir(), 'piqueld-playwright-'));
-    const child = new Process(join(bin, 'examples/browser_fixture'), [], { ...process.env, PIQUELD_PLAYWRIGHT_DATA_DIR: directory });
+    const env: NodeJS.ProcessEnv = { ...process.env, PIQUELD_PLAYWRIGHT_DATA_DIR: directory };
+    if (fakeDocker) env.PIQUELD_PLAYWRIGHT_FAKE_DOCKER = '1';
+    const child = new Process(join(bin, 'examples/browser_fixture'), [], env);
     try {
       const line = await child.waitForOutput(/^(\{[^\n]+\})/m, 'stdout');
       const daemon: Daemon = { ...JSON.parse(line), directory };

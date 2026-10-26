@@ -69,10 +69,10 @@ To see what a deployment would change before you run it, use
 
 ```console
 $ piquelctl app show hello
-hello (app-01a16b1282cf755287920502b5793cd1)
+hello (app-f11d73eef37c18041cd376261d46daa1)
 
 Configuration revision: 1
-Environment: production (app-01a16b1282cf755287920502b5793cd1): ready, deploys from saved
+Environment: production (app-f11d73eef37c18041cd376261d46daa1): ready, deploys from saved
 
 Service: web
   Replicas: 1
@@ -84,8 +84,9 @@ deployments**.
 
 ![The dashboard's Overview: one healthy application, System status showing the database, Docker Engine and Swarm manager ready, and hello's deployment succeeded](../../images/getting-started/overview.png)
 
-Open **Applications**, then **hello**, then **production**. **Observed
-services** lists `web` with one healthy replica.
+Open **Applications**, then **hello**, then **production** on its
+**Environments** tab. **Observed services** lists `web` with one healthy
+replica.
 
 ![The production environment of hello: its state is Ready, and web is Converged with 1 of 1 replicas healthy](../../images/getting-started/environment.png)
 
