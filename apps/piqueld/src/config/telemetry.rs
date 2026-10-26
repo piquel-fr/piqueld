@@ -1,9 +1,10 @@
 //! Export of the daemon's own traces, metrics and logs over OTLP/gRPC.
-use super::{ConfigError, Credential, CredentialError, CredentialFile};
-use serde::Deserialize;
+use super::{ConfigError, Credential, CredentialError, CredentialFile, schema_from_raw};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// The `[telemetry]` table. Telemetry is off without an endpoint.
+/// The `[telemetry]` table. Telemetry is off without an endpoint. Its schema
+/// is that of its TOML form, `RawTelemetryConfig`.
 ///
 /// ```toml
 /// [telemetry]
@@ -33,21 +34,34 @@ impl Default for TelemetryConfig {
     }
 }
 
-/// TOML form of [`TelemetryConfig`], before its headers file is read.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Export of the daemon's traces, metrics and logs
+/// over OTLP/gRPC to a collector. Export is off until `endpoint` is set.
+//
+// The TOML form of [`TelemetryConfig`], before its headers file is read.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(default, deny_unknown_fields)]
 struct RawTelemetryConfig {
-    #[serde(default)]
+    /// The OTLP/gRPC collector receiving every signal:
+    /// `https://host[:port]`, `http://host[:port]` or `unix:///path` for a
+    /// Unix socket, without credentials or a path.
+    #[schema(value_type = Option<String>)]
     endpoint: Option<OtlpEndpoint>,
-    #[serde(default)]
+    /// gRPC metadata sent with every export, such as a collector token, one
+    /// `name: value` per line. Requires `endpoint`.
     headers_file: Option<CredentialFile>,
-    #[serde(default = "enabled")]
+    /// Also export the output and resource usage of every container piqueld
+    /// runs.
     containers: bool,
 }
 
-/// Container export is on by default.
-const fn enabled() -> bool {
-    true
+impl Default for RawTelemetryConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            headers_file: None,
+            containers: TelemetryConfig::default().containers,
+        }
+    }
 }
 
 impl TryFrom<RawTelemetryConfig> for TelemetryConfig {
@@ -63,6 +77,8 @@ impl TryFrom<RawTelemetryConfig> for TelemetryConfig {
         })
     }
 }
+
+schema_from_raw!(TelemetryConfig => RawTelemetryConfig);
 
 impl TelemetryConfig {
     /// Checks that headers come with an endpoint and parse as gRPC metadata.
@@ -121,6 +137,13 @@ impl TryFrom<String> for OtlpEndpoint {
             return Err("telemetry endpoint must be https://host[:port], http://host[:port], or unix:///path, without credentials or a path".into());
         }
         Ok(Self::Tcp(url))
+    }
+}
+
+/// As configured, like [`std::fmt::Display`].
+impl Serialize for OtlpEndpoint {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 

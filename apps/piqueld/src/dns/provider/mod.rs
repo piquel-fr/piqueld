@@ -75,14 +75,14 @@ pub(crate) trait Provider {
     }
 }
 
-/// One DNS provider account, selected by `kind` in daemon TOML. Credentials
-/// are only accepted through `_file` settings.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// One DNS provider account, selected by `kind`. Credentials are only
+/// accepted as `_file` settings.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum DnsProvider {
-    /// Cloudflare API with a scoped token (Zone:Read and DNS:Edit).
+    /// A Cloudflare account.
     Cloudflare(Cloudflare),
-    /// OVH API with an application key, secret and consumer key.
+    /// An OVH account.
     Ovh(Ovh),
     /// Pebble's `challtestsrv`, which serves TXT records to a test CA.
     #[cfg(test)]
@@ -93,16 +93,17 @@ pub enum DnsProvider {
     Test(test_provider::TestProvider),
 }
 
-/// One `[[dns.providers]]` entry: a provider account and whether piqueld
-/// manages routes' records in its zones.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// A DNS provider account, selected by `kind`, and whether piqueld manages
+/// routes' DNS records in its zones.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, utoipa::ToSchema)]
 pub struct DnsProviderConfig {
     /// The account, selected by `kind`.
     #[serde(flatten)]
     pub provider: DnsProvider,
-    /// Create, update and delete routes' A/AAAA/CNAME records in this
+    /// Create, update and delete routes' A, AAAA and CNAME records in this
     /// provider's zones. Off by default, so its zones stay manual.
     #[serde(default)]
+    #[schema(default = false)]
     pub manage_records: bool,
 }
 

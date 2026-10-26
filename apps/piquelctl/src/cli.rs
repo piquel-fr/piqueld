@@ -1,52 +1,139 @@
 //! Clap command-line surface. `///` on derived items is user-facing help text, so
 //! internal notes use `//`. Flattened `Args` structs keep `//` because their doc
 //! comments would become the `about` text of commands that flatten them.
+//!
+//! The help text is also published as `docs/user/reference/cli-commands.md`, so
+//! it follows `docs/dev/documentation.md`: the first paragraph is the `-h`
+//! summary, later paragraphs only appear with `--help`.
 use clap::{Args, Parser, Subcommand};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
-/// Essential commands for inspecting and operating applications and their environments.
+/// Heading of the options every command accepts, which `--help` lists apart
+/// from each command's own.
+const GLOBAL: &str = "Global options";
+
+/// Parses one of a fixed set of values, so clap lists them in `--help`.
+/// `$values` yields the values, which have an `as_str` form that `$parse`
+/// turns back into the value, and `$help`, when given, describes each one.
+///
+/// ```text
+/// one_of!(Preset::ALL, Preset::parse)  →  `--preset <PRESET>  [possible values: read-only, …]`
+/// ```
+//
+// Clap's `ValueEnum` would do this, but the orphan rule forbids implementing
+// it here for `piqueld-core` types. Values go through their string form
+// instead: clap only accepts the listed strings, each the `as_str` of a
+// value, so `$parse` cannot fail on them.
+macro_rules! one_of {
+    ($values:expr, $parse:path $(, $help:expr)?) => {
+        clap::builder::TypedValueParser::map(
+            clap::builder::PossibleValuesParser::new($values.into_iter().map(|value| {
+                let possible = clap::builder::PossibleValue::new(value.as_str());
+                $(let possible = possible.help(($help)(value));)?
+                possible
+            })),
+            |value: String| $parse(&value).expect("every listed value parses"),
+        )
+    };
+}
+pub(crate) use one_of;
+
+/// Operate a piqueld control plane.
+///
+/// `piquelctl` connects to the daemon's Unix socket, `/run/piqueld/piqueld.sock`,
+/// unless `--socket`, `--url`, the `PIQUELD_SOCKET` or `PIQUELD_URL` variable,
+/// or a connection profile names another endpoint. It authenticates with
+/// `PIQUELD_TOKEN`, or with the login that `piquelctl login` saved. On the
+/// daemon host, root and the daemon's user need no login.
 #[derive(Debug, Parser)]
-#[command(name = "piquelctl", version, about = "Operate a piqueld control plane")]
+#[command(name = "piquelctl", version)]
 pub(crate) struct Cli {
     // Where the effective endpoint and timeout came from, filled in by
     // `Profiles::resolve` and shown in connection diagnostics.
     #[arg(skip)]
     pub(crate) connection_sources: crate::profiles::ConnectionSources,
 
-    /// Named connection in the profiles file (or `PIQUELD_PROFILE`).
-    #[arg(long, global = true)]
+    /// Connect with this profile from the profiles files.
+    ///
+    /// Defaults to `PIQUELD_PROFILE`, else to the profile named `default` if
+    /// there is one.
+    #[arg(long, global = true, value_name = "NAME", help_heading = GLOBAL)]
     pub(crate) profile: Option<String>,
-    /// Profiles file (or `PIQUELD_PROFILES_FILE`); replaces system and user discovery.
-    #[arg(long, global = true)]
+    /// Read profiles only from this file.
+    ///
+    /// Defaults to `PIQUELD_PROFILES_FILE`. Without either, `piquelctl` reads
+    /// `/etc/piqueld/profiles.toml`, then `~/.config/piqueld/profiles.toml`
+    /// (in `$XDG_CONFIG_HOME` when it is set), whose profiles replace those of
+    /// the same name.
+    #[arg(long, global = true, value_name = "PATH", help_heading = GLOBAL)]
     pub(crate) profiles_file: Option<PathBuf>,
 
-    /// Unix socket path. The default is the daemon's local socket.
-    #[arg(long, global = true, value_name = "PATH", conflicts_with = "url")]
+    /// Connect to the daemon's Unix socket at this path.
+    ///
+    /// It overrides `PIQUELD_SOCKET`, `PIQUELD_URL` and the profile's endpoint.
+    /// Without any of them, `piquelctl` uses `/run/piqueld/piqueld.sock`.
+    #[arg(
+        long,
+        global = true,
+        value_name = "PATH",
+        conflicts_with = "url",
+        help_heading = GLOBAL
+    )]
     pub(crate) socket: Option<PathBuf>,
 
     #[command(flatten)]
     pub(crate) auth: AuthArgs,
 
-    /// Explicit HTTP or HTTPS endpoint.
-    #[arg(long, global = true, value_name = "URL", conflicts_with = "socket")]
+    /// Connect to the daemon over HTTP or HTTPS at this address.
+    ///
+    /// Give an origin without a path, query or credentials, such as
+    /// `http://127.0.0.1:7845` or `https://piqueld.example.ts.net`. It
+    /// overrides `PIQUELD_URL`, `PIQUELD_SOCKET` and the profile's endpoint.
+    #[arg(
+        long,
+        global = true,
+        value_name = "URL",
+        conflicts_with = "socket",
+        help_heading = GLOBAL
+    )]
     pub(crate) url: Option<String>,
 
-    /// Bound for each request and for the complete command wait.
-    #[arg(long, global = true, default_value = "30s", value_parser = parse_duration)]
+    /// Give up on the command after this long, such as `500ms`, `30s`, `2m` or `1h`.
+    ///
+    /// A number without a unit is seconds. The limit also applies to each
+    /// request. Confirmation prompts don't count towards it, and it doesn't
+    /// limit the session of `app exec` and `preview exec`, or how long `login`
+    /// waits for your approval. `PIQUELD_TIMEOUT` and a profile's `timeout`
+    /// replace the default.
+    #[arg(
+        long,
+        global = true,
+        default_value = "30s",
+        value_name = "DURATION",
+        value_parser = parse_duration,
+        help_heading = GLOBAL
+    )]
     pub(crate) timeout: Duration,
 
-    /// Emit only the command's documented JSON result on stdout.
-    #[arg(long, global = true)]
+    /// Print the result as JSON on standard output.
+    ///
+    /// Information, warnings and errors on standard error become one JSON
+    /// object per line.
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub(crate) json: bool,
 
-    /// Suppress human results, info and progress; JSON, warnings and errors remain available.
-    #[arg(long, short, global = true)]
+    /// Hide human-readable results, information and progress.
+    ///
+    /// JSON results, warnings, errors and prompts still appear.
+    #[arg(long, short, global = true, help_heading = GLOBAL)]
     pub(crate) quiet: bool,
-    /// Never prompt, even on a terminal. Mutations still require --yes.
-    #[arg(long, global = true)]
+    /// Never prompt, even on a terminal.
+    ///
+    /// Commands that ask for confirmation then fail unless you pass `--yes`.
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub(crate) noninteractive: bool,
 
     #[command(subcommand)]
@@ -78,12 +165,19 @@ impl Cli {
 // Account selection and authentication transport options.
 #[derive(Debug, Args)]
 pub(crate) struct AuthArgs {
-    /// Account username or ID from the private credential file.
-    #[arg(long, global = true)]
+    /// Act as this saved login, by username or account ID.
+    ///
+    /// Defaults to the login you saved last for this daemon. `PIQUELD_TOKEN`
+    /// takes precedence over saved logins.
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub(crate) account: Option<String>,
 
-    /// Allow remote HTTP authentication (only with separate transport encryption, e.g. Tailscale).
-    #[arg(long, global = true)]
+    /// Allow sending credentials over plain HTTP to a remote daemon.
+    ///
+    /// Only use it when something else encrypts the connection, such as
+    /// Tailscale: `piquelctl` adds no encryption and doesn't check. HTTPS,
+    /// loopback addresses and the Unix socket don't need it.
+    #[arg(long, global = true, help_heading = GLOBAL)]
     pub(crate) allow_insecure_http: bool,
 }
 
@@ -91,174 +185,232 @@ pub(crate) struct AuthArgs {
 // timeout-bounded `commands::run`; everything else goes through it.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Sign in with a passkey through the browser (also works over SSH).
-    /// Grant options limit the session; `--app` takes application IDs here.
+    /// Sign in with a passkey through your browser, and save the login.
+    ///
+    /// `login` prints a link and a code. Open the link in any browser, even on
+    /// another machine, and approve the code with your passkey. It waits until
+    /// the code expires, at most 15 minutes, whatever `--timeout` says. It then
+    /// saves the login for this daemon in `~/.config/piqueld/credentials.json`
+    /// (in `$XDG_CONFIG_HOME` when it is set), or in the file
+    /// `PIQUELD_CREDENTIALS_FILE` names.
+    ///
+    /// Grant options limit what the login may do; without them, it has all your
+    /// account's access. Here `--app` takes application IDs, not names, which
+    /// cannot be looked up before signing in.
+    #[command(mut_arg("applications", |arg| arg.value_name("APPLICATION_ID")))]
     Login {
         #[command(flatten)]
         limit: crate::accounts::GrantArgs,
     },
-    /// Revoke the current credential and remove its local copy.
+    /// Sign out: revoke the current credential and delete its saved copy.
+    ///
+    /// With `PIQUELD_TOKEN` set, it revokes that token and leaves saved logins
+    /// alone.
     Logout,
-    /// Show the authenticated account and what the current credential may do.
+    /// Show who you are signed in as and what the current credential may do.
     Whoami,
-    /// List accounts, change their grants, and create invitation or enrollment links.
+    /// Manage accounts: list them, change their grants, and create invitation and enrollment links.
     Account {
         #[command(subcommand)]
         command: crate::accounts::AccountCommand,
     },
-    /// Create, list, and revoke API tokens for your account.
+    /// Create, list and revoke your API tokens and sessions.
     Token {
         #[command(subcommand)]
         command: crate::accounts::TokenCommand,
     },
-    /// Read the audit trail of API requests, newest first: your own, or any
-    /// account's with audit:read.
+    /// Read the audit trail of API requests, newest first.
+    ///
+    /// Each line is one request: when it was made, its outcome and status, what
+    /// it did and to which application or environment, who made it with which
+    /// credential, and from where. With `audit:read`, you see every account's
+    /// requests. Without it, you see only your own account's, and an API token
+    /// only its own.
     Audit(crate::accounts::AuditArgs),
-    /// Print a one-time link that creates a new administrator account, to
-    /// regain access when no administrator can sign in. Run it with sudo on
-    /// the daemon host: only root or the daemon's user may use it (Unix
-    /// socket only).
+    /// Print a one-time link that creates a new administrator account.
+    ///
+    /// Use it to regain access when no administrator can sign in. Run it on the
+    /// daemon host as root or as the daemon's user, such as with `sudo`: the
+    /// daemon serves it only over its Unix socket. The link works once within
+    /// 24 hours and replaces any earlier one. Issuing it raises a security
+    /// notification.
     RecoverAdmin,
-    /// Print a one-time link that signs a browser in as the host operator,
-    /// with full access, for 12 hours. Run it on the daemon host as root or
-    /// the daemon's user (Unix socket only); the link works once within 10
-    /// minutes.
+    /// Print a one-time link that signs a browser in as the host operator.
+    ///
+    /// The browser gets full access for 12 hours. The link works once within 10
+    /// minutes. Run it on the daemon host as root or as the daemon's user,
+    /// without `PIQUELD_TOKEN` or a saved login: the daemon serves it only over
+    /// its Unix socket, to the host operator. Issuing it raises a security
+    /// notification.
     SignInLink,
-    /// Print the first-account setup link (Unix socket only).
+    /// Print the link that creates the first account.
+    ///
+    /// Run it on the daemon host: the daemon serves it only over its Unix
+    /// socket, and only until the first account exists.
     SetupLink {
-        /// Also open the link in the default browser.
+        /// Also open the link in your default browser.
         #[arg(long)]
         open: bool,
     },
-    /// List effective connection profile names and endpoints without contacting a daemon.
+    /// List your connection profiles and their endpoints.
+    ///
+    /// It reads the profiles files without contacting a daemon, and ignores
+    /// `--profile` and the endpoint options.
     Profiles,
-    /// Manage the encryption key for all secrets on this daemon.
+    /// Manage the daemon's encryption key for secrets.
     Secrets {
         #[command(subcommand)]
         action: crate::secrets::KeyAction,
     },
-    /// Manage notification destinations and inspect deliveries.
+    /// Manage notification destinations and their deliveries.
     Notification {
         #[command(subcommand)]
         command: crate::notifications::NotificationCommand,
     },
-    /// Report daemon availability, version, and subsystem health.
+    /// Show whether the daemon responds, its version, and the health of its subsystems.
     Status,
     /// Inspect the daemon's DNS providers.
     Dns {
         #[command(subcommand)]
         command: DnsCommand,
     },
-    /// Create, inspect, edit, and deploy applications.
+    /// Create, inspect, edit and deploy applications.
     App {
         #[command(subcommand)]
         command: AppCommand,
     },
-    /// Create, inspect, deploy, and delete an application's environments.
+    /// Create, inspect, deploy and delete an application's environments.
     Env {
         #[command(subcommand)]
         command: crate::environments::EnvCommand,
     },
-    /// Create, inspect, deploy, and delete previews: disposable deployments of a branch.
+    /// Create, inspect, deploy and delete previews: disposable deployments of a branch.
     Preview {
         #[command(subcommand)]
         command: crate::previews::PreviewCommand,
     },
-    /// Inspect build attempts and their persisted output.
+    /// Inspect Git source builds and job runs, and read their output.
     Builds(BuildArgs),
-    /// Inspect or wait for one asynchronous operation.
+    /// Show an operation, waiting until it ends.
+    ///
+    /// Deployments, deletions and other long tasks run as operations, whose IDs
+    /// commands print. Unless you pass `--no-wait`, it exits with code 5 if the
+    /// operation failed.
     Operation(OperationArgs),
-    /// Read one page of informational events, oldest first.
+    /// Read one page of the event history, oldest first.
+    ///
+    /// Events record what happened to applications, environments and the
+    /// daemon, such as edits, deployments and failures.
     Events {
-        /// Filter by stable application ID: its own events and those of all its
+        /// Only show events of the application with this ID, and of all its
         /// environments, including deleted ones.
-        #[arg(long)]
+        #[arg(long, value_name = "APPLICATION_ID")]
         application: Option<String>,
-        /// Filter by stable environment ID, including deleted environments.
-        #[arg(long)]
+        /// Only show events of the environment with this ID, even a deleted one.
+        #[arg(long, value_name = "ENVIRONMENT_ID")]
         environment: Option<String>,
-        /// Continue after a cursor returned by the previous page.
+        /// Read the page after this cursor, which the previous page printed.
         #[arg(long)]
         cursor: Option<String>,
-        /// Maximum number of events in the page.
-        #[arg(long,default_value_t=piqueld_client::DEFAULT_PAGE_SIZE,value_parser=clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE)))]
+        /// Show at most this many events, from 1 to 100.
+        #[arg(
+            long,
+            default_value_t = piqueld_client::DEFAULT_PAGE_SIZE,
+            value_parser = clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE))
+        )]
         limit: u16,
     },
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum DnsCommand {
-    /// Check every DNS provider's credentials and zones now instead of at the
-    /// next hourly discovery. Credential files are only read at daemon startup.
+    /// Check every DNS provider's credentials and zones now.
+    ///
+    /// The daemon otherwise checks them every hour. It reads credential files
+    /// only when it starts, so restart it after changing one. Needs
+    /// `system:operate`.
     Refresh,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum AppCommand {
-    /// Save an empty application; add services and volumes independently.
+    /// Create an empty application.
+    ///
+    /// Add services, volumes and routes to it with the other `app` commands.
+    /// Needs `apps:create`.
     Create(CreateArgs),
-    /// Edit individual service settings.
+    /// Add, change and remove an application's services.
     Service {
         #[command(subcommand)]
         command: crate::editing::ServiceCommand,
     },
-    /// List, add, or remove read-only files mounted into services.
+    /// List, add and remove the read-only files services mount.
     File {
         #[command(subcommand)]
         command: crate::editing::FileCommand,
     },
-    /// Add or remove declared named volumes.
+    /// Declare and remove named volumes.
     Volume {
         #[command(subcommand)]
         command: crate::editing::VolumeCommand,
     },
-    /// Manage HTTPS routes, redirects, and their visibility.
+    /// Add, change and remove HTTPS routes and redirects.
     Route {
         #[command(subcommand)]
         command: crate::editing::RouteCommand,
     },
-    /// Add, replace, or remove one-shot jobs that run before rollout.
+    /// Add, reorder and remove the jobs that run before each rollout.
     Job {
         #[command(subcommand)]
         command: crate::editing::JobCommand,
     },
-    /// Let other applications reach services of this one privately.
+    /// Let other applications reach this application's services privately.
     Export {
         #[command(subcommand)]
         command: crate::editing::ExportCommand,
     },
-    /// Reach services other applications export, as `<service>.<application>`.
+    /// Reach the services other applications export, as `<service>.<application>`.
     Import {
         #[command(subcommand)]
         command: crate::editing::ImportCommand,
     },
-    /// Set or remove manifest variables and their values per environment.
+    /// Set and remove manifest variables, and their values per environment and for previews.
     Variable {
         #[command(subcommand)]
         command: crate::editing::VariableCommand,
     },
-    /// Connect, edit, or disconnect the manifest repository, or reset edits to it.
+    /// Connect the application to a manifest in Git, and manage that connection.
     Repository {
         #[command(subcommand)]
         command: crate::editing::RepositoryCommand,
     },
-    /// List applications, their environments, and concise reconciliation status.
+    /// List applications with their environments and status.
     List,
-    /// Show one application and its environments by name or ID.
+    /// Show an application and its environments.
     Show {
         /// Application name or stable ID.
         name_or_id: String,
     },
-    /// Read a bounded snapshot of Docker logs of the application's only environment.
+    /// Show recent Docker logs of the application's only environment.
+    ///
+    /// With several environments, use `env logs`. Needs `logs:read`.
     Logs {
         /// Application name or stable ID.
         name_or_id: String,
         #[command(flatten)]
         window: LogArgs,
     },
-    /// Run a one-off command in a running task of a service, streaming its output.
+    /// Run a one-off command in a running task of a service.
+    ///
+    /// The command shares the task's image, environment, secrets, mounts and
+    /// networks. Its output streams to your terminal, and `piquelctl` exits
+    /// with its exit code. Stopping `piquelctl` early closes the stream, but the
+    /// command may keep running. `--timeout` limits connecting, not the
+    /// session. Needs `apps:exec`.
     Exec(crate::exec::ExecArgs<crate::exec::ApplicationTarget>),
-    /// Manage the application's store of manually set secrets and their access lists.
+    /// Manage the application's stored secrets and who may mount them.
+    ///
+    /// Values are write-only: no command prints them back.
     Secret {
         /// Application name or stable ID.
         application: String,
@@ -267,35 +419,56 @@ pub(crate) enum AppCommand {
     },
     /// Check a TOML manifest locally, without contacting a daemon.
     Validate {
-        /// TOML application manifest.
+        /// Manifest file: UTF-8 TOML of at most 2 MiB.
         #[arg(long, value_name = "PATH")]
         file: PathBuf,
     },
-    /// Preview creation or replacement from a TOML manifest.
+    /// Show what saving a TOML manifest would change, without saving it.
+    ///
+    /// It exits with code 3 when the plan is blocked.
     Plan(ManifestArgs),
-    /// Save a TOML manifest; optionally deploy with --deploy.
+    /// Save a TOML manifest, creating or replacing the application it names.
+    ///
+    /// Without `--deploy`, it only saves the manifest. With it, it also deploys
+    /// every environment that builds, and waits for each deployment.
     Apply(ApplyArgs),
-    /// Confirm and delete an application and all its environments by name or ID.
+    /// Delete an application with all its environments and previews.
+    ///
+    /// The environments' named volumes are kept; the previews' volumes are
+    /// deleted. Needs `apps:delete`.
     Delete(DeleteArgs),
-    /// Retry the latest operation of the application's only environment once it
-    /// has ended or failed, reusing its saved inputs.
+    /// Retry the latest operation of the application's only environment.
+    ///
+    /// It runs the operation again with its saved inputs, without fetching the
+    /// manifest or resolving sources again. If the operation is still in
+    /// progress, it waits for it instead. With several environments, use
+    /// `env reconcile`. Needs `apps:deploy`.
     Reconcile(TargetArgs),
-    /// Deploy saved configuration to the application's only environment, fetching
-    /// the manifest and resolving sources again.
+    /// Deploy the application's only environment.
+    ///
+    /// It fetches the manifest again, from the environment's branch for a
+    /// repository-backed application, and resolves images and Git sources
+    /// again. With several environments, use `env deploy`. Needs `apps:deploy`.
     Deploy(DeployArgs),
-    /// Rename an idle application; optionally deploy with the change.
+    /// Rename an application.
+    ///
+    /// It fails while an operation of the application is running, and for
+    /// repository-backed applications, whose manifests set their name. Update
+    /// `metadata.name` in your manifest files afterwards.
     Rename(RenameArgs),
-    /// Export the saved manifest as TOML.
+    /// Print the saved manifest as TOML.
     Manifest {
         /// Application name or stable ID.
         name_or_id: String,
     },
-    /// List the application's immutable releases, newest first: what each
-    /// successful preparation in a tracking environment deployed.
+    /// List the application's releases, newest first.
+    ///
+    /// A release records what a deployment prepared: the manifest, and each
+    /// service's image and where it came from.
     Releases {
         /// Application name or stable ID.
         name_or_id: String,
-        /// Continue after a cursor returned by the previous page.
+        /// Read the page after this cursor, which the previous page printed.
         #[arg(long)]
         cursor: Option<String>,
     },
@@ -303,11 +476,11 @@ pub(crate) enum AppCommand {
 
 #[derive(Debug, Args)]
 pub(crate) struct CreateArgs {
-    /// New unique application name.
+    /// Name of the new application, unused by any other.
     pub(crate) name: String,
     #[command(flatten)]
     pub(crate) deployment: DeploymentArgs,
-    /// Skip interactive confirmation.
+    /// Skip the confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
 }
@@ -320,38 +493,45 @@ pub(crate) struct BuildArgs {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum BuildCommand {
-    /// List recent build attempts, newest first.
+    /// List Git source builds and job runs, newest first.
     List {
-        /// Filter by stable application ID: builds of all its environments.
-        #[arg(long)]
+        /// Only show the builds of the environments of the application with this ID.
+        #[arg(long, value_name = "APPLICATION_ID")]
         application: Option<String>,
-        /// Filter by stable environment ID.
-        #[arg(long)]
+        /// Only show the builds of the environment with this ID.
+        #[arg(long, value_name = "ENVIRONMENT_ID")]
         environment: Option<String>,
-        /// Continue after a cursor returned by the previous page.
+        /// Read the page after this cursor, which the previous page printed.
         #[arg(long)]
         cursor: Option<String>,
     },
-    /// Read a bounded page of persisted build output.
+    /// Read the newest page of a build's output.
+    ///
+    /// To read older output, pass the `--before` offset it prints. Needs
+    /// `logs:read`.
     Logs {
-        /// Build attempt ID from `builds list`.
+        /// Build ID, from `builds list`.
         id: i64,
-        /// Read output before this offset, as suggested after the previous page.
-        #[arg(long)]
+        /// Read the output before this byte offset, which the previous page printed.
+        #[arg(long, value_name = "OFFSET")]
         before: Option<i64>,
     },
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ManifestArgs {
-    /// TOML application manifest.
+    /// Manifest file: UTF-8 TOML of at most 2 MiB.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
-    /// Require this intent generation; zero requires an absent application.
-    #[arg(long)]
+    /// Fail unless the application is at this generation; `0` requires that it
+    /// doesn't exist.
+    #[arg(long, value_name = "GENERATION")]
     pub(crate) expected_generation: Option<u64>,
-    /// Compare with this environment's deployment and runtime; defaults to the
-    /// application's only environment.
+    /// Render the manifest for this environment, and compare it with that
+    /// environment's deployment.
+    ///
+    /// Defaults to the application's only environment. With several, the plan
+    /// compares the manifest as written.
     #[arg(long = "env", value_name = "ENV")]
     pub(crate) environment: Option<String>,
 }
@@ -360,18 +540,25 @@ pub(crate) struct ManifestArgs {
 pub(crate) struct ApplyArgs {
     #[command(flatten)]
     pub(crate) deployment: DeploymentArgs,
-    /// TOML application manifest.
+    /// Manifest file: UTF-8 TOML of at most 2 MiB.
     #[arg(long, value_name = "PATH")]
     pub(crate) file: PathBuf,
-    /// Require this intent generation; zero requires an absent application.
-    #[arg(long)]
+    /// Fail unless the application is at this generation; `0` requires that it
+    /// doesn't exist.
+    ///
+    /// Defaults to the generation it inspects, or `0` when no application has
+    /// the manifest's name.
+    #[arg(long, value_name = "GENERATION")]
     pub(crate) expected_generation: Option<u64>,
 
-    /// Skip the interactive confirmation prompt.
+    /// Skip the confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
 
-    /// Override intent preconditions (does not skip confirmation).
+    /// Replace whichever application has the manifest's name now, or create it.
+    ///
+    /// It skips the generation and identity checks, but still asks for
+    /// confirmation.
     #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
 }
@@ -379,10 +566,11 @@ pub(crate) struct ApplyArgs {
 // Shared `--deploy` / `--no-wait` flags for commands that save configuration.
 #[derive(Debug, Args)]
 pub(crate) struct DeploymentArgs {
-    /// Deploy after saving; by default only configuration is saved.
+    /// Also deploy the saved configuration.
     #[arg(long)]
     pub(crate) deploy: bool,
-    /// Return immediately after saving or accepting deployment.
+    /// Return once the change is saved, or its deployment accepted, without
+    /// waiting for the deployment to end.
     #[arg(long)]
     pub(crate) no_wait: bool,
 }
@@ -391,7 +579,9 @@ pub(crate) struct DeploymentArgs {
 pub(crate) struct DeleteArgs {
     /// Application name or stable ID.
     pub(crate) name_or_id: String,
-    /// Names of every environment, required when the application has several.
+    /// Names of all the application's environments, comma-separated.
+    ///
+    /// Required when it has several, to confirm that you delete them all.
     #[arg(long, value_delimiter = ',', value_name = "NAMES")]
     pub(crate) environments: Vec<String>,
     #[command(flatten)]
@@ -401,29 +591,33 @@ pub(crate) struct DeleteArgs {
 // Precondition, confirmation, and waiting flags shared by deletions.
 #[derive(Debug, Args)]
 pub(crate) struct DeletionFlags {
-    /// Require this application revision.
-    #[arg(long)]
+    /// Fail unless the application is at this generation.
+    ///
+    /// Defaults to the generation it inspects.
+    #[arg(long, value_name = "GENERATION")]
     pub(crate) expected_generation: Option<u64>,
 
-    /// Skip the interactive confirmation prompt.
+    /// Skip the confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
 
-    /// Override revision preconditions (does not skip confirmation).
+    /// Skip the generation check.
+    ///
+    /// It still asks for confirmation.
     #[arg(long, conflicts_with = "expected_generation")]
     pub(crate) force: bool,
 
-    /// Return after the daemon accepts the operation.
+    /// Return once the daemon accepts the deletion, without waiting for it to end.
     #[arg(long)]
     pub(crate) no_wait: bool,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct OperationArgs {
-    /// Stable operation ID.
+    /// Operation ID.
     pub(crate) operation_id: String,
 
-    /// Fetch once instead of waiting for a terminal state.
+    /// Show the operation's current state instead of waiting for it to end.
     #[arg(long)]
     pub(crate) no_wait: bool,
 }
@@ -472,9 +666,9 @@ pub(crate) fn expected_generation(force: bool, expected: Option<u64>, current: u
 
 #[derive(Debug, Args)]
 pub(crate) struct RenameArgs {
-    /// Existing application name or stable ID.
+    /// Application name or stable ID.
     pub(crate) name_or_id: String,
-    /// New unique application name.
+    /// New name of the application, unused by any other.
     pub(crate) new_name: String,
     #[command(flatten)]
     pub(crate) edit: crate::editing::EditFlags,
@@ -491,13 +685,14 @@ pub(crate) struct DeployArgs {
 // One-time manifest revision overrides for deployments.
 #[derive(Debug, Args)]
 pub(crate) struct RevisionArgs {
-    /// Fetch the repository manifest from this branch instead of the
-    /// environment's, for this deployment only.
+    /// Fetch the repository manifest from this branch, for this deployment only.
+    ///
+    /// The environment keeps following its own branch.
     #[arg(long, conflicts_with = "commit")]
     pub(crate) branch: Option<String>,
-    /// Fetch the repository manifest from this full commit instead, for this
+    /// Fetch the repository manifest at this full commit hash, for this
     /// deployment only.
-    #[arg(long)]
+    #[arg(long, value_name = "SHA")]
     pub(crate) commit: Option<String>,
 }
 
@@ -527,13 +722,16 @@ pub(crate) struct TargetArgs {
 // Precondition, confirmation, and waiting flags shared by deploy and reconcile.
 #[derive(Debug, Args)]
 pub(crate) struct OperationFlags {
-    /// Optionally require this application revision.
-    #[arg(long)]
+    /// Fail unless the application is at this generation.
+    ///
+    /// Without it, a deployment uses the generation it inspects, and a retry
+    /// checks none.
+    #[arg(long, value_name = "GENERATION")]
     pub(crate) expected_generation: Option<u64>,
-    /// Skip the interactive confirmation prompt.
+    /// Skip the confirmation prompt.
     #[arg(long)]
     pub(crate) yes: bool,
-    /// Return after the daemon accepts the operation.
+    /// Return once the daemon accepts the operation, without waiting for it to end.
     #[arg(long)]
     pub(crate) no_wait: bool,
 }
@@ -541,13 +739,25 @@ pub(crate) struct OperationFlags {
 // Log window shared by `app logs` and `env logs`.
 #[derive(Debug, Args)]
 pub(crate) struct LogArgs {
-    /// Only include output from this service; all services when omitted.
+    /// Only show this service's output.
+    ///
+    /// Defaults to every service.
     #[arg(long)]
     pub(crate) service: Option<String>,
-    /// Maximum number of most recent lines, merged across the selected services.
-    #[arg(long,default_value_t=200,value_parser=clap::value_parser!(u16).range(1..=1000))]
+    /// Show at most this many of the most recent lines, from 1 to 1000, merged
+    /// across services.
+    #[arg(
+        long,
+        default_value_t = 200,
+        value_parser = clap::value_parser!(u16).range(1..=1000)
+    )]
     pub(crate) tail: u16,
-    /// Only include output from the last N seconds.
-    #[arg(long,default_value_t=3600,value_parser=clap::value_parser!(u32).range(1..=86400))]
+    /// Only show output written within this many seconds, from 1 to 86400 (a day).
+    #[arg(
+        long,
+        default_value_t = 3600,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u32).range(1..=86400)
+    )]
     pub(crate) since_seconds: u32,
 }

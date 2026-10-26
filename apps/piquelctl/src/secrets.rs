@@ -20,35 +20,57 @@ use std::{
 // `app secret` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum SecretAction {
-    /// List the application's stored secrets and who may mount them; values cannot be read back.
+    /// List the application's stored secrets and who may mount them.
+    ///
+    /// It shows each secret's version, never its value.
     List,
-    /// Create or rotate a stored secret for the next explicit deployment.
+    /// Create or replace a stored secret.
+    ///
+    /// The value, of 1 to 512000 bytes, comes from a file or standard input,
+    /// never from an argument. Running services keep their value until the
+    /// next deployment. A new secret may be mounted by every environment and no
+    /// preview, unless you set its access. Needs `secrets:write`.
     Set {
         /// Secret name.
         name: String,
-        /// Read the value from this file (1–512000 bytes).
-        #[arg(long, conflicts_with = "stdin", required_unless_present = "stdin")]
+        /// Read the value from this file.
+        #[arg(
+            long,
+            value_name = "PATH",
+            conflicts_with = "stdin",
+            required_unless_present = "stdin"
+        )]
         file: Option<PathBuf>,
-        /// Read the value from stdin (1–512000 bytes).
+        /// Read the value from standard input.
         #[arg(long, conflicts_with = "file")]
         stdin: bool,
         #[command(flatten)]
         access: AccessFlags,
-        /// Require this secret generation; zero requires an absent secret.
-        #[arg(long,value_parser=clap::value_parser!(i64).range(0..))]
+        /// Fail unless the secret is at this generation; `0` requires that it
+        /// doesn't exist.
+        ///
+        /// Defaults to the generation it inspects, or `0` for a new secret.
+        #[arg(long, value_name = "GENERATION", value_parser = clap::value_parser!(i64).range(0..))]
         expected_generation: Option<i64>,
-        /// Skip interactive confirmation.
+        /// Skip the confirmation prompt.
         #[arg(long, short)]
         yes: bool,
     },
     /// Change which environments, and whether previews, may mount a stored secret.
+    ///
+    /// Options you omit keep the current access. Deployments that mount a
+    /// secret they may no longer use fail with `secret_access_denied`; running
+    /// ones keep their value. Needs `secrets:write`.
     Access {
         /// Secret name.
         name: String,
         #[command(flatten)]
         access: AccessFlags,
     },
-    /// Delete a stored secret no environment uses, and its Docker versions.
+    /// Delete a stored secret and the Docker secrets made from it.
+    ///
+    /// It fails while any environment's configuration or deployment still uses
+    /// the secret. Needs `secrets:write`.
     Delete(SecretChange),
 }
 
@@ -57,10 +79,12 @@ pub(crate) enum SecretAction {
 pub(crate) struct SecretChange {
     /// Secret name.
     name: String,
-    /// Require this secret generation.
-    #[arg(long,value_parser=clap::value_parser!(i64).range(1..))]
+    /// Fail unless the secret is at this generation.
+    ///
+    /// Defaults to the generation it inspects.
+    #[arg(long, value_name = "GENERATION", value_parser = clap::value_parser!(i64).range(1..))]
     expected_generation: Option<i64>,
-    /// Skip interactive confirmation.
+    /// Skip the confirmation prompt.
     #[arg(long, short)]
     yes: bool,
 }
@@ -75,20 +99,23 @@ impl SecretChange {
     }
 }
 
-/// Access list changes. Unset flags keep the current setting, or the default
-/// of every environment and no previews for a new secret.
+// Access list changes. Unset flags keep the current setting, or the default
+// of every environment and no previews for a new secret.
 #[derive(Debug, Args)]
 pub(crate) struct AccessFlags {
-    /// Only these environments may mount the secret (comma-separated names or IDs; '' for none).
+    /// Let only these environments mount the secret: comma-separated names or
+    /// IDs, or `''` for none.
     #[arg(long, value_delimiter = ',', conflicts_with = "all_environments")]
     environments: Option<Vec<String>>,
-    /// Every environment may mount the secret, including ones created later.
+    /// Let every environment mount the secret, including ones created later.
+    ///
+    /// It never includes previews.
     #[arg(long)]
     all_environments: bool,
-    /// Previews may mount the secret.
+    /// Let previews mount the secret.
     #[arg(long, conflicts_with = "no_previews")]
     previews: bool,
-    /// Previews may not mount the secret.
+    /// Stop previews from mounting the secret.
     #[arg(long)]
     no_previews: bool,
 }
@@ -256,11 +283,21 @@ impl SecretAction {
 // `env secret` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
 pub(crate) enum GeneratedSecretAction {
-    /// List the environment's generated secrets; values cannot be read back.
+    /// List the environment's generated secrets.
+    ///
+    /// It shows each secret's version, never its value.
     List,
-    /// Generate a new value for the next deployment, to rotate it or replace one discarded by key recovery.
+    /// Generate a new value for a generated secret.
+    ///
+    /// Use it to rotate a value, or to replace one that `secrets recover-key`
+    /// discarded. The next deployment uses it; running services keep theirs
+    /// until then. Needs `secrets:write`.
     Regenerate(SecretChange),
-    /// Delete an unreferenced generated secret; a later deployment generates a new value.
+    /// Delete a generated secret that nothing uses.
+    ///
+    /// It fails while the configuration or a deployment still uses the secret.
+    /// A later deployment that mounts it generates a new value. Needs
+    /// `secrets:write`.
     Delete(SecretChange),
 }
 
@@ -305,12 +342,23 @@ impl GeneratedSecretAction {
     }
 }
 
-/// Daemon-wide operations, distinct from environment-scoped secret values.
+// Daemon-wide operations, distinct from environment-scoped secret values.
 #[derive(Debug, Subcommand)]
 pub(crate) enum KeyAction {
-    /// Recover from a lost master key by discarding ALL stored and generated values.
+    /// Recover from a lost secret key by discarding every value it encrypted.
+    ///
+    /// Use it only when the daemon's `secrets.key` is lost and you have no
+    /// backup: the daemon refuses while the key still works. It discards the
+    /// stored and generated secret values of ALL applications and environments
+    /// and the repository webhook secrets, and deletes every notification
+    /// destination, since their URLs are encrypted. Running services keep their
+    /// Docker secrets. Afterwards, set the stored secrets again and deploy,
+    /// which also generates new values for generated secrets, give each
+    /// repository a new webhook secret with `app repository webhook rotate`,
+    /// and add the notification destinations again with `notification set`.
+    /// Needs `system:operate`.
     RecoverKey {
-        /// Confirm recovery without an interactive prompt.
+        /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
     },
@@ -320,7 +368,7 @@ impl KeyAction {
     /// Discards every stored secret value after printing the scope and confirming.
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let Self::RecoverKey { yes } = self;
-        let message = "Discard stored and generated secret values for ALL applications and environments? Running services keep their Docker secrets; replacement values and a new deploy are required.";
+        let message = "Discard stored and generated secret values for ALL applications and environments, and repository webhook secrets, and delete every notification destination? Running services keep their Docker secrets. Afterwards, set the secrets again and deploy, rotate repository webhook secrets with `app repository webhook rotate`, and add destinations again with `notification set`.";
         // Print scope even with --yes; the confirmation skips its prompt then.
         console.warning(message)?;
         console.confirm(*yes, message).await?;

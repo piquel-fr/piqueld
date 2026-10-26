@@ -10,7 +10,9 @@ database, Docker, or UI dependency. The daemon uses these contracts directly.
 CLI and dashboard. `piqueld-probe` is the static HTTP health probe, depending
 only on `thiserror`: the daemon build script embeds its binary, and
 `piqueld-core` uses its container path and arguments to validate and compile
-HTTP health checks.
+HTTP health checks. `piqueld-generated` writes and checks the files
+`just generate` produces, for the daemon's `generate_openapi` binary and
+`piquelctl`'s `cli_reference` example.
 
 Endpoint bindings are generated from the daemon's OpenAPI document by
 Progenitor and checked into `piqueld-client`. They reuse the core wire contracts

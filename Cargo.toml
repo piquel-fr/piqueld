@@ -6,6 +6,7 @@ members = [
   "apps/piqueld-ui",
   "crates/piqueld-client",
   "crates/piqueld-core",
+  "crates/piqueld-generated",
   "crates/piqueld-probe",
   "tools/xtask",
 ]
@@ -20,9 +21,10 @@ repository = "https://github.com/piquel-fr/piqueld"
 chacha20poly1305 = "0.10.1"
 zeroize = "1.8"
 # Internal
-piqueld-client = { version = "0.1.0", path = "crates/piqueld-client" }
-piqueld-core   = { version = "0.1.0", path = "crates/piqueld-core"   }
-piqueld-probe  = { version = "0.1.0", path = "crates/piqueld-probe"  }
+piqueld-client    = { version = "0.1.0", path = "crates/piqueld-client"    }
+piqueld-core      = { version = "0.1.0", path = "crates/piqueld-core"      }
+piqueld-generated = { version = "0.1.0", path = "crates/piqueld-generated" }
+piqueld-probe     = { version = "0.1.0", path = "crates/piqueld-probe"     }
 
 # External
 anstream = "1.0.0"

@@ -1,6 +1,6 @@
 //! Cloudflare API v4 with a bearer token scoped to Zone:Read and DNS:Edit.
 use super::{ApiError, Found, Provider, Record, RecordId, Zone, send};
-use crate::config::{Credential, CredentialError, CredentialFile};
+use crate::config::{Credential, CredentialError, CredentialFile, schema_from_raw};
 use piqueld_core::manifest::Hostname;
 use serde::Deserialize;
 use serde_json::json;
@@ -23,12 +23,18 @@ pub struct Cloudflare {
     api: String,
 }
 
-/// TOML form of [`Cloudflare`], before its token file is read.
-#[derive(Deserialize)]
+/// A Cloudflare account.
+//
+// The TOML form of [`Cloudflare`], before its token file is read.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct RawCloudflare {
+    /// An API token scoped to Zone:Read and DNS:Edit on the zones piqueld
+    /// may use.
     api_token_file: CredentialFile,
 }
+
+schema_from_raw!(Cloudflare => RawCloudflare);
 
 impl TryFrom<RawCloudflare> for Cloudflare {
     type Error = CredentialError;
