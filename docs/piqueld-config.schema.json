@@ -4,7 +4,7 @@
   "definitions": {
     "AcmeConfig": {
       "additionalProperties": false,
-      "description": "The certificate authority (CA) piqueld orders DNS-01 certificates from,\nfor hostnames a public CA cannot reach over HTTP, such as private\nroutes'. The gateway obtains other certificates itself.",
+      "description": "The certificate authority (CA) piqueld orders DNS-01 certificates from,\nfor hostnames a public CA cannot reach over HTTP, such as those of\nprivate routes. The gateway obtains other certificates itself.",
       "properties": {
         "directory": {
           "default": "https://acme-v02.api.letsencrypt.org/directory",
@@ -616,7 +616,7 @@
             },
             {
               "$ref": "#/definitions/CredentialFile",
-              "description": "The tunnel's credentials file, which `cloudflared tunnel create`\nwrites. It is read only while the tunnel is enabled."
+              "description": "The tunnel's credentials file, which `cloudflared tunnel create`\nwrites. piqueld reads it only while the tunnel is enabled."
             }
           ]
         },

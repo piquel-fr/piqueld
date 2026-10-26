@@ -513,8 +513,8 @@ impl TryFrom<RawPrivateIngressConfig> for PrivateIngressConfig {
 schema_from_raw!(PrivateIngressConfig => RawPrivateIngressConfig);
 
 /// The certificate authority (CA) piqueld orders DNS-01 certificates from,
-/// for hostnames a public CA cannot reach over HTTP, such as private
-/// routes'. The gateway obtains other certificates itself.
+/// for hostnames a public CA cannot reach over HTTP, such as those of
+/// private routes. The gateway obtains other certificates itself.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AcmeConfig {

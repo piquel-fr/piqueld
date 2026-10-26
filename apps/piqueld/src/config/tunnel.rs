@@ -90,7 +90,7 @@ struct RawTunnelConfig {
     /// Serve public routes through the tunnel. Requires `credentials_file`.
     enabled: bool,
     /// The tunnel's credentials file, which `cloudflared tunnel create`
-    /// writes. It is read only while the tunnel is enabled.
+    /// writes. piqueld reads it only while the tunnel is enabled.
     credentials_file: Option<CredentialFile>,
 }
 

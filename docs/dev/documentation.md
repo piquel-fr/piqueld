@@ -103,8 +103,9 @@ Numbered steps, through the manifest, `piquelctl`, and the dashboard.
 ## Troubleshooting
 ```
 
-Reference pages list every setting instead, each with what it does, its
-default, and an example.
+Reference pages list every setting instead, each with what it does and its
+default. The generated ones leave examples to the guides and the pages they
+link to, such as `examples/piqueld.toml`.
 
 ## Screenshots
 

@@ -165,7 +165,7 @@ A public hostname that serves GitHub push webhooks, and nothing else, for applic
 
 ## `[ingress.acme]`
 
-The certificate authority (CA) piqueld orders DNS-01 certificates from, for hostnames a public CA cannot reach over HTTP, such as private routes'. The gateway obtains other certificates itself.
+The certificate authority (CA) piqueld orders DNS-01 certificates from, for hostnames a public CA cannot reach over HTTP, such as those of private routes. The gateway obtains other certificates itself.
 
 ### `ingress.acme.directory`
 
@@ -215,7 +215,7 @@ A Cloudflare Tunnel that serves public routes instead of the host's ports 80 and
 
 Type: string, a [credential file](#credential-file). Default: unset.
 
-The tunnel's credentials file, which `cloudflared tunnel create` writes. It is read only while the tunnel is enabled.
+The tunnel's credentials file, which `cloudflared tunnel create` writes. piqueld reads it only while the tunnel is enabled.
 
 ### `ingress.tunnel.enabled`
 
