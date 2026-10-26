@@ -55,6 +55,7 @@ host or on any machine where `piquelctl` is signed in to the instance.
    piquelctl --timeout 15m app apply --file deploy/docs/piqueld.toml --deploy
    ```
 
+   The command asks you to confirm, then waits until the deployment finishes.
    The first build downloads the Nix image and the documentation toolchain,
    and can take several minutes. Later builds reuse them, and only rebuild the
    book.
