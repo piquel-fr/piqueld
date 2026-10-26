@@ -19,28 +19,30 @@ use utoipa::ToSchema;
 /// one export grants.
 pub const MAX_LINKS: usize = 64;
 
-/// A service other applications may reach, `[[spec.exports]]`.
+/// A service of this application that other applications may reach over a
+/// private link, as `<service>.<application>`.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
-    /// Service in this application that importers reach.
+    /// Service of this application to export, at most once.
     pub service: String,
-    /// Applications whose environments may import the service.
+    /// Applications whose environments may import the service: at least one,
+    /// at most 64, each listed once.
     pub applications: Vec<String>,
-    /// Whether previews of those applications may import it too; `false` by
-    /// default, so only their environments can.
+    /// Whether previews of those applications may import the service too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(default = false)]
     pub previews: bool,
 }
 
-/// A service of another application this application reaches,
-/// `[[spec.imports]]`, as `<service>.<application>`.
+/// A service of another application this application reaches over a private
+/// link, as `<service>.<application>`.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Import {
-    /// Application exporting the service.
+    /// Application exporting the service. It may be this application.
     pub application: String,
-    /// Exported service of that application.
+    /// Service that application exports, imported at most once.
     pub service: String,
     /// Environment of that application to reach. By default, the one named
     /// like the importing environment. It may reference variables, so

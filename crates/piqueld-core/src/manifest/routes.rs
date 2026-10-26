@@ -195,11 +195,10 @@ pub struct VisibilityError;
 
 string_enum! {
     #[serde]
-    /// Who may connect to a route: everyone, or only tailnet devices. It says
-    /// nothing about how traffic arrives; the installation decides that.
-    ///
-    /// Variants are ordered from least to most restrictive, so the stricter of
-    /// two visibilities is their maximum.
+    /// Who may connect to a route: everyone, or only tailnet devices.
+    // It says nothing about how traffic arrives; the installation decides
+    // that. Variants are ordered from least to most restrictive, so the
+    // stricter of two visibilities is their maximum.
     #[derive(Default, Hash, Ord, PartialOrd)]
     pub enum Visibility {
         /// Reachable from the internet.
@@ -259,6 +258,28 @@ pub enum RedirectStatus {
     PermanentRedirect = 308,
 }
 
+impl RedirectStatus {
+    /// Every redirect status, in numeric order.
+    pub const ALL: [Self; 5] = [
+        Self::MovedPermanently,
+        Self::Found,
+        Self::SeeOther,
+        Self::TemporaryRedirect,
+        Self::PermanentRedirect,
+    ];
+}
+
+impl utoipa::PartialSchema for RedirectStatus {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::Integer)
+            .enum_values(Some(Self::ALL.map(u16::from)))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for RedirectStatus {}
+
 impl From<RedirectStatus> for u16 {
     fn from(status: RedirectStatus) -> Self {
         status as Self
@@ -269,14 +290,10 @@ impl TryFrom<u16> for RedirectStatus {
     type Error = RedirectStatusError;
 
     fn try_from(code: u16) -> Result<Self, Self::Error> {
-        Ok(match code {
-            301 => Self::MovedPermanently,
-            302 => Self::Found,
-            303 => Self::SeeOther,
-            307 => Self::TemporaryRedirect,
-            308 => Self::PermanentRedirect,
-            _ => return Err(RedirectStatusError),
-        })
+        Self::ALL
+            .into_iter()
+            .find(|status| u16::from(*status) == code)
+            .ok_or(RedirectStatusError)
     }
 }
 
@@ -287,7 +304,7 @@ pub struct ValidatedRedirect {
     /// Absolute destination URL.
     pub to: RedirectUrl,
     /// HTTP redirect status code.
-    #[schema(value_type = u16, minimum = 301, maximum = 308)]
+    #[schema(inline)]
     pub status: RedirectStatus,
     /// Appends the request path and query to `to`.
     pub preserve_path: bool,

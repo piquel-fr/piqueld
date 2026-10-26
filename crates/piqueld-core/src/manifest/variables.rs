@@ -323,11 +323,11 @@ impl TemplateError {
     }
 }
 
-/// A typed value: a literal, or a template rendered for each environment.
+/// A value written directly, or a template rendered for each environment.
 ///
-/// A template that is exactly one reference yields the variable's own value;
-/// any other template yields text. The result must then decode as `T`, so
-/// strings are never parsed into numbers.
+/// A template that is exactly one reference takes the variable's own value;
+/// any other template renders to text. The value must have the setting's
+/// type: strings are never parsed into numbers.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum Typed<T> {
@@ -338,7 +338,12 @@ pub enum Typed<T> {
     Template(Template),
 }
 
-/// Schema of a template in a typed field: text containing `${{`.
+/// A template in a setting of another type, such as an integer: text
+/// containing a `${{` reference. A template that is exactly one reference
+/// takes the variable's own value, which must have the setting's type;
+/// strings are never parsed into numbers. For example, with `replicas =
+/// "${{ vars.replicas }}"`, the variable `replicas` must be the integer `2`,
+/// not the string `"2"`.
 #[derive(ToSchema)]
 #[schema(pattern = r"\$\{\{")]
 #[expect(dead_code, reason = "describes the wire shape of `Typed::Template`")]

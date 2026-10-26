@@ -146,7 +146,7 @@
           "allOf": [
             {
               "$ref": "#/definitions/Ovh",
-              "description": "An OVH account."
+              "description": "An OVH account. The consumer key needs `GET` on `/domain/zone`, and\n`POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also\n`GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server\ntime from `/auth/time`, which needs no permission."
             },
             {
               "properties": {
@@ -163,7 +163,7 @@
               "type": "object"
             }
           ],
-          "description": "An OVH account."
+          "description": "An OVH account. The consumer key needs `GET` on `/domain/zone`, and\n`POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also\n`GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server\ntime from `/auth/time`, which needs no permission."
         }
       ]
     },
@@ -283,7 +283,7 @@
       "type": "string"
     },
     "Ovh": {
-      "description": "An OVH account. The consumer key needs `GET` on `/domain/zone`, and\n`POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also\n`GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server time\nfrom `/auth/time`, which needs no permission.",
+      "description": "An OVH account.",
       "properties": {
         "application_key_file": {
           "$ref": "#/definitions/CredentialFile",
@@ -629,7 +629,7 @@
       "type": "object"
     }
   },
-  "description": "The daemon's configuration file, `/etc/piqueld/config.toml` unless\n`piqueld --config` selects another. Every setting is optional. The daemon\nreads the file once at startup, so restart it to apply a change.",
+  "description": "The daemon's configuration file, `/etc/piqueld/config.toml` unless\n`piqueld --config` selects another. Every setting is optional unless it\nsays otherwise. The daemon reads the file once at startup, so restart it\nto apply a change.",
   "properties": {
     "auth": {
       "$ref": "#/definitions/AuthConfig",

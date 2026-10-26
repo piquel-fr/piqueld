@@ -73,10 +73,7 @@ pub struct Ovh {
     api: String,
 }
 
-/// An OVH account. The consumer key needs `GET` on `/domain/zone`, and
-/// `POST` and `DELETE` on `/domain/zone/*`; with `manage_records`, also
-/// `GET` and `PUT` on `/domain/zone/*`. piqueld also reads the server time
-/// from `/auth/time`, which needs no permission.
+/// An OVH account.
 //
 // The TOML form of [`Ovh`], before its credential files are read.
 #[derive(Deserialize, utoipa::ToSchema)]

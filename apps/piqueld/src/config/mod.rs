@@ -47,8 +47,9 @@ macro_rules! schema_from_raw {
 pub(crate) use schema_from_raw;
 
 /// The daemon's configuration file, `/etc/piqueld/config.toml` unless
-/// `piqueld --config` selects another. Every setting is optional. The daemon
-/// reads the file once at startup, so restart it to apply a change.
+/// `piqueld --config` selects another. Every setting is optional unless it
+/// says otherwise. The daemon reads the file once at startup, so restart it
+/// to apply a change.
 //
 // Each table documents its own settings and defaults. Tables are defaulted
 // field by field: a container `#[serde(default)]` would make utoipa repeat

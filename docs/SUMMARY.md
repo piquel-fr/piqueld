@@ -21,6 +21,7 @@
 # Reference
 
 - [Application manifest](user/reference/manifest.md)
+- [Manifest settings](user/reference/manifest-settings.md)
 - [Daemon configuration](user/reference/configuration.md)
 - [Daemon configuration settings](user/reference/configuration-settings.md)
 - [NixOS module](user/reference/nixos.md)

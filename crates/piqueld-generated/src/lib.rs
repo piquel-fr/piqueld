@@ -178,15 +178,42 @@ impl Page {
 
     /// Turns doc-comment or help text into Markdown: lines of a paragraph
     /// are joined, except list items, and a `<` outside code spans is
-    /// escaped so it doesn't open an HTML tag.
+    /// escaped so it doesn't open an HTML tag. Fenced code blocks stay as
+    /// they are.
     ///
     /// ```text
     /// "Becomes `<host>.ts.net`, see\n<host>." -> "Becomes `<host>.ts.net`, see \<host>."
     /// ```
     #[must_use]
     pub fn prose(text: &str) -> String {
+        let mut blocks = Vec::new();
+        let mut prose = Vec::new();
+        let mut lines = text.trim().lines();
+        while let Some(line) = lines.next() {
+            let Some(fence) = Fence::open(line) else {
+                prose.push(line);
+                continue;
+            };
+            blocks.push(Self::paragraph(&prose));
+            prose.clear();
+            let mut code = vec![line];
+            for line in lines.by_ref() {
+                code.push(line);
+                if fence.closes(line) {
+                    break;
+                }
+            }
+            blocks.push(code.join("\n"));
+        }
+        blocks.push(Self::paragraph(&prose));
+        blocks.retain(|block| !block.is_empty());
+        blocks.join("\n\n")
+    }
+
+    /// [`Self::prose`] for `lines` without code blocks.
+    fn paragraph(lines: &[&str]) -> String {
         let mut joined = String::new();
-        for line in text.trim().lines().map(str::trim) {
+        for line in lines.iter().map(|line| line.trim()) {
             if !joined.is_empty() && !joined.ends_with('\n') {
                 joined.push(if line.is_empty() || line.starts_with("- ") {
                     '\n'
@@ -200,6 +227,7 @@ impl Page {
             joined.push_str(line);
         }
         joined
+            .trim()
             .split('`')
             .enumerate()
             .map(|(index, part)| {
@@ -211,5 +239,56 @@ impl Page {
             })
             .collect::<Vec<_>>()
             .join("`")
+    }
+}
+
+/// The marker of a fenced code block in [`Page::prose`]: three or more
+/// backticks or tildes.
+#[derive(Clone, Copy)]
+struct Fence {
+    /// The marker's character, `` ` `` or `~`.
+    marker: char,
+    /// How many times the opening line repeats it.
+    len: usize,
+}
+
+impl Fence {
+    /// The fence `line` opens, if it is an opening fence.
+    fn open(line: &str) -> Option<Self> {
+        let line = line.trim_start();
+        let marker = line.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+        let len = line.chars().take_while(|&c| c == marker).count();
+        (len >= 3).then_some(Self { marker, len })
+    }
+
+    /// Whether `line` closes the fence: only its marker, at least as many
+    /// times as the opening line.
+    fn closes(self, line: &str) -> bool {
+        let line = line.trim();
+        let len = line.chars().take_while(|&c| c == self.marker).count();
+        len >= self.len && len == line.chars().count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Page;
+
+    #[test]
+    fn prose_keeps_code_blocks_as_they_are() {
+        let text = "Text that may\nreference <name>.\n\n```text\n\"${{ a }}\"  -> <a>\n```\nAfter.";
+        assert_eq!(
+            Page::prose(text),
+            "Text that may reference \\<name>.\n\n```text\n\"${{ a }}\"  -> <a>\n```\n\nAfter."
+        );
+    }
+
+    #[test]
+    fn prose_closes_code_blocks_only_on_a_matching_fence() {
+        let text = "````markdown\n```text\n<a>\n```\n````\nAfter <b>.\n\n~~~\n<c>\n~~~";
+        assert_eq!(
+            Page::prose(text),
+            "````markdown\n```text\n<a>\n```\n````\n\nAfter \\<b>.\n\n~~~\n<c>\n~~~"
+        );
     }
 }
