@@ -5,7 +5,7 @@ api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 
 [metadata]
-name = "docs"
+name = "piqueld-docs"
 
 [spec.manifest]
 path = "deploy/docs/piqueld.toml"

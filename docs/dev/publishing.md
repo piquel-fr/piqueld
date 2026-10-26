@@ -1,8 +1,9 @@
 # Publishing the documentation
 
 This book is published at <https://docs.piqueld.dev> by a piqueld instance,
-which runs it as the `docs` application. Every push to `main` rebuilds the book
-and deploys it. This page sets that up once, on the instance that serves it.
+which runs it as the `piqueld-docs` application. Every push to `main` rebuilds
+the book and deploys it. This page sets that up once, on the instance that
+serves it.
 
 Two files in
 [`deploy/docs`](https://github.com/piquel-fr/piqueld/tree/main/deploy/docs)
@@ -46,8 +47,8 @@ host or on any machine where `piquelctl` is signed in to the instance.
    piquelctl app plan --file deploy/docs/piqueld.toml
    ```
 
-   The plan creates the `docs` application, with its `web` service and its
-   `docs.piqueld.dev` route.
+   The plan creates the `piqueld-docs` application, with its `web` service and
+   its `docs.piqueld.dev` route.
 
 3. Save the manifest and deploy it:
 
@@ -63,7 +64,7 @@ host or on any machine where `piquelctl` is signed in to the instance.
 4. Generate the secret of the repository's webhook:
 
    ```console
-   piquelctl app repository webhook rotate docs
+   piquelctl app repository webhook rotate piqueld-docs
    ```
 
    It prints the webhook's payload URL and secret. piqueld never shows the
@@ -93,7 +94,7 @@ curl --fail --head https://docs.piqueld.dev/dev/publishing.html
 After the next push to `main`, check that it deployed:
 
 ```console
-piquelctl env show docs production
+piquelctl env show piqueld-docs production
 ```
 
 Its `Sync` line says `following`, with the commit of that push. In GitHub,
@@ -118,15 +119,15 @@ set `DOCKER_HOST` to that engine's socket first.
 - **The deployment fails with `git_build_failed`.** The build's output ends
   with the error. List the builds with
   `piquelctl builds list --application <id>`, where `<id>` is the ID
-  `piquelctl app show docs` prints, then read one with
+  `piquelctl app show piqueld-docs` prints, then read one with
   `piquelctl builds logs <number>`.
 - **The first deployment fails with `preparation_timeout`.** The build took
   longer than
   [`reconciliation.prepare_timeout_seconds`](../user/reference/configuration-settings.md#reconciliationprepare_timeout_seconds),
   300 seconds by default. Deploy again with
-  `piquelctl --timeout 10m app deploy docs`: the steps that finished stay
-  cached. If it keeps failing, raise the setting.
-- **A push deploys nothing.** `piquelctl env show docs production` says why on
-  its `Sync` line, and GitHub's **Recent Deliveries** shows whether the
-  delivery failed. A `401` means the secret doesn't match: generate a new one
+  `piquelctl --timeout 10m app deploy piqueld-docs`: the steps that finished
+  stay cached. If it keeps failing, raise the setting.
+- **A push deploys nothing.** `piquelctl env show piqueld-docs production`
+  says why on its `Sync` line, and GitHub's **Recent Deliveries** shows whether
+  the delivery failed. A `401` means the secret doesn't match: generate a new one
   and copy it into GitHub again.
