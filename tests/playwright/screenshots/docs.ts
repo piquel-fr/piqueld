@@ -1,7 +1,7 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
-import type { Locator, Page } from '@playwright/test';
-import { test as base, expect, adminToken, fillRegistration, applicationTab, rewrite, type Cli } from '../fixtures.js';
+import type { Browser, Locator, Page } from '@playwright/test';
+import { test as base, expect, adminToken, fillRegistration, submitRegistration, applicationTab, rewrite, Passkeys, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -33,16 +33,20 @@ export const test = base.extend({
 
 /** Saves the page as docs/images/`name`.png, cut 12 pixels below the
  * bottom of `through`, or 800 pixels tall without it, once `freeze` has
- * made its content the same on every run.
+ * made its content the same on every run. With `from`, the image starts 12
+ * pixels above it, the page scrolled under the sidebar, instead of at the
+ * top of the page.
  *
  * The image records a fingerprint of the page it shows: its content and
  * styles, not its pixels, which antialiasing varies between runs. A page
  * whose fingerprint matches its image's isn't shot again. With
  * `--update-snapshots=none`, as in CI, a page that no longer matches fails
  * instead. */
-export async function shoot(page: Page, name: string, through?: Locator) {
-  const box = await through?.boundingBox();
-  await page.setViewportSize({ width: 1280, height: box ? Math.ceil(box.y + box.height) + 12 : 800 });
+export async function shoot(page: Page, name: string, through?: Locator, from?: Locator) {
+  const top = await from?.evaluate(element => element.getBoundingClientRect().top + scrollY - 12) ?? 0;
+  const bottom = await through?.evaluate(element => element.getBoundingClientRect().bottom + scrollY + 12);
+  await page.setViewportSize({ width: 1280, height: bottom ? Math.ceil(bottom - top) : 800 });
+  await page.evaluate(top => scrollTo(0, top), top);
   // Stop the dashboard's timers, without running any, so no refresh redraws
   // what `freeze` replaced. Fixing the time first makes pausing at it skip
   // nothing, however long the calls take.
@@ -66,8 +70,8 @@ export async function shoot(page: Page, name: string, through?: Locator) {
   await page.clock.resume();
 }
 
-// The text that differs on every run: random IDs and digests, and dates.
-const identifier = String.raw`\b[0-9a-f]{32,64}\b`;
+// The text that differs on every run: random IDs, UUIDs and digests, and dates.
+const identifier = String.raw`\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,64})\b`;
 const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M\b`;
 const fixedDate = '10/24/2026, 9:41:07 AM';
 const isoDate = String.raw`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`;
@@ -77,8 +81,9 @@ async function varying(page: Page): Promise<string[]> {
   return page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], `${identifier}|${date}`);
 }
 
-/** A hash of what the frozen page draws: the window's size, its styles, and
- * its content, with form values and without scripts. IDs and dates left in
+/** A hash of what the frozen page draws: the window's size and, when
+ * scrolled, where, its styles, and its content, with form values and without
+ * scripts. IDs and dates left in
  * attributes, such as links, are replaced like `freeze` replaces text. */
 async function fingerprint(page: Page): Promise<string> {
   const drawn = await page.evaluate(() => {
@@ -86,7 +91,8 @@ async function fingerprint(page: Page): Promise<string> {
     body.querySelectorAll('script').forEach(script => script.remove());
     const styles = Array.from(document.styleSheets).flatMap(sheet => Array.from(sheet.cssRules, rule => rule.cssText));
     const values = Array.from(document.querySelectorAll('input, select, textarea'), field => (field as HTMLInputElement).value);
-    return [`${innerWidth}x${innerHeight}`, ...styles, ...values, body.outerHTML].join('\n');
+    const size = scrollY ? `${innerWidth}x${innerHeight}+${scrollY}` : `${innerWidth}x${innerHeight}`;
+    return [size, ...styles, ...values, body.outerHTML].join('\n');
   });
   const order = new Map<string, number>();
   const stable = drawn
@@ -128,8 +134,11 @@ const Png = {
  * Returns the replacements. */
 async function freeze(page: Page): Promise<string[]> {
   const identifiers = (await varying(page)).filter(value => new RegExp(`^${identifier}$`).test(value));
-  const stable = Object.fromEntries(identifiers.map((value, index) =>
-    [value, createHash('sha256').update(`piqueld ${index}`).digest('hex').slice(0, value.length)]));
+  const stable = Object.fromEntries(identifiers.map((value, index) => {
+    const digest = createHash('sha256').update(`piqueld ${index}`).digest('hex');
+    let at = 0;
+    return [value, value.replace(/[0-9a-f]/g, () => digest[at++])];
+  }));
   await page.evaluate(({ pattern, stable, fixedDate }) => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -176,4 +185,59 @@ export async function environment(page: Page, app: string, name: string) {
   await page.getByRole('main').getByRole('link').filter({ hasText: name }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
   await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
+}
+
+/** The Accounts page, once its accounts loaded. */
+export async function accounts(page: Page) {
+  await page.goto('/dashboard/accounts');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Accounts');
+  await expect(page.locator('.auth-account').first()).toBeVisible();
+}
+
+/** The card of account `username` on the Accounts page. */
+export const accountCard = (page: Page, username: string) =>
+  page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: username, exact: true }) });
+
+/** Chooses grants in the grant editor within `scope`, as the guides do: the
+ * applications first, if any, then the preset. */
+export async function chooseGrants(scope: Locator, preset: string, applications: string[] = []) {
+  if (applications.length) {
+    await scope.getByLabel('Application permissions apply to every application, including future ones').setChecked(false);
+    for (const application of applications) await scope.getByLabel(application, { exact: true }).setChecked(true);
+  }
+  await scope.getByLabel('Preset').selectOption(preset);
+}
+
+/** Creates an invitation link on the Accounts page, as
+ * docs/user/accounts/accounts.md does, and returns it. */
+export async function invite(page: Page, preset: string, applications: string[] = []): Promise<string> {
+  await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create invitation' });
+  await chooseGrants(dialog, preset, applications);
+  await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
+  return done(page);
+}
+
+/** The invitation or enrollment link the Accounts page shows once, read
+ * before selecting **Done**. */
+export async function done(page: Page): Promise<string> {
+  const secret = page.locator('.secret-box');
+  await expect(secret).toContainText(/#(invite|enroll)=/);
+  const link = (await secret.innerText()).trim();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(secret).toHaveCount(0);
+  return link;
+}
+
+/** Creates account `username` through invitation `link`, in a browser of its own. */
+export async function signUp(browser: Browser, link: string, username: string, display: string) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const passkeys = await Passkeys.create(page);
+    try {
+      await fillRegistration(page, link, username, { display, passkey: 'Laptop' });
+      await submitRegistration(page);
+    } finally { await passkeys.close(); }
+  } finally { await context.close(); }
 }

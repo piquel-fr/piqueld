@@ -20,7 +20,7 @@ Open **Accounts** in the dashboard's sidebar. Each account has a card with its
 **Profile**, its **Access**, its **Passkeys**, and its **Sessions and API
 tokens**.
 
-![The Accounts page: the card of alice, with her username and display name, admin on every application, and two passkeys named Laptop and Phone](../../images/accounts/accounts-page.png)
+![The Accounts page: the card of alice, with the display name Alice, admin on every application, and two passkeys named Laptop and Phone](../../images/accounts/accounts-page.png)
 
 Without `accounts:manage`, the page only shows your own account. With it, the
 page lists every account, the invitation and enrollment links waiting to be
