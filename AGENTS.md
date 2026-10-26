@@ -34,4 +34,5 @@ When changing/adding to configuration, make sure to update the NixOS module.
 The documentation in `docs/` is an mdBook with a user guide (`docs/user`) and a
 developer guide (`docs/dev`). Update it in the same pull request as the change
 it describes, following `docs/dev/documentation.md`, and run `just docs` to
-build it and check its links.
+build it and check its links. The `piqueld-docs` skill in `.agents/skills`
+points agents to that guide.
