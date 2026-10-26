@@ -52,7 +52,7 @@ host or on any machine where `piquelctl` is signed in to the instance.
 3. Save the manifest and deploy it:
 
    ```console
-   piquelctl --timeout 15m app apply --file deploy/docs/piqueld.toml --deploy
+   piquelctl --timeout 10m app apply --file deploy/docs/piqueld.toml --deploy
    ```
 
    The command asks you to confirm, then waits until the deployment finishes.
@@ -124,7 +124,7 @@ set `DOCKER_HOST` to that engine's socket first.
   longer than
   [`reconciliation.prepare_timeout_seconds`](../user/reference/configuration-settings.md#reconciliationprepare_timeout_seconds),
   300 seconds by default. Deploy again with
-  `piquelctl --timeout 15m app deploy docs`: the steps that finished stay
+  `piquelctl --timeout 10m app deploy docs`: the steps that finished stay
   cached. If it keeps failing, raise the setting.
 - **A push deploys nothing.** `piquelctl env show docs production` says why on
   its `Sync` line, and GitHub's **Recent Deliveries** shows whether the
