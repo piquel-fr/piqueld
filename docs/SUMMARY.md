@@ -37,7 +37,7 @@
 - [Automated validation](dev/validation.md)
 - [Contract coverage](dev/contract-coverage.md)
 - [Changing the documentation](dev/documentation.md)
-- [Publishing the documentation](dev/publishing.md)
+- [Deploying piqueld.dev](dev/deployments.md)
 
 # Architecture
 

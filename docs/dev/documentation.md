@@ -203,4 +203,4 @@ because a change anywhere in the repository can break a link to it. It uses
 `nix develop .#docs`, so CI and your shell run the same versions.
 
 Every push to `main` publishes the book at <https://docs.piqueld.dev>; see
-[publishing the documentation](publishing.md).
+[deploying piqueld.dev](deployments.md#the-documentation).
