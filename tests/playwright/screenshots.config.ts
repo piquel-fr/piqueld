@@ -3,13 +3,10 @@ import type { Options } from './fixtures.js';
 
 // The documentation screenshots (`just docs-screenshots`), apart from the
 // test suite: a fixed 1280 px wide window at one device pixel per CSS pixel,
-// with dates in one locale and time zone, so each run draws the same pixels.
-// Each screenshot is a snapshot in docs/images, rewritten only when the page
-// looks different: Chromium's antialiasing alone varies between runs.
+// with dates in one locale and time zone, so each run draws the same page.
+// `shoot` in screenshots/docs.ts saves each one in docs/images.
 export default defineConfig<Options>({
   testDir: './screenshots',
-  snapshotPathTemplate: '{testDir}/../../../docs/images/{arg}{ext}',
-  updateSnapshots: 'changed',
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 15_000 },

@@ -5,6 +5,7 @@ import { test as base, expect, adminToken, fillRegistration, applicationTab, rew
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { crc32 } from 'node:zlib';
 
 const docs = new URL('../../../docs/', import.meta.url);
 
@@ -32,7 +33,13 @@ export const test = base.extend({
 
 /** Saves the page as docs/images/`name`.png, cut 12 pixels below the
  * bottom of `through`, or 800 pixels tall without it, once `freeze` has
- * made its content the same on every run. */
+ * made its content the same on every run.
+ *
+ * The image records a fingerprint of the page it shows: its content and
+ * styles, not its pixels, which antialiasing varies between runs. A page
+ * whose fingerprint matches its image's isn't shot again. With
+ * `--update-snapshots=none`, as in CI, a page that no longer matches fails
+ * instead. */
 export async function shoot(page: Page, name: string, through?: Locator) {
   const box = await through?.boundingBox();
   await page.setViewportSize({ width: 1280, height: box ? Math.ceil(box.y + box.height) + 12 : 800 });
@@ -43,7 +50,14 @@ export async function shoot(page: Page, name: string, through?: Locator) {
   await page.clock.setFixedTime(now);
   await page.clock.pauseAt(now);
   const frozen = await freeze(page);
-  await expect(page).toHaveScreenshot(`${name}.png`.split('/'));
+  const file = new URL(`images/${name}.png`, docs);
+  const current = await fingerprint(page);
+  if (await readFile(file).then(Png.fingerprint, () => undefined) !== current) {
+    if (test.info().config.updateSnapshots === 'none') {
+      throw new Error(`docs/images/${name}.png shows an older version of its page: run just docs-screenshots`);
+    }
+    await writeFile(file, Png.withFingerprint(await page.screenshot(), current));
+  }
   // A refresh already under way when the clock stopped redraws it anyway.
   expect(frozen, 'a refresh redrew the page while it was saved').toEqual(expect.arrayContaining(await varying(page)));
   // Catch up with the time spent paused, so later pages read the daemon's
@@ -56,11 +70,58 @@ export async function shoot(page: Page, name: string, through?: Locator) {
 const identifier = String.raw`\b[0-9a-f]{32,64}\b`;
 const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M\b`;
 const fixedDate = '10/24/2026, 9:41:07 AM';
+const isoDate = String.raw`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`;
 
 /** Each distinct ID, digest and date the page shows. */
 async function varying(page: Page): Promise<string[]> {
   return page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], `${identifier}|${date}`);
 }
+
+/** A hash of what the frozen page draws: the window's size, its styles, and
+ * its content, with form values and without scripts. IDs and dates left in
+ * attributes, such as links, are replaced like `freeze` replaces text. */
+async function fingerprint(page: Page): Promise<string> {
+  const drawn = await page.evaluate(() => {
+    const body = document.body.cloneNode(true) as HTMLElement;
+    body.querySelectorAll('script').forEach(script => script.remove());
+    const styles = Array.from(document.styleSheets).flatMap(sheet => Array.from(sheet.cssRules, rule => rule.cssText));
+    const values = Array.from(document.querySelectorAll('input, select, textarea'), field => (field as HTMLInputElement).value);
+    return [`${innerWidth}x${innerHeight}`, ...styles, ...values, body.outerHTML].join('\n');
+  });
+  const order = new Map<string, number>();
+  const stable = drawn
+    .replace(new RegExp(identifier, 'g'), id => {
+      if (!order.has(id)) order.set(id, order.size);
+      return `id-${order.get(id)}`;
+    })
+    .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date');
+  return createHash('sha256').update(stable).digest('hex');
+}
+
+/** The fingerprint `shoot` records in a PNG, as a `tEXt` chunk. */
+const Png = {
+  keyword: 'piqueld:page',
+
+  /** The fingerprint recorded in `png`, if any. */
+  fingerprint(png: Buffer): string | undefined {
+    for (let at = 8; at < png.length; at += 12 + png.readUInt32BE(at)) {
+      if (png.toString('latin1', at + 4, at + 8) !== 'tEXt') continue;
+      const [keyword, text] = png.toString('latin1', at + 8, at + 8 + png.readUInt32BE(at)).split('\0');
+      if (keyword === Png.keyword) return text;
+    }
+  },
+
+  /** `png` with `fingerprint` recorded before its last chunk, `IEND`. */
+  withFingerprint(png: Buffer, fingerprint: string): Buffer {
+    const data = Buffer.from(`tEXt${Png.keyword}\0${fingerprint}`, 'latin1');
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length - 4);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(data));
+    const end = png.length - 12;
+    return Buffer.concat([png.subarray(0, end), length, data, crc, png.subarray(end)]);
+  },
+};
 
 /** Replaces the text that differs on every run: each random ID or digest by
  * one derived from its order on the page, and each date by a fixed one.

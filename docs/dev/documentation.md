@@ -128,11 +128,20 @@ The recipe runs the specs in `tests/playwright/screenshots/` with the daemon
 of the [browser tests](https://github.com/piquel-fr/piqueld/tree/main/tests/playwright),
 in a mode where it deploys to an in-memory Docker engine: deployments succeed
 and services report healthy. Each spec seeds example data the way its guide
-does, then saves each page into `docs/images/<section>/`. An image is
-rewritten only when the page looks different, so a run that changes nothing
-leaves the images untouched. The daemon runs no ingress gateway, so
+does, then saves each page into `docs/images/<section>/`. The daemon runs no
+ingress gateway, so
 screenshots show HTTPS ingress as disabled, as on a daemon with the default
 configuration.
+
+Each image records a fingerprint of the page it shows: its content and
+styles, not its pixels, which vary slightly from run to run. The recipe shoots
+a page again only when its fingerprint changed, so a run that changes nothing
+leaves the images untouched. CI runs it with `--update-snapshots=none`, and
+fails when an image shows an older version of its page:
+
+```console
+just docs-screenshots --update-snapshots=none
+```
 
 To add a screenshot, extend the spec of its guide, or add a spec for a new
 guide. `screenshots/docs.ts` holds the helpers:

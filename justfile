@@ -138,9 +138,10 @@ setup-playwright:
 test-playwright *ARGS: build-playwright
     @cargo xtask playwright {{ARGS}}
 
-# Regenerates the dashboard screenshots in docs/images, through the browser
-# suite's fixture with deployments to its fake Docker engine. Not part of
-# validation: see docs/dev/documentation.md.
+# Regenerates the dashboard screenshots in docs/images whose page changed,
+# through the browser suite's fixture with deployments to its fake Docker
+# engine. With `--update-snapshots=none`, fails on an outdated one instead:
+# see docs/dev/documentation.md.
 docs-screenshots *ARGS: build-playwright
     @cargo xtask playwright --config screenshots.config.ts {{ARGS}}
 

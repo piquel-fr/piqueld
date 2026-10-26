@@ -124,6 +124,9 @@ jobs:
               - tools/**
               - examples/**
               - tests/playwright/**
+              # The screenshot specs follow the guides.
+              - docs/user/**
+              - docs/images/**
             # The flake's package sources.
             nix:
               - *crates
@@ -265,6 +268,8 @@ jobs:
       - run: just setup-playwright
       - run: pnpm --dir tests/playwright audit --audit-level=moderate
       - run: just test-playwright
+      - name: Check documentation screenshots
+        run: just docs-screenshots --update-snapshots=none
       - name: Preserve browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
