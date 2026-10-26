@@ -21,8 +21,10 @@ use std::{collections::BTreeMap, time::Duration};
 pub const IMAGE: &str = "alpine:3.20";
 /// A tag of [`IMAGE`]'s repository that doesn't exist.
 pub const MISSING_IMAGE: &str = "alpine:piqueld-missing";
-/// Another repository serving [`IMAGE`]'s images.
-pub const MIRROR: &str = "mirror.gcr.io/library/alpine";
+/// [`IMAGE`]'s repository, named by Docker Hub's registry endpoint. Docker
+/// doesn't normalize this name to [`IMAGE`]'s, so it is another repository
+/// serving the same images, from Docker Hub.
+pub const HUB_ALIAS: &str = "registry-1.docker.io/library/alpine";
 
 /// How long a scenario waits for the Engine to apply a change; the fake
 /// applies each at once.
@@ -432,19 +434,16 @@ impl<D: DockerApi> Contract<D> {
     pub async fn pinned_references_resolve_to_their_digest(&self) {
         let image = &self.environment.image;
         assert_eq!(self.docker.resolve_image(image).await.unwrap(), *image);
-        let mirrored = self.mirrored();
-        assert_eq!(
-            self.docker.resolve_image(&mirrored).await.unwrap(),
-            mirrored
-        );
+        let aliased = self.aliased();
+        assert_eq!(self.docker.resolve_image(&aliased).await.unwrap(), aliased);
     }
 
     /// An image pulled from two repositories is listed once, with both
     /// repositories' digests. The Engine's containerd image store, which
     /// `just docker-test` doesn't run, lists only one of them.
     pub async fn an_image_in_two_repositories_lists_both_digests(&self) {
-        let mirrored = self.docker.resolve_image(&self.mirrored()).await.unwrap();
-        let resolved = [self.environment.image.as_str(), mirrored.as_str()];
+        let aliased = self.docker.resolve_image(&self.aliased()).await.unwrap();
+        let resolved = [self.environment.image.as_str(), aliased.as_str()];
         let images = self.docker.images().await.unwrap();
         let listed = images
             .iter()
@@ -520,9 +519,11 @@ impl<D: DockerApi> Contract<D> {
     }
 
     /// Observing an environment also reports another's volume whose name
-    /// starts with its readable name prefix, as only labels tell them apart,
-    /// so planning sees it as an ownership conflict. That environment's
-    /// network and service, named for their owner, aren't reported.
+    /// starts with its readable name prefix: a volume name doesn't say whose
+    /// it is, so observation doesn't trust its labels alone to drop it, and
+    /// planning sees the foreign volume (and ignores it, as its name isn't
+    /// one this environment wants). That environment's network and service,
+    /// named for their owner, aren't reported.
     pub async fn observations_report_volumes_named_like_their_environment(&self) {
         let look_alike = self.environment.look_alike(&self.docker).await;
         self.ensure_web(&look_alike).await;
@@ -626,10 +627,10 @@ impl<D: DockerApi> Contract<D> {
             .unwrap_or_else(|| panic!("timed out waiting until {expected}"))
     }
 
-    /// The environment's image, pinned in [`MIRROR`].
-    fn mirrored(&self) -> String {
+    /// The environment's image, pinned in [`HUB_ALIAS`].
+    fn aliased(&self) -> String {
         let (_, digest) = self.environment.image.split_once('@').unwrap();
-        format!("{MIRROR}@{digest}")
+        format!("{HUB_ALIAS}@{digest}")
     }
 
     /// The environment as Docker reports it.

@@ -4,7 +4,7 @@
 
 use super::{
     BollardDocker, DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus,
-    LocalImage, SwarmState, resolve_image_digest,
+    LocalImage, ResourceKind, SwarmState, resolve_image_digest,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
@@ -113,8 +113,22 @@ pub struct JobRunState {
     pub exit_code: i64,
     /// When it times out.
     pub deadline: std::time::SystemTime,
-    /// The ownership labels of the environment that started it.
+    /// The labels of the job service, as the run's `DesiredJobRun` sets them.
     pub labels: BTreeMap<String, String>,
+}
+
+impl JobRunState {
+    /// The run of `job` that exits with `exit_code`, started now.
+    #[must_use]
+    pub fn of(job: &piqueld_core::DesiredJobRun, exit_code: i64) -> Self {
+        Self {
+            operation: job.operation().into(),
+            exit_code,
+            deadline: std::time::SystemTime::now()
+                + Duration::from_secs(u64::from(job.timeout_seconds)),
+            labels: job.container.labels.clone(),
+        }
+    }
 }
 
 /// A started job with the services, networks, and volumes it could see.
@@ -335,7 +349,7 @@ impl FakeDocker {
         labels_match && spec_hash_valid
     }
 
-    /// Whether a secret or job run labelled `observed` belongs to the environment
+    /// Whether a secret labelled `observed` belongs to the environment
     /// `expected` names by its managed, instance, and application labels.
     fn scope_matches(
         observed: &BTreeMap<String, String>,
@@ -822,13 +836,7 @@ impl DockerApi for FakeDocker {
             .push(format!("job {}", job.logical_name));
         self.jobs.lock().await.insert(
             job.container.name.to_string(),
-            JobRunState {
-                operation: job.operation().into(),
-                exit_code: self.job_exit.load(Ordering::SeqCst),
-                deadline: std::time::SystemTime::now()
-                    + Duration::from_secs(u64::from(job.timeout_seconds)),
-                labels: job.container.labels.clone(),
-            },
+            JobRunState::of(job, self.job_exit.load(Ordering::SeqCst)),
         );
         if self.lose_job_start.swap(false, Ordering::SeqCst) {
             return Err(DockerError::Request("start job"));
@@ -881,7 +889,8 @@ impl DockerApi for FakeDocker {
         })
     }
 
-    /// Removes the selected runs of the environment `ownership` labels.
+    /// Removes the selected runs `ownership`'s environment owns, by the
+    /// adapter's job ownership check; other runs are left alone.
     async fn remove_jobs(
         &self,
         ownership: &BTreeMap<String, String>,
@@ -894,8 +903,15 @@ impl DockerApi for FakeDocker {
                 return Err(DockerError::Request("remove jobs"));
             }
         }
-        self.jobs.lock().await.retain(|_, run| {
-            !(Self::scope_matches(&run.labels, ownership) && runs.selects(Some(&run.operation)))
+        self.jobs.lock().await.retain(|name, run| {
+            !(runs.selects(Some(&run.operation))
+                && BollardDocker::check_ownership(
+                    run.labels.clone().into_iter().collect(),
+                    ownership,
+                    ResourceKind::Job,
+                    name,
+                )
+                .is_ok())
         });
         Ok(())
     }

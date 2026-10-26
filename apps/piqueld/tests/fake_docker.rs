@@ -3703,18 +3703,16 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let harness = ControllerHarness::new().await;
     let mut input = manifest_with_jobs(&["migrate"], 300);
     let first = harness.apply(input.clone(), None).await;
-    // A run left by an earlier operation is removed before jobs start.
+    // A run of a job an earlier manifest declared is removed before jobs start.
+    let earlier = manifest_with_jobs(&["seed"], 300)
+        .validate()
+        .unwrap()
+        .normalize(ApplicationId::parse(first.environment_id.to_string()).unwrap());
+    let leftover = prebuilt::resolve(&earlier, harness.store.instance_id()).jobs[0]
+        .for_operation("earlier-operation");
     harness.docker.jobs.lock().await.insert(
-        "leftover".into(),
-        JobRunState {
-            operation: "earlier-operation".into(),
-            exit_code: 0,
-            deadline: std::time::SystemTime::now(),
-            labels: piqueld_core::resource::Ownership::scope(
-                harness.store.instance_id(),
-                &first.environment_id,
-            ),
-        },
+        leftover.container.name.to_string(),
+        JobRunState::of(&leftover, 0),
     );
     harness.finish(&first).await;
     // The first job sees its network and volume but no service yet.
