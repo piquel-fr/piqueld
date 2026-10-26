@@ -3,8 +3,8 @@
 //! converged, unless a test arms one of its failure knobs.
 
 use super::{
-    DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus, LocalImage,
-    SwarmState, resolve_image_digest,
+    BollardDocker, DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus,
+    LocalImage, ResourceKind, SwarmState, resolve_image_digest,
 };
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
@@ -15,7 +15,7 @@ use piqueld_core::resource::{
 };
 use piqueld_core::{EnvironmentId, InstanceId, Sha256Digest};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
@@ -29,8 +29,8 @@ use tokio::sync::Mutex;
 pub struct FakeDocker {
     /// Every service, network, and volume the engine runs.
     pub observed: Arc<Mutex<ObservedApplication>>,
-    /// Secret values by Docker secret name.
-    pub secret_values: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    /// Secrets by Docker secret name.
+    pub secrets: Arc<Mutex<BTreeMap<String, Secret>>>,
     /// Fails removing secrets.
     pub fail_secret_removal: Arc<AtomicBool>,
     /// The registry images resolve and pull from.
@@ -51,8 +51,6 @@ pub struct FakeDocker {
     pub incompatible_swarm: Arc<AtomicBool>,
     /// Holds resolutions of `/slow:` images until released.
     pub resolution_gate: Option<Arc<Gate>>,
-    /// Observes only the requested environment's resources.
-    pub isolate_observations: bool,
     /// Counts service, network, volume, and job mutations.
     pub mutations: Arc<Probe>,
     /// Counts image resolutions.
@@ -97,8 +95,41 @@ pub struct FakeDocker {
     pub build_gate: Option<Arc<Gate>>,
 }
 
-/// A job run's operation, exit code, and deadline.
-pub type JobRunState = (String, i64, std::time::SystemTime);
+/// A Docker secret's value and the labels of the environment that owns it.
+#[derive(Clone, Debug)]
+pub struct Secret {
+    /// The value it was created with; secrets are immutable.
+    pub value: Vec<u8>,
+    /// Ownership labels it was created with.
+    pub labels: BTreeMap<String, String>,
+}
+
+/// A job run, as its Swarm job service records it.
+#[derive(Clone, Debug)]
+pub struct JobRunState {
+    /// The operation that started it.
+    pub operation: String,
+    /// The exit code it reports once finished.
+    pub exit_code: i64,
+    /// When it times out.
+    pub deadline: std::time::SystemTime,
+    /// The labels of the job service, as the run's `DesiredJobRun` sets them.
+    pub labels: BTreeMap<String, String>,
+}
+
+impl JobRunState {
+    /// The run of `job` that exits with `exit_code`, started now.
+    #[must_use]
+    pub fn of(job: &piqueld_core::DesiredJobRun, exit_code: i64) -> Self {
+        Self {
+            operation: job.operation().into(),
+            exit_code,
+            deadline: std::time::SystemTime::now()
+                + Duration::from_secs(u64::from(job.timeout_seconds)),
+            labels: job.container.labels.clone(),
+        }
+    }
+}
 
 /// A started job with the services, networks, and volumes it could see.
 #[derive(Debug, PartialEq, Eq)]
@@ -160,13 +191,17 @@ impl Probe {
 }
 
 /// The fake registry. Programmatic hook: the tag is re-pointed after this
-/// many remaining pulls.
+/// many remaining pulls of tags; pulls of digest-pinned references never
+/// re-point anything.
 #[derive(Default)]
 pub struct RegistryState {
     /// Pulls so far, by reference.
     pub pulls: BTreeMap<String, u64>,
-    /// Digests tags point at by reference, besides the base digest.
+    /// Digests tags point at by reference, besides the base digest. A
+    /// digest-pinned reference always points at its own digest.
     pub digests: BTreeMap<String, String>,
+    /// References the registry doesn't have; every other one exists.
+    pub missing: BTreeSet<String>,
     flips_remaining: usize,
 }
 
@@ -182,15 +217,19 @@ impl RegistryState {
     }
 
     fn digest(&self, reference: &str) -> String {
-        self.digests
-            .get(reference)
-            .cloned()
-            .unwrap_or_else(Self::base_digest)
+        match reference.split_once("@sha256:") {
+            Some((_, pinned)) => pinned.to_owned(),
+            None => self
+                .digests
+                .get(reference)
+                .cloned()
+                .unwrap_or_else(Self::base_digest),
+        }
     }
 
     fn pull(&mut self, reference: &str) {
         *self.pulls.entry(reference.to_owned()).or_insert(0) += 1;
-        if self.flips_remaining > 0 {
+        if self.flips_remaining > 0 && !reference.contains('@') {
             self.flips_remaining -= 1;
             let flipped = if self.digest(reference) == Self::base_digest() {
                 Self::flipped_digest()
@@ -213,6 +252,9 @@ struct RegistryView {
 impl ImageSource for RegistryView {
     async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
         let state = self.registry.lock().await;
+        if state.missing.contains(reference) {
+            return Ok(None);
+        }
         let repository =
             image_repository(reference).ok_or(DockerError::Request("image reference"))?;
         let repository = repository
@@ -226,8 +268,19 @@ impl ImageSource for RegistryView {
         )]))
     }
 
+    /// Fails a missing reference as the registry's 404, as the Engine does.
     async fn pull(&self, reference: &str) -> Result<(), DockerError> {
-        self.registry.lock().await.pull(reference);
+        let mut state = self.registry.lock().await;
+        if state.missing.contains(reference) {
+            return Err(DockerError::ImageResolutionSource {
+                operation: "pull image",
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404,
+                    message: format!("manifest for {reference} not found: manifest unknown"),
+                },
+            });
+        }
+        state.pull(reference);
         Ok(())
     }
 }
@@ -238,12 +291,31 @@ impl FakeDocker {
         self.registry.lock().await.flips_remaining = flips;
     }
 
-    /// Adds `image` unless an image with its ID exists.
+    /// Adds `image`, or merges its repository digests into the image with
+    /// its ID, as the Engine lists an image pulled from several
+    /// repositories once with each repository's digest.
     async fn add_image(&self, image: LocalImage) {
         let mut images = self.local_images.lock().await;
-        if !images.iter().any(|existing| existing.id == image.id) {
-            images.push(image);
+        match images.iter_mut().find(|existing| existing.id == image.id) {
+            Some(existing) => {
+                for digest in image.repo_digests {
+                    if !existing.repo_digests.contains(&digest) {
+                        existing.repo_digests.push(digest);
+                    }
+                }
+            }
+            None => images.push(image),
         }
+    }
+
+    /// The run of `job` by its operation, if it has one.
+    async fn run(&self, job: &piqueld_core::DesiredJobRun) -> Option<JobRunState> {
+        self.jobs
+            .lock()
+            .await
+            .get(job.container.name.as_str())
+            .filter(|run| run.operation == job.operation())
+            .cloned()
     }
 
     /// Whether any of `services` is attached to the network `name`, as
@@ -277,6 +349,22 @@ impl FakeDocker {
         labels_match && spec_hash_valid
     }
 
+    /// Whether a secret labelled `observed` belongs to the environment
+    /// `expected` names by its managed, instance, and application labels.
+    fn scope_matches(
+        observed: &BTreeMap<String, String>,
+        expected: &BTreeMap<String, String>,
+    ) -> bool {
+        expected.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+            && [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
+                .iter()
+                .all(|key| {
+                    expected
+                        .get(*key)
+                        .is_some_and(|value| observed.get(*key) == Some(value))
+                })
+    }
+
     /// Refuses changing or removing a resource labelled `existing`, if it
     /// exists, unless `ownership` owns it.
     fn check_owned(
@@ -308,7 +396,8 @@ impl FakeDocker {
     }
 }
 
-/// How Docker reports `desired` once it runs as declared.
+/// How Docker reports `desired` once it runs as declared: one running,
+/// healthy task per replica.
 #[must_use]
 pub fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
@@ -337,12 +426,15 @@ pub fn observed_service(desired: &DesiredService) -> ObservedService {
         rollout: Some(desired.rollout_policy()),
         telemetry: desired.telemetry.clone(),
         runtime_configuration_matches: true,
-        tasks: vec![ObservedTask {
-            state: TaskState::Running,
-            healthy: Some(true),
-            desired_running: true,
-            diagnostic: None,
-        }],
+        tasks: vec![
+            ObservedTask {
+                state: TaskState::Running,
+                healthy: Some(true),
+                desired_running: true,
+                diagnostic: None,
+            };
+            usize::from(desired.replicas)
+        ],
         convergence: Convergence::Converged,
     }
 }
@@ -353,27 +445,42 @@ impl DockerApi for FakeDocker {
         &self,
         name: &str,
         value: &[u8],
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
-        self.secret_values
-            .lock()
-            .await
-            .entry(name.to_owned())
-            .or_insert_with(|| value.to_vec());
+        let mut secrets = self.secrets.lock().await;
+        if let Some(existing) = secrets.get(name) {
+            return if Self::scope_matches(&existing.labels, ownership) {
+                Ok(())
+            } else {
+                Err(DockerError::OwnershipConflict)
+            };
+        }
+        secrets.insert(
+            name.to_owned(),
+            Secret {
+                value: value.to_vec(),
+                labels: ownership.clone(),
+            },
+        );
         Ok(())
     }
 
     async fn remove_secrets(
         &self,
         names: &[String],
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
         if self.fail_secret_removal.load(Ordering::SeqCst) {
             return Err(DockerError::Request("remove secrets"));
         }
-        let mut values = self.secret_values.lock().await;
+        let mut secrets = self.secrets.lock().await;
         for name in names {
-            values.remove(name);
+            if let Some(secret) = secrets.get(name) {
+                if !Self::scope_matches(&secret.labels, ownership) {
+                    return Err(DockerError::OwnershipConflict);
+                }
+                secrets.remove(name);
+            }
         }
         Ok(())
     }
@@ -573,28 +680,24 @@ impl DockerApi for FakeDocker {
         for network in &mut observed.networks {
             network.in_use = Self::attached(&observed.services, &network.name);
         }
-        observed.linked_networks = observed
+        // As the adapter observes: see `BollardDocker::relevant`.
+        let relevant = |name: &str, labels: &BTreeMap<String, String>| {
+            BollardDocker::relevant(name, labels, application)
+        };
+        observed
+            .services
+            .retain(|service| relevant(&service.name, &service.labels));
+        observed
+            .volumes
+            .retain(|volume| relevant(&volume.name, &volume.labels));
+        (observed.networks, observed.linked_networks) = observed
             .networks
-            .iter()
+            .into_iter()
             .filter(|network| {
-                network
-                    .labels
-                    .get(piqueld_core::resource::LINK_LABEL)
-                    .map(String::as_str)
-                    == Some(application.as_str())
+                relevant(&network.name, &network.labels)
+                    || BollardDocker::linked(&network.labels, application)
             })
-            .cloned()
-            .collect();
-        if self.isolate_observations {
-            let belongs = |labels: &BTreeMap<String, String>| {
-                labels
-                    .get(APPLICATION_LABEL)
-                    .is_some_and(|id| id == application.as_str())
-            };
-            observed.services.retain(|service| belongs(&service.labels));
-            observed.networks.retain(|network| belongs(&network.labels));
-            observed.volumes.retain(|volume| belongs(&volume.labels));
-        }
+            .partition(|network| relevant(&network.name, &network.labels));
         Ok(observed)
     }
 
@@ -733,11 +836,7 @@ impl DockerApi for FakeDocker {
             .push(format!("job {}", job.logical_name));
         self.jobs.lock().await.insert(
             job.container.name.to_string(),
-            (
-                job.operation().into(),
-                self.job_exit.load(Ordering::SeqCst),
-                std::time::SystemTime::now() + Duration::from_secs(u64::from(job.timeout_seconds)),
-            ),
+            JobRunState::of(job, self.job_exit.load(Ordering::SeqCst)),
         );
         if self.lose_job_start.swap(false, Ordering::SeqCst) {
             return Err(DockerError::Request("start job"));
@@ -749,14 +848,11 @@ impl DockerApi for FakeDocker {
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobStatus, DockerError> {
-        let run = self
-            .jobs
-            .lock()
-            .await
-            .get(job.container.name.as_str())
-            .cloned();
-        let Some((_, exit_code, deadline)) =
-            run.filter(|(operation, ..)| operation == job.operation())
+        let Some(JobRunState {
+            exit_code,
+            deadline,
+            ..
+        }) = self.run(job).await
         else {
             return Ok(JobStatus::Missing);
         };
@@ -774,14 +870,18 @@ impl DockerApi for FakeDocker {
         })
     }
 
+    /// Every run prints `migrated`; an operation without a run has no output.
     async fn job_output(
         &self,
-        _job: &piqueld_core::DesiredJobRun,
+        job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobOutput, DockerError> {
         self.job_output_reads.fetch_add(1, Ordering::SeqCst);
         drop(self.hold_job_output.lock().await);
         if self.fail_job_output.load(Ordering::SeqCst) {
             return Err(DockerError::Request("read job output"));
+        }
+        if self.run(job).await.is_none() {
+            return Ok(JobOutput::default());
         }
         Ok(JobOutput {
             chunks: vec![(piqueld_core::api::LogStream::Stdout, b"migrated\n".to_vec())],
@@ -789,9 +889,11 @@ impl DockerApi for FakeDocker {
         })
     }
 
+    /// Removes the selected runs `ownership`'s environment owns, by the
+    /// adapter's job ownership check; other runs are left alone.
     async fn remove_jobs(
         &self,
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
         runs: JobRuns<'_>,
     ) -> Result<(), DockerError> {
         if matches!(runs, JobRuns::Of(_)) {
@@ -801,10 +903,16 @@ impl DockerApi for FakeDocker {
                 return Err(DockerError::Request("remove jobs"));
             }
         }
-        self.jobs
-            .lock()
-            .await
-            .retain(|_, (operation, ..)| !runs.selects(Some(operation)));
+        self.jobs.lock().await.retain(|name, run| {
+            !(runs.selects(Some(&run.operation))
+                && BollardDocker::check_ownership(
+                    run.labels.clone().into_iter().collect(),
+                    ownership,
+                    ResourceKind::Job,
+                    name,
+                )
+                .is_ok())
+        });
         Ok(())
     }
 

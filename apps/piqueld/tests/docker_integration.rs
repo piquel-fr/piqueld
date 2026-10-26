@@ -2,6 +2,8 @@
 
 // Each test binary compiles the support modules on its own; this one builds
 // from Git but never fails a build, clones, or bundles, as fake_docker does.
+#[path = "support/docker_contract.rs"]
+mod docker_contract;
 #[allow(dead_code, reason = "only GitBuildFixture's build is used here")]
 #[path = "support/git.rs"]
 mod git_fixture;
@@ -12,6 +14,7 @@ mod poll;
 mod repository;
 
 use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuilder};
+use docker_contract::Environment;
 use git_fixture::GitBuildFixture;
 use piqueld::application::RuntimeBoundary;
 use piqueld::docker::{BollardDocker, DockerApi, DockerError, JobRuns, JobStatus};
@@ -19,7 +22,7 @@ use piqueld_core::manifest::ValidatedHealthCheck;
 use piqueld_core::resource::{
     DesiredNetwork, DesiredService, DesiredVolume, ObservedService, ResolvedSource,
 };
-use piqueld_core::{ApplicationId, EnvironmentId, InstanceId, ResourceKind, docker_resource_name};
+use piqueld_core::{ApplicationId, EnvironmentId, InstanceId};
 use poll::eventually;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
@@ -94,8 +97,7 @@ impl IsolatedDocker {
 
 struct SwarmScenario {
     engine: IsolatedDocker,
-    app: EnvironmentId,
-    labels: BTreeMap<String, String>,
+    environment: Environment,
     network: DesiredNetwork,
     volume: DesiredVolume,
     service: DesiredService,
@@ -104,86 +106,38 @@ struct SwarmScenario {
 impl SwarmScenario {
     async fn new() -> Self {
         let engine = IsolatedDocker::from_env().await;
-        let suffix = uuid::Uuid::now_v7().simple().to_string();
-        let app = EnvironmentId::parse(format!("app-{}", &suffix[..16])).unwrap();
-        let instance = InstanceId::parse("integration-instance").unwrap();
-        let spec_hash = format!("sha256:{}", "a".repeat(64));
-        let labels = BTreeMap::from([
-            ("io.piqueld.managed".into(), "true".into()),
-            ("io.piqueld.instance".into(), instance.to_string()),
-            ("io.piqueld.application".into(), app.to_string()),
-            ("io.piqueld.spec-hash".into(), spec_hash),
-        ]);
-        let network = DesiredNetwork {
-            name: piqueld_core::DockerNetworkName::parse(docker_resource_name(
-                &app,
-                ResourceKind::Network,
-                None,
-            ))
-            .unwrap(),
-            labels: labels.clone(),
-        };
-        let volume = DesiredVolume {
-            logical_name: piqueld_core::VolumeName::parse("data").unwrap(),
-            name: piqueld_core::DockerVolumeName::parse(docker_resource_name(
-                &app,
-                ResourceKind::Volume,
-                Some("data"),
-            ))
-            .unwrap(),
-            labels: labels.clone(),
-        };
+        let environment = Environment::new(&engine.docker).await;
+        let app = &environment.app;
+        let labels = &environment.labels;
+        let network = environment.network();
+        let volume = environment.volume();
         engine.docker.ensure_network(&network).await.unwrap();
-        let observed = engine.docker.observe(&app).await.unwrap();
+        let observed = engine.docker.observe(app).await.unwrap();
         assert!(
             observed.networks[0].runtime_configuration_matches,
             "a network created by piqueld must match Docker's inspected representation"
         );
         engine.docker.ensure_volume(&volume).await.unwrap();
-        let image = engine.docker.resolve_image("alpine:3.20").await.unwrap();
-        let mut service_labels = labels.clone();
-        service_labels.insert("io.piqueld.service".into(), "web".into());
-        let secret_name = format!("piqueld-secret-{suffix}");
+        let secret_name = environment.secret_name();
         engine
             .docker
-            .ensure_secret(&secret_name, b"mounted-value", &labels)
+            .ensure_secret(&secret_name, b"mounted-value", labels)
             .await
             .unwrap();
         let service = DesiredService {
-            link_aliases: BTreeMap::new(),
             secrets: vec![piqueld_core::resource::SecretFile { secret_name: secret_name.clone(), target: "/run/secrets/token".into() }],
-            files: vec![Self::motd(&app)],
-            logical_name: piqueld_core::ServiceName::parse("web").unwrap(),
-            name: piqueld_core::DockerServiceName::parse(docker_resource_name(
-                &app,
-                ResourceKind::Service,
-                Some("web"),
-            ))
-            .unwrap(),
-            source: ResolvedSource::parse_image("alpine:3.20", image.clone()).unwrap(),
-            image: piqueld_core::ImmutableImage::parse(image).unwrap(),
-            replicas: 1,
-            environment: BTreeMap::new(),
-            command: vec!["/bin/sh".into()],
+            files: vec![Self::motd(app)],
             arguments: vec![
                 "-c".into(),
                 "test $(cat /run/secrets/token) = mounted-value || exit 1; test \"$(cat /etc/piqueld-motd)\" = 'hello ${HOME}' || exit 1; if echo changed 2>/dev/null >/etc/piqueld-motd; then exit 1; fi; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
             ],
-            mounts: vec![],
-            healthcheck: Some(Self::passing_healthcheck()),
-            resources: None,
-            networks: vec![network.name.clone()],
-            labels: service_labels,
-            depends_on: Vec::new(),
-            rollout: piqueld_core::manifest::ValidatedRollout::default(),
-            receives_telemetry: false,
-            telemetry: None,
+            ..environment.service("web")
         };
         engine.ensure_service_eventually(&service).await;
         assert!(
             engine
                 .docker
-                .remove_secrets(std::slice::from_ref(&secret_name), &labels)
+                .remove_secrets(std::slice::from_ref(&secret_name), labels)
                 .await
                 .is_err(),
             "Docker refuses removal while a service uses the secret"
@@ -191,22 +145,10 @@ impl SwarmScenario {
 
         Self {
             engine,
-            app,
-            labels,
+            environment,
             network,
             volume,
             service,
-        }
-    }
-
-    /// A command health check that passes every second.
-    fn passing_healthcheck() -> ValidatedHealthCheck {
-        ValidatedHealthCheck::Command {
-            command: vec!["true".into()],
-            interval_seconds: 1,
-            timeout_seconds: 1,
-            start_period_seconds: 0,
-            retries: 3,
         }
     }
 
@@ -225,16 +167,11 @@ impl SwarmScenario {
         }
     }
 
-    /// The installation that owns the scenario's resources.
-    fn instance(&self) -> InstanceId {
-        InstanceId::parse(&self.labels["io.piqueld.instance"]).unwrap()
-    }
-
     /// How Docker runs `service` now, if it exists.
     async fn observed_service(&self, service: &DesiredService) -> Option<ObservedService> {
         self.engine
             .docker
-            .observe(&self.app)
+            .observe(&self.environment.app)
             .await
             .unwrap()
             .services
@@ -244,18 +181,13 @@ impl SwarmScenario {
 
     /// The web service, renamed to `name`, for changes to start beside it.
     fn derived_service(&self, name: &str) -> DesiredService {
-        let mut service = self.service.clone();
-        service.logical_name = piqueld_core::ServiceName::parse(name).unwrap();
-        service.name = piqueld_core::DockerServiceName::parse(docker_resource_name(
-            &self.app,
-            ResourceKind::Service,
-            Some(name),
-        ))
-        .unwrap();
-        service
-            .labels
-            .insert("io.piqueld.service".into(), name.into());
-        service
+        let named = self.environment.service(name);
+        DesiredService {
+            logical_name: named.logical_name,
+            name: named.name,
+            labels: named.labels,
+            ..self.service.clone()
+        }
     }
 
     /// The web task checked its file's content and that it cannot write it
@@ -266,7 +198,7 @@ impl SwarmScenario {
         use base64::Engine as _;
         use piqueld_core::manifest::ServiceFile;
         // Labelled as piqueld labels the environment's file configs.
-        let mut labels = self.labels.clone();
+        let mut labels = self.environment.labels.clone();
         labels.remove("io.piqueld.spec-hash");
         labels.insert("io.piqueld.file".into(), "true".into());
         // 12 full-size generations list as more than 8 MiB of base64.
@@ -276,7 +208,7 @@ impl SwarmScenario {
                 "POST",
                 "/configs/create",
                 Some(serde_json::json!({
-                    "Name": format!("piqueld-{}-file-unused-{generation}", self.app),
+                    "Name": format!("piqueld-{}-file-unused-{generation}", self.environment.app),
                     "Labels": labels,
                     "Data": base64::engine::general_purpose::STANDARD
                         .encode(&content[..ServiceFile::MAX_BYTES]),
@@ -284,7 +216,11 @@ impl SwarmScenario {
             )
             .await;
         }
-        self.engine.docker.prune_files(&self.labels).await.unwrap();
+        self.engine
+            .docker
+            .prune_files(&self.environment.labels)
+            .await
+            .unwrap();
         let remaining = self
             .docker_api("GET", "/configs")
             .await
@@ -293,7 +229,8 @@ impl SwarmScenario {
             .iter()
             .filter(|config| {
                 config["Spec"]["Labels"]["io.piqueld.file"] == "true"
-                    && config["Spec"]["Labels"]["io.piqueld.application"] == self.app.as_str()
+                    && config["Spec"]["Labels"]["io.piqueld.application"]
+                        == self.environment.app.as_str()
             })
             .map(|config| config["Spec"]["Name"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
@@ -301,7 +238,7 @@ impl SwarmScenario {
         assert_eq!(
             self.engine
                 .docker
-                .observe(&self.app)
+                .observe(&self.environment.app)
                 .await
                 .unwrap()
                 .services[0]
@@ -318,12 +255,12 @@ impl SwarmScenario {
     /// The container logs only after resolving its logical name, so this also
     /// proves the private-network alias.
     async fn assert_logs(&self) {
-        let instance = self.instance();
+        let instance = self.environment.instance();
         let logs = eventually(Duration::from_secs(30), POLL, async || {
             let logs = self
                 .engine
                 .docker
-                .application_logs(&instance, &self.app, Some("web"), 20, 60, None)
+                .application_logs(&instance, &self.environment.app, Some("web"), 20, 60, None)
                 .await
                 .unwrap();
             logs.items
@@ -348,7 +285,14 @@ impl SwarmScenario {
             let logs = self
                 .engine
                 .docker
-                .application_logs(&instance, &self.app, Some("web"), 1, 60, Some(stream))
+                .application_logs(
+                    &instance,
+                    &self.environment.app,
+                    Some("web"),
+                    1,
+                    60,
+                    Some(stream),
+                )
                 .await
                 .unwrap();
             assert_eq!(logs.items.len(), 1);
@@ -359,7 +303,7 @@ impl SwarmScenario {
                 .docker
                 .application_logs(
                     &InstanceId::parse("another-instance").unwrap(),
-                    &self.app,
+                    &self.environment.app,
                     None,
                     20,
                     60,
@@ -388,7 +332,11 @@ impl SwarmScenario {
         };
         self.engine
             .docker
-            .create_exec(&self.instance(), &self.app, &request)
+            .create_exec(
+                &self.environment.instance(),
+                &self.environment.app,
+                &request,
+            )
             .await
             .unwrap()
             .expect("web has a running task")
@@ -478,7 +426,7 @@ impl SwarmScenario {
         .await
         .expect("a stop ends the session");
         assert!(stopped.is_err());
-        let instance = self.instance();
+        let instance = self.environment.instance();
         let mut missing = piqueld_core::exec::ExecRequest {
             service: piqueld_core::ServiceName::parse("absent").unwrap(),
             command: piqueld_core::exec::ExecCommand::parse(vec!["true".into()]).unwrap(),
@@ -488,7 +436,7 @@ impl SwarmScenario {
         let docker = &self.engine.docker;
         assert!(
             docker
-                .create_exec(&instance, &self.app, &missing)
+                .create_exec(&instance, &self.environment.app, &missing)
                 .await
                 .unwrap()
                 .is_none()
@@ -497,7 +445,7 @@ impl SwarmScenario {
         let other = InstanceId::parse("another-instance").unwrap();
         assert!(
             docker
-                .create_exec(&other, &self.app, &missing)
+                .create_exec(&other, &self.environment.app, &missing)
                 .await
                 .unwrap()
                 .is_none()
@@ -710,25 +658,8 @@ impl SwarmScenario {
         script: &str,
         volume_access: piqueld_core::manifest::JobVolumeAccess,
     ) -> piqueld_core::DesiredJobRun {
-        let name = piqueld_core::JobName::parse("migrate").unwrap();
-        let mut container = self.service.clone();
-        container.mounts = vec![self.data_mount()];
-        container.name = piqueld_core::DockerServiceName::for_job(&self.app, &name);
-        container.command = vec!["/bin/sh".into(), "-c".into(), script.into()];
-        container.arguments.clear();
-        container.healthcheck = None;
-        container.labels = self.labels.clone();
-        container
-            .labels
-            .insert(piqueld_core::resource::JOB_LABEL.into(), name.to_string());
-        piqueld_core::DesiredJob {
-            logical_name: name,
-            run: piqueld_core::manifest::JobRun::BeforeRollout,
-            timeout_seconds: 60,
-            volume_access,
-            container,
-        }
-        .for_operation(operation)
+        self.environment
+            .job(&self.service, operation, script, volume_access)
     }
 
     /// Runs one-shot jobs derived from the service: they read its secret,
@@ -799,7 +730,7 @@ impl SwarmScenario {
         assert_eq!(exit_code, Some(3));
         assert!(error.is_some(), "Docker explains a failed task");
         docker
-            .remove_jobs(&self.labels, JobRuns::Except("operation-2"))
+            .remove_jobs(&self.environment.labels, JobRuns::Except("operation-2"))
             .await
             .unwrap();
         assert_ne!(
@@ -807,22 +738,13 @@ impl SwarmScenario {
             JobStatus::Missing
         );
         docker
-            .remove_jobs(&self.labels, JobRuns::All)
+            .remove_jobs(&self.environment.labels, JobRuns::All)
             .await
             .unwrap();
         assert_eq!(
             docker.job_status(&second).await.unwrap(),
             JobStatus::Missing
         );
-    }
-
-    /// The scenario's volume, mounted writable at `/data`.
-    fn data_mount(&self) -> piqueld_core::DesiredMount {
-        piqueld_core::DesiredMount {
-            volume_name: self.volume.name.clone(),
-            target: "/data".into(),
-            read_only: false,
-        }
     }
 
     /// An exclusive run and a service never share a volume: the run does not
@@ -841,7 +763,7 @@ impl SwarmScenario {
         writer.arguments.clear();
         writer.healthcheck = None;
         writer.secrets.clear();
-        writer.mounts = vec![self.data_mount()];
+        writer.mounts = vec![self.environment.data_mount()];
         self.engine.ensure_service_eventually(&writer).await;
 
         let job = self.job_with(
@@ -854,7 +776,7 @@ impl SwarmScenario {
             Err(DockerError::Request(_))
         ));
         docker
-            .remove_service(writer.name.as_str(), &self.labels)
+            .remove_service(writer.name.as_str(), &self.environment.labels)
             .await
             .unwrap();
         assert!(matches!(
@@ -868,7 +790,7 @@ impl SwarmScenario {
             Err(DockerError::Request(_))
         ));
         docker
-            .remove_jobs(&self.labels, JobRuns::All)
+            .remove_jobs(&self.environment.labels, JobRuns::All)
             .await
             .unwrap();
         eventually(Duration::from_mins(1), POLL, async || {
@@ -877,7 +799,7 @@ impl SwarmScenario {
         .await
         .expect("the service starts once the run stopped");
         docker
-            .remove_service(writer.name.as_str(), &self.labels)
+            .remove_service(writer.name.as_str(), &self.environment.labels)
             .await
             .unwrap();
     }
@@ -908,11 +830,11 @@ impl SwarmScenario {
         self.docker_api("DELETE", &format!("/services/{}", third.container.name))
             .await;
         docker
-            .remove_jobs(&self.labels, JobRuns::All)
+            .remove_jobs(&self.environment.labels, JobRuns::All)
             .await
             .unwrap();
         docker
-            .wait_jobs_stopped(&self.labels, JobRuns::All)
+            .wait_jobs_stopped(&self.environment.labels, JobRuns::All)
             .await
             .unwrap();
         assert_eq!(running().await, 0);
@@ -975,17 +897,22 @@ impl SwarmScenario {
     async fn delete_retaining_volume(&self, http_service: &DesiredService) {
         self.engine
             .docker
-            .remove_service(http_service.name.as_str(), &self.labels)
+            .remove_service(http_service.name.as_str(), &self.environment.labels)
             .await
             .unwrap();
         self.engine
             .docker
-            .remove_service(self.service.name.as_str(), &self.labels)
+            .remove_service(self.service.name.as_str(), &self.environment.labels)
             .await
             .unwrap();
         let removed = [self.service.name.as_str(), http_service.name.as_str()];
         eventually(Duration::from_mins(1), POLL, async || {
-            let observed = self.engine.docker.observe(&self.app).await.unwrap();
+            let observed = self
+                .engine
+                .docker
+                .observe(&self.environment.app)
+                .await
+                .unwrap();
             (!observed
                 .services
                 .iter()
@@ -1000,7 +927,7 @@ impl SwarmScenario {
             match self
                 .engine
                 .docker
-                .remove_network(self.network.name.as_str(), &self.labels)
+                .remove_network(self.network.name.as_str(), &self.environment.labels)
                 .await
             {
                 Ok(()) => Some(()),
@@ -1018,7 +945,12 @@ impl SwarmScenario {
         .await
         .unwrap_or_else(|| panic!("network task cleanup timed out: {in_use:?}"));
         eventually(Duration::from_mins(1), POLL, async || {
-            let observed = self.engine.docker.observe(&self.app).await.unwrap();
+            let observed = self
+                .engine
+                .docker
+                .observe(&self.environment.app)
+                .await
+                .unwrap();
             (!observed
                 .networks
                 .iter()
@@ -1027,7 +959,12 @@ impl SwarmScenario {
         })
         .await
         .expect("the network is removed");
-        let retained = self.engine.docker.observe(&self.app).await.unwrap();
+        let retained = self
+            .engine
+            .docker
+            .observe(&self.environment.app)
+            .await
+            .unwrap();
         assert!(
             retained
                 .volumes
@@ -1038,7 +975,7 @@ impl SwarmScenario {
         let secret_name = &self.service.secrets[0].secret_name;
         self.engine
             .docker
-            .remove_secrets(std::slice::from_ref(secret_name), &self.labels)
+            .remove_secrets(std::slice::from_ref(secret_name), &self.environment.labels)
             .await
             .unwrap();
         assert!(matches!(
@@ -1445,4 +1382,24 @@ async fn links_reach_only_the_imported_service_until_removed() {
         )
         .await;
     }
+}
+
+/// Runs the contract scenario `$scenario` against the isolated Engine.
+macro_rules! contract_test {
+    ($scenario:ident) => {
+        #[tokio::test]
+        #[ignore = "requires an isolated privileged Docker Engine"]
+        async fn $scenario() {
+            let engine = crate::IsolatedDocker::from_env().await;
+            crate::docker_contract::Contract::new(engine.docker)
+                .await
+                .$scenario()
+                .await;
+        }
+    };
+}
+
+/// The fake behaves like the real Engine: see [`docker_contract`].
+mod contract {
+    crate::docker_contract::scenarios!(contract_test);
 }

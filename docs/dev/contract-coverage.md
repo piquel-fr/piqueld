@@ -20,6 +20,7 @@ when changing behavior.
 | CLI commands, output, exit codes, connection profiles | `piquelctl/tests/cli.rs` and `profiles.rs` |
 | Docker policy and complete observations | Docker adapter unit tests |
 | Real Swarm health, drift repair, deletion, builds | `piqueld/tests/docker_integration.rs` through `just docker-test` |
+| The fake Docker engine behaving like the real one | `piqueld/tests/support/docker_contract.rs`, run by `fake_docker.rs` and `docker_integration.rs` |
 | Dashboard and passkey flows in a real browser | `tests/playwright` through `just test-playwright` |
 
 The additional audit cases check complete cleanup plans against reordered Engine

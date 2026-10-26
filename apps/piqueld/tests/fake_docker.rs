@@ -2,6 +2,8 @@
 
 #[path = "support/application.rs"]
 mod application_fixture;
+#[path = "support/docker_contract.rs"]
+mod docker_contract;
 #[path = "support/git.rs"]
 mod git_fixture;
 #[path = "support/poll.rs"]
@@ -16,7 +18,9 @@ mod sqlite;
 use application_fixture::TestApplications;
 use async_trait::async_trait;
 use piqueld::api::Actor::Daemon;
-use piqueld::docker::fake::{FakeDocker, Gate, JobStart, RegistryState, observed_service};
+use piqueld::docker::fake::{
+    FakeDocker, Gate, JobRunState, JobStart, RegistryState, observed_service,
+};
 use piqueld::docker::{DockerApi, DockerError, ImageSource, LocalImage, resolve_image_digest};
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
@@ -693,11 +697,7 @@ impl EnvironmentHarness {
     async fn new() -> Self {
         use piqueld::api::{Mutation, MutationResponse};
         use piqueld_core::EnvironmentName;
-        let mut harness = ControllerHarness::with_docker(FakeDocker {
-            isolate_observations: true,
-            ..FakeDocker::default()
-        })
-        .await;
+        let mut harness = ControllerHarness::new().await;
         harness.application = with_token(harness.application.to_manifest())
             .validate()
             .unwrap()
@@ -806,7 +806,7 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
             .len(),
         1
     );
-    assert_eq!(harness.docker.secret_values.lock().await.len(), 2);
+    assert_eq!(harness.docker.secrets.lock().await.len(), 2);
 
     fixture.delete_staging().await;
 
@@ -862,9 +862,9 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
         .await
         .unwrap();
     assert_eq!(stored[0].metadata.generation, 1);
-    let values = harness.docker.secret_values.lock().await;
+    let values = harness.docker.secrets.lock().await;
     assert_eq!(values.len(), 1, "only staging's copy is removed");
-    assert_eq!(values.values().next().unwrap(), b"shared token");
+    assert_eq!(values.values().next().unwrap().value, b"shared token");
     let environments = store.environments(harness.application.id()).await;
     assert_eq!(environments.unwrap().len(), 1);
     assert_eq!(
@@ -882,11 +882,7 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
 /// unexported `worker`, and `notes`, which imports it, then scans until they
 /// are linked. Returns the harness and both environments.
 async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
-    let harness = ControllerHarness::with_docker(FakeDocker {
-        isolate_observations: true,
-        ..FakeDocker::default()
-    })
-    .await;
+    let harness = ControllerHarness::new().await;
     let deploy = |name: &str, edit: fn(&mut ApplicationManifest)| {
         let mut manifest = harness.application.to_manifest();
         manifest.metadata.name = name.into();
@@ -1265,6 +1261,9 @@ async fn controller_refuses_a_foreign_same_name_volume() {
 async fn image_resolution_repairs_a_single_tag_flip_through_a_retry() {
     let docker = FakeDocker::default();
     docker.arm_tag_flips(1).await;
+    // Pulling a pinned reference leaves the flip armed.
+    let pinned = format!("ghcr.io/example/notes@sha256:{}", "c".repeat(64));
+    assert_eq!(docker.resolve_image(&pinned).await.unwrap(), pinned);
 
     let resolved = docker
         .resolve_image("ghcr.io/example/notes:1.4.0")
@@ -1547,7 +1546,6 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     let gate = Arc::new(Gate::default());
     let harness = ControllerHarness::with_docker(FakeDocker {
         resolution_gate: Some(Arc::clone(&gate)),
-        isolate_observations: true,
         ..FakeDocker::default()
     })
     .await;
@@ -1630,11 +1628,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
 
 #[tokio::test]
 async fn controller_enforces_global_io_bounds_on_a_single_thread() {
-    let harness = ControllerHarness::with_docker(FakeDocker {
-        isolate_observations: true,
-        ..FakeDocker::default()
-    })
-    .await;
+    let harness = ControllerHarness::new().await;
     for index in 0..12 {
         let mut manifest = manifest();
         manifest.metadata.name = format!("app-{index}");
@@ -2444,11 +2438,7 @@ mod repository_deployments {
     #[tokio::test]
     async fn deleting_a_preview_removes_every_volume_it_ever_created() {
         let repository = Repository::new();
-        let harness = ControllerHarness::with_docker(FakeDocker {
-            isolate_observations: true,
-            ..FakeDocker::default()
-        })
-        .await;
+        let harness = ControllerHarness::new().await;
         let main = repository.manifest("app.json");
         repository.write("app.json", &main);
         repository.commit(&[]);
@@ -3065,7 +3055,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     let target = harness.target(&first.environment_id).await;
     let old = target.secret_names["token"].clone();
     assert_eq!(
-        harness.docker.secret_values.lock().await[&old],
+        harness.docker.secrets.lock().await[&old].value,
         b"version-one"
     );
     harness
@@ -3086,7 +3076,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     let new = &target.secret_names["token"];
     assert_ne!(&old, new);
     assert_eq!(
-        harness.docker.secret_values.lock().await[new],
+        harness.docker.secrets.lock().await[new].value,
         b"version-two"
     );
     assert_eq!(
@@ -3107,7 +3097,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
         .delete_stored_secret(Daemon, &app, "token", 2)
         .await
         .unwrap();
-    assert!(harness.docker.secret_values.lock().await.is_empty());
+    assert!(harness.docker.secrets.lock().await.is_empty());
     assert!(harness.store.stored_secrets(&app).await.unwrap().is_empty());
 }
 
@@ -3185,11 +3175,11 @@ async fn secret_key_recovery_leaves_running_services_and_blocks_discarded_rollou
     harness.finish(&replacement).await;
     let new_target = harness.target(id).await;
     assert_eq!(
-        harness.docker.secret_values.lock().await[&new_target.secret_names["token"]],
+        harness.docker.secrets.lock().await[&new_target.secret_names["token"]].value,
         b"replacement"
     );
     assert_eq!(
-        harness.docker.secret_values.lock().await[&target.secret_names["token"]],
+        harness.docker.secrets.lock().await[&target.secret_names["token"]].value,
         b"original",
         "running services keep their existing Docker secret"
     );
@@ -3211,7 +3201,7 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
         operation.error_code.as_deref(),
         Some("secret_storage_unavailable")
     );
-    assert!(harness.docker.secret_values.lock().await.is_empty());
+    assert!(harness.docker.secrets.lock().await.is_empty());
     let events = harness.operation_events(&deployment.id).await;
     let service = |kind: &str| {
         events
@@ -3697,8 +3687,8 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
     });
     scanned.unwrap();
     // The daemon stays down past the run's deadline.
-    for (_, _, deadline) in harness.docker.jobs.lock().await.values_mut() {
-        *deadline = std::time::SystemTime::now() - Duration::from_secs(1);
+    for run in harness.docker.jobs.lock().await.values_mut() {
+        run.deadline = std::time::SystemTime::now() - Duration::from_secs(1);
     }
     harness.reopen().await;
     let result = tokio::time::timeout(Duration::from_secs(30), harness.scan_result(&operation))
@@ -3712,12 +3702,18 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
 async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let harness = ControllerHarness::new().await;
     let mut input = manifest_with_jobs(&["migrate"], 300);
-    // A run left by an earlier operation is removed before jobs start.
-    harness.docker.jobs.lock().await.insert(
-        "leftover".into(),
-        ("earlier-operation".into(), 0, std::time::SystemTime::now()),
-    );
     let first = harness.apply(input.clone(), None).await;
+    // A run of a job an earlier manifest declared is removed before jobs start.
+    let earlier = manifest_with_jobs(&["seed"], 300)
+        .validate()
+        .unwrap()
+        .normalize(ApplicationId::parse(first.environment_id.to_string()).unwrap());
+    let leftover = prebuilt::resolve(&earlier, harness.store.instance_id()).jobs[0]
+        .for_operation("earlier-operation");
+    harness.docker.jobs.lock().await.insert(
+        leftover.container.name.to_string(),
+        JobRunState::of(&leftover, 0),
+    );
     harness.finish(&first).await;
     // The first job sees its network and volume but no service yet.
     assert_eq!(
@@ -3797,14 +3793,7 @@ async fn a_secret_only_a_job_mounts_is_generated_for_the_job_alone() {
     harness.finish(&deployment).await;
     let target = harness.target(&deployment.environment_id).await;
     let pinned = &target.secret_names["owner-password"];
-    assert!(
-        harness
-            .docker
-            .secret_values
-            .lock()
-            .await
-            .contains_key(pinned)
-    );
+    assert!(harness.docker.secrets.lock().await.contains_key(pinned));
     assert_eq!(target.services[0].secrets, []);
     assert_eq!(
         target.jobs[0].container.secrets,
@@ -5243,4 +5232,34 @@ mod promotion {
                 .is_none()
         );
     }
+}
+
+/// Runs the contract scenario `$scenario` against the fake, whose registry
+/// lacks the contract's missing image and serves its image at a digest
+/// other than the base one, as unpinned references resolve by default.
+macro_rules! contract_test {
+    ($scenario:ident) => {
+        #[tokio::test]
+        async fn $scenario() {
+            let docker = crate::FakeDocker::default();
+            {
+                let mut registry = docker.registry.lock().await;
+                registry
+                    .missing
+                    .insert(crate::docker_contract::MISSING_IMAGE.into());
+                registry
+                    .digests
+                    .insert(crate::docker_contract::IMAGE.into(), "c".repeat(64));
+            }
+            crate::docker_contract::Contract::new(docker)
+                .await
+                .$scenario()
+                .await;
+        }
+    };
+}
+
+/// The fake behaves like the real Engine: see [`docker_contract`].
+mod contract {
+    crate::docker_contract::scenarios!(contract_test);
 }
