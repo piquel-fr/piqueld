@@ -1259,6 +1259,9 @@ async fn controller_refuses_a_foreign_same_name_volume() {
 async fn image_resolution_repairs_a_single_tag_flip_through_a_retry() {
     let docker = FakeDocker::default();
     docker.arm_tag_flips(1).await;
+    // Pulling a pinned reference leaves the flip armed.
+    let pinned = format!("ghcr.io/example/notes@sha256:{}", "c".repeat(64));
+    assert_eq!(docker.resolve_image(&pinned).await.unwrap(), pinned);
 
     let resolved = docker
         .resolve_image("ghcr.io/example/notes:1.4.0")
@@ -5224,18 +5227,22 @@ mod promotion {
 }
 
 /// Runs the contract scenario `$scenario` against the fake, whose registry
-/// lacks the contract's missing image.
+/// lacks the contract's missing image and serves its image at a digest
+/// other than the base one, as unpinned references resolve by default.
 macro_rules! contract_test {
     ($scenario:ident) => {
         #[tokio::test]
         async fn $scenario() {
             let docker = crate::FakeDocker::default();
-            docker
-                .registry
-                .lock()
-                .await
-                .missing
-                .insert(crate::docker_contract::MISSING_IMAGE.into());
+            {
+                let mut registry = docker.registry.lock().await;
+                registry
+                    .missing
+                    .insert(crate::docker_contract::MISSING_IMAGE.into());
+                registry
+                    .digests
+                    .insert(crate::docker_contract::IMAGE.into(), "c".repeat(64));
+            }
             crate::docker_contract::Contract::new(docker)
                 .await
                 .$scenario()

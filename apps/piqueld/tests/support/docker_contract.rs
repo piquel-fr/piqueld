@@ -21,6 +21,8 @@ use std::{collections::BTreeMap, time::Duration};
 pub const IMAGE: &str = "alpine:3.20";
 /// A tag of [`IMAGE`]'s repository that doesn't exist.
 pub const MISSING_IMAGE: &str = "alpine:piqueld-missing";
+/// Another repository serving [`IMAGE`]'s images.
+pub const MIRROR: &str = "mirror.gcr.io/library/alpine";
 
 /// How long a scenario waits for the Engine to apply a change; the fake
 /// applies each at once.
@@ -38,6 +40,8 @@ macro_rules! scenarios {
         $test!(removing_services_and_networks_is_idempotent);
         $test!(secrets_are_only_changed_by_their_owner);
         $test!(missing_images_are_rejected);
+        $test!(pinned_references_resolve_to_their_digest);
+        $test!(an_image_in_two_repositories_lists_both_digests);
         $test!(job_runs_report_their_status_and_output_per_operation);
         $test!(observations_report_only_their_environment);
     };
@@ -398,6 +402,41 @@ impl<D: DockerApi> Contract<D> {
         );
     }
 
+    /// A digest-pinned reference resolves to that digest, in [`IMAGE`]'s
+    /// repository as in another one serving the image, as the controller
+    /// pulls a stored digest again.
+    pub async fn pinned_references_resolve_to_their_digest(&self) {
+        let image = &self.environment.image;
+        assert_eq!(self.docker.resolve_image(image).await.unwrap(), *image);
+        let mirrored = self.mirrored();
+        assert_eq!(
+            self.docker.resolve_image(&mirrored).await.unwrap(),
+            mirrored
+        );
+    }
+
+    /// An image pulled from two repositories is listed once, with both
+    /// repositories' digests. The Engine's containerd image store, which
+    /// `just docker-test` doesn't run, lists only one of them.
+    pub async fn an_image_in_two_repositories_lists_both_digests(&self) {
+        let mirrored = self.docker.resolve_image(&self.mirrored()).await.unwrap();
+        let resolved = [self.environment.image.as_str(), mirrored.as_str()];
+        let images = self.docker.images().await.unwrap();
+        let listed = images
+            .iter()
+            .map(|image| {
+                image
+                    .repo_digests
+                    .iter()
+                    .map(piqueld_core::RepositoryDigest::as_str)
+                    .filter(|digest| resolved.contains(digest))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|digests| !digests.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(listed, [resolved]);
+    }
+
     /// A job's run is missing, without output, until its operation starts
     /// it, then finishes with its exit code and output. Another operation's
     /// run replaces it, and removing every run leaves none.
@@ -541,6 +580,12 @@ impl<D: DockerApi> Contract<D> {
         eventually(CONVERGENCE, POLL, check)
             .await
             .unwrap_or_else(|| panic!("timed out waiting until {expected}"))
+    }
+
+    /// The environment's image, pinned in [`MIRROR`].
+    fn mirrored(&self) -> String {
+        let (_, digest) = self.environment.image.split_once('@').unwrap();
+        format!("{MIRROR}@{digest}")
     }
 
     /// The environment as Docker reports it.

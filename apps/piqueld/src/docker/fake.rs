@@ -167,12 +167,14 @@ impl Probe {
 }
 
 /// The fake registry. Programmatic hook: the tag is re-pointed after this
-/// many remaining pulls.
+/// many remaining pulls of tags; pulls of digest-pinned references never
+/// re-point anything.
 #[derive(Default)]
 pub struct RegistryState {
     /// Pulls so far, by reference.
     pub pulls: BTreeMap<String, u64>,
-    /// Digests tags point at by reference, besides the base digest.
+    /// Digests tags point at by reference, besides the base digest. A
+    /// digest-pinned reference always points at its own digest.
     pub digests: BTreeMap<String, String>,
     /// References the registry doesn't have; every other one exists.
     pub missing: BTreeSet<String>,
@@ -191,15 +193,19 @@ impl RegistryState {
     }
 
     fn digest(&self, reference: &str) -> String {
-        self.digests
-            .get(reference)
-            .cloned()
-            .unwrap_or_else(Self::base_digest)
+        match reference.split_once("@sha256:") {
+            Some((_, pinned)) => pinned.to_owned(),
+            None => self
+                .digests
+                .get(reference)
+                .cloned()
+                .unwrap_or_else(Self::base_digest),
+        }
     }
 
     fn pull(&mut self, reference: &str) {
         *self.pulls.entry(reference.to_owned()).or_insert(0) += 1;
-        if self.flips_remaining > 0 {
+        if self.flips_remaining > 0 && !reference.contains('@') {
             self.flips_remaining -= 1;
             let flipped = if self.digest(reference) == Self::base_digest() {
                 Self::flipped_digest()
@@ -261,11 +267,20 @@ impl FakeDocker {
         self.registry.lock().await.flips_remaining = flips;
     }
 
-    /// Adds `image` unless an image with its ID exists.
+    /// Adds `image`, or merges its repository digests into the image with
+    /// its ID, as the Engine lists an image pulled from several
+    /// repositories once with each repository's digest.
     async fn add_image(&self, image: LocalImage) {
         let mut images = self.local_images.lock().await;
-        if !images.iter().any(|existing| existing.id == image.id) {
-            images.push(image);
+        match images.iter_mut().find(|existing| existing.id == image.id) {
+            Some(existing) => {
+                for digest in image.repo_digests {
+                    if !existing.repo_digests.contains(&digest) {
+                        existing.repo_digests.push(digest);
+                    }
+                }
+            }
+            None => images.push(image),
         }
     }
 
