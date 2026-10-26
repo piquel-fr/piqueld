@@ -7,8 +7,8 @@ manifest, `piqueld.toml`:
 
 - [`docs`](#the-documentation) serves this book at <https://docs.piqueld.dev>.
   Every push to `main` rebuilds the book and deploys it.
-- [`observability`](#the-observability-stack) stores and shows the instance's
-  telemetry, with Grafana at <https://grafana.piqueld.dev>.
+- [`piqueld-observability`](#the-observability-stack) stores and shows the
+  instance's telemetry, with Grafana at <https://grafana.piqueld.dev>.
 
 This page sets each up once, on the instance that runs it. Afterwards, change
 them through pull requests to `main`.
@@ -168,8 +168,8 @@ piqueld.dev.
    piquelctl app plan --file deploy/observability/piqueld.toml
    ```
 
-   The plan creates the `observability` application, with its `collector`,
-   `prometheus`, `tempo`, `loki` and `grafana` services and its
+   The plan creates the `piqueld-observability` application, with its
+   `collector`, `prometheus`, `tempo`, `loki` and `grafana` services and its
    `grafana.piqueld.dev` route.
 
 3. Save the manifest, grant its environment the instance's telemetry, and
@@ -177,8 +177,8 @@ piqueld.dev.
 
    ```console
    piquelctl app apply --file deploy/observability/piqueld.toml
-   piquelctl env telemetry observability production on
-   piquelctl app deploy observability
+   piquelctl env telemetry piqueld-observability production on
+   piquelctl app deploy piqueld-observability
    ```
 
    `app apply` and `app deploy` ask you to confirm. `app deploy` then waits
@@ -187,7 +187,7 @@ piqueld.dev.
 4. Make each push to `main` deploy it:
 
    ```console
-   piquelctl env sync observability production on
+   piquelctl env sync piqueld-observability production on
    ```
 
    piqueld polls the repository for new commits, so this application needs no
@@ -203,7 +203,7 @@ From now on, change the stack through pull requests to `main`, including
 the generated password:
 
 ```console
-piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
+piquelctl app exec piqueld-observability grafana -- cat /run/secrets/grafana-admin-password
 ```
 
 Grafana's **piqueld** folder holds the dashboards of the daemon, its

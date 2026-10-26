@@ -8,7 +8,7 @@ api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 
 [metadata]
-name = "observability"
+name = "piqueld-observability"
 
 # Where the manifest and its configuration files come from. Point it at your
 # fork, and pin a release's `commit` or follow a branch.
@@ -215,11 +215,13 @@ visibility = "private"
 # names in place of `my-app`. Each imports it with
 #
 #   [[spec.imports]]
-#   application = "observability"
+#   application = "piqueld-observability"
 #   service = "collector"
 #
-# and sets OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
-# with OTEL_EXPORTER_OTLP_PROTOCOL = "grpc".
+# and sets
+#   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-observability:4317"
+#   OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+#
 # [[spec.exports]]
 # service = "collector"
 # applications = ["my-app"]

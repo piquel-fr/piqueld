@@ -560,7 +560,7 @@ as it does with the [ingress gateway](ingress.md).
    since the receiving service gets the telemetry of every application:
 
    ```console
-   piquelctl env telemetry observability production on
+   piquelctl env telemetry piqueld-observability production on
    ```
 
    The environment's Overview has a Grant telemetry button. Previews
@@ -657,17 +657,17 @@ adjust each `path`. Then:
 
    ```console
    piquelctl app apply --file deploy/observability/piqueld.toml
-   piquelctl env telemetry observability production on
-   piquelctl app deploy observability --yes
+   piquelctl env telemetry piqueld-observability production on
+   piquelctl app deploy piqueld-observability --yes
    ```
 
-   `piquelctl env sync observability production on` makes pushes to its
+   `piquelctl env sync piqueld-observability production on` makes pushes to its
    branch deploy it. `piquelctl status` then shows the receiver connected.
-3. Open the URL `piquelctl env url observability` prints, from the tailnet, and
-   sign in as `admin` with the generated password:
+3. Open the URL `piquelctl env url piqueld-observability` prints, from the
+   tailnet, and sign in as `admin` with the generated password:
 
    ```console
-   piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
+   piquelctl app exec piqueld-observability grafana -- cat /run/secrets/grafana-admin-password
    ```
 
    Grafana sets it when it first starts, so regenerating the secret doesn't
@@ -678,13 +678,13 @@ adjust each `path`. Then:
 
    ```toml
    [[spec.imports]]
-   application = "observability"
+   application = "piqueld-observability"
    service = "collector"
 
    [[spec.services]]
    name = "web"
    [spec.services.environment]
-   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
+   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-observability:4317"
    OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
    ```
 
