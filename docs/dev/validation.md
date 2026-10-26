@@ -38,3 +38,18 @@ build cover them. `fmt` and `generate` are editing commands whose results are
 checked above, and `setup-playwright` installs the browser test dependencies.
 `run`, `ctl`, `daemon`, `daemon-embedded`, `dev`, and `docs-serve` launch
 interactive processes and are not finite validation commands.
+
+## Docker test suites
+
+Controller tests run against `FakeDocker`, an in-memory Docker engine in
+`apps/piqueld/src/docker/fake.rs`. `just docker-test` runs
+`apps/piqueld/tests/docker_integration.rs` against a real engine: a throwaway
+Docker-in-Docker daemon, never the host's.
+
+The scenarios in `apps/piqueld/tests/support/docker_contract.rs` check that the
+fake behaves like the real engine. Both suites run each of them:
+`fake_docker.rs` against the fake, in the `rust` job, and
+`docker_integration.rs` against the engine, in the `docker-integration` job.
+When the controller starts relying on another engine behavior, add a scenario
+for it. When a scenario passes against the fake but fails against the engine,
+fix the fake.

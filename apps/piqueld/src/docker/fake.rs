@@ -15,7 +15,7 @@ use piqueld_core::resource::{
 };
 use piqueld_core::{EnvironmentId, InstanceId, Sha256Digest};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
@@ -29,8 +29,8 @@ use tokio::sync::Mutex;
 pub struct FakeDocker {
     /// Every service, network, and volume the engine runs.
     pub observed: Arc<Mutex<ObservedApplication>>,
-    /// Secret values by Docker secret name.
-    pub secret_values: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    /// Secrets by Docker secret name.
+    pub secrets: Arc<Mutex<BTreeMap<String, Secret>>>,
     /// Fails removing secrets.
     pub fail_secret_removal: Arc<AtomicBool>,
     /// The registry images resolve and pull from.
@@ -51,8 +51,6 @@ pub struct FakeDocker {
     pub incompatible_swarm: Arc<AtomicBool>,
     /// Holds resolutions of `/slow:` images until released.
     pub resolution_gate: Option<Arc<Gate>>,
-    /// Observes only the requested environment's resources.
-    pub isolate_observations: bool,
     /// Counts service, network, volume, and job mutations.
     pub mutations: Arc<Probe>,
     /// Counts image resolutions.
@@ -95,6 +93,15 @@ pub struct FakeDocker {
     pub local_images: Arc<Mutex<Vec<LocalImage>>>,
     /// Holds builds once their image exists, until released.
     pub build_gate: Option<Arc<Gate>>,
+}
+
+/// A Docker secret's value and the labels of the environment that owns it.
+#[derive(Clone, Debug)]
+pub struct Secret {
+    /// The value it was created with; secrets are immutable.
+    pub value: Vec<u8>,
+    /// Ownership labels it was created with.
+    pub labels: BTreeMap<String, String>,
 }
 
 /// A job run's operation, exit code, and deadline.
@@ -167,6 +174,8 @@ pub struct RegistryState {
     pub pulls: BTreeMap<String, u64>,
     /// Digests tags point at by reference, besides the base digest.
     pub digests: BTreeMap<String, String>,
+    /// References the registry doesn't have; every other one exists.
+    pub missing: BTreeSet<String>,
     flips_remaining: usize,
 }
 
@@ -213,6 +222,9 @@ struct RegistryView {
 impl ImageSource for RegistryView {
     async fn repo_digests(&self, reference: &str) -> Result<Option<Vec<String>>, DockerError> {
         let state = self.registry.lock().await;
+        if state.missing.contains(reference) {
+            return Ok(None);
+        }
         let repository =
             image_repository(reference).ok_or(DockerError::Request("image reference"))?;
         let repository = repository
@@ -226,8 +238,19 @@ impl ImageSource for RegistryView {
         )]))
     }
 
+    /// Fails a missing reference as the registry's 404, as the Engine does.
     async fn pull(&self, reference: &str) -> Result<(), DockerError> {
-        self.registry.lock().await.pull(reference);
+        let mut state = self.registry.lock().await;
+        if state.missing.contains(reference) {
+            return Err(DockerError::ImageResolutionSource {
+                operation: "pull image",
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404,
+                    message: format!("manifest for {reference} not found: manifest unknown"),
+                },
+            });
+        }
+        state.pull(reference);
         Ok(())
     }
 }
@@ -244,6 +267,16 @@ impl FakeDocker {
         if !images.iter().any(|existing| existing.id == image.id) {
             images.push(image);
         }
+    }
+
+    /// The run of `job` by its operation, if it has one.
+    async fn run(&self, job: &piqueld_core::DesiredJobRun) -> Option<JobRunState> {
+        self.jobs
+            .lock()
+            .await
+            .get(job.container.name.as_str())
+            .filter(|(operation, ..)| operation == job.operation())
+            .cloned()
     }
 
     /// Whether any of `services` is attached to the network `name`, as
@@ -277,6 +310,22 @@ impl FakeDocker {
         labels_match && spec_hash_valid
     }
 
+    /// Whether a secret labelled `observed` belongs to the environment
+    /// `expected` names by its managed, instance, and application labels.
+    fn scope_matches(
+        observed: &BTreeMap<String, String>,
+        expected: &BTreeMap<String, String>,
+    ) -> bool {
+        expected.get(MANAGED_LABEL).map(String::as_str) == Some("true")
+            && [MANAGED_LABEL, INSTANCE_LABEL, APPLICATION_LABEL]
+                .iter()
+                .all(|key| {
+                    expected
+                        .get(*key)
+                        .is_some_and(|value| observed.get(*key) == Some(value))
+                })
+    }
+
     /// Refuses changing or removing a resource labelled `existing`, if it
     /// exists, unless `ownership` owns it.
     fn check_owned(
@@ -308,7 +357,8 @@ impl FakeDocker {
     }
 }
 
-/// How Docker reports `desired` once it runs as declared.
+/// How Docker reports `desired` once it runs as declared: one running,
+/// healthy task per replica.
 #[must_use]
 pub fn observed_service(desired: &DesiredService) -> ObservedService {
     ObservedService {
@@ -337,12 +387,15 @@ pub fn observed_service(desired: &DesiredService) -> ObservedService {
         rollout: Some(desired.rollout_policy()),
         telemetry: desired.telemetry.clone(),
         runtime_configuration_matches: true,
-        tasks: vec![ObservedTask {
-            state: TaskState::Running,
-            healthy: Some(true),
-            desired_running: true,
-            diagnostic: None,
-        }],
+        tasks: vec![
+            ObservedTask {
+                state: TaskState::Running,
+                healthy: Some(true),
+                desired_running: true,
+                diagnostic: None,
+            };
+            usize::from(desired.replicas)
+        ],
         convergence: Convergence::Converged,
     }
 }
@@ -353,27 +406,42 @@ impl DockerApi for FakeDocker {
         &self,
         name: &str,
         value: &[u8],
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
-        self.secret_values
-            .lock()
-            .await
-            .entry(name.to_owned())
-            .or_insert_with(|| value.to_vec());
+        let mut secrets = self.secrets.lock().await;
+        if let Some(existing) = secrets.get(name) {
+            return if Self::scope_matches(&existing.labels, ownership) {
+                Ok(())
+            } else {
+                Err(DockerError::OwnershipConflict)
+            };
+        }
+        secrets.insert(
+            name.to_owned(),
+            Secret {
+                value: value.to_vec(),
+                labels: ownership.clone(),
+            },
+        );
         Ok(())
     }
 
     async fn remove_secrets(
         &self,
         names: &[String],
-        _ownership: &BTreeMap<String, String>,
+        ownership: &BTreeMap<String, String>,
     ) -> Result<(), DockerError> {
         if self.fail_secret_removal.load(Ordering::SeqCst) {
             return Err(DockerError::Request("remove secrets"));
         }
-        let mut values = self.secret_values.lock().await;
+        let mut secrets = self.secrets.lock().await;
         for name in names {
-            values.remove(name);
+            if let Some(secret) = secrets.get(name) {
+                if !Self::scope_matches(&secret.labels, ownership) {
+                    return Err(DockerError::OwnershipConflict);
+                }
+                secrets.remove(name);
+            }
         }
         Ok(())
     }
@@ -585,16 +653,14 @@ impl DockerApi for FakeDocker {
             })
             .cloned()
             .collect();
-        if self.isolate_observations {
-            let belongs = |labels: &BTreeMap<String, String>| {
-                labels
-                    .get(APPLICATION_LABEL)
-                    .is_some_and(|id| id == application.as_str())
-            };
-            observed.services.retain(|service| belongs(&service.labels));
-            observed.networks.retain(|network| belongs(&network.labels));
-            observed.volumes.retain(|volume| belongs(&volume.labels));
-        }
+        let belongs = |labels: &BTreeMap<String, String>| {
+            labels
+                .get(APPLICATION_LABEL)
+                .is_some_and(|id| id == application.as_str())
+        };
+        observed.services.retain(|service| belongs(&service.labels));
+        observed.networks.retain(|network| belongs(&network.labels));
+        observed.volumes.retain(|volume| belongs(&volume.labels));
         Ok(observed)
     }
 
@@ -749,15 +815,7 @@ impl DockerApi for FakeDocker {
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobStatus, DockerError> {
-        let run = self
-            .jobs
-            .lock()
-            .await
-            .get(job.container.name.as_str())
-            .cloned();
-        let Some((_, exit_code, deadline)) =
-            run.filter(|(operation, ..)| operation == job.operation())
-        else {
+        let Some((_, exit_code, deadline)) = self.run(job).await else {
             return Ok(JobStatus::Missing);
         };
         if self.fail_job_status.load(Ordering::SeqCst) {
@@ -774,14 +832,18 @@ impl DockerApi for FakeDocker {
         })
     }
 
+    /// Every run prints `migrated`; an operation without a run has no output.
     async fn job_output(
         &self,
-        _job: &piqueld_core::DesiredJobRun,
+        job: &piqueld_core::DesiredJobRun,
     ) -> Result<JobOutput, DockerError> {
         self.job_output_reads.fetch_add(1, Ordering::SeqCst);
         drop(self.hold_job_output.lock().await);
         if self.fail_job_output.load(Ordering::SeqCst) {
             return Err(DockerError::Request("read job output"));
+        }
+        if self.run(job).await.is_none() {
+            return Ok(JobOutput::default());
         }
         Ok(JobOutput {
             chunks: vec![(piqueld_core::api::LogStream::Stdout, b"migrated\n".to_vec())],
