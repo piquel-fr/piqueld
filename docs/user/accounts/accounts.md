@@ -13,6 +13,8 @@ they leave. You do this on the dashboard's **Accounts** page;
 - The `piquelctl` commands on this page run on your machine, signed in as your
   account, as when you
   [signed it in](../getting-started/first-account.md#sign-piquelctl-in).
+  [`piquelctl account`](../reference/cli-commands.md#piquelctl-account) lists
+  their options.
 
 ## The Accounts page
 

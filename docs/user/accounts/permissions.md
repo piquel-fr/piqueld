@@ -88,6 +88,8 @@ limited logins:
 
 For example, `--preset deploy --permission secrets:write --app blog` lets an
 account deploy blog and change its secrets.
+[`piquelctl account access`](../reference/cli-commands.md#piquelctl-account-access)
+lists all its options.
 
 ## Application permissions
 

@@ -152,7 +152,10 @@ leaked ones. piqueld only keeps a hash of it.
 - `--days` sets its lifetime, 90 days by default. `--no-expiry` makes it
   last until you revoke it.
 
-The daemon's [`auth.max_token_days`](../reference/configuration.md#authentication-origin)
+[`piquelctl token create`](../reference/cli-commands.md#piquelctl-token-create)
+lists all its options.
+
+The daemon's [`auth.max_token_days`](../reference/configuration-settings.md#authmax_token_days)
 setting can limit how long new tokens last. With a limit, tokens without
 expiry are refused, and so are tokens that outlive it.
 
