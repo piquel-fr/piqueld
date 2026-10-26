@@ -4,9 +4,9 @@ piqueld keeps structured control-plane history in SQLite. Operation records are
 execution state; events are the independently readable historical record. The
 daemon can also push its traces, metrics and logs to an OpenTelemetry collector;
 see [telemetry export](#telemetry-export). It does not manage collectors or
-monitor its own outages from outside, but an
-[example application](#observability-stack) deploys a collector with Prometheus,
-Tempo, Loki and Grafana.
+monitor its own outages from outside, but
+[piqueld.dev's own application](#observability-stack) deploys a collector with
+Prometheus, Tempo, Loki and Grafana.
 
 ## History and diagnostics
 
@@ -635,10 +635,11 @@ container: nothing of the daemon's beyond the socket directory is mounted.
 
 ## Observability stack
 
-[`examples/observability`](https://github.com/piquel-fr/piqueld/blob/main/examples/observability/application.toml) is an
-ordinary application that stores and shows piqueld's telemetry: an
-OpenTelemetry Collector receiving it, Prometheus keeping metrics for 15 days,
-Tempo and Loki keeping traces and logs for 7, and Grafana. Grafana's data
+[`deploy/observability`](https://github.com/piquel-fr/piqueld/blob/main/deploy/observability/piqueld.toml)
+is the application that stores and shows the telemetry of the piqueld instance
+at piqueld.dev, and you can deploy it on yours: an OpenTelemetry Collector
+receiving it, Prometheus keeping metrics for 15 days, Tempo and Loki keeping
+traces and logs for 7, and Grafana. Grafana's data
 sources link logs and traces both ways, and metric exemplars to traces. Its
 dashboards cover the daemon's health, deployments and builds, services
 (replicas and container usage), and logs.
@@ -649,13 +650,13 @@ adjust each `path`. Then:
 
 1. Edit the manifest: `grafana_hostname`, a hostname for Grafana's private
    route, which needs a DNS record like any
-   [private route](ingress.md#public-and-private-routes); the applications the
-   collector is exported to; and `spec.manifest`, which should name your
-   repository and either follow a branch or pin the `commit` of a release tag.
+   [private route](ingress.md#public-and-private-routes); and `spec.manifest`,
+   which should name your repository and either follow a branch or pin the
+   `commit` of a release tag.
 2. Create the application, grant it telemetry, and deploy it:
 
    ```console
-   piquelctl app apply --file examples/observability/application.toml
+   piquelctl app apply --file deploy/observability/piqueld.toml
    piquelctl env telemetry observability production on
    piquelctl app deploy observability --yes
    ```
@@ -671,9 +672,9 @@ adjust each `path`. Then:
 
    Grafana sets it when it first starts, so regenerating the secret doesn't
    change it; change it in Grafana instead.
-4. Other applications can send their own telemetry to the collector. List them
-   in the manifest's `[[spec.exports]]`, then import it in each of them and
-   point its OpenTelemetry SDK at it:
+4. Other applications can send their own telemetry to the collector. Uncomment
+   the manifest's `[[spec.exports]]` and list them in it, then import it in
+   each of them and point its OpenTelemetry SDK at it:
 
    ```toml
    [[spec.imports]]

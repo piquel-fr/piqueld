@@ -342,17 +342,17 @@ mod tests {
         assert_eq!("644".parse::<FileMode>().unwrap().to_string(), "0644");
     }
 
-    /// The observability example validates, and a deployment can capture
-    /// every repository file it mounts.
+    /// The observability stack in `deploy` validates, and a deployment can
+    /// capture every repository file it mounts.
     #[test]
-    fn the_observability_example_captures_its_files() {
-        let example = crate::manifest::parse_template_toml(include_str!(
-            "../../../../examples/observability/application.toml"
+    fn the_observability_stack_captures_its_files() {
+        let stack = crate::manifest::parse_template_toml(include_str!(
+            "../../../../deploy/observability/piqueld.toml"
         ))
         .unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let files = RepositoryFiles(
-            example
+            stack
                 .spec()
                 .repository_file_paths()
                 .into_iter()
@@ -363,6 +363,6 @@ mod tests {
                 })
                 .collect(),
         );
-        example.spec().check_captured(&files).unwrap();
+        stack.spec().check_captured(&files).unwrap();
     }
 }

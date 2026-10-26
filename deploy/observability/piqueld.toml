@@ -1,6 +1,9 @@
-# An observability stack for piqueld: an OpenTelemetry Collector receiving the
-# daemon's telemetry, Prometheus, Tempo and Loki storing it, and Grafana
-# showing it. See "Observability stack" in docs/user/guides/observability.md to deploy it.
+# The observability stack of the piqueld instance at piqueld.dev: an
+# OpenTelemetry Collector receiving the daemon's telemetry, Prometheus, Tempo
+# and Loki storing it, and Grafana showing it at https://grafana.piqueld.dev.
+# Each deployment reads this file and its configuration files from main. See
+# docs/dev/deployments.md, and "Observability stack" in
+# docs/user/guides/observability.md to deploy it on your own instance.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 
@@ -10,7 +13,7 @@ name = "observability"
 # Where the manifest and its configuration files come from. Point it at your
 # fork, and pin a release's `commit` or follow a branch.
 [spec.manifest]
-path = "examples/observability/application.toml"
+path = "deploy/observability/piqueld.toml"
 sync = { mode = "poll" }
 [spec.manifest.repository]
 url = "https://github.com/piquel-fr/piqueld.git"
@@ -37,7 +40,7 @@ image = "otel/opentelemetry-collector-contrib:0.163.2"
 
 [[spec.services.files]]
 target = "/etc/otelcol-contrib/config.yaml"
-path = "examples/observability/collector.yaml"
+path = "deploy/observability/collector.yaml"
 
 [spec.services.healthcheck]
 type = "http"
@@ -68,7 +71,7 @@ image = "prom/prometheus:v3.15.1"
 
 [[spec.services.files]]
 target = "/etc/prometheus/prometheus.yml"
-path = "examples/observability/prometheus.yaml"
+path = "deploy/observability/prometheus.yaml"
 
 [[spec.services.mounts]]
 volume = "prometheus"
@@ -93,7 +96,7 @@ image = "grafana/tempo:3.1.1"
 
 [[spec.services.files]]
 target = "/etc/tempo/tempo.yaml"
-path = "examples/observability/tempo.yaml"
+path = "deploy/observability/tempo.yaml"
 
 [[spec.services.mounts]]
 volume = "tempo"
@@ -119,7 +122,7 @@ image = "grafana/loki:3.7.9"
 
 [[spec.services.files]]
 target = "/etc/loki/loki.yaml"
-path = "examples/observability/loki.yaml"
+path = "deploy/observability/loki.yaml"
 
 [[spec.services.mounts]]
 volume = "loki"
@@ -153,27 +156,27 @@ target = "/run/secrets/grafana-admin-password"
 
 [[spec.services.files]]
 target = "/etc/grafana/provisioning/datasources/datasources.yaml"
-path = "examples/observability/grafana/datasources.yaml"
+path = "deploy/observability/grafana/datasources.yaml"
 
 [[spec.services.files]]
 target = "/etc/grafana/provisioning/dashboards/dashboards.yaml"
-path = "examples/observability/grafana/dashboards.yaml"
+path = "deploy/observability/grafana/dashboards.yaml"
 
 [[spec.services.files]]
 target = "/etc/grafana/dashboards/daemon.json"
-path = "examples/observability/grafana/dashboards/daemon.json"
+path = "deploy/observability/grafana/dashboards/daemon.json"
 
 [[spec.services.files]]
 target = "/etc/grafana/dashboards/deployments.json"
-path = "examples/observability/grafana/dashboards/deployments.json"
+path = "deploy/observability/grafana/dashboards/deployments.json"
 
 [[spec.services.files]]
 target = "/etc/grafana/dashboards/services.json"
-path = "examples/observability/grafana/dashboards/services.json"
+path = "deploy/observability/grafana/dashboards/services.json"
 
 [[spec.services.files]]
 target = "/etc/grafana/dashboards/logs.json"
-path = "examples/observability/grafana/dashboards/logs.json"
+path = "deploy/observability/grafana/dashboards/logs.json"
 
 [[spec.services.mounts]]
 volume = "grafana"
@@ -207,8 +210,9 @@ service = "grafana"
 port = 3000
 visibility = "private"
 
-# Lets other applications send their own telemetry to the collector. Replace
-# `my-app` with their names; each imports it with
+# Lets other applications send their own telemetry to the collector. No
+# application on piqueld.dev does; to add some, uncomment this with their
+# names in place of `my-app`. Each imports it with
 #
 #   [[spec.imports]]
 #   application = "observability"
@@ -216,6 +220,6 @@ visibility = "private"
 #
 # and sets OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
 # with OTEL_EXPORTER_OTLP_PROTOCOL = "grpc".
-[[spec.exports]]
-service = "collector"
-applications = ["my-app"]
+# [[spec.exports]]
+# service = "collector"
+# applications = ["my-app"]
