@@ -1,17 +1,18 @@
-# The observability stack of the piqueld instance at piqueld.dev: an
+# piqueld's observability stack, which any piqueld instance can deploy: an
 # OpenTelemetry Collector receiving the daemon's telemetry, Prometheus, Tempo
-# and Loki storing it, and Grafana showing it at https://grafana.piqueld.dev.
-# Each deployment reads this file and its configuration files from main. See
-# docs/dev/deployments.md, and "Observability stack" in
-# docs/user/guides/observability.md to deploy it on your own instance.
+# and Loki storing it, and Grafana showing it on a private route. Each
+# deployment reads this file and the configuration files next to it from the
+# repository below. See "Observability stack" in
+# docs/user/guides/observability.md to deploy it.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 
 [metadata]
 name = "piqueld-observability"
 
-# Where the manifest and its configuration files come from. Point it at your
-# fork, and pin a release's `commit` or follow a branch.
+# Where the manifest and its configuration files come from: this repository's
+# main branch. Point it at your fork or your own repository to change them, and
+# pin a `commit` to upgrade only when you choose.
 [spec.manifest]
 path = "deploy/observability/piqueld.toml"
 sync = { mode = "poll" }
@@ -19,7 +20,9 @@ sync = { mode = "poll" }
 url = "https://github.com/piquel-fr/piqueld.git"
 branch = "main"
 
-# Grafana's private route. Point it at a domain your DNS provider manages.
+# Grafana's private route. Deployed from this repository, Grafana is served
+# on grafana.piqueld.dev: to use your own hostname, deploy from a fork or a
+# copy of this directory with it set here.
 [spec.variables]
 grafana_hostname = "grafana.piqueld.dev"
 
@@ -210,9 +213,9 @@ service = "grafana"
 port = 3000
 visibility = "private"
 
-# Lets other applications send their own telemetry to the collector. No
-# application on piqueld.dev does; to add some, uncomment this with their
-# names in place of `my-app`. Each imports it with
+# Lets other applications send their own telemetry to the collector. To add
+# some, uncomment this with their names in place of `my-app`. Each imports it
+# with
 #
 #   [[spec.imports]]
 #   application = "piqueld-observability"
