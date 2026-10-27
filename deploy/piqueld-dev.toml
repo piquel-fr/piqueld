@@ -48,9 +48,9 @@ port = 8080
 path = "/"
 
 [[spec.routes]]
-name = "web"
+name = "docs"
 hostname = "docs.piqueld.dev"
-service = "web"
+service = "docs"
 port = 8080
 visibility = "public"
 
