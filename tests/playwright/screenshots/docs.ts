@@ -83,8 +83,9 @@ async function varying(page: Page): Promise<string[]> {
 
 /** A hash of what the frozen page draws: the window's size and, when
  * scrolled, where, its styles, and its content, with form values and without
- * scripts. IDs and dates left in
- * attributes, such as links, are replaced like `freeze` replaces text. */
+ * scripts. IDs and dates left in attributes, such as links, are replaced like
+ * `freeze` replaces text: each ID by its order on the page, keeping its
+ * format and length. */
 async function fingerprint(page: Page): Promise<string> {
   const drawn = await page.evaluate(() => {
     const body = document.body.cloneNode(true) as HTMLElement;
@@ -98,7 +99,7 @@ async function fingerprint(page: Page): Promise<string> {
   const stable = drawn
     .replace(new RegExp(identifier, 'g'), id => {
       if (!order.has(id)) order.set(id, order.size);
-      return `id-${order.get(id)}`;
+      return `id-${order.get(id)}:${id.replace(/[0-9a-f]/g, 'x')}`;
     })
     .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date');
   return createHash('sha256').update(stable).digest('hex');
