@@ -1,5 +1,5 @@
-# The documentation book, served by the `piqueld-docs` application in
-# piqueld.toml next to this file. Build it from the repository root:
+# The documentation book, served by the `web` service of the `piqueld-dev`
+# application in deploy/piqueld-dev.toml. Build it from the repository root:
 #
 #   docker build --file deploy/docs/Dockerfile .
 #

@@ -1,0 +1,189 @@
+# A minimal observability stack for piqueld: an OpenTelemetry Collector
+# receiving the daemon's telemetry, Prometheus, Tempo and Loki storing it, and
+# Grafana on a private route to explore it. Every configuration file is inline,
+# so the application needs no repository and keeps the edits you make to it,
+# such as its hostname. See "Observability stack" in
+# docs/user/guides/observability.md to deploy it.
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+
+[metadata]
+name = "observability"
+
+# Grafana's hostname. Set yours with
+# `piquelctl app variable set observability grafana_hostname <hostname>`.
+[spec.variables]
+grafana_hostname = "grafana.example.com"
+
+[[spec.secrets]]
+name = "grafana-admin-password"
+generate = { type = "random", bytes = 24, encoding = "base64url" }
+
+# Receives the daemon's telemetry on its socket, and that of applications
+# importing it on ports 4317 (gRPC) and 4318 (HTTP).
+[[spec.services]]
+name = "collector"
+receives_telemetry = true
+
+[spec.services.source]
+type = "image"
+image = "otel/opentelemetry-collector-contrib:0.163.2"
+
+[[spec.services.files]]
+target = "/etc/otelcol-contrib/config.yaml"
+content = '''
+receivers:
+  otlp/piqueld:
+    protocols:
+      grpc:
+        endpoint: /run/piqueld/telemetry/otlp.sock
+        transport: unix
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  otlp_http/prometheus:
+    metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  otlp_http/loki:
+    logs_endpoint: http://loki:3100/otlp/v1/logs
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp/piqueld, otlp]
+      exporters: [otlp_http/prometheus]
+    traces:
+      receivers: [otlp/piqueld, otlp]
+      exporters: [otlp_grpc/tempo]
+    logs:
+      receivers: [otlp/piqueld, otlp]
+      exporters: [otlp_http/loki]
+'''
+
+[[spec.services]]
+name = "prometheus"
+arguments = [
+  "--config.file=/etc/prometheus/prometheus.yml",
+  "--storage.tsdb.path=/prometheus",
+  "--web.enable-otlp-receiver",
+]
+
+[spec.services.source]
+type = "image"
+image = "prom/prometheus:v3.15.1"
+
+# Labels each container's metrics with its resource attributes, such as
+# `piqueld_application`, so containers of the same service name stay apart.
+[[spec.services.files]]
+target = "/etc/prometheus/prometheus.yml"
+content = '''
+otlp:
+  promote_all_resource_attributes: true
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+'''
+
+[[spec.services.mounts]]
+volume = "prometheus"
+target = "/prometheus"
+
+[[spec.services]]
+name = "tempo"
+arguments = ["-config.file=/etc/tempo/tempo.yaml"]
+
+[spec.services.source]
+type = "image"
+image = "grafana/tempo:3.1.1"
+
+[[spec.services.files]]
+target = "/etc/tempo/tempo.yaml"
+content = '''
+server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+'''
+
+[[spec.services.mounts]]
+volume = "tempo"
+target = "/var/tempo"
+
+# Loki runs with its image's own configuration, which stores logs in /loki.
+[[spec.services]]
+name = "loki"
+
+[spec.services.source]
+type = "image"
+image = "grafana/loki:3.7.9"
+
+[[spec.services.mounts]]
+volume = "loki"
+target = "/loki"
+
+# Grafana keeps nothing between restarts: its data sources come from the file
+# below, and its admin password from the secret.
+[[spec.services]]
+name = "grafana"
+
+[spec.services.source]
+type = "image"
+image = "grafana/grafana:13.2.4"
+
+[spec.services.environment]
+GF_SECURITY_ADMIN_PASSWORD__FILE = "/run/secrets/grafana-admin-password"
+GF_SERVER_ROOT_URL = "https://${{ vars.grafana_hostname }}"
+
+[[spec.services.secrets]]
+name = "grafana-admin-password"
+target = "/run/secrets/grafana-admin-password"
+
+[[spec.services.files]]
+target = "/etc/grafana/provisioning/datasources/datasources.yaml"
+content = '''
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Tempo
+    type: tempo
+    url: http://tempo:3200
+  - name: Loki
+    type: loki
+    url: http://loki:3100
+'''
+
+[[spec.volumes]]
+name = "prometheus"
+
+[[spec.volumes]]
+name = "tempo"
+
+[[spec.volumes]]
+name = "loki"
+
+[[spec.routes]]
+name = "grafana"
+hostname = "${{ vars.grafana_hostname }}"
+service = "grafana"
+port = 3000
+visibility = "private"

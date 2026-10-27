@@ -1,31 +1,62 @@
-# piqueld's observability stack, which any piqueld instance can deploy: an
-# OpenTelemetry Collector receiving the daemon's telemetry, Prometheus, Tempo
-# and Loki storing it, and Grafana showing it on a private route. Each
-# deployment reads this file and the configuration files next to it from the
-# repository below. See "Observability stack" in
-# docs/user/guides/observability.md to deploy it.
+# Everything piqueld.dev serves, as one application: the documentation at
+# docs.piqueld.dev, and the telemetry stack receiving this instance's
+# telemetry, with Grafana at grafana.piqueld.dev on the tailnet. Each
+# deployment reads this file, and the files its services build and mount,
+# from main, and every push to main deploys it. Add a site with its own
+# service and route. See docs/dev/publishing.md.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 
 [metadata]
-name = "piqueld-observability"
+name = "piqueld-dev"
 
-# Where the manifest and its configuration files come from: this repository's
-# main branch. Point it at your fork or your own repository to change them, and
-# pin a `commit` to upgrade only when you choose.
 [spec.manifest]
-path = "deploy/observability/piqueld.toml"
-sync = { mode = "poll" }
+path = "deploy/piqueld-dev.toml"
+sync = { mode = "webhook" }
+
 [spec.manifest.repository]
 url = "https://github.com/piquel-fr/piqueld.git"
 branch = "main"
 
-# Grafana's private route. Deployed from this repository, Grafana is served
-# on grafana.piqueld.dev: to use your own hostname, deploy from a fork or a
-# copy of this directory with it set here.
+[spec.environments.production]
+sync = true
+
 [spec.variables]
 grafana_hostname = "grafana.piqueld.dev"
 
+# The documentation book, built from deploy/docs/Dockerfile at the deployed
+# commit.
+[[spec.services]]
+name = "web"
+
+[spec.services.source]
+type = "git"
+repository = "self"
+
+[spec.services.source.build]
+type = "docker"
+dockerfile = "deploy/docs/Dockerfile"
+
+# static-web-server uses a few MiB serving static files.
+[spec.services.resources]
+cpu_millis = 500
+memory_bytes = 67108864 # 64 MiB
+
+[spec.services.healthcheck]
+type = "http"
+port = 8080
+path = "/"
+
+[[spec.routes]]
+name = "web"
+hostname = "docs.piqueld.dev"
+service = "web"
+port = 8080
+visibility = "public"
+
+# The telemetry stack: an OpenTelemetry Collector receiving the daemon's
+# telemetry, Prometheus, Tempo and Loki storing it, and Grafana showing it,
+# with the dashboards in deploy/observability/grafana.
 [[spec.secrets]]
 name = "grafana-admin-password"
 generate = { type = "random", bytes = 24, encoding = "base64url" }
@@ -218,11 +249,11 @@ visibility = "private"
 # with
 #
 #   [[spec.imports]]
-#   application = "piqueld-observability"
+#   application = "piqueld-dev"
 #   service = "collector"
 #
 # and sets
-#   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-observability:4317"
+#   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-dev:4317"
 #   OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
 #
 # [[spec.exports]]

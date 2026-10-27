@@ -342,18 +342,17 @@ mod tests {
         assert_eq!("644".parse::<FileMode>().unwrap().to_string(), "0644");
     }
 
-    /// The observability stack in `deploy` validates, and a deployment can
-    /// capture every repository file it mounts.
+    /// piqueld.dev's manifest validates, and a deployment can capture every
+    /// repository file it mounts.
     #[test]
-    fn the_observability_stack_captures_its_files() {
-        let stack = crate::manifest::parse_template_toml(include_str!(
-            "../../../../deploy/observability/piqueld.toml"
+    fn piqueld_dev_captures_its_files() {
+        let site = crate::manifest::parse_template_toml(include_str!(
+            "../../../../deploy/piqueld-dev.toml"
         ))
         .unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let files = RepositoryFiles(
-            stack
-                .spec()
+            site.spec()
                 .repository_file_paths()
                 .into_iter()
                 .map(|path| {
@@ -363,6 +362,6 @@ mod tests {
                 })
                 .collect(),
         );
-        stack.spec().check_captured(&files).unwrap();
+        site.spec().check_captured(&files).unwrap();
     }
 }
