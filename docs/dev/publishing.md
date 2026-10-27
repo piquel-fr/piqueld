@@ -11,7 +11,8 @@ define the site:
 
 - `Dockerfile` builds the book with the mdBook that `flake.lock` pins, through
   `nix develop .#docs`, the shell `just docs` and CI use. It serves the pages
-  with [static-web-server](https://static-web-server.net/) on port 80.
+  with [static-web-server](https://static-web-server.net/) on port 8080, as
+  an unprivileged user.
 - `piqueld.toml` is the application's manifest. piqueld reads it from `main`
   on each deployment, builds the `Dockerfile` from the same commit, and serves
   it on `docs.piqueld.dev`.
@@ -107,7 +108,7 @@ From the root of the repository:
 
 ```console
 docker build --file deploy/docs/Dockerfile --tag piqueld-docs .
-docker run --rm --publish 8080:80 piqueld-docs
+docker run --rm --publish 8080:8080 piqueld-docs
 ```
 
 The book is then on <http://localhost:8080>. To build it in a

@@ -36,12 +36,12 @@ memory_bytes = 67108864 # 64 MiB
 
 [spec.services.healthcheck]
 type = "http"
-port = 80
+port = 8080
 path = "/"
 
 [[spec.routes]]
 name = "web"
 hostname = "docs.piqueld.dev"
 service = "web"
-port = 80
+port = 8080
 visibility = "public"
