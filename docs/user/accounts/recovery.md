@@ -71,22 +71,44 @@ or run `piquelctl token revoke` with its ID. Revoking one needs
 
 ## Someone lost their passkey
 
-1. If they still have another passkey, they sign in with it. Otherwise, an
-   administrator [sends them an enrollment link](accounts.md#to-someone-elses-account),
-   which adds a new passkey to their account and signs them in.
-2. On their card on the **Accounts** page, select **Remove** next to the lost
+First, they get a new passkey on their account, the first way that works:
+
+- **They still have another passkey, or a browser still signed in as their
+  account.** On their own card, they
+  [add a passkey](accounts.md#to-your-own-account).
+- **`piquelctl` is still signed in as their account, with its full access.**
+  On that machine, they create an enrollment link for their own account,
+  which needs no `accounts:manage`:
+
+  ```console
+  piquelctl account enroll bob
+  ```
+
+  They open the link themselves, in a browser, and register a passkey, which
+  also signs that browser in. The link signs in whoever uses it, so they
+  don't share it.
+- **Otherwise,** an administrator
+  [sends them an enrollment link](accounts.md#to-someone-elses-account). That
+  needs `accounts:manage` and every grant of their account.
+
+API tokens and [limited logins](cli-and-tokens.md#ask-for-less-access) can't
+add passkeys or create enrollment links. If nobody who can sign in may send
+the link, see the next section.
+
+Then, signed in as their account or as that administrator:
+
+1. On their card on the **Accounts** page, select **Remove** next to the lost
    passkey.
-3. If the passkey may have been stolen, select **Revoke all** under
+2. If the passkey may have been stolen, select **Revoke all** under
    **Sessions and API tokens**. Removing a passkey doesn't end the sessions it
    opened.
 
-Sending an enrollment link needs `accounts:manage` and every grant of their
-account. If nobody who can sign in holds that, see the next section.
-
 ## No administrator can sign in
 
-When every administrator has lost their passkeys, and none of their sessions
-or tokens still works, the host operator creates a new administrator.
+When every administrator has lost their passkeys, and none is still signed
+in to a browser or to `piquelctl` with their account's full access, the host
+operator creates a new administrator. Their API tokens and limited logins
+can't help: they can't add passkeys or create links.
 
 1. On the host, print a recovery link:
 
@@ -95,6 +117,10 @@ or tokens still works, the host operator creates a new administrator.
    Warning: this link creates a new administrator account and works once within 24 hours; open it in a browser and register a passkey. It was recorded as a security event, which notifies administrators when security notifications are enabled.
    https://piqueld.<tailnet>.ts.net/dashboard/auth#invite=…
    ```
+
+   Whoever completes the link first becomes an administrator. If you send it
+   to someone, use a private channel you trust. If anyone else may have seen
+   it, run `recover-admin` again, which replaces it.
 
 2. Open the link. On **Create your account**, choose a username, and select
    **Create account with a passkey**. The new account has `admin` on every

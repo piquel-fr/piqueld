@@ -288,6 +288,11 @@ within about 30 seconds, such as an expired credential, a token revoked
 because its application was deleted, or a tailnet device that no longer
 matches a token's [binding](cli-and-tokens.md#bind-a-token-to-tailnet-devices).
 
+For a token bound to tailnet devices, each of these checks first looks the
+device up again on the tailnet, which can add up to 10 seconds. If the
+lookup doesn't answer in time, the connection ends with
+`tailnet_unavailable`.
+
 - An event stream stops sending history you may no longer read. When you lose
   access entirely, it ends with an `access_ended` message.
 - A command that lost access ends with the refusal, such as 401, 403 or 404.

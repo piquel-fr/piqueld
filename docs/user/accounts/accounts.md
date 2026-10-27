@@ -47,6 +47,11 @@ An invitation is a link that creates one account. You choose what the account
 may do: there's no default access. The person who opens the link chooses its
 username and registers its passkey.
 
+The link isn't tied to a person or an email address: whoever completes it
+first gets the account and its access. Send it only to the person it's for,
+over a private channel you trust. If anyone else may have seen it,
+[revoke it](#revoke-an-invitation).
+
 1. On the **Accounts** page, select **Create invitation**.
 2. To limit the access to some applications, clear **Application permissions
    apply to every application, including future ones**, and select them.
@@ -55,7 +60,7 @@ username and registers its passkey.
 4. Select **Create link**.
 5. At the top of the **Accounts** page, select **Copy** next to the new link,
    then **Done**.
-6. Send the link to the person it's for, over a channel you trust.
+6. Send the link to the person it's for.
 
 With `piquelctl`:
 
@@ -74,10 +79,9 @@ When the person opens the link, the **Create your account** page asks for a
 **Create account with a passkey**, save the passkey, and the dashboard opens,
 signed in.
 
-The link works once, within 24 hours. It isn't tied to a person or an email
-address: whoever completes it first gets the account. Opening it doesn't use
-it up, so someone who closes the page before finishing can open the original
-link again. The dashboard removes the link from the browser's address bar and
+The link works once, within 24 hours. Opening it doesn't use it up, so
+someone who closes the page before finishing can open the original link
+again. The dashboard removes the link from the browser's address bar and
 history as soon as it reads it.
 
 ## Revoke an invitation
@@ -103,12 +107,19 @@ browser where it's signed in, or through an enrollment link.
 2. Select **Add passkey**, and save the passkey when your browser asks.
 
 A second passkey, on another device or in a password manager, means losing one
-device doesn't lock you out.
+device doesn't lock you out. If you've already lost them all, see
+[someone lost their passkey](recovery.md#someone-lost-their-passkey).
 
 ### To someone else's account
 
 When someone has lost their passkeys, or wants to sign in on a device that
-can't share them, send them an enrollment link:
+can't share them, send them an enrollment link.
+
+Whoever uses the link registers a passkey on the account and signs in as it,
+with all its access. Before you create one, check that the request comes
+from the account's owner, such as in person or over a channel you already
+know is theirs. Send the link over a private channel you trust. If anyone else
+may have seen it, [revoke it](#revoke-an-invitation).
 
 1. On their card, under **Passkeys**, select **Create enrollment link**.
 2. At the top of the **Accounts** page, select **Copy** next to the new link,
