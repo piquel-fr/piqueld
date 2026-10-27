@@ -656,7 +656,7 @@ its hostname, stay until you apply the file again.
   the stack the daemon's telemetry also needs `telemetry:grant`, an
   installation-wide permission that no preset includes: `admin` holds it, or
   it can be granted on its own. See
-  [permissions](../accounts/authorization.md#grants).
+  [permissions](../accounts/permissions.md#grants).
 - `piquelctl` is signed in to your instance, on a machine with a checkout of
   piqueld's repository. Run the commands in this section from the checkout's
   root. Without a checkout, download `application.toml` and pass its path

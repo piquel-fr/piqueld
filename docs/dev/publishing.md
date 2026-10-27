@@ -51,7 +51,7 @@ application, which can't deploy while the others hold its hostnames.
   run commands in them: `apps:create`, `apps:write`, `apps:deploy` and
   `apps:exec`. Granting the application the daemon's telemetry also needs
   `telemetry:grant`, which only `admin` holds by default; see
-  [permissions](../user/accounts/authorization.md#grants).
+  [permissions](../user/accounts/permissions.md#grants).
 - You can change the DNS of `piqueld.dev` and the settings of the
   `piquel-fr/piqueld` repository on GitHub.
 
