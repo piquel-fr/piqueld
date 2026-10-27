@@ -1,0 +1,261 @@
+# Everything piqueld.dev serves, as one application: the documentation at
+# docs.piqueld.dev, and the telemetry stack receiving this instance's
+# telemetry, with Grafana at grafana.piqueld.dev on the tailnet. Each
+# deployment reads this file, and the files its services build and mount,
+# from main, and every push to main deploys it. Add a site with its own
+# service and route. See docs/dev/publishing.md.
+api_version = "piqueld.dev/v1alpha1"
+kind = "Application"
+
+[metadata]
+name = "piqueld-dev"
+
+[spec.manifest]
+path = "deploy/piqueld-dev.toml"
+sync = { mode = "webhook" }
+
+[spec.manifest.repository]
+url = "https://github.com/piquel-fr/piqueld.git"
+branch = "main"
+
+[spec.environments.production]
+sync = true
+
+[spec.variables]
+grafana_hostname = "grafana.piqueld.dev"
+
+# The documentation book, built from deploy/docs/Dockerfile at the deployed
+# commit.
+[[spec.services]]
+name = "web"
+
+[spec.services.source]
+type = "git"
+repository = "self"
+
+[spec.services.source.build]
+type = "docker"
+dockerfile = "deploy/docs/Dockerfile"
+
+# static-web-server uses a few MiB serving static files.
+[spec.services.resources]
+cpu_millis = 500
+memory_bytes = 67108864 # 64 MiB
+
+[spec.services.healthcheck]
+type = "http"
+port = 8080
+path = "/"
+
+[[spec.routes]]
+name = "web"
+hostname = "docs.piqueld.dev"
+service = "web"
+port = 8080
+visibility = "public"
+
+# The telemetry stack: an OpenTelemetry Collector receiving the daemon's
+# telemetry, Prometheus, Tempo and Loki storing it, and Grafana showing it,
+# with the dashboards in deploy/observability/grafana.
+[[spec.secrets]]
+name = "grafana-admin-password"
+generate = { type = "random", bytes = 24, encoding = "base64url" }
+
+# Receives the daemon's traces, metrics and logs on its socket, and those of
+# applications importing it on ports 4317 (gRPC) and 4318 (HTTP).
+[[spec.services]]
+name = "collector"
+receives_telemetry = true
+depends_on = ["prometheus", "tempo", "loki"]
+
+[spec.services.source]
+type = "image"
+image = "otel/opentelemetry-collector-contrib:0.163.2"
+
+[[spec.services.files]]
+target = "/etc/otelcol-contrib/config.yaml"
+path = "deploy/observability/collector.yaml"
+
+[spec.services.healthcheck]
+type = "http"
+port = 13133
+path = "/"
+
+[spec.services.resources]
+cpu_millis = 500
+memory_bytes = 536870912
+
+[[spec.services]]
+name = "prometheus"
+arguments = [
+  "--config.file=/etc/prometheus/prometheus.yml",
+  "--storage.tsdb.path=/prometheus",
+  "--web.enable-otlp-receiver",
+  # Counters start from zero at their OTLP start time, so `increase()` counts
+  # their first increment.
+  "--enable-feature=created-timestamp-zero-ingestion",
+  # Tempo writes span metrics, with their exemplars.
+  "--web.enable-remote-write-receiver",
+  "--enable-feature=exemplar-storage",
+]
+
+[spec.services.source]
+type = "image"
+image = "prom/prometheus:v3.15.1"
+
+[[spec.services.files]]
+target = "/etc/prometheus/prometheus.yml"
+path = "deploy/observability/prometheus.yaml"
+
+[[spec.services.mounts]]
+volume = "prometheus"
+target = "/prometheus"
+
+[spec.services.healthcheck]
+type = "http"
+port = 9090
+path = "/-/ready"
+
+[spec.services.resources]
+cpu_millis = 1000
+memory_bytes = 2147483648
+
+[[spec.services]]
+name = "tempo"
+arguments = ["-config.file=/etc/tempo/tempo.yaml"]
+
+[spec.services.source]
+type = "image"
+image = "grafana/tempo:3.1.1"
+
+[[spec.services.files]]
+target = "/etc/tempo/tempo.yaml"
+path = "deploy/observability/tempo.yaml"
+
+[[spec.services.mounts]]
+volume = "tempo"
+target = "/var/tempo"
+
+[spec.services.healthcheck]
+type = "http"
+port = 3200
+path = "/ready"
+interval_seconds = 15
+
+[spec.services.resources]
+cpu_millis = 1000
+memory_bytes = 2147483648
+
+[[spec.services]]
+name = "loki"
+arguments = ["-config.file=/etc/loki/loki.yaml"]
+
+[spec.services.source]
+type = "image"
+image = "grafana/loki:3.7.9"
+
+[[spec.services.files]]
+target = "/etc/loki/loki.yaml"
+path = "deploy/observability/loki.yaml"
+
+[[spec.services.mounts]]
+volume = "loki"
+target = "/loki"
+
+[spec.services.healthcheck]
+type = "http"
+port = 3100
+path = "/ready"
+interval_seconds = 15
+
+[spec.services.resources]
+cpu_millis = 1000
+memory_bytes = 1073741824
+
+[[spec.services]]
+name = "grafana"
+
+[spec.services.source]
+type = "image"
+image = "grafana/grafana:13.2.4"
+
+[spec.services.environment]
+GF_SECURITY_ADMIN_PASSWORD__FILE = "/run/secrets/grafana-admin-password"
+GF_SERVER_ROOT_URL = "https://${{ vars.grafana_hostname }}"
+GF_ANALYTICS_REPORTING_ENABLED = "false"
+
+[[spec.services.secrets]]
+name = "grafana-admin-password"
+target = "/run/secrets/grafana-admin-password"
+
+[[spec.services.files]]
+target = "/etc/grafana/provisioning/datasources/datasources.yaml"
+path = "deploy/observability/grafana/datasources.yaml"
+
+[[spec.services.files]]
+target = "/etc/grafana/provisioning/dashboards/dashboards.yaml"
+path = "deploy/observability/grafana/dashboards.yaml"
+
+[[spec.services.files]]
+target = "/etc/grafana/dashboards/daemon.json"
+path = "deploy/observability/grafana/dashboards/daemon.json"
+
+[[spec.services.files]]
+target = "/etc/grafana/dashboards/deployments.json"
+path = "deploy/observability/grafana/dashboards/deployments.json"
+
+[[spec.services.files]]
+target = "/etc/grafana/dashboards/services.json"
+path = "deploy/observability/grafana/dashboards/services.json"
+
+[[spec.services.files]]
+target = "/etc/grafana/dashboards/logs.json"
+path = "deploy/observability/grafana/dashboards/logs.json"
+
+[[spec.services.mounts]]
+volume = "grafana"
+target = "/var/lib/grafana"
+
+[spec.services.healthcheck]
+type = "http"
+port = 3000
+path = "/api/health"
+
+[spec.services.resources]
+cpu_millis = 500
+memory_bytes = 536870912
+
+[[spec.volumes]]
+name = "prometheus"
+
+[[spec.volumes]]
+name = "tempo"
+
+[[spec.volumes]]
+name = "loki"
+
+[[spec.volumes]]
+name = "grafana"
+
+[[spec.routes]]
+name = "grafana"
+hostname = "${{ vars.grafana_hostname }}"
+service = "grafana"
+port = 3000
+visibility = "private"
+
+# Lets other applications send their own telemetry to the collector. To add
+# some, uncomment this with their names in place of `my-app`. Each imports it
+# with
+#
+#   [[spec.imports]]
+#   application = "piqueld-dev"
+#   service = "collector"
+#
+# and sets
+#   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-dev:4317"
+#   OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+#
+# [[spec.exports]]
+# service = "collector"
+# applications = ["my-app"]

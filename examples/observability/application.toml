@@ -1,35 +1,29 @@
-# An observability stack for piqueld: an OpenTelemetry Collector receiving the
-# daemon's telemetry, Prometheus, Tempo and Loki storing it, and Grafana
-# showing it. See "Observability stack" in docs/user/guides/observability.md to deploy it.
+# A minimal observability stack for piqueld: an OpenTelemetry Collector
+# receiving the daemon's telemetry, Prometheus, Tempo and Loki storing it, and
+# Grafana on a private route to explore it. Every configuration file is inline,
+# so the application needs no repository and keeps the edits you make to it,
+# such as its hostname. See "Observability stack" in
+# docs/user/guides/observability.md to deploy it.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 
 [metadata]
 name = "observability"
 
-# Where the manifest and its configuration files come from. Point it at your
-# fork, and pin a release's `commit` or follow a branch.
-[spec.manifest]
-path = "examples/observability/application.toml"
-sync = { mode = "poll" }
-[spec.manifest.repository]
-url = "https://github.com/piquel-fr/piqueld.git"
-branch = "main"
-
-# Grafana's private route. Point it at a domain your DNS provider manages.
+# Grafana's hostname. Set yours with
+# `piquelctl app variable set observability grafana_hostname <hostname>`.
 [spec.variables]
-grafana_hostname = "grafana.piqueld.dev"
+grafana_hostname = "grafana.example.com"
 
 [[spec.secrets]]
 name = "grafana-admin-password"
 generate = { type = "random", bytes = 24, encoding = "base64url" }
 
-# Receives the daemon's traces, metrics and logs on its socket, and those of
-# applications importing it on ports 4317 (gRPC) and 4318 (HTTP).
+# Receives the daemon's telemetry on its socket, and that of applications
+# importing it on ports 4317 (gRPC) and 4318 (HTTP).
 [[spec.services]]
 name = "collector"
 receives_telemetry = true
-depends_on = ["prometheus", "tempo", "loki"]
 
 [spec.services.source]
 type = "image"
@@ -37,16 +31,40 @@ image = "otel/opentelemetry-collector-contrib:0.163.2"
 
 [[spec.services.files]]
 target = "/etc/otelcol-contrib/config.yaml"
-path = "examples/observability/collector.yaml"
-
-[spec.services.healthcheck]
-type = "http"
-port = 13133
-path = "/"
-
-[spec.services.resources]
-cpu_millis = 500
-memory_bytes = 536870912
+content = '''
+receivers:
+  otlp/piqueld:
+    protocols:
+      grpc:
+        endpoint: /run/piqueld/telemetry/otlp.sock
+        transport: unix
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  otlp_http/prometheus:
+    metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  otlp_http/loki:
+    logs_endpoint: http://loki:3100/otlp/v1/logs
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp/piqueld, otlp]
+      exporters: [otlp_http/prometheus]
+    traces:
+      receivers: [otlp/piqueld, otlp]
+      exporters: [otlp_grpc/tempo]
+    logs:
+      receivers: [otlp/piqueld, otlp]
+      exporters: [otlp_http/loki]
+'''
 
 [[spec.services]]
 name = "prometheus"
@@ -54,34 +72,27 @@ arguments = [
   "--config.file=/etc/prometheus/prometheus.yml",
   "--storage.tsdb.path=/prometheus",
   "--web.enable-otlp-receiver",
-  # Counters start from zero at their OTLP start time, so `increase()` counts
-  # their first increment.
-  "--enable-feature=created-timestamp-zero-ingestion",
-  # Tempo writes span metrics, with their exemplars.
-  "--web.enable-remote-write-receiver",
-  "--enable-feature=exemplar-storage",
 ]
 
 [spec.services.source]
 type = "image"
 image = "prom/prometheus:v3.15.1"
 
+# Labels each container's metrics with its resource attributes, such as
+# `piqueld_application`, so containers of the same service name stay apart.
 [[spec.services.files]]
 target = "/etc/prometheus/prometheus.yml"
-path = "examples/observability/prometheus.yaml"
+content = '''
+otlp:
+  promote_all_resource_attributes: true
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+'''
 
 [[spec.services.mounts]]
 volume = "prometheus"
 target = "/prometheus"
-
-[spec.services.healthcheck]
-type = "http"
-port = 9090
-path = "/-/ready"
-
-[spec.services.resources]
-cpu_millis = 1000
-memory_bytes = 2147483648
 
 [[spec.services]]
 name = "tempo"
@@ -93,48 +104,42 @@ image = "grafana/tempo:3.1.1"
 
 [[spec.services.files]]
 target = "/etc/tempo/tempo.yaml"
-path = "examples/observability/tempo.yaml"
+content = '''
+server:
+  http_listen_port: 3200
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+'''
 
 [[spec.services.mounts]]
 volume = "tempo"
 target = "/var/tempo"
 
-[spec.services.healthcheck]
-type = "http"
-port = 3200
-path = "/ready"
-interval_seconds = 15
-
-[spec.services.resources]
-cpu_millis = 1000
-memory_bytes = 2147483648
-
+# Loki runs with its image's own configuration, which stores logs in /loki.
 [[spec.services]]
 name = "loki"
-arguments = ["-config.file=/etc/loki/loki.yaml"]
 
 [spec.services.source]
 type = "image"
 image = "grafana/loki:3.7.9"
 
-[[spec.services.files]]
-target = "/etc/loki/loki.yaml"
-path = "examples/observability/loki.yaml"
-
 [[spec.services.mounts]]
 volume = "loki"
 target = "/loki"
 
-[spec.services.healthcheck]
-type = "http"
-port = 3100
-path = "/ready"
-interval_seconds = 15
-
-[spec.services.resources]
-cpu_millis = 1000
-memory_bytes = 1073741824
-
+# Grafana keeps nothing between restarts: its data sources come from the file
+# below, and its admin password from the secret.
 [[spec.services]]
 name = "grafana"
 
@@ -145,7 +150,6 @@ image = "grafana/grafana:13.2.4"
 [spec.services.environment]
 GF_SECURITY_ADMIN_PASSWORD__FILE = "/run/secrets/grafana-admin-password"
 GF_SERVER_ROOT_URL = "https://${{ vars.grafana_hostname }}"
-GF_ANALYTICS_REPORTING_ENABLED = "false"
 
 [[spec.services.secrets]]
 name = "grafana-admin-password"
@@ -153,40 +157,20 @@ target = "/run/secrets/grafana-admin-password"
 
 [[spec.services.files]]
 target = "/etc/grafana/provisioning/datasources/datasources.yaml"
-path = "examples/observability/grafana/datasources.yaml"
-
-[[spec.services.files]]
-target = "/etc/grafana/provisioning/dashboards/dashboards.yaml"
-path = "examples/observability/grafana/dashboards.yaml"
-
-[[spec.services.files]]
-target = "/etc/grafana/dashboards/daemon.json"
-path = "examples/observability/grafana/dashboards/daemon.json"
-
-[[spec.services.files]]
-target = "/etc/grafana/dashboards/deployments.json"
-path = "examples/observability/grafana/dashboards/deployments.json"
-
-[[spec.services.files]]
-target = "/etc/grafana/dashboards/services.json"
-path = "examples/observability/grafana/dashboards/services.json"
-
-[[spec.services.files]]
-target = "/etc/grafana/dashboards/logs.json"
-path = "examples/observability/grafana/dashboards/logs.json"
-
-[[spec.services.mounts]]
-volume = "grafana"
-target = "/var/lib/grafana"
-
-[spec.services.healthcheck]
-type = "http"
-port = 3000
-path = "/api/health"
-
-[spec.services.resources]
-cpu_millis = 500
-memory_bytes = 536870912
+content = '''
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Tempo
+    type: tempo
+    url: http://tempo:3200
+  - name: Loki
+    type: loki
+    url: http://loki:3100
+'''
 
 [[spec.volumes]]
 name = "prometheus"
@@ -197,25 +181,9 @@ name = "tempo"
 [[spec.volumes]]
 name = "loki"
 
-[[spec.volumes]]
-name = "grafana"
-
 [[spec.routes]]
 name = "grafana"
 hostname = "${{ vars.grafana_hostname }}"
 service = "grafana"
 port = 3000
 visibility = "private"
-
-# Lets other applications send their own telemetry to the collector. Replace
-# `my-app` with their names; each imports it with
-#
-#   [[spec.imports]]
-#   application = "observability"
-#   service = "collector"
-#
-# and sets OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
-# with OTEL_EXPORTER_OTLP_PROTOCOL = "grpc".
-[[spec.exports]]
-service = "collector"
-applications = ["my-app"]

@@ -635,67 +635,116 @@ container: nothing of the daemon's beyond the socket directory is mounted.
 
 ## Observability stack
 
-[`examples/observability`](https://github.com/piquel-fr/piqueld/blob/main/examples/observability/application.toml) is an
-ordinary application that stores and shows piqueld's telemetry: an
-OpenTelemetry Collector receiving it, Prometheus keeping metrics for 15 days,
-Tempo and Loki keeping traces and logs for 7, and Grafana. Grafana's data
-sources link logs and traces both ways, and metric exemplars to traces. Its
-dashboards cover the daemon's health, deployments and builds, services
-(replicas and container usage), and logs.
+[`examples/observability/application.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/observability/application.toml)
+is an application that stores piqueld's telemetry and lets you explore it: an
+OpenTelemetry Collector receiving the daemon's telemetry, Prometheus, Tempo and
+Loki storing its metrics, traces and logs, and Grafana on a private route, with
+a data source for each. It is a small starting point, with no dashboards, that
+you can extend.
 
-Its configuration files are mounted from the repository with `path`, so it
-deploys from a repository: fork piqueld, or copy the directory into yours and
-adjust each `path`. Then:
+The manifest holds every configuration file inline, so it deploys from the
+file alone, without a repository. Edits you make to the application, such as
+its hostname, stay until you apply the file again.
 
-1. Edit the manifest: `grafana_hostname`, a hostname for Grafana's private
-   route, which needs a DNS record like any
-   [private route](ingress.md#public-and-private-routes); the applications the
-   collector is exported to; and `spec.manifest`, which should name your
-   repository and either follow a branch or pin the `commit` of a release tag.
-2. Create the application, grant it telemetry, and deploy it:
+### Before you start
+
+- Your instance serves [private routes](ingress.md#public-and-private-routes)
+  on its tailnet, with a [DNS-01 provider](ingress.md#dns-01-certificates) for
+  the zone of Grafana's hostname.
+- You can create applications, change and deploy them, and run commands in
+  them: `apps:create`, `apps:write`, `apps:deploy` and `apps:exec`. Granting
+  the stack the daemon's telemetry also needs `telemetry:grant`, an
+  installation-wide permission that no preset includes: `admin` holds it, or
+  it can be granted on its own. See
+  [permissions](../accounts/authorization.md#grants).
+- `piquelctl` is signed in to your instance, on a machine with a checkout of
+  piqueld's repository. Run the commands in this section from the checkout's
+  root. Without a checkout, download `application.toml` and pass its path
+  instead.
+
+### Deploy it
+
+1. Choose Grafana's hostname, such as `grafana.example.com`, and point it at
+   the instance. Like any
+   [private route](ingress.md#dns-for-private-routes), it needs `A` and `AAAA`
+   records to the apps node's tailnet addresses, unless piqueld
+   [manages the zone's records](ingress.md#managed-dns-records).
+
+2. Save the manifest, then set your hostname in place of
+   `grafana.example.com`, the manifest's placeholder:
 
    ```console
    piquelctl app apply --file examples/observability/application.toml
-   piquelctl env telemetry observability production on
-   piquelctl app deploy observability --yes
+   piquelctl app variable set observability grafana_hostname grafana.example.com
    ```
 
-   `piquelctl env sync observability production on` makes pushes to its
-   branch deploy it. `piquelctl status` then shows the receiver connected.
-3. Open the URL `piquelctl env url observability` prints, from the tailnet, and
-   sign in as `admin` with the generated password:
+   `app apply` creates the `observability` application, with its `collector`,
+   `prometheus`, `tempo`, `loki` and `grafana` services. Both commands ask you
+   to confirm. In the dashboard, the application's **Variables** tab sets the
+   hostname too.
+
+3. Grant the application's environment the daemon's telemetry, then deploy it:
 
    ```console
-   piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
+   piquelctl env telemetry observability production on
+   piquelctl app deploy observability
    ```
 
-   Grafana sets it when it first starts, so regenerating the secret doesn't
-   change it; change it in Grafana instead.
-4. Other applications can send their own telemetry to the collector. List them
-   in the manifest's `[[spec.exports]]`, then import it in each of them and
-   point its OpenTelemetry SDK at it:
+   `app deploy` asks you to confirm, then waits until the deployment finishes.
+   Grant the telemetry first: without it, the collector can't start, and the
+   deployment fails. The stack now receives the telemetry of every
+   application; see
+   [receiving telemetry](#receiving-telemetry-in-an-application).
 
-   ```toml
-   [[spec.imports]]
-   application = "observability"
-   service = "collector"
+### Check that it works
 
-   [[spec.services]]
-   name = "web"
-   [spec.services.environment]
-   OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
-   OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
-   ```
+`piquelctl status` shows the telemetry receiver connected. Open the URL that
+`piquelctl env url observability` prints, from the tailnet, and sign in as
+`admin` with the generated password:
 
-   The collector also accepts OTLP/HTTP on port 4318. Importing applications
-   can send any telemetry, including records that pass for the daemon's, so
-   list only applications you trust, and replace the placeholder `my-app`
-   before deploying: a name no application holds is granted to whichever
-   application [takes it first](../reference/manifest.md#links).
+```console
+piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
+```
 
-Container metrics carry the [container attributes](#container-telemetry)
-`piqueld.application`, `piqueld.environment`, `piqueld.preview`,
-`piqueld.workload` and `container.name` as labels, such as
-`piqueld_application`, and the service as `job`. Loki indexes logs by
-`service_name` and the same `piqueld_*` attributes; everything else, such as
-the trace ID of the daemon's records, is structured metadata.
+Then open **Explore** in Grafana and pick a data source:
+
+- **Prometheus** has the daemon's metrics, with `job="piqueld"`, and the
+  resource usage of each container, labelled with its attributes, such as
+  `piqueld_application`.
+- **Loki** has the daemon's logs and every container's output. Query them by
+  `service_name`, such as `{service_name="piqueld"}`.
+- **Tempo** has the daemon's traces. Search them by service or by name.
+
+Prometheus keeps metrics for 15 days and Tempo traces for 14, their images'
+defaults. Loki keeps logs until you delete its volume. Grafana keeps nothing
+between restarts, so the password stays the generated one; add a volume at
+`/var/lib/grafana` to keep the dashboards you create.
+
+### Send applications' telemetry to it
+
+Other applications can send their own telemetry to the collector. Export it to
+them, here `my-app`:
+
+```console
+piquelctl app export set observability collector --applications my-app --deploy
+```
+
+The application's **Links** tab in the dashboard edits exports too. Then import
+the collector in each of them, and point its OpenTelemetry SDK at it:
+
+```toml
+[[spec.imports]]
+application = "observability"
+service = "collector"
+
+[[spec.services]]
+name = "web"
+[spec.services.environment]
+OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
+OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
+```
+
+The collector also accepts OTLP/HTTP on port 4318. Importing applications can
+send any telemetry, including records that pass for the daemon's, so export it
+only to applications you trust. A name no application holds is granted to
+whichever application [takes it first](../reference/manifest.md#links).

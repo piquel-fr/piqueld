@@ -342,18 +342,17 @@ mod tests {
         assert_eq!("644".parse::<FileMode>().unwrap().to_string(), "0644");
     }
 
-    /// The observability example validates, and a deployment can capture
-    /// every repository file it mounts.
+    /// piqueld.dev's manifest validates, and a deployment can capture every
+    /// repository file it mounts.
     #[test]
-    fn the_observability_example_captures_its_files() {
-        let example = crate::manifest::parse_template_toml(include_str!(
-            "../../../../examples/observability/application.toml"
+    fn piqueld_dev_captures_its_files() {
+        let site = crate::manifest::parse_template_toml(include_str!(
+            "../../../../deploy/piqueld-dev.toml"
         ))
         .unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let files = RepositoryFiles(
-            example
-                .spec()
+            site.spec()
                 .repository_file_paths()
                 .into_iter()
                 .map(|path| {
@@ -363,6 +362,16 @@ mod tests {
                 })
                 .collect(),
         );
-        example.spec().check_captured(&files).unwrap();
+        site.spec().check_captured(&files).unwrap();
+    }
+
+    /// The observability example validates and deploys from its file alone.
+    #[test]
+    fn the_observability_example_mounts_only_inline_files() {
+        let example = crate::manifest::parse_template_toml(include_str!(
+            "../../../../examples/observability/application.toml"
+        ))
+        .unwrap();
+        assert!(example.spec().repository_file_paths().is_empty());
     }
 }

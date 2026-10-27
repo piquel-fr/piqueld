@@ -969,7 +969,7 @@ Services mount read-only files, each from exactly one source:
 ```toml
 [[spec.services.files]]
 target = "/etc/otelcol/config.yaml"
-path = "examples/observability/collector.yaml"
+path = "otel/collector.yaml"
 # mode = "0444"
 
 [[spec.services.files]]
