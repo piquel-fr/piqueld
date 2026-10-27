@@ -1,6 +1,6 @@
 # The documentation book at https://docs.piqueld.dev. Each deployment reads
 # this file from main, and every push to main deploys it. See
-# docs/dev/deployments.md.
+# docs/dev/publishing.md.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 

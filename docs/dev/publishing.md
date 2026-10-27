@@ -1,39 +1,8 @@
-# Deploying piqueld.dev
+# Publishing the documentation
 
-piqueld.dev runs on a piqueld instance, which deploys piqueld's own
-applications from this repository's `main`. Each has a directory in
-[`deploy`](https://github.com/piquel-fr/piqueld/tree/main/deploy), with its
-manifest, `piqueld.toml`:
-
-- [`docs`](#the-documentation) serves this book at <https://docs.piqueld.dev>.
-  Every push to `main` rebuilds the book and deploys it.
-- [`piqueld-observability`](#the-observability-stack) stores and shows the
-  instance's telemetry, with Grafana at <https://grafana.piqueld.dev>.
-
-This page sets each up once, on the instance that runs it. Afterwards, change
-them through pull requests to `main`.
-
-## Before you start
-
-- The instance serves public routes through
-  [HTTP ingress](../user/guides/ingress.md#enable-and-expose-an-application),
-  private routes on its
-  [tailnet](../user/guides/ingress.md#public-and-private-routes), and has a
-  [webhook hostname](../user/guides/ingress.md#push-webhooks) whose DNS is
-  public, so GitHub can report pushes.
-- The host is `x86_64-linux`, the only Linux system the flake's `docs` shell
-  supports, and can reach GitHub and `cache.nixos.org` while it builds.
-- You can create applications on the instance, and change and deploy them:
-  `apps:create`, `apps:write` and `apps:deploy`. Granting the observability
-  stack telemetry also needs `telemetry:grant`, which only `admin` holds; see
-  [permissions](../user/accounts/authorization.md#grants).
-- You can change the DNS of `piqueld.dev` and the settings of the
-  `piquel-fr/piqueld` repository on GitHub.
-
-Run the `piquelctl` commands on this page from a checkout of `main`, on the
-host or on any machine where `piquelctl` is signed in to the instance.
-
-## The documentation
+This book is published at <https://docs.piqueld.dev> by a piqueld instance,
+which runs it as the `docs` application. Every push to `main` rebuilds the book
+and deploys it. This page sets that up once, on the instance that serves it.
 
 Two files in
 [`deploy/docs`](https://github.com/piquel-fr/piqueld/tree/main/deploy/docs)
@@ -46,7 +15,24 @@ define the site:
   on each deployment, builds the `Dockerfile` from the same commit, and serves
   it on `docs.piqueld.dev`.
 
-### Set it up
+## Before you start
+
+- The instance serves public routes through
+  [HTTP ingress](../user/guides/ingress.md#enable-and-expose-an-application),
+  and has a [webhook hostname](../user/guides/ingress.md#push-webhooks) whose
+  DNS is public, so GitHub can report pushes.
+- The host is `x86_64-linux`, the only Linux system the flake's `docs` shell
+  supports, and can reach GitHub and `cache.nixos.org` while it builds.
+- You can create applications on the instance, and change and deploy them:
+  `apps:create`, `apps:write` and `apps:deploy`; see
+  [permissions](../user/accounts/authorization.md#grants).
+- You can change the DNS of `piqueld.dev` and the settings of the
+  `piquel-fr/piqueld` repository on GitHub.
+
+Run the `piquelctl` commands on this page from a checkout of `main`, on the
+host or on any machine where `piquelctl` is signed in to the instance.
+
+## Set it up
 
 1. Point `docs.piqueld.dev` at the instance, like any public route: an `A`
    record to the host's public address, a CNAME to the tunnel with a
@@ -96,12 +82,12 @@ manifest the repository holds.
 and [deploying on push](../user/reference/manifest.md#deploying-on-push)
 describe how this works.
 
-### Check that it works
+## Check that it works
 
 The site serves the book:
 
 ```console
-curl --fail --head https://docs.piqueld.dev/dev/deployments.html
+curl --fail --head https://docs.piqueld.dev/dev/publishing.html
 ```
 
 After the next push to `main`, check that it deployed:
@@ -114,7 +100,7 @@ Its `Sync` line says `following`, with the commit of that push. In GitHub,
 the webhook's **Recent Deliveries** shows each push, with piqueld's response
 `204`.
 
-### Build the image locally
+## Build the image locally
 
 From the root of the repository:
 
@@ -127,7 +113,7 @@ The book is then on <http://localhost:8080>. To build it in a
 [development instance](development.md#docker)'s engine rather than the host's,
 set `DOCKER_HOST` to that engine's socket first.
 
-### Troubleshooting
+## Troubleshooting
 
 - **The deployment fails with `git_build_failed`.** The build's output ends
   with the error. List the builds with
@@ -144,67 +130,3 @@ set `DOCKER_HOST` to that engine's socket first.
   its `Sync` line, and GitHub's **Recent Deliveries** shows whether the
   delivery failed. A `401` means the secret doesn't match: generate a new one
   and copy it into GitHub again.
-
-## The observability stack
-
-[`deploy/observability`](https://github.com/piquel-fr/piqueld/tree/main/deploy/observability)
-holds the stack's manifest and the configuration files its services mount: an
-OpenTelemetry Collector receiving the instance's telemetry, Prometheus, Tempo
-and Loki storing it, and Grafana showing it on a private route. The
-[observability stack](../user/guides/observability.md#observability-stack)
-guide says what it runs and how to use it; this section deploys it on
-piqueld.dev.
-
-### Set it up
-
-1. Point `grafana.piqueld.dev` at the instance, like any
-   [private route](../user/guides/ingress.md#dns-for-private-routes): `A` and
-   `AAAA` records to the apps node's tailnet addresses, or nothing when piqueld
-   [manages the zone's records](../user/guides/ingress.md#managed-dns-records).
-
-2. Check what saving the manifest would do:
-
-   ```console
-   piquelctl app plan --file deploy/observability/piqueld.toml
-   ```
-
-   The plan creates the `piqueld-observability` application, with its
-   `collector`, `prometheus`, `tempo`, `loki` and `grafana` services and its
-   `grafana.piqueld.dev` route.
-
-3. Save the manifest, grant its environment the instance's telemetry, and
-   deploy it:
-
-   ```console
-   piquelctl app apply --file deploy/observability/piqueld.toml
-   piquelctl env telemetry piqueld-observability production on
-   piquelctl app deploy piqueld-observability
-   ```
-
-   `app apply` and `app deploy` ask you to confirm. `app deploy` then waits
-   until the deployment finishes.
-
-4. Make each push to `main` deploy it:
-
-   ```console
-   piquelctl env sync piqueld-observability production on
-   ```
-
-   piqueld polls the repository for new commits, so this application needs no
-   webhook.
-
-From now on, change the stack through pull requests to `main`, including
-`deploy/observability/piqueld.toml` and the configuration files next to it.
-
-### Check that it works
-
-`piquelctl status` shows the telemetry receiver connected. Open
-<https://grafana.piqueld.dev> from the tailnet, and sign in as `admin` with
-the generated password:
-
-```console
-piquelctl app exec piqueld-observability grafana -- cat /run/secrets/grafana-admin-password
-```
-
-Grafana's **piqueld** folder holds the dashboards of the daemon, its
-deployments and builds, services, and logs.

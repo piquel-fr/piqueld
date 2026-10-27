@@ -1,6 +1,6 @@
 # The documentation book. `just docs` builds and checks it, `just docs-serve`
 # previews it. See docs/dev/documentation.md. deploy/docs publishes it at
-# docs.piqueld.dev on every push to main; see docs/dev/deployments.md.
+# docs.piqueld.dev on every push to main; see docs/dev/publishing.md.
 
 [book]
 title = "piqueld"

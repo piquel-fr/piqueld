@@ -3,7 +3,7 @@
 #
 #   docker build --file deploy/docs/Dockerfile .
 #
-# See docs/dev/deployments.md.
+# See docs/dev/publishing.md.
 
 # Builds the book with the mdBook that flake.lock pins, through the same
 # `nix develop .#docs` shell as `just docs` and CI.
