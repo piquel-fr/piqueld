@@ -364,4 +364,14 @@ mod tests {
         );
         site.spec().check_captured(&files).unwrap();
     }
+
+    /// The observability example validates and deploys from its file alone.
+    #[test]
+    fn the_observability_example_mounts_only_inline_files() {
+        let example = crate::manifest::parse_template_toml(include_str!(
+            "../../../../examples/observability/application.toml"
+        ))
+        .unwrap();
+        assert!(example.spec().repository_file_paths().is_empty());
+    }
 }
