@@ -657,9 +657,11 @@ repository serves Grafana there. To use your own hostname, deploy it from
 - Your instance serves [private routes](ingress.md#public-and-private-routes)
   on its tailnet, with a [DNS-01 provider](ingress.md#dns-01-certificates) for
   the zone of Grafana's hostname.
-- You can create applications, and change and deploy them: `apps:create`,
-  `apps:write` and `apps:deploy`. Granting the stack the daemon's telemetry
-  also needs `telemetry:grant`, which only `admin` holds; see
+- You can create applications, change and deploy them, and run commands in
+  them: `apps:create`, `apps:write`, `apps:deploy` and `apps:exec`. Granting
+  the stack the daemon's telemetry also needs `telemetry:grant`, an
+  installation-wide permission that no preset includes: `admin` holds it, or
+  it can be granted on its own. See
   [permissions](../accounts/authorization.md#grants).
 - You have a checkout of the repository you deploy from, and `piquelctl` is
   signed in to your instance. Run the commands in this section from the
