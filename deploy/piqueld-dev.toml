@@ -27,7 +27,7 @@ grafana_hostname = "grafana.piqueld.dev"
 # The documentation book, built from deploy/docs/Dockerfile at the deployed
 # commit.
 [[spec.services]]
-name = "web"
+name = "docs"
 
 [spec.services.source]
 type = "git"
