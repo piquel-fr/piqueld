@@ -1,8 +1,8 @@
 # Deploying your first application
 
 This page deploys a small website: one nginx container that piqueld checks
-over HTTP. You describe it in a manifest, deploy it with `piquelctl`, and
-watch it run in the dashboard.
+over HTTP. You create it in the dashboard, with `piquelctl`, or from a
+manifest, then watch it run.
 
 ## Before you start
 
@@ -12,9 +12,52 @@ watch it run in the dashboard.
   when you [signed it in](first-account.md#sign-piquelctl-in).
 - The host can pull images from Docker Hub.
 
-## Write the manifest
+## Create and deploy it
 
-An application is described by a manifest, a TOML file. Save this one as
+The application, `hello`, has one service, `web`, which runs the
+`nginx:alpine` image. Its health check tells piqueld that `web` is healthy
+once it answers on port 80. Create it in any of these three ways.
+
+### In the dashboard
+
+1. Open **Applications**, select **New application**, and fill in
+   **Application name** with `hello`. Select **Create application**.
+
+   ![The "Create application" dialog, with the application name hello](../../images/getting-started/new-application.png)
+
+2. The application opens, empty. On its **Services** tab, select **Add
+   service**, fill in **Service name** with `web` and **Container image** with
+   `nginx:alpine`, then select **Add service**.
+
+   ![The "Add service" dialog, with the service name web and the container image nginx:alpine](../../images/getting-started/add-service.png)
+
+3. Select `web` in the list, then its **Health check** tab. Set **Check type**
+   to **HTTP**, **Port** to `80` and **Path** to `/`, and select **Save
+   changes**.
+
+   ![The Health check tab of web: Check type is HTTP, on port 80 and path /](../../images/getting-started/health-check.png)
+
+4. Saving changes the application's configuration, but not what runs. Go
+   back to the application's page, through **hello** above the service's
+   name, and select **Deploy to production**.
+
+### With piquelctl
+
+```console
+piquelctl app create hello
+piquelctl app service add hello web nginx:alpine
+piquelctl app service health http hello web 80 --path /
+piquelctl app deploy hello
+```
+
+Each command asks you to confirm, then saves one change. `app deploy` deploys
+them to the application's `production` environment. It prints each step and
+waits until the deployment finishes. In a script, add `--yes` to skip the
+confirmations.
+
+### From a manifest
+
+A manifest describes the whole application in a TOML file. Save this one as
 `hello.toml`:
 
 ```toml
@@ -37,47 +80,21 @@ port = 80
 path = "/"
 ```
 
-- `metadata.name` names the application.
-- Each `[[spec.services]]` entry is a service. Here, `web` runs the
-  `nginx:alpine` image.
-- The health check tells piqueld that `web` is healthy once it answers on
-  port 80.
-
-Check the manifest:
+Each `[[spec.services]]` entry is a service. Check the manifest, then save it
+and deploy it to `production`:
 
 ```console
 $ piquelctl app validate --file hello.toml
 Manifest is valid for application "hello".
+$ piquelctl app apply --file hello.toml --deploy
 ```
 
-The [manifest reference](../reference/manifest.md) describes every setting.
-
-## Deploy it
-
-```console
-piquelctl app apply --file hello.toml --deploy
-```
-
-After you confirm, `piquelctl` saves the manifest and deploys it to the
-application's `production` environment. It prints each step and waits until
-the deployment finishes. In a script, add `--yes` to skip the confirmation.
-
-To see what a deployment would change before you run it, use
-`piquelctl app plan --file hello.toml`.
+`app plan --file hello.toml` shows what a deployment would change before you
+run it. The [manifest reference](../reference/manifest.md) describes every
+setting. `piquelctl app manifest hello` prints the manifest of an application
+you created in the dashboard or with `piquelctl`.
 
 ## Check that it works
-
-```console
-$ piquelctl app show hello
-hello (app-f11d73eef37c18041cd376261d46daa1)
-
-Configuration revision: 1
-Environment: production (app-f11d73eef37c18041cd376261d46daa1): ready, deploys from saved
-
-Service: web
-  Replicas: 1
-  Source: image nginx:alpine
-```
 
 In the dashboard, the **Overview** lists the deployment under **Recent
 deployments**.
@@ -90,34 +107,44 @@ replica.
 
 ![The production environment of hello: its state is Ready, and web is Converged with 1 of 1 replicas healthy](../../images/getting-started/environment.png)
 
-Read the service's output with `piquelctl app logs hello`, or on the
-environment's **Logs** tab. piqueld's health checks show up there as requests
+With `piquelctl`:
+
+```console
+$ piquelctl app show hello
+hello (app-f11d73eef37c18041cd376261d46daa1)
+
+Configuration revision: 3
+Environment: production (app-f11d73eef37c18041cd376261d46daa1): ready, deploys from saved
+
+Service: web
+  Replicas: 1
+  Source: image nginx:alpine
+```
+
+Read the service's output on the environment's **Logs** tab, or with
+`piquelctl app logs hello`. piqueld's health checks show up there as requests
 to `/`.
 
 ## Change it
 
-Edit the manifest, for example to run two replicas of `web`. Add one line to
-its existing `[[spec.services]]` entry:
+To run two replicas of `web`:
 
-```diff
- [[spec.services]]
- name = "web"
-+replicas = 2
-```
-
-Then run `piquelctl app apply --file hello.toml --deploy` again.
-
-You can also edit the application in the dashboard, on its **Services** tab.
-Saving changes the application's manifest but not what's running: select
-**Deploy** to apply it.
+- **In the dashboard,** set **Replicas** to `2` on the service's **Source &
+  scaling** tab, and select **Save changes**. Go back to the application
+  through the **hello** breadcrumb, then select **Deploy to production**.
+- **With `piquelctl`,** run
+  `piquelctl app service replicas hello web 2 --deploy`.
+- **From the manifest,** add `replicas = 2` to the existing
+  `[[spec.services]]` entry, then run
+  `piquelctl app apply --file hello.toml --deploy` again.
 
 ## Next steps
 
 - Put the website on an HTTPS address with a [route](../guides/ingress.md).
-- Add a `staging` environment with
-  [declared environments](../reference/manifest.md#declared-environments).
-- Build images from a Git repository with
-  [Git build sources](../reference/manifest.md#git-build-sources).
+- Add a `staging` environment, as in
+  [environments and promotion](../applications/environments.md).
+- Build images from a Git repository, as in
+  [building images from Git](../applications/git-builds.md).
 
 When you're done, delete the application. This removes its containers and
 history, and deletes its previews with their volumes. Its environments' named
@@ -132,7 +159,7 @@ piquelctl app delete hello
 - **`piquelctl` times out.** It waits 30 seconds by default, and pulling a
   large image can take longer. The deployment carries on: follow it in
   the dashboard, or give `piquelctl` longer, such as
-  `piquelctl --timeout 5m app apply --file hello.toml --deploy`.
+  `piquelctl --timeout 5m app deploy hello`.
 - **The deployment fails.** `piquelctl` prints the error. The environment's
   **Deployments** tab shows each step, and **Diagnostics** on its **Overview**
   says what went wrong.

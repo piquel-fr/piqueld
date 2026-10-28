@@ -37,8 +37,11 @@ Images go in `docs/images/`; see [screenshots](#screenshots).
 
 - Update the documentation in the same pull request as the change it
   describes.
-- Describe a feature through each of its surfaces: the manifest, `piquelctl`,
-  and the dashboard.
+- Describe a feature through each of its surfaces: the dashboard,
+  `piquelctl`, and the manifest. When a task can be done on more than one,
+  show each way, in that order, and never present one as the only way. Keep
+  each short: a subsection, or a sentence for a small change. If a surface
+  can't do it, say so.
 - Keep a page to one task or topic, and link to the reference rather than
   repeating it.
 - Describe how piqueld works now, not how it changed. Database migrations
@@ -100,7 +103,7 @@ What the reader needs first: permissions, other features, external accounts.
 
 ## Set it up
 
-Numbered steps, through the manifest, `piquelctl`, and the dashboard.
+Numbered steps, through the dashboard, `piquelctl`, and the manifest.
 
 ## Check that it works
 
@@ -114,7 +117,8 @@ link to, such as `examples/piqueld.toml`.
 ## Screenshots
 
 Show the dashboard where it helps the reader find their way, such as the first
-time a guide uses a page.
+time a guide uses a page, and each meaningful step of a procedure done in the
+dashboard.
 
 Screenshots are generated, never taken by hand, so they always match the
 dashboard. Regenerate them all after changing a page they show:
@@ -131,7 +135,8 @@ and services report healthy. Each spec seeds example data the way its guide
 does, then saves each page into `docs/images/<section>/`. The daemon runs no
 ingress gateway, so
 screenshots show HTTPS ingress as disabled, as on a daemon with the default
-configuration.
+configuration. It shows webhook URLs on `hooks.example.com`, as the guides
+configure it, but nothing listens there.
 
 Each image records a fingerprint of the page it shows: its content and
 styles, not its pixels, which vary slightly from run to run. The recipe shoots
@@ -148,15 +153,26 @@ guide. `screenshots/docs.ts` holds the helpers:
 
 - one helper per page or state, such as `overview`, which waits for its data
   to settle. Add one for each new page you show.
+- helpers for the dashboard steps the guides take, such as
+  `createApplication`, so a spec seeds its data in the dashboard where the
+  guide shows it.
+- `manifest`, which reads a TOML block of a guide, and `Piquelctl`, which
+  applies it and runs the guide's other commands.
+- `GitHost`, whose repositories the daemon reads at the URLs the guides use,
+  such as `https://github.com/example/blog.git`. Its commits get the same
+  IDs on every run.
 - `shoot(page, '<section>/<name>', through, from)`, which saves the page,
   1280 pixels wide and cut just below the element `through`, as
   `docs/images/<section>/<name>.png`. With `from`, the image starts just above
-  that element instead of at the top of the page. It replaces IDs, digests
-  and dates with fixed ones first, so the images don't change from run to
-  run.
+  that element instead of at the top of the page. It first replaces IDs and
+  digests with fixed ones, and moves every date by the same amount, the
+  earliest to a fixed one, so the images don't change from run to run.
 
 ```typescript
-await deployFrom(page, cli, 'user/getting-started/first-app.md');
+await newApplication(page, 'hello');
+await shoot(page, 'getting-started/new-application');
+await createApplication(page, 'hello');
+// …
 await overview(page);
 await shoot(page, 'getting-started/overview', page.getByRole('region', { name: 'Recent deployments' }));
 ```
