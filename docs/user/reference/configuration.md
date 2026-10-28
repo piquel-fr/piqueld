@@ -285,8 +285,9 @@ Native clients without browser headers continue to work. The Unix socket skips
 the TCP hostname and Fetch Metadata checks; authentication and its origin checks
 still apply on every API transport.
 
-See [observability](../guides/observability.md) for telemetry export, diagnostic
-ownership and retention semantics. [Notification destinations](../guides/observability.md#notifications)
+See [telemetry](../operations/telemetry.md) for telemetry export, and
+[history and diagnostics](../operations/history.md#how-long-history-is-kept)
+for retention. [Notification destinations](../operations/notifications.md)
 are managed through the API, CLI and dashboard rather than this file; a
 `[notifications]` table is rejected as unknown.
 
@@ -327,7 +328,7 @@ auth_key_file = "ts-auth-key" # $CREDENTIALS_DIRECTORY/ts-auth-key
 - The node has its own tailnet IP, so it never competes with managed ingress
   for port 443.
 - piqueld asks its `tailscaled` who each peer is (`tailscale whois`, one
-  lookup per address at a time). The [audit trail](../guides/observability.md#audit-trail) records
+  lookup per address at a time). The [audit trail](../operations/audit.md) records
   that tailnet user or tag and node, cached for a minute per address. API
   tokens can be [bound to a tailnet identity](../accounts/cli-and-tokens.md#bind-a-token-to-tailnet-devices),
   which is always checked with a fresh lookup.
@@ -413,7 +414,7 @@ startup, checks that it is a tunnel credentials file, and writes it, mode 0600, 
 `<data_dir>/ingress/tunnel/credentials.json` for the `cloudflared` container.
 piqueld reads `telemetry.headers_file` at
 startup and sends its `name: value` lines as gRPC headers with every
-[telemetry export](../guides/observability.md#telemetry-export).
+[telemetry export](../operations/telemetry.md).
 
 Errors and the read-only settings view name the file a value came from, never
 the value. Restart the daemon after changing a credential file.
@@ -428,7 +429,8 @@ recovery, even when all secrets are deleted. New writes authenticate a persisten
 key verifier; replacing the key with a different valid 32-byte file fails closed.
 Restore the original key, owned by the daemon user with private permissions.
 Secret metadata remains readable without it. Key failures are recorded as
-`secret_storage_unavailable` diagnostics; see [observability](../guides/observability.md).
+`secret_storage_unavailable` diagnostics; see
+[history and diagnostics](../operations/history.md#find-out-why-something-failed).
 
 Secret values use authenticated XChaCha20-Poly1305 encryption, binding ciphertext
 to application, logical name and version. The implementation uses
@@ -442,7 +444,7 @@ Restore `secrets.key` from backup whenever possible. If it cannot be recovered,
 `piquelctl secrets recover-key --yes` discards **all stored values for every
 application on the daemon**. It refuses while the current key still works.
 Names, generations, file references and deployment history remain; discarded
-versions are marked unavailable. [Notification destinations](../guides/observability.md#notifications),
+versions are marked unavailable. [Notification destinations](../operations/notifications.md),
 whose URLs are encrypted with the same key, are deleted; create them again. Docker secrets and running services are left in
 place. An unusable key file is renamed to `secrets.key.retired-<ms>` rather than
 deleted, since it may match another database backup.

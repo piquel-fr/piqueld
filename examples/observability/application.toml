@@ -2,8 +2,8 @@
 # receiving the daemon's telemetry, Prometheus, Tempo and Loki storing it, and
 # Grafana on a private route to explore it. Every configuration file is inline,
 # so the application needs no repository and keeps the edits you make to it,
-# such as its hostname. See "Observability stack" in
-# docs/user/guides/observability.md to deploy it.
+# such as its hostname. See docs/user/operations/observability-stack.md to
+# deploy it.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 

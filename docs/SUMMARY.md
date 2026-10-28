@@ -35,8 +35,12 @@
   - [Cloudflare](user/networking/cloudflare.md)
   - [OVH](user/networking/ovh.md)
   - [Receiving webhooks](user/networking/webhooks.md)
-- [Observability](user/guides/observability.md)
-- [Backups and upgrades](user/guides/backups-and-upgrades.md)
+- [History and diagnostics](user/operations/history.md)
+- [Audit trail](user/operations/audit.md)
+- [Notifications](user/operations/notifications.md)
+- [Exporting telemetry](user/operations/telemetry.md)
+- [Deploying an observability stack](user/operations/observability-stack.md)
+- [Backups and upgrades](user/operations/backups.md)
 
 # Reference
 
@@ -63,6 +67,7 @@
 
 - [Module boundaries](dev/architecture/dependency-flow.md)
 - [Persistence](dev/architecture/persistence.md)
+- [Observability](dev/architecture/observability.md)
 - [Resource planning](dev/architecture/resource-planning.md)
 - [Docker reconciliation](dev/architecture/docker-reconciliation.md)
 - [Ingress](dev/architecture/ingress.md)

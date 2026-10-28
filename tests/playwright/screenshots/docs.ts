@@ -266,10 +266,10 @@ export class Piquelctl {
     return new Piquelctl(cli, await adminToken(page, 'Screenshots'));
   }
 
-  /** Runs `piquelctl` with `args`, in directory `cwd` when given, and
-   * returns its output. */
-  async run(args: string[], cwd?: string): Promise<string> {
-    const result = await this.cli.run(args, this.token, cwd);
+  /** Runs `piquelctl` with `args`, in directory `cwd` and with `input` as
+   * its standard input when given, and returns its output. */
+  async run(args: string[], cwd?: string, input?: string): Promise<string> {
+    const result = await this.cli.run(args, this.token, cwd, input);
     expect(result.code, `piquelctl ${args.join(' ')}: ${result.stderr}`).toBe(0);
     return result.stdout;
   }
@@ -294,8 +294,19 @@ export class Piquelctl {
   /** Saves TOML `manifest` with `piquelctl app apply`, deploying it unless
    * `deploy` is false. */
   async apply(manifest: string, deploy = true) {
+    await this.run(await this.applying(manifest, deploy));
+  }
+
+  /** Saves and deploys TOML `manifest`, whose deployment must fail. */
+  async applyFailing(manifest: string) {
+    const result = await this.cli.run(await this.applying(manifest, true), this.token);
+    expect(result.code, `the deployment succeeded: ${result.stdout}`).not.toBe(0);
+  }
+
+  /** The arguments of `piquelctl app apply` saving `manifest`. */
+  private async applying(manifest: string, deploy: boolean): Promise<string[]> {
     const file = await this.write('manifest.toml', manifest);
-    await this.run(['app', 'apply', '--file', file, '--yes', ...deploy ? ['--deploy'] : []]);
+    return ['app', 'apply', '--file', file, '--yes', ...deploy ? ['--deploy'] : []];
   }
 }
 
@@ -355,10 +366,24 @@ export async function service(page: Page, app: string, name: string, tab: string
 /** Environment `name` of application `app`, reached as a reader would, once
  * its services converged. */
 export async function environment(page: Page, app: string, name: string) {
+  await openEnvironment(page, app, name);
+  await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
+}
+
+/** Environment `name` of application `app`, reached as a reader would. */
+async function openEnvironment(page: Page, app: string, name: string) {
   await application(page, app, 'Environments');
   await page.getByRole('main').getByRole('link').filter({ hasText: name }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
-  await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
+}
+
+/** The card granting environment `name` of application `app` the daemon's
+ * telemetry, on the environment's Overview. */
+export async function telemetryGrant(page: Page, app: string, name: string): Promise<Locator> {
+  await openEnvironment(page, app, name);
+  const card = page.locator('section.card').filter({ has: page.getByRole('button', { name: 'Grant telemetry', exact: true }) });
+  await expect(card).toContainText('not granted');
+  return card;
 }
 
 /** The Accounts page, once its accounts loaded. */
@@ -393,3 +418,33 @@ export async function source(page: Page, app: string) {
   await expect(card(page, 'GitHub webhook').getByText('Payload URL', { exact: true })).toBeVisible();
 }
 
+/** The Errors page, once it lists `count` failures. */
+export async function errors(page: Page, count: number) {
+  await page.goto('/dashboard/errors');
+  await expect(page.locator('article.event')).toHaveCount(count);
+}
+
+/** The Notifications page, once `count` deliveries were delivered. */
+export async function notifications(page: Page, count: number) {
+  await page.goto('/dashboard/notifications');
+  await expect(deliveries(page).getByRole('row').filter({ hasText: 'Delivered' })).toHaveCount(count);
+}
+
+/** The form editing notification destination `name`. */
+export async function destination(page: Page, name: string): Promise<Locator> {
+  await page.goto('/dashboard/notifications');
+  await page.getByRole('row').filter({ hasText: name }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const form = page.getByRole('dialog', { name: 'Notification destination' });
+  await expect(form.getByLabel('Name', { exact: true })).toHaveValue(name);
+  return form;
+}
+
+/** The Notifications page's Deliveries list. */
+export const deliveries = (page: Page) => card(page, 'Deliveries');
+
+/** The Audit page, once its chain was verified intact. */
+export async function audit(page: Page) {
+  await page.goto('/dashboard/audit');
+  await page.getByRole('button', { name: 'Verify integrity', exact: true }).click();
+  await expect(page.getByText(/^Intact:/)).toBeVisible();
+}
