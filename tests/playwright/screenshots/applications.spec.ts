@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { expect, applicationTab, environmentTab, rewrite, submitRegistration, title } from '../fixtures.js';
+import { expect, applicationTab, card, environmentTab, rewrite, submitRegistration, title } from '../fixtures.js';
 import { test, accountForm, application, createApplication, environment, manifest, saveChanges, service, shoot, Piquelctl } from './docs.js';
 
 const guides = 'user/applications';
@@ -22,10 +22,6 @@ const output = (page: Page, id: number, edit = (text: string) => text) => rewrit
     chunk.timestamp_ms = Date.UTC(2026, 9, 24, 9, 41, 7);
   }
 });
-
-/** The card of the page headed `heading`. */
-const card = (page: Page, heading: string) =>
-  page.locator('section.card', { has: page.getByRole('heading', { name: heading, exact: true }) });
 
 // docs/user/applications: building images from Git, deploying on push,
 // environments, and previews, each continuing from the one before.

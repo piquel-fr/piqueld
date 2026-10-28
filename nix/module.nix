@@ -215,7 +215,7 @@ in
           ingress.acme.email = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            description = "Optional ACME account contact for expiry and policy notices from the CA.";
+            description = "Optional ACME account contact address, sent only when piqueld first registers its account with the CA.";
           };
           ingress.private.enabled = lib.mkOption {
             type = lib.types.bool;

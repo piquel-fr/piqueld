@@ -39,12 +39,12 @@ deployment to `piqueld-dev` instead: these steps would create a second
 application, which can't deploy while the others hold its hostnames.
 
 - The instance serves public routes through
-  [HTTP ingress](../user/guides/ingress.md#enable-and-expose-an-application),
-  and has a [webhook hostname](../user/guides/ingress.md#push-webhooks) whose
-  DNS is public, so GitHub can report pushes. It also serves
-  [private routes](../user/guides/ingress.md#public-and-private-routes) on its
-  tailnet, with a [DNS-01 provider](../user/guides/ingress.md#dns-01-certificates)
-  for `piqueld.dev`.
+  [HTTP ingress](../user/networking/routes.md), and has a
+  [webhook hostname](../user/networking/webhooks.md) whose DNS is public, so
+  GitHub can report pushes. It also serves
+  [private routes](../user/networking/private-routes.md) on its tailnet, with
+  a [DNS-01 provider](../user/networking/wildcards.md#dns-01-certificates) for
+  `piqueld.dev`.
 - The host is `x86_64-linux`, the only Linux system the flake's `docs` shell
   supports, and can reach GitHub and `cache.nixos.org` while it builds.
 - You can create applications on the instance, change and deploy them, and
@@ -63,13 +63,13 @@ host or on any machine where `piquelctl` is signed in to the instance.
 1. Point the hostnames at the instance:
    - `docs.piqueld.dev`, like any public route: an `A` record to the host's
      public address, a CNAME to the tunnel with a
-     [Cloudflare Tunnel](../user/guides/ingress.md#cloudflare-tunnel), or
-     nothing when piqueld
-     [manages the zone's records](../user/guides/ingress.md#managed-dns-records).
+     [Cloudflare Tunnel](../user/networking/cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel),
+     or nothing when piqueld
+     [manages the zone's records](../user/networking/dns-records.md).
    - `grafana.piqueld.dev`, like any
-     [private route](../user/guides/ingress.md#dns-for-private-routes): `A`
-     and `AAAA` records to the apps node's tailnet addresses, or nothing when
-     piqueld manages the zone's records.
+     [private route](../user/networking/private-routes.md#dns-for-private-routes):
+     `A` and `AAAA` records to the apps node's tailnet addresses, or nothing
+     when piqueld manages the zone's records.
 
 2. Check what saving the manifest would do:
 

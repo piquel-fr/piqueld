@@ -142,7 +142,7 @@ To run two replicas of `web`:
 
 ## Next steps
 
-- Put the website on an HTTPS address with a [route](../guides/ingress.md).
+- Put the website on an HTTPS address with a [route](../networking/routes.md).
 - Add a `staging` environment, as in
   [environments and promotion](../applications/environments.md).
 - Build images from a Git repository, as in
