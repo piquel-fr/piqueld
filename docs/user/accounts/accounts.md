@@ -106,6 +106,16 @@ browser where it's signed in, or through an enrollment link.
    `Phone`.
 2. Select **Add passkey**, and save the passkey when your browser asks.
 
+To add one on a device with no browser signed in, print an enrollment link for
+your own account with `piquelctl`, signed in with your account's full access:
+
+```console
+piquelctl account enroll alice
+```
+
+Open the link on that device yourself, and don't share it: it signs in
+whoever uses it.
+
 A second passkey, on another device or in a password manager, means losing one
 device doesn't lock you out. If you've already lost them all, see
 [someone lost their passkey](recovery.md#someone-lost-their-passkey).
@@ -144,7 +154,8 @@ first; revoke the ones you no longer need under **Pending links**.
 Under **Passkeys**, edit a **Passkey name** and select **Rename**.
 
 Removing a passkey can't be undone, and the dashboard doesn't ask to confirm.
-To remove one, select **Remove** next to it.
+To remove one, select **Remove** next to it. `piquelctl` doesn't rename or
+remove passkeys.
 
 Removing a passkey stops it from signing in, but it doesn't end the sessions
 and tokens already open. If the passkey was lost or stolen,
@@ -159,6 +170,8 @@ Under **Profile**, change the **Username** or the **Display name**, then select
   It is unique regardless of case: `Alice` and `alice` are the same name.
 - A display name is optional, up to 200 bytes.
 
+`piquelctl` doesn't edit profiles.
+
 Renaming an account doesn't change its ID, which the
 [audit trail](../guides/observability.md#audit-trail) and saved CLI logins
 use. To change someone's access instead, see
@@ -170,6 +183,8 @@ use. To change someone's access instead, see
 sessions (**Browser**), `piquelctl` logins (**Cli**), and
 [API tokens](cli-and-tokens.md#create-an-api-token) (**Token**). Each row
 shows what it may do, when it was last used, and when it expires.
+
+![Sessions and API tokens: alice's browser session with full account access, and the ci token with apps:read and apps:deploy on blog, each with Activity and Revoke buttons](../../images/accounts/sessions-and-tokens.png)
 
 - **Revoke** ends one at once.
 - **Revoke all** ends all of them, including the session you're using if it's

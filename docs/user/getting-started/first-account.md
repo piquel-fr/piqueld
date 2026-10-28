@@ -37,8 +37,9 @@ leak.
 
 The dashboard opens, signed in. Your account has `admin` on every application.
 The link only works once: when the first account exists, setup is closed for
-good. Invite other people from the dashboard's **Accounts** page; see
-[accounts and invitations](../accounts/accounts.md#invite-someone).
+good. Invite other people from the dashboard's **Accounts** page or with
+`piquelctl account invite`; see
+[invite someone](../accounts/accounts.md#invite-someone).
 
 To sign in later, open the dashboard and select **Sign in with a passkey**.
 You don't need to type your username.

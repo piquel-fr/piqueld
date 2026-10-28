@@ -134,7 +134,9 @@ permission.
 
 Agents and CI jobs that create, test and delete [previews](../introduction.md#concepts)
 need no access to your long-lived environments. Give them only the previews
-permissions:
+permissions. On the dashboard, [create a token](cli-and-tokens.md#create-an-api-token)
+limited to blog, and select only `previews:deploy` and `previews:delete`. With
+`piquelctl`:
 
 ```console
 piquelctl token create agent --app blog \
@@ -258,6 +260,9 @@ from **every** application in its
 [receiving service](../guides/observability.md#receiving-telemetry-in-an-application).
 So granting it can't depend on that application's own permissions: it needs
 `telemetry:grant` and reading the application.
+
+On the dashboard, select **Grant telemetry** on the environment's
+**Overview** tab. With `piquelctl`:
 
 ```console
 piquelctl env telemetry blog production on

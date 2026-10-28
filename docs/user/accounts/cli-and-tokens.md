@@ -193,15 +193,17 @@ saved logins alone.
 When piqueld has its own [tailnet node](../reference/configuration.md#tailnet-node),
 or a [dashboard hostname](../guides/ingress.md#dashboard-hostname), you can
 bind a token to a tailnet user or tag. A leaked CI token is then useless
-outside your tailnet's CI runners:
+outside your tailnet's CI runners.
+
+On the dashboard, fill in **Tailnet user or tag (optional, e.g. tag:ci)** when
+you create the token. Its row then shows **Only from tailnet tag:ci**.
+
+With `piquelctl`, add `--tailnet`:
 
 ```console
 piquelctl token create ci --preset deploy --app blog --tailnet tag:ci
 piquelctl token create laptop --preset read-only --tailnet alice@example.com
 ```
-
-In the dashboard, fill in **Tailnet user or tag (optional, e.g. tag:ci)**. The
-token's row then shows **Only from tailnet tag:ci**.
 
 piqueld then accepts the token only through its tailnet node, or that
 hostname, from a device signed in as that user or carrying that tag. It checks
@@ -216,7 +218,11 @@ their tokens to a tag. Logins can't be bound.
 
 ## Revoke a token
 
-List your sessions and tokens, then revoke one by its ID:
+On the dashboard, select **Revoke** next to the token, under
+[**Sessions and API tokens**](accounts.md#revoke-sessions-and-tokens) on your
+card.
+
+With `piquelctl`, list your sessions and tokens, then revoke one by its ID:
 
 ```console
 $ piquelctl token list
@@ -231,9 +237,7 @@ $ piquelctl token revoke 01a16b4e-6995-79b2-bfb1-0f72630a4d96
 Info: revoked 01a16b4e-6995-79b2-bfb1-0f72630a4d96
 ```
 
-Your logins are listed as `piquelctl`, and browser sessions as `Browser`. On
-the dashboard, select **Revoke** next to the token, under **Sessions and API
-tokens**.
+Your logins are listed as `piquelctl`, and browser sessions as `Browser`.
 
 Deleting an application removes every grant on it. A token or limited login
 left with no grant at all is revoked.

@@ -70,10 +70,12 @@ export async function shoot(page: Page, name: string, through?: Locator, from?: 
   await page.clock.resume();
 }
 
-// The text that differs on every run: random IDs, UUIDs and digests, and dates.
+// The text that differs on every run: random IDs, UUIDs and digests, and
+// dates, with their time or, as for dates more than a week away, without.
 const identifier = String.raw`\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,64})\b`;
-const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M\b`;
+const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}\b(?:, \d{1,2}:\d{2}:\d{2} [AP]M\b)?`;
 const fixedDate = '10/24/2026, 9:41:07 AM';
+const fixedDay = '10/24/2026';
 const isoDate = String.raw`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`;
 
 /** Each distinct ID, digest and date the page shows. */
@@ -140,13 +142,13 @@ async function freeze(page: Page): Promise<string[]> {
     let at = 0;
     return [value, value.replace(/[0-9a-f]/g, () => digest[at++])];
   }));
-  await page.evaluate(({ pattern, stable, fixedDate }) => {
+  await page.evaluate(({ pattern, stable, fixedDate, fixedDay }) => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string) => id ? stable[id] ?? id : fixedDate);
+      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string) => id ? stable[id] ?? id : value.includes(',') ? fixedDate : fixedDay);
     }
-  }, { pattern: `(${identifier})|${date}`, stable, fixedDate });
-  return [...Object.values(stable), fixedDate];
+  }, { pattern: `(${identifier})|${date}`, stable, fixedDate, fixedDay });
+  return [...Object.values(stable), fixedDate, fixedDay];
 }
 
 /** The "Create your account" page of setup `link`, filled in for alice. */
@@ -219,11 +221,11 @@ export async function invite(page: Page, preset: string, applications: string[] 
   return done(page);
 }
 
-/** The invitation or enrollment link the Accounts page shows once, read
- * before selecting **Done**. */
+/** The invitation link, enrollment link or API token the Accounts page shows
+ * once, read before selecting **Done**. */
 export async function done(page: Page): Promise<string> {
   const secret = page.locator('.secret-box');
-  await expect(secret).toContainText(/#(invite|enroll)=/);
+  await expect(secret).toContainText(/#(invite|enroll)=|pqd_/);
   const link = (await secret.innerText()).trim();
   await page.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(secret).toHaveCount(0);
