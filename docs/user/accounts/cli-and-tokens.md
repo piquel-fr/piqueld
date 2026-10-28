@@ -219,7 +219,7 @@ on every request, and again when a command started with `app exec` begins, so
 removing a tag or signing a device out takes effect at once. Anywhere else,
 including the Unix socket and other devices, the token is refused with 401
 `tailnet_binding_mismatch`, and the refusal is recorded in the
-[audit trail](../guides/observability.md#audit-trail).
+[audit trail](../operations/audit.md).
 
 Tagged devices belong to no user, so a user binding never matches them: bind
 their tokens to a tag. Logins can't be bound.
@@ -292,4 +292,4 @@ a new token.
   `chmod 600` on the credentials file.
 - **"the daemon predates limited tokens" or "it predates limited logins".**
   The daemon is too old to limit access, so `piquelctl` refuses rather than
-  getting full access. [Upgrade it](../guides/backups-and-upgrades.md).
+  getting full access. [Upgrade it](../operations/backups.md#upgrade).

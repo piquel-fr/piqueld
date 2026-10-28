@@ -1126,7 +1126,7 @@ without the mount, and `app plan`, promotion plans and the deployment warn with
 deployment, which restarts the service. Previews are never granted. Volume
 mounts and files can't use `/run/piqueld/telemetry`. The receiving
 application sees every application's telemetry; see
-[receiving telemetry](../guides/observability.md#receiving-telemetry-in-an-application)
+[receiving telemetry](../operations/telemetry.md#receive-telemetry-in-an-application)
 for the collector configuration and what that implies.
 
 ## Jobs

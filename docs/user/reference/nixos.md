@@ -131,13 +131,13 @@ and `telemetry.containers`, with the daemon's defaults. Reconciliation
 values must be 1–86400 seconds; retention values are nonnegative days, with zero
 disabling pruning. Unknown settings are rejected.
 
-[Notification destinations](../guides/observability.md#notifications) are managed with
+[Notification destinations](../operations/notifications.md) are managed with
 `piquelctl notification` or the dashboard, not the module; the former
 `settings.notifications` options are removed.
 
-[Telemetry export](../guides/observability.md#telemetry-export) pushes traces, metrics
+[Telemetry export](../operations/telemetry.md) pushes traces, metrics
 and logs to an OTLP/gRPC collector, along with the
-[logs and resource usage of every container](../guides/observability.md#container-telemetry)
+[logs and resource usage of every container](../operations/telemetry.md#what-piqueld-sends)
 unless `containers = false`. A collector token goes in `headers_file`, which
 systemd passes to the daemon as the `otlp-headers` credential:
 

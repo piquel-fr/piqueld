@@ -70,17 +70,20 @@ export async function shoot(page: Page, name: string, through?: Locator, from?: 
   await page.clock.resume();
 }
 
-// The text that differs on every run: random IDs, UUIDs and digests, and
-// dates, with their time or, as for dates more than a week away, without.
+// The text that differs on every run: random IDs, UUIDs and digests, dates,
+// with their time or, as for dates more than a week away, without, and how
+// long steps took, which the dashboard shows under a minute.
 const identifier = String.raw`\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,64})\b`;
 const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}\b(?:, \d{1,2}:\d{2}:\d{2} [AP]M\b)?`;
 const fixedDate = '10/24/2026, 9:41:07 AM';
 const fixedDay = '10/24/2026';
+const duration = String.raw`\b(?:\d{1,3} ms|\d{1,2}\.\d s)\b`;
+const fixedDuration = '412 ms';
 const isoDate = String.raw`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`;
 
-/** Each distinct ID, digest and date the page shows. */
+/** Each distinct ID, digest, date and duration the page shows. */
 async function varying(page: Page): Promise<string[]> {
-  return page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], `${identifier}|${date}`);
+  return page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], `${identifier}|${date}|${duration}`);
 }
 
 /** A hash of what the frozen page draws: the window's size and, when
@@ -103,7 +106,8 @@ async function fingerprint(page: Page): Promise<string> {
       if (!order.has(id)) order.set(id, order.size);
       return `id-${order.get(id)}:${id.replace(/[0-9a-f]/g, 'x')}`;
     })
-    .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date');
+    .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date')
+    .replace(new RegExp(duration, 'g'), 'duration');
   return createHash('sha256').update(stable).digest('hex');
 }
 
@@ -132,23 +136,28 @@ const Png = {
   },
 };
 
+/** A fixed ID of `value`'s shape, the `index`th of its page. */
+function stableId(value: string, index: number): string {
+  const digest = createHash('sha256').update(`piqueld ${index}`).digest('hex');
+  let at = 0;
+  return value.replace(/[0-9a-f]/g, () => digest[at++]!);
+}
+
 /** Replaces the text that differs on every run: each random ID or digest by
- * one derived from its order on the page, and each date by a fixed one.
- * Returns the replacements. */
+ * one derived from its order on the page, and each date and duration by a
+ * fixed one. Returns the replacements. */
 async function freeze(page: Page): Promise<string[]> {
   const identifiers = (await varying(page)).filter(value => new RegExp(`^${identifier}$`).test(value));
-  const stable = Object.fromEntries(identifiers.map((value, index) => {
-    const digest = createHash('sha256').update(`piqueld ${index}`).digest('hex');
-    let at = 0;
-    return [value, value.replace(/[0-9a-f]/g, () => digest[at++])];
-  }));
-  await page.evaluate(({ pattern, stable, fixedDate, fixedDay }) => {
+  const stable = Object.fromEntries(identifiers.map((value, index) =>
+    [value, stableId(value, index)]));
+  await page.evaluate(({ pattern, stable, fixedDate, fixedDay, fixedDuration }) => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string) => id ? stable[id] ?? id : value.includes(',') ? fixedDate : fixedDay);
+      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string, took?: string) =>
+        id ? stable[id] ?? id : took ? fixedDuration : value.includes(',') ? fixedDate : fixedDay);
     }
-  }, { pattern: `(${identifier})|${date}`, stable, fixedDate, fixedDay });
-  return [...Object.values(stable), fixedDate, fixedDay];
+  }, { pattern: `(${identifier})|(${duration})|${date}`, stable, fixedDate, fixedDay, fixedDuration });
+  return [...Object.values(stable), fixedDate, fixedDay, fixedDuration];
 }
 
 /** The "Create your account" page of setup `link`, filled in for alice. */
@@ -156,17 +165,55 @@ export async function accountForm(page: Page, link: string) {
   await fillRegistration(page, link, 'alice', { display: 'Alice', passkey: 'Laptop' });
 }
 
-/** Deploys the first manifest of `guide`, a page under docs/, with
- * `piquelctl app apply`, as the guide does, authenticated by a token of the
- * signed-in account. */
-export async function deployFrom(page: Page, cli: Cli, guide: string) {
+/** The `piquelctl` token of each page's signed-in account, created once. */
+const tokens = new WeakMap<Page, Promise<string>>();
+
+/** Runs `piquelctl args`, with `input` as its standard input, authenticated
+ * by an admin token of the signed-in account. It must succeed. */
+export async function piquelctl(page: Page, cli: Cli, args: string[], input?: string): Promise<string> {
+  const result = await cli.run(args, await token(page), input);
+  expect(result.code, result.stderr).toBe(0);
+  return result.stdout;
+}
+
+function token(page: Page): Promise<string> {
+  if (!tokens.has(page)) tokens.set(page, adminToken(page, 'Screenshots'));
+  return tokens.get(page)!;
+}
+
+/** The first TOML block of `guide`, a page under docs/, that contains
+ * `containing`. */
+export async function manifestOf(guide: string, containing = ''): Promise<string> {
   const markdown = await readFile(new URL(guide, docs), 'utf8');
-  const manifest = markdown.match(/```toml\n([\s\S]*?)```/)?.[1];
+  const manifest = [...markdown.matchAll(/```toml\n([\s\S]*?)```/g)].map(block => block[1]!).find(block => block.includes(containing));
   if (!manifest) throw new Error(`${guide} shows no TOML manifest`);
+  return manifest;
+}
+
+/** Saves `manifest` with `piquelctl app apply`, as the guides do, with
+ * `args` added to the command. */
+async function apply(page: Page, cli: Cli, manifest: string, ...args: string[]) {
   const file = join(cli.daemon.directory, 'manifest.toml');
   await writeFile(file, manifest);
-  const applied = await cli.run(['app', 'apply', '--file', file, '--deploy', '--yes'], await adminToken(page, 'Screenshots'));
-  expect(applied.code, applied.stderr).toBe(0);
+  return cli.run(['app', 'apply', '--file', file, ...args, '--yes'], await token(page));
+}
+
+/** Saves `manifest` without deploying it. */
+export async function save(page: Page, cli: Cli, manifest: string) {
+  const saved = await apply(page, cli, manifest);
+  expect(saved.code, saved.stderr).toBe(0);
+}
+
+/** Saves `manifest` and deploys it. The deployment must fail when `fails`,
+ * and succeed otherwise. */
+export async function deploy(page: Page, cli: Cli, manifest: string, fails = false) {
+  const applied = await apply(page, cli, manifest, '--deploy');
+  expect(applied.code !== 0, applied.stderr).toBe(fails);
+}
+
+/** Deploys the first manifest of `guide`, a page under docs/. */
+export async function deployFrom(page: Page, cli: Cli, guide: string) {
+  await deploy(page, cli, await manifestOf(guide));
 }
 
 /** The Overview, once every application is healthy and the latest deployment succeeded. */
@@ -180,6 +227,12 @@ export async function overview(page: Page) {
 /** Environment `name` of application `app`, reached as a reader would, once
  * its services converged. */
 export async function environment(page: Page, app: string, name: string) {
+  await openEnvironment(page, app, name);
+  await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
+}
+
+/** Environment `name` of application `app`, reached as a reader would. */
+async function openEnvironment(page: Page, app: string, name: string) {
   await page.getByRole('link', { name: 'Applications', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Applications');
   await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link').filter({ hasText: app }).click();
@@ -187,7 +240,16 @@ export async function environment(page: Page, app: string, name: string) {
   await applicationTab(page, 'Environments').click();
   await page.getByRole('main').getByRole('link').filter({ hasText: name }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
-  await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
+}
+
+/** The card granting environment `name` of application `app` the daemon's
+ * telemetry, on the environment's Overview. */
+export async function telemetryGrant(page: Page, app: string, name: string): Promise<Locator> {
+  await page.goto('/dashboard/');
+  await openEnvironment(page, app, name);
+  const card = page.locator('section.card').filter({ has: page.getByRole('button', { name: 'Grant telemetry', exact: true }) });
+  await expect(card).toContainText('not granted');
+  return card;
 }
 
 /** The Accounts page, once its accounts loaded. */
@@ -243,4 +305,35 @@ export async function signUp(browser: Browser, link: string, username: string, d
       await submitRegistration(page);
     } finally { await passkeys.close(); }
   } finally { await context.close(); }
+}
+
+/** The Errors page, once it lists `count` failures. */
+export async function errors(page: Page, count: number) {
+  await page.goto('/dashboard/errors');
+  await expect(page.locator('article.event')).toHaveCount(count);
+}
+
+/** The Notifications page, once `count` deliveries were delivered. */
+export async function notifications(page: Page, count: number) {
+  await page.goto('/dashboard/notifications');
+  await expect(deliveries(page).getByRole('row').filter({ hasText: 'Delivered' })).toHaveCount(count);
+}
+
+/** The form editing notification destination `name`. */
+export async function destination(page: Page, name: string): Promise<Locator> {
+  await page.goto('/dashboard/notifications');
+  await page.getByRole('row').filter({ hasText: name }).getByRole('button', { name: 'Edit', exact: true }).click();
+  const form = page.getByRole('dialog', { name: 'Notification destination' });
+  await expect(form.getByLabel('Name', { exact: true })).toHaveValue(name);
+  return form;
+}
+
+/** The Notifications page's Deliveries list. */
+export const deliveries = (page: Page) => page.locator('section.card').filter({ has: page.getByRole('heading', { name: 'Deliveries' }) });
+
+/** The Audit page, once its chain was verified intact. */
+export async function audit(page: Page) {
+  await page.goto('/dashboard/audit');
+  await page.getByRole('button', { name: 'Verify integrity', exact: true }).click();
+  await expect(page.getByText(/^Intact:/)).toBeVisible();
 }

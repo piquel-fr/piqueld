@@ -23,7 +23,7 @@ Authentication rejections use the same request tracing and paired `x-request-id`
 header/error-body ID as other API responses. Authentication storage failures
 return `503 storage_unavailable` with a log-correlated `details.diagnostic_id`;
 they do not attempt to persist a diagnostic in the failing database. See
-[observability](../../user/guides/observability.md#history-and-diagnostics).
+[observability](observability.md#history-and-diagnostics).
 
 Authentication metadata shares the existing SQLite database. The reconciler's
 periodic full scan deletes expired sessions, tokens, invitations and links
@@ -190,7 +190,7 @@ on the Unix socket needs none. Public endpoints are the status, setup-link,
 recovery, sign-in-link, ceremony, operator login, and device start and poll
 routes, plus TCP `/health`, the dashboard's static assets, and the separate
 webhook socket. The daemon serves no metrics; it pushes them instead, see
-[telemetry export](../../user/guides/observability.md#telemetry-export).
+[telemetry export](../../user/operations/telemetry.md).
 
 ## CLI device login
 
