@@ -397,12 +397,12 @@ impl ControllerHarness {
 
     /// The replicas Docker runs of the first service.
     async fn replicas(&self) -> u16 {
-        self.docker
-            .observe(&environment(&self.application))
-            .await
-            .unwrap()
-            .services[0]
-            .replicas
+        self.replicas_of(&environment(&self.application)).await
+    }
+
+    /// The replicas Docker runs of environment `id`'s first service.
+    async fn replicas_of(&self, id: &EnvironmentId) -> u16 {
+        self.docker.observe(id).await.unwrap().services[0].replicas
     }
 
     async fn repair_drift(&self) {
@@ -1152,7 +1152,7 @@ async fn stopped_environments_run_no_replicas_until_started_or_deployed() {
     harness.finish(&first).await;
     let id = first.environment_id.clone();
     let health = async || harness.store.status(&id).await.unwrap().runtime_health;
-    let replicas = async || harness.docker.observe(&id).await.unwrap().services[0].replicas;
+    let replicas = async || harness.replicas_of(&id).await;
 
     let stopped = applications.stop(&id).await.unwrap();
     assert_eq!(stopped.id, first.id, "the rolled out deployment runs again");
