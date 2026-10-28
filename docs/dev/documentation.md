@@ -148,10 +148,12 @@ guide. `screenshots/docs.ts` holds the helpers:
 
 - one helper per page or state, such as `overview`, which waits for its data
   to settle. Add one for each new page you show.
-- `shoot(page, '<section>/<name>', through)`, which saves the page, 1280
-  pixels wide and cut just below the element `through`, as
-  `docs/images/<section>/<name>.png`. It replaces IDs, digests and dates with
-  fixed ones first, so the images don't change from run to run.
+- `shoot(page, '<section>/<name>', through, from)`, which saves the page,
+  1280 pixels wide and cut just below the element `through`, as
+  `docs/images/<section>/<name>.png`. With `from`, the image starts just above
+  that element instead of at the top of the page. It replaces IDs, digests
+  and dates with fixed ones first, so the images don't change from run to
+  run.
 
 ```typescript
 await deployFrom(page, cli, 'user/getting-started/first-app.md');

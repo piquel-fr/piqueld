@@ -11,8 +11,10 @@
 
 # User guide
 
-- [Accounts and sign-in](user/accounts/authentication.md)
-- [Permissions](user/accounts/authorization.md)
+- [Managing accounts](user/accounts/accounts.md)
+- [Permissions](user/accounts/permissions.md)
+- [Signing in from the CLI and automation](user/accounts/cli-and-tokens.md)
+- [Recovering access](user/accounts/recovery.md)
 - [Dashboard](user/dashboard.md)
 - [HTTP ingress](user/guides/ingress.md)
 - [Observability](user/guides/observability.md)
@@ -46,6 +48,7 @@
 - [Resource planning](dev/architecture/resource-planning.md)
 - [Docker reconciliation](dev/architecture/docker-reconciliation.md)
 - [Authentication](dev/architecture/authentication.md)
+- [Authorization](dev/architecture/authorization.md)
 - [Dashboard](dev/architecture/dashboard.md)
 - [ADR 0001: SQLx SQLite persistence](dev/architecture/adr/0001-sqlx-sqlite.md)
 - [ADR 0002: Cargo builds the dashboard](dev/architecture/adr/0002-cargo-built-dashboard.md)

@@ -431,7 +431,7 @@ dashboard_hostname = "dashboard.example.com"
   daemon asks the apps node who that client is (`tailscale whois`, through the
   node's socket in `<data_dir>/ingress/tailscale/run`), so the `tailscale` CLI
   must be on `PATH` for the audit trail to name tailnet users and for
-  [tailnet-bound tokens](../accounts/authorization.md#tailnet-bound-tokens) to work here.
+  [tailnet-bound tokens](../accounts/cli-and-tokens.md#bind-a-token-to-tailnet-devices) to work here.
 - **DNS and certificates.** The hostname gets a private route's A/AAAA records
   to the apps node's addresses, managed like routes' when a DNS provider sets
   `manage_records` for its zone (see [managed DNS records](#managed-dns-records)),
@@ -443,7 +443,7 @@ dashboard_hostname = "dashboard.example.com"
   created on another origin, such as the tailnet node's, stop working there.
   Register new ones with an enrollment link (`piquelctl account enroll`, with a
   CLI login that still works), or, if none does,
-  [recover administrator access](../accounts/authentication.md#recovering-administrator-access).
+  [recover administrator access](../accounts/recovery.md#no-administrator-can-sign-in).
   The tailnet node keeps serving the API, and `piquelctl status` reports that
   `auth.public_url` is not its origin.
 
@@ -654,7 +654,7 @@ tailnet addresses. A broken node degrades only private routes. Each route report
 its effective `visibility`, the `dns` records its hostname needs, and whether
 piqueld [manages them](#managed-dns-records) (`dns_state`). `routes` lists
 only the routes of applications the caller can
-[read](../accounts/authorization.md#what-callers-see).
+[read](../accounts/permissions.md#what-people-without-access-see).
 
 Every gateway change (network, image pull, start, replacement, recovery, route
 reload, stop) is a daemon-scoped journal action with an `ingress_*` phase, so it

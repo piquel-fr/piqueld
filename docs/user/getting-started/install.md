@@ -16,7 +16,7 @@ You need:
 
 Anyone who controls the host also controls piqueld: they can read its database
 and drive its Docker engine. piqueld calls them the
-[host operator](../accounts/authentication.md#the-host-operator) and lets
+[host operator](../accounts/recovery.md#the-host-operator) and lets
 them use `piquelctl` on the host without signing in.
 
 ## Install on NixOS

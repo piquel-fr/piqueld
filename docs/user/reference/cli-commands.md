@@ -257,7 +257,7 @@ Options:
 
 Print a link that adds a passkey to an existing account.
 
-The link works once within 24 hours. Needs permission to manage that account.
+The link works once within 24 hours, and signs in whoever uses it as that account. Anyone may create one for their own account; another account needs `accounts:manage` and every grant it has. An API token or limited login can't create enrollment links.
 
 ```text
 piquelctl account enroll [OPTIONS] <ACCOUNT>

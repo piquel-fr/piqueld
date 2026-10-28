@@ -29,11 +29,12 @@ pub(super) fn can(permission: Permission) -> Signal<bool> {
 }
 
 /// Application name for an ID from the dashboard's application list, or the
-/// ID outside the dashboard (e.g. on the CLI approval page).
+/// ID outside the dashboard (e.g. on the CLI approval page) and until the
+/// list loads. Tracks the list, so views calling it fill in the names later.
 fn application_name(id: &ApplicationId) -> String {
     use_context::<super::DashboardContext>()
         .and_then(|context| {
-            context.signals.applications.with_untracked(|rows| {
+            context.signals.applications.with(|rows| {
                 rows.iter()
                     .find(|row| row.application.id == *id)
                     .map(|row| row.application.name.clone())
@@ -64,17 +65,22 @@ pub(super) fn describe(grants: &Grants) -> Vec<String> {
         .collect()
 }
 
-/// A compact list of grants, or "No access".
+/// A compact list of grants, or "No access", naming applications once the
+/// dashboard's application list loads.
 pub(super) fn summary(grants: &Grants) -> AnyView {
-    let lines = describe(grants);
-    if lines.is_empty() {
-        return view! { <span class="muted">"No access"</span> }.into_any();
-    }
-    view! {
-        <ul class="grant-list">
-            {lines.into_iter().map(|line| view! { <li>{line}</li> }).collect_view()}
-        </ul>
-    }
+    let grants = grants.clone();
+    (move || {
+        let lines = describe(&grants);
+        if lines.is_empty() {
+            return view! { <span class="muted">"No access"</span> }.into_any();
+        }
+        view! {
+            <ul class="grant-list">
+                {lines.into_iter().map(|line| view! { <li>{line}</li> }).collect_view()}
+            </ul>
+        }
+        .into_any()
+    })
     .into_any()
 }
 
