@@ -41,7 +41,7 @@ generated from the manifest's
 [JSON Schema](manifest.md#validation-and-editor-support), so your editor shows
 the same descriptions. For how the settings work together, read the
 [application manifest](manifest.md) reference and the guides, such as
-[HTTP ingress](../guides/ingress.md).
+[serving an application over HTTPS](../networking/routes.md).
 
 Each table's section is headed by the line that starts it in the file, such
 as `[[spec.services]]`. Each setting is named by its full TOML path:
@@ -292,10 +292,12 @@ impl<'a> Renderer<'a> {
     /// Writes a table's section, then the sections of the tables nested in
     /// it.
     fn section(&mut self, Section { path, table }: Section<'a>) -> Result<()> {
+        // "table" keeps the section's anchor, such as `#ingressprivate-table`,
+        // apart from its setting's entry in the parent table, `#ingressprivate`.
         let heading = if path.is_empty() {
             "Top level".to_owned()
         } else {
-            format!("`{}`", Self::header(&path))
+            format!("`{}` table", Self::header(&path))
         };
         let description = table
             .description

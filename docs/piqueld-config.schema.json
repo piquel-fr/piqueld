@@ -13,7 +13,7 @@
         },
         "email": {
           "default": null,
-          "description": "An email address the CA may send expiry and policy notices to.",
+          "description": "An email address the CA may send expiry and policy notices to.\npiqueld sends it only when it first registers its account with the CA.",
           "type": [
             "string",
             "null"
