@@ -112,7 +112,7 @@ returns to its own branch. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
 A deployed environment's page also offers **Stop**, which confirms, then
-[stops](api.md#stopped-environments) it: the gateway withdraws its routes and
+[stops](reference/api.md#stopped-environments) it: the gateway withdraws its routes and
 its services scale to zero, keeping their configuration and volumes. Its
 health then shows **Stopped** on its page, in the Environments list, and on the
 application, and its Source card says pushes don't deploy it. **Start** runs it

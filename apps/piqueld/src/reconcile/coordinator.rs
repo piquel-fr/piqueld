@@ -463,8 +463,9 @@ impl<D: DockerApi> Controller<D> {
         let request = if application.delete_intent() {
             self.delete_request(application.id())
         } else if let Some(target) = target {
+            let stopped = self.store.is_stopped(application.id()).await?;
             PlanRequest::Reconcile {
-                desired: self.runtime_target(target, &[], &observed).await?,
+                desired: self.runtime_target(target, &[], &observed, stopped).await?,
             }
         } else {
             return Ok(());
@@ -595,7 +596,8 @@ impl<D: DockerApi> Controller<D> {
         target: &piqueld_core::ResolvedApplication,
         observed: &piqueld_core::ObservedApplication,
     ) -> Result<bool, StoreError> {
-        let desired = self.runtime_target(target, &[], observed).await?;
+        let stopped = self.store.is_stopped(&target.id).await?;
+        let desired = self.runtime_target(target, &[], observed, stopped).await?;
         let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, observed);
         Ok(
             plan.is_blocked()
@@ -679,7 +681,7 @@ impl<D: DockerApi> Controller<D> {
         let observed = self.docker.observe(id).await?;
         let stopped = self.store.is_stopped(id).await?;
         let desired = self
-            .runtime_target(target, &accepted_routes, &observed)
+            .runtime_target(target, &accepted_routes, &observed, stopped)
             .await?;
         let mut plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
         if plan.is_blocked() {

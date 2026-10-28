@@ -321,7 +321,7 @@ impl<D: DockerApi> Controller<D> {
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
                     desired: self
-                        .runtime_target(desired, &accepted_routes, &observed)
+                        .runtime_target(desired, &accepted_routes, &observed, stopped)
                         .await?,
                 },
                 _ => request.clone(),

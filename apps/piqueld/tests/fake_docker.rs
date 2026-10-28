@@ -1152,18 +1152,19 @@ async fn stopped_environments_run_no_replicas_until_started_or_deployed() {
     harness.finish(&first).await;
     let id = first.environment_id.clone();
     let health = async || harness.store.status(&id).await.unwrap().runtime_health;
+    let replicas = async || harness.docker.observe(&id).await.unwrap().services[0].replicas;
 
     let stopped = applications.stop(&id).await.unwrap();
     assert_eq!(stopped.id, first.id, "the rolled out deployment runs again");
     harness.finish(&stopped).await;
-    assert_eq!(harness.replicas().await, 0);
+    assert_eq!(replicas().await, 0);
     assert_eq!(health().await.as_deref(), Some("stopped"));
     harness.scan().await;
-    assert_eq!(harness.replicas().await, 0, "repair keeps it stopped");
+    assert_eq!(replicas().await, 0, "repair keeps it stopped");
 
     let started = applications.reconcile(&id, None).await.unwrap();
     harness.finish(&started).await;
-    assert_eq!(harness.replicas().await, 1);
+    assert_eq!(replicas().await, 1);
     assert_eq!(health().await.as_deref(), Some("ready"));
 
     let mut unstable = manifest();
@@ -1184,16 +1185,12 @@ async fn stopped_environments_run_no_replicas_until_started_or_deployed() {
         "a deployment that never rolled out is not retried"
     );
     harness.scan().await;
-    assert_eq!(
-        harness.replicas().await,
-        0,
-        "repair stops the active target"
-    );
+    assert_eq!(replicas().await, 0, "repair stops the active target");
 
     harness.docker.arm_tag_flips(0).await;
     let deployed = harness.apply(manifest(), None).await;
     harness.finish(&deployed).await;
-    assert_eq!(harness.replicas().await, 1);
+    assert_eq!(replicas().await, 1);
     assert!(!harness.store.get(&id).await.unwrap().environment.stopped());
 }
 
@@ -3468,6 +3465,27 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
     );
     assert!(rollout[6..].contains(&"ensure web".to_owned()));
     assert!(rollout[6..].contains(&"ensure other".to_owned()));
+}
+
+#[tokio::test]
+async fn jobs_of_a_deployment_stopped_before_them_still_reach_their_dependencies() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness.apply(manifest_with_job_dependencies(), None).await;
+    let id = &operation.environment_id;
+    harness.applications().stop(id).await.unwrap();
+    harness.finish(&operation).await;
+    assert_eq!(
+        harness.docker.job_starts.lock().await[0].services,
+        2,
+        "the migration's dependencies run"
+    );
+    let observed = harness.docker.observe(id).await.unwrap();
+    assert!(
+        observed
+            .services
+            .iter()
+            .all(|service| service.replicas == 0)
+    );
 }
 
 #[tokio::test]
