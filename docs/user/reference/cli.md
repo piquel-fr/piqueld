@@ -255,7 +255,6 @@ stored secret whose access no longer allows the environment. `preview history` a
 `preview restore` do the same for a preview.
 
 A [preview](manifest.md#previews) is a disposable deployment of
-A [preview](manifest.md#previews) is a disposable deployment of
 one branch of a repository-backed application. `preview` commands address a
 preview by stable ID, then slug, then branch with `--slot` for a slotted one;
 `env` commands and `env list` never show or act on previews. `preview create`

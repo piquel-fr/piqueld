@@ -1026,8 +1026,16 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                 each={move || history.items.get()}
                 key={|d| d.operation.id.clone()}
                 children={move |initial| {
+                    let newer = {
+                        let id = initial.operation.id.clone();
+                        Signal::derive(move || {
+                            history.items.with(|items| {
+                                items.first().is_some_and(|newest| newest.operation.id != id)
+                            })
+                        })
+                    };
                     let deployment = live_row(history.items, initial, |d| &d.operation.id);
-                    view! { <DeploymentCard deployment={deployment} /> }
+                    view! { <DeploymentCard deployment={deployment} newer={newer} /> }
                 }}
             />
             {load_older(
@@ -1042,9 +1050,11 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
 
 /// Expandable deployment summary with details, snapshot and attempts tabs.
 /// Starts expanded when it matches the `?deployment=` query; attempts load
-/// lazily the first time their tab is opened.
+/// lazily the first time their tab is opened. `newer` is whether a newer
+/// deployment is listed: one that failed before replacing the current target
+/// leaves Restore offered on it.
 #[component]
-fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
+fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> impl IntoView {
     let context = editor();
     let application = context.id();
     let initial = deployment.get_untracked();
@@ -1110,8 +1120,8 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                             ..
                         } = deployment.get();
                         let restore = (succeeded_at_ms.is_some()
-                            && !current_target
-                            && context.can(AppPermission::Deploy))
+                            && (!current_target || newer.get())
+                            && context.can_restore())
                             .then(|| {
                                 let id = op.id.clone();
                                 view! {
@@ -1212,6 +1222,19 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
 }
 
 impl EditorContext {
+    /// Whether the caller may restore deployments of the shown environment:
+    /// `apps:deploy`, or `previews:deploy` in a preview.
+    fn can_restore(self) -> bool {
+        let preview = self
+            .selected_environment()
+            .is_some_and(|environment| environment.preview().is_some());
+        self.can(if preview {
+            AppPermission::PreviewsDeploy
+        } else {
+            AppPermission::Deploy
+        })
+    }
+
     /// Confirms, then restores `deployment` of the shown environment or
     /// preview exactly as it ran.
     fn restore(self, deployment: String) {

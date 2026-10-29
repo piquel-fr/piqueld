@@ -380,8 +380,8 @@ impl Mutation {
     /// environment's, for environment changes), whose repository connection
     /// is currently `connection`: `Write`, and `Deploy` too for saves and
     /// edits that deploy, and for changes sync then deploys (see
-    /// [`Self::deploys_on_push`]). Previews need `previews:deploy` to create
-    /// and deploy, and `previews:delete` to delete, which `Deploy` and
+    /// [`Self::deploys_on_push`]). Previews need `previews:deploy` to create,
+    /// deploy and restore, and `previews:delete` to delete, which `Deploy` and
     /// `Delete` include.
     #[must_use]
     pub fn required(
@@ -406,9 +406,10 @@ impl Mutation {
             | Self::Promotion(PromotionMutation::Promote { .. })
             | Self::Reconcile { .. }
             | Self::Stop { .. }
-            | Self::Restore(_)
+            | Self::Restore(Restore::Environment { .. })
             | Self::Sync(_) => &[Deploy],
-            Self::Preview(
+            Self::Restore(Restore::Preview { .. })
+            | Self::Preview(
                 PreviewMutation::Create { .. }
                 | PreviewMutation::Deploy { .. }
                 | PreviewMutation::Local { .. },

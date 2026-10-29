@@ -158,9 +158,10 @@ meanwhile, the daemon refuses it (`promotion_source_changed`) and the dialog
 shows why.
 
 An environment's or preview's **Deployments** tab lists its deployments, newest
-first. Expanding an earlier deployment that succeeded offers **Restore**, which,
-once confirmed, deploys it again exactly as it ran, like `piquelctl env
-restore`: its manifest, images and secret versions, without running its jobs
+first. Expanding a deployment that succeeded offers **Restore**, unless it is the
+newest and already current, so you can also return to it after a newer
+deployment failed. Once confirmed, it deploys the deployment again exactly as it
+ran, like `piquelctl env restore`: its manifest, images and secret versions, without running its jobs
 and without reverting volume contents or migrations. The restore is a new
 deployment whose origin reads "Restored from deployment \<id>", and becomes the
 current target. A deployment whose images or secret versions are gone is

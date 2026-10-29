@@ -56,3 +56,33 @@ test('an earlier deployment is restored from the deployment history', async ({ p
   await expect(cards.nth(1)).toContainText('Origin');
   await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 });
+
+test('the current deployment is offered for restore after a newer one failed', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
+  const app = saved.application_id as string;
+  const accepted = await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
+  const earlier = accepted.operation_id as string;
+  // A newer deployment failed before replacing the earlier one, which stays
+  // the current target.
+  await page.route(url => url.pathname === `/api/v1/environments/${app}/deployments`, async (route: Route) => {
+    const { data } = await (await route.fetch()).json();
+    const deployment = data.items.find((item: { operation: { id: string } }) => item.operation.id === earlier);
+    const current = { ...deployment, succeeded_at_ms: Date.now(), current_target: true, last_successful: true };
+    const failed = {
+      ...deployment,
+      operation: { ...deployment.operation, id: 'operation-0123456789abcdf0', state: 'failed' },
+      succeeded_at_ms: null,
+      current_target: false,
+      last_successful: false,
+    };
+    await route.fulfill({ json: { data: { items: [failed, current], next_cursor: null } } });
+  });
+
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await environmentTab(page, 'Deployments').click();
+  const cards = page.locator('.expander', { hasText: 'Deployment #' });
+  await expect(cards).toHaveCount(2);
+  await cards.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
+});
