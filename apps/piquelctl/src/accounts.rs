@@ -764,12 +764,8 @@ pub(crate) struct AuditArgs {
     /// Only show the requests with this outcome.
     #[arg(long, value_parser = one_of!(AuditOutcome::ALL, AuditOutcome::parse, AuditArgs::describe_outcome))]
     outcome: Option<AuditOutcome>,
-    /// Read the page after this cursor, which the previous page printed.
-    #[arg(long)]
-    cursor: Option<String>,
-    /// Show at most this many requests, from 1 to 100.
-    #[arg(long, default_value_t = piqueld_client::DEFAULT_PAGE_SIZE, value_parser = clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE)))]
-    limit: u16,
+    #[command(flatten)]
+    page: crate::support::PageArgs,
 }
 
 fn parse_tailnet(value: &str) -> std::result::Result<TailnetBinding, String> {
@@ -832,7 +828,7 @@ impl AuditArgs {
             outcome: self.outcome,
         };
         let page = client
-            .audit_events(&filter, self.cursor.as_deref(), self.limit)
+            .audit_events(&filter, self.page.cursor.as_deref(), self.page.limit)
             .await?;
         console.emit(&page)
     }

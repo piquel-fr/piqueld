@@ -541,7 +541,7 @@ Options:
   - `denied`: Refused: missing credentials or permission, or a target hidden from the caller.
   - `failed`: Authorized, but failed.
 - `--cursor <CURSOR>`: Read the page after this cursor, which the previous page printed.
-- `--limit <LIMIT>`: Show at most this many requests, from 1 to 100. Default: `50`.
+- `--limit <LIMIT>`: Show at most this many items, from 1 to 100. Default: `50`.
 
 Commands:
 
@@ -641,8 +641,8 @@ Commands:
 - [`piquelctl notification set`](#piquelctl-notification-set): Create a notification destination, or change one.
 - [`piquelctl notification test`](#piquelctl-notification-test): Send a test notification to a destination now.
 - [`piquelctl notification delete`](#piquelctl-notification-delete): Delete a notification destination and cancel its pending deliveries.
-- [`piquelctl notification deliveries`](#piquelctl-notification-deliveries): List notification deliveries, newest first.
-- [`piquelctl notification retry`](#piquelctl-notification-retry): Try a failed delivery again, with the destination's current settings.
+- [`piquelctl notification deliveries`](#piquelctl-notification-deliveries): List notification deliveries, newest first, with their state, attempts and last error.
+- [`piquelctl notification retry`](#piquelctl-notification-retry): Try a failed delivery again now, with the destination's current settings.
 
 ## `piquelctl notification list`
 
@@ -729,7 +729,7 @@ Options:
 
 ## `piquelctl notification deliveries`
 
-List notification deliveries, newest first.
+List notification deliveries, newest first, with their state, attempts and last error.
 
 Needs `system:read`.
 
@@ -740,12 +740,13 @@ piquelctl notification deliveries [OPTIONS]
 Options:
 
 - `--cursor <CURSOR>`: Read the page after this cursor, which the previous page printed.
+- `--limit <LIMIT>`: Show at most this many items, from 1 to 100. Default: `50`.
 
 ## `piquelctl notification retry`
 
-Try a failed delivery again, with the destination's current settings.
+Try a failed delivery again now, with the destination's current settings.
 
-Needs `system:operate`.
+Needs `system:operate`. The daemon refuses a delivery that hasn't failed or that the destination no longer receives, and says why.
 
 ```text
 piquelctl notification retry [OPTIONS] <ID>
@@ -3750,4 +3751,4 @@ Options:
 - `--application <APPLICATION_ID>`: Only show events of the application with this ID, and of all its environments, including deleted ones.
 - `--environment <ENVIRONMENT_ID>`: Only show events of the environment with this ID, even a deleted one.
 - `--cursor <CURSOR>`: Read the page after this cursor, which the previous page printed.
-- `--limit <LIMIT>`: Show at most this many events, from 1 to 100. Default: `50`.
+- `--limit <LIMIT>`: Show at most this many items, from 1 to 100. Default: `50`.

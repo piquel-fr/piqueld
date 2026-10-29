@@ -309,16 +309,8 @@ pub(crate) enum Command {
         /// Only show events of the environment with this ID, even a deleted one.
         #[arg(long, value_name = "ENVIRONMENT_ID")]
         environment: Option<String>,
-        /// Read the page after this cursor, which the previous page printed.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Show at most this many events, from 1 to 100.
-        #[arg(
-            long,
-            default_value_t = piqueld_client::DEFAULT_PAGE_SIZE,
-            value_parser = clap::value_parser!(u16).range(1..=i64::from(piqueld_client::MAX_PAGE_SIZE))
-        )]
-        limit: u16,
+        #[command(flatten)]
+        page: crate::support::PageArgs,
     },
 }
 
