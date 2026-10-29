@@ -80,6 +80,25 @@ test('adds a service and edits it on the service page', async ({ page, account }
   await expect(page.locator('a.list-row', { hasText: 'web' })).toContainText('3 replicas');
 });
 
+test('renames a service from its page and opens the renamed page', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  await addService(page, 'web', 'nginx:1.27');
+  await page.locator('a.list-row', { hasText: 'web' }).click();
+  // Renaming remounts the page, so other unsaved edits block it.
+  const rename = page.getByRole('button', { name: 'Rename service', exact: true });
+  await page.getByLabel('Replicas', { exact: true }).fill('3');
+  await expect(rename).toBeDisabled();
+  await visible(page, 'Discard').click();
+  await rename.click();
+  await page.getByLabel('Service name', { exact: true }).fill('frontend');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page).toHaveURL(/\/services\/frontend$/);
+  await expect(title(page)).toHaveText('frontend');
+  await page.reload();
+  await expect(title(page)).toHaveText('frontend');
+});
+
 test('mounts an inline file whose content is kept verbatim', async ({ page, account }) => {
   void account;
   await createApplication(page);
