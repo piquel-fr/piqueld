@@ -60,7 +60,8 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
   Deploy and navigation.
 - Environment pages, creation, renaming, and deletion, environments declared by
   the manifest, and per-environment logs.
-- Per-environment branches, deployment on push, previews created and pruned from
+- Per-environment branches, one-time branch or commit deployments, deployment
+  on push, previews created and pruned from
   the dashboard, promotion plans, and the Secrets tabs of environments and
   previews.
 - Preservation of unsaved edits while reauthenticating after session revocation.
