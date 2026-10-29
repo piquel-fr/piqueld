@@ -225,21 +225,55 @@ impl Credentials {
         ) {
             return Ok(client);
         }
-        let token = match std::env::var("PIQUELD_TOKEN") {
-            Ok(token) => Some(token),
-            Err(std::env::VarError::NotPresent) => Self::read()?
-                .selected(cli)?
-                .map(|(_, account)| account.token.clone()),
-            Err(_) => {
-                return Err(CliError::new(
-                    ErrorKind::Input,
-                    "PIQUELD_TOKEN must contain valid text",
-                ));
-            }
-        };
-        match token {
+        match Self::token(cli)?.0 {
             Some(token) => Ok(client.with_bearer(&token)?),
             None => Ok(client),
+        }
+    }
+    /// The bearer token requests send, and where it comes from.
+    pub(crate) fn token(cli: &Cli) -> Result<(Option<String>, TokenSource)> {
+        match std::env::var("PIQUELD_TOKEN") {
+            Ok(token) => Ok((Some(token), TokenSource::Environment)),
+            Err(std::env::VarError::NotPresent) => {
+                let path = Self::path()?;
+                Ok(match Self::read_at(&path)?.selected(cli)? {
+                    Some((_, account)) => (
+                        Some(account.token.clone()),
+                        TokenSource::Saved {
+                            username: account.username.clone(),
+                            path,
+                        },
+                    ),
+                    None => (None, TokenSource::None),
+                })
+            }
+            Err(_) => Err(CliError::new(
+                ErrorKind::Input,
+                "PIQUELD_TOKEN must contain valid text",
+            )),
+        }
+    }
+}
+/// Where the bearer token requests send comes from.
+///
+/// ```text
+/// environment variable PIQUELD_TOKEN
+/// saved login "alice" in ~/.config/piqueld/credentials.json
+/// none
+/// ```
+pub(crate) enum TokenSource {
+    Environment,
+    Saved { username: String, path: PathBuf },
+    None,
+}
+impl std::fmt::Display for TokenSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Environment => formatter.write_str("environment variable PIQUELD_TOKEN"),
+            Self::Saved { username, path } => {
+                write!(formatter, "saved login {username:?} in {}", path.display())
+            }
+            Self::None => formatter.write_str("none"),
         }
     }
 }

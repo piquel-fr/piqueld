@@ -16,6 +16,8 @@ pub enum Expensive {
     Exec,
     /// Event streams, for as long as they stay open.
     EventStream,
+    /// Installation checks, which probe the network and Docker.
+    Checks,
 }
 impl Expensive {
     /// How many of this kind may run at once.
@@ -25,6 +27,7 @@ impl Expensive {
             Self::Logs => 8,
             Self::Exec => 32,
             Self::EventStream => 128,
+            Self::Checks => 2,
         }
     }
 
@@ -40,6 +43,7 @@ pub(super) struct Admission {
     logs: Arc<Semaphore>,
     exec: Arc<Semaphore>,
     event_streams: Arc<Semaphore>,
+    checks: Arc<Semaphore>,
 }
 
 impl Default for Admission {
@@ -49,6 +53,7 @@ impl Default for Admission {
             logs: Expensive::Logs.budget(),
             exec: Expensive::Exec.budget(),
             event_streams: Expensive::EventStream.budget(),
+            checks: Expensive::Checks.budget(),
         }
     }
 }
@@ -61,6 +66,7 @@ impl Admission {
             Expensive::Logs => &self.logs,
             Expensive::Exec => &self.exec,
             Expensive::EventStream => &self.event_streams,
+            Expensive::Checks => &self.checks,
         }
     }
 }

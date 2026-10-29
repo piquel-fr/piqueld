@@ -71,6 +71,7 @@ Commands:
 - [`piquelctl status`](#piquelctl-status): Show whether the daemon responds, its version, and the health of its subsystems.
 - [`piquelctl resources`](#piquelctl-resources): Show the daemon process's resource usage, storage, retained history, and queues, measured at most every 5 seconds (requires system:read).
 - [`piquelctl settings`](#piquelctl-settings): Show the daemon's effective host settings, read-only (requires system:read). Change them in its TOML configuration and restart it.
+- [`piquelctl doctor`](#piquelctl-doctor): Check this CLI's connection and the installation's health.
 - [`piquelctl dns`](#piquelctl-dns): Inspect the daemon's DNS providers.
 - [`piquelctl app`](#piquelctl-app): Create, inspect, edit and deploy applications.
 - [`piquelctl env`](#piquelctl-env): Create, inspect, deploy and delete an application's environments.
@@ -781,6 +782,16 @@ Show the daemon's effective host settings, read-only (requires system:read). Cha
 
 ```text
 piquelctl settings [OPTIONS]
+```
+
+## `piquelctl doctor`
+
+Check this CLI's connection and the installation's health.
+
+Shows the resolved endpoint and credential, then each daemon check as pass, warn, fail, or skip with a next step. Exits 6 when a check fails.
+
+```text
+piquelctl doctor [OPTIONS]
 ```
 
 ## `piquelctl dns`

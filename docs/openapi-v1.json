@@ -1569,6 +1569,16 @@
         ],
         "type": "object"
       },
+      "CheckStatus": {
+        "description": "A check's verdict. Only `fail` makes `piquelctl doctor` exit nonzero.",
+        "enum": [
+          "pass",
+          "warn",
+          "fail",
+          "skip"
+        ],
+        "type": "string"
+      },
       "Convergence": {
         "description": "Aggregate health state derived from observed tasks.",
         "enum": [
@@ -5866,6 +5876,31 @@
               }
             ],
             "description": "A manually set secret in an application's store: its metadata and access,\nnever its value."
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "Envelope_SystemChecks": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "Installation health from `GET /api/v1/system/checks`, rendered by\n`piquelctl doctor` and the dashboard. Each check runs against the live\ninstallation with a bounded timeout.",
+            "properties": {
+              "checks": {
+                "description": "One verdict per check, in a stable order.",
+                "items": {
+                  "$ref": "#/components/schemas/SystemCheck"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "checks"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -11501,6 +11536,63 @@
           "sync:webhook"
         ],
         "type": "string"
+      },
+      "SystemCheck": {
+        "description": "One check's verdict, what was found, and what to do about it.",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/SystemCheckId",
+            "description": "Which check this is."
+          },
+          "message": {
+            "description": "What was found, without secrets.",
+            "type": "string"
+          },
+          "next_step": {
+            "description": "What to do next; absent when nothing is needed.",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CheckStatus",
+            "description": "The verdict."
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "message"
+        ],
+        "type": "object"
+      },
+      "SystemCheckId": {
+        "description": "Identifies a check. New features add their own variant.",
+        "enum": [
+          "public_url",
+          "docker",
+          "ingress_ports",
+          "secret_key",
+          "runtime_directory",
+          "tailnet",
+          "backups"
+        ],
+        "type": "string"
+      },
+      "SystemChecks": {
+        "description": "Installation health from `GET /api/v1/system/checks`, rendered by\n`piquelctl doctor` and the dashboard. Each check runs against the live\ninstallation with a bounded timeout.",
+        "properties": {
+          "checks": {
+            "description": "One verdict per check, in a stable order.",
+            "items": {
+              "$ref": "#/components/schemas/SystemCheck"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "checks"
+        ],
+        "type": "object"
       },
       "SystemStatus": {
         "description": "Current control-plane status.",
@@ -30371,6 +30463,46 @@
         },
         "summary": "Deploys the head of a preview's branch.",
         "x-piqueld-access": "previews:deploy"
+      }
+    },
+    "/api/v1/system/checks": {
+      "get": {
+        "description": "Inspects the live installation read-only: the public URL and its\ncertificate, Docker against ingress requirements, ports 80/443, the secret\nkey, the API socket's permissions, the tailnet node, and backups. Each\ncheck passes, warns, fails, or is skipped, with a next step when action is\nneeded. Returns 503 when the daemon has no effective configuration, or\n`server_busy` while two runs are already in progress.",
+        "operationId": "systemChecks",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SystemChecks"
+                }
+              }
+            },
+            "description": "Installation checks"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Checks the installation's health.",
+        "x-piqueld-access": "system:read"
       }
     },
     "/api/v1/system/configuration": {

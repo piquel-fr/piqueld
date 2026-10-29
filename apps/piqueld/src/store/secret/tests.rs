@@ -952,3 +952,58 @@ async fn stored_secret_writes_use_the_callers_current_grants() {
         Err(StoreError::Denied(denied)) if denied == refused
     ));
 }
+
+#[tokio::test]
+async fn secret_key_check_reports_the_key_without_changing_it() {
+    use piqueld_core::api::CheckStatus;
+    let temp = tempfile::tempdir().unwrap();
+    let key = temp.path().join("secrets.key");
+    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let status = async || store.secret_key_check().await.status;
+    // A new installation has no key yet, and checking does not create one.
+    assert_eq!(status().await, CheckStatus::Pass);
+    assert!(!key.exists());
+
+    let app = with_secret(&application());
+    store
+        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .await
+        .unwrap();
+    store
+        .put_stored_secret(Daemon, app.id(), "token", 0, b"value".to_vec(), None)
+        .await
+        .unwrap();
+    assert_eq!(status().await, CheckStatus::Pass);
+    let original = Zeroizing::new(std::fs::read(&key).unwrap());
+
+    std::fs::set_permissions(&key, std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
+    assert_eq!(status().await, CheckStatus::Fail);
+    std::fs::write(&key, [42; 32]).unwrap();
+    std::fs::set_permissions(&key, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let mismatched = store.secret_key_check().await;
+    assert_eq!(mismatched.status, CheckStatus::Fail);
+    assert!(mismatched.next_step.unwrap().contains("recover-key"));
+    std::fs::remove_file(&key).unwrap();
+    assert_eq!(status().await, CheckStatus::Fail);
+    assert!(
+        !key.exists(),
+        "a key bound to stored values is never regenerated"
+    );
+
+    // Without a verifier, the stored values decide, and none is stored.
+    sqlx::query("DELETE FROM secret_key_verification")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(status().await, CheckStatus::Fail, "missing key");
+    std::fs::write(&key, [42; 32]).unwrap();
+    std::fs::set_permissions(&key, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    assert_eq!(status().await, CheckStatus::Fail, "wrong key");
+    std::fs::write(&key, &*original).unwrap();
+    assert_eq!(status().await, CheckStatus::Pass, "original key");
+    let verifiers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM secret_key_verification")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(verifiers, 0);
+}

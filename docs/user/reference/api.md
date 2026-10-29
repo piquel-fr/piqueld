@@ -26,9 +26,10 @@ Clients poll for progress.
 Request bodies are limited to 2 MiB, and to 64 KiB on the public sign-in
 endpoints (16 KiB for device starts); larger ones fail with `413
 request_body_too_large`. A body that sends nothing for a minute fails with
-`408 request_body_timeout`. Deployment analytics, logs, commands and event
-streams each run a bounded number at once across all listeners (4 analytics
-reads, 8 log reads, 32 commands, 128 event streams); more fail at once with
+`408 request_body_timeout`. Deployment analytics, logs, commands, event
+streams and installation checks each run a bounded number at once across all
+listeners (4 analytics reads, 8 log reads, 32 commands, 128 event streams, 2
+installation check runs); more fail at once with
 `503 server_busy`, which records no diagnostic. Retry them shortly.
 
 An application owns the saved manifest and its configuration revision
@@ -109,6 +110,7 @@ when the complete normalized manifest is needed.
 | --- | --- | --- |
 | GET | `/api/v1/system/status` | Daemon status, with `tailscale`: the [tailnet node](configuration.md#tailnet-node)'s login and certificate state; `images`: the built images cleanup kept, the total size of those it removed since the daemon started, and when it last ran; DNS providers and certificates only with `system:read`; preview counts per readable application; `snapshots`: the largest [local snapshot](#local-snapshots) upload, working tree and file count the daemon accepts |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings (`system:read`); 503 `configuration_unavailable` without them |
+| GET | `/api/v1/system/checks` | Installation checks, each `pass`, `warn`, `fail` or `skip` with a next step (`system:read`); see [`piquelctl doctor`](cli.md#installation-checks) |
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |

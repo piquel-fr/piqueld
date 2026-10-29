@@ -23,6 +23,8 @@ pub(crate) enum ErrorKind {
     Unavailable,
     /// An awaited operation ended unsuccessfully (exit 5).
     Operation,
+    /// An installation check failed (exit 6).
+    Unhealthy,
     /// Ctrl-C (exit 130, the shell convention for SIGINT).
     Interrupted,
 }
@@ -35,6 +37,7 @@ impl ErrorKind {
             Self::Conflict => 3,
             Self::Unavailable => 4,
             Self::Operation => 5,
+            Self::Unhealthy => 6,
             Self::Interrupted => 130,
         }
     }
@@ -47,6 +50,7 @@ impl ErrorKind {
             Self::Conflict => CliCode::Conflict,
             Self::Unavailable => CliCode::Unavailable,
             Self::Operation => CliCode::OperationFailed,
+            Self::Unhealthy => CliCode::ChecksFailed,
             Self::Interrupted => CliCode::Interrupted,
         }
     }
@@ -83,6 +87,8 @@ pub(crate) enum CliCode {
     DeploymentSuperseded,
     /// An awaited operation ended unsuccessfully.
     OperationFailed,
+    /// `piquelctl doctor` found a failed installation check.
+    ChecksFailed,
     /// Ctrl-C.
     Interrupted,
 }

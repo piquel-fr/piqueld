@@ -1,7 +1,7 @@
 //! Authenticate the database's key before accepting any new ciphertext.
 use super::{Envelope, SecretCipher, SecretOwner, Store, StoreError};
 use crate::secrets::KeyFailure;
-use piqueld_core::api::SecretKeyRecovery;
+use piqueld_core::api::{CheckStatus, SecretKeyRecovery, SystemCheck, SystemCheckId};
 
 /// What a master key makes of the stored values and webhook secrets.
 enum Ciphertext {
@@ -14,6 +14,90 @@ enum Ciphertext {
 }
 
 impl Store {
+    /// Checks without side effects that `secrets.key` exists while values
+    /// need it, is private, and matches the stored verifier or, without one,
+    /// the stored values. Unlike [`Self::verified_secret_cipher`], it never
+    /// generates a key or stores a verifier.
+    pub(crate) async fn secret_key_check(&self) -> SystemCheck {
+        self.inspect_secret_key().await.unwrap_or_else(|error| {
+            SystemCheck::new(
+                SystemCheckId::SecretKey,
+                CheckStatus::Fail,
+                format!("could not read the stored secrets: {error}"),
+            )
+            .next_step("Check the database; daemon logs have details.")
+        })
+    }
+
+    /// [`Self::secret_key_check`]'s verdict, short of database errors.
+    async fn inspect_secret_key(&self) -> Result<SystemCheck, StoreError> {
+        let check =
+            |status, message: String| SystemCheck::new(SystemCheckId::SecretKey, status, message);
+        let path = self.secret_key_path.display();
+        let mut tx = self.snapshot().await?;
+        let verifier = Self::secret_key_verifier_on(&mut *tx).await?;
+        // Values stored without a verifier still need their key, as in
+        // `verified_secret_cipher`.
+        let bound = verifier.is_some()
+            || !matches!(
+                Self::probe_ciphertext_on(&mut tx, None).await?,
+                Ciphertext::None
+            );
+        match self.secret_key_path.try_exists() {
+            Ok(false) if bound => {
+                return Ok(check(CheckStatus::Fail, KeyFailure::Missing.to_string()).next_step(
+                    format!("Restore {path} from backup, or discard every stored value with `piquelctl secrets recover-key`."),
+                ));
+            }
+            Ok(false) => {
+                return Ok(check(
+                    CheckStatus::Pass,
+                    format!("no secret is stored yet; {path} is created by the first secret write"),
+                ));
+            }
+            Ok(true) => {}
+            Err(error) => {
+                return Ok(check(
+                    CheckStatus::Fail,
+                    format!("could not inspect {path}: {error}"),
+                )
+                .next_step("Check the data directory's permissions."));
+            }
+        }
+        let opened = match SecretCipher::open(&self.secret_key_path) {
+            Ok(cipher) => match &verifier {
+                Some(verifier) => cipher.verify(verifier),
+                None if bound => match Self::probe_ciphertext_on(&mut tx, Some(&cipher)).await? {
+                    Ciphertext::Decrypts => Ok(()),
+                    _ => Err(KeyFailure::AuthenticationFailed.into()),
+                },
+                None => Ok(()),
+            },
+            Err(error) => Err(error),
+        };
+        Ok(match opened {
+            Ok(()) if bound => check(
+                CheckStatus::Pass,
+                format!("{path} is private and matches the database"),
+            ),
+            Ok(()) => check(
+                CheckStatus::Pass,
+                format!("{path} is private; the first secret write binds it to the database"),
+            ),
+            Err(error) => {
+                let step = match KeyFailure::of(&error) {
+                    Some(KeyFailure::NotPrivate) => format!(
+                        "Make {path} a regular file owned by the daemon user with mode 0600."
+                    ),
+                    _ => format!(
+                        "Restore the original {path} from backup, or discard every stored value with `piquelctl secrets recover-key`."
+                    ),
+                };
+                check(CheckStatus::Fail, format!("{error:#}")).next_step(step)
+            }
+        })
+    }
+
     /// Loads the master key and proves it matches the database by decrypting the
     /// stored verifier. The first write binds the key by storing a new verifier
     /// in `tx`, so it only persists if the caller commits. Without a verifier,
@@ -25,7 +109,7 @@ impl Store {
     ) -> Result<SecretCipher, StoreError> {
         // Without a verifier, the database is new, lost-key recovery discarded
         // every value, or, after outside damage, values still need their key.
-        let Some(verifier) = Self::secret_key_verifier_on(tx).await? else {
+        let Some(verifier) = Self::secret_key_verifier_on(&mut **tx).await? else {
             let encrypted = !matches!(Self::probe_ciphertext_on(tx, None).await?, Ciphertext::None);
             let cipher = SecretCipher::load(&self.secret_key_path, encrypted)
                 .map_err(StoreError::SecretSource)?;
@@ -65,12 +149,12 @@ impl Store {
 
     /// The verifier binding the master key to the database, stored with the
     /// first value it encrypted.
-    async fn secret_key_verifier_on(
-        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    async fn secret_key_verifier_on<'e>(
+        executor: impl sqlx::SqliteExecutor<'e>,
     ) -> Result<Option<Envelope>, StoreError> {
         Ok(
             sqlx::query!("SELECT nonce,ciphertext FROM secret_key_verification WHERE singleton=1")
-                .fetch_optional(&mut **tx)
+                .fetch_optional(executor)
                 .await
                 .map_err(StoreError::database)?
                 .map(|row| Envelope {
@@ -154,7 +238,7 @@ impl Store {
             piqueld_core::access::GlobalPermission::SystemOperate,
         );
         actor.require_on(&mut tx, operate, None).await?;
-        let verifier = Self::secret_key_verifier_on(&mut tx).await?;
+        let verifier = Self::secret_key_verifier_on(&mut *tx).await?;
         let key = match SecretCipher::load(&self.secret_key_path, true) {
             Ok(cipher) => Ok(cipher),
             Err(error) => match KeyFailure::of(&error) {

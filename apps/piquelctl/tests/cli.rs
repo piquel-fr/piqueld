@@ -599,6 +599,43 @@ fn resources_and_settings_show_the_daemon_measurements_and_host_settings() {
 }
 
 #[test]
+fn doctor_reports_the_connection_and_exits_6_on_a_failed_check() {
+    for (status, code) in [("warn", 0), ("fail", 6)] {
+        let server = start_server(true, 1, move |request| {
+            assert_eq!(request.path, "/api/v1/system/checks");
+            Reply::json(json!({"checks": [
+                {"id": "public_url", "status": "pass", "message": "reachable", "next_step": null},
+                {"id": "secret_key", "status": status, "message": "unusable", "next_step": "restore it"},
+            ]}))
+        });
+        let output = run(&server, &["doctor"]);
+        assert_eq!(output.status.code(), Some(code));
+        let value: Value = serde_json::from_slice(&output.stdout).expect("clean JSON stdout");
+        assert_eq!(value["connection"]["endpoint_source"], "flag --socket");
+        assert_eq!(value["checks"][1]["status"], status);
+        if code == 6 {
+            let error: Value = serde_json::from_slice(&output.stderr).expect("error event");
+            assert_eq!(error["error"]["code"], "checks_failed");
+        }
+        let _ = server.finish();
+    }
+}
+
+#[test]
+fn doctor_reports_the_connection_when_the_daemon_times_out() {
+    let server = start_server(true, 1, |_| {
+        thread::sleep(Duration::from_millis(1500));
+        Reply::json(json!({"checks": []}))
+    });
+    let output = run_with_timeout(&server, &["doctor"], "500ms");
+    assert_eq!(output.status.code(), Some(4));
+    let value: Value = serde_json::from_slice(&output.stdout).expect("clean JSON stdout");
+    assert_eq!(value["connection"]["credential"], "none");
+    assert_eq!(value["checks"], Value::Null);
+    let _ = server.finish();
+}
+
+#[test]
 fn list_paginates_and_includes_reconciliation_status() {
     for unix in [false, true] {
         let mut page_number = 0;
