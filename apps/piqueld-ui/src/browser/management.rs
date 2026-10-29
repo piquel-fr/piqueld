@@ -401,11 +401,12 @@ impl EditorContext {
         })
     }
 
-    /// Whether the caller may not open tab `tab`: logs need `logs:read`, and
-    /// history `events:read`.
+    /// Whether the caller may not open tab `tab`: logs need `logs:read`, the
+    /// terminal `apps:exec`, and history `events:read`.
     fn tab_hidden(self, tab: &str) -> bool {
         match tab {
             "Logs" => !self.can(AppPermission::LogsRead),
+            "Terminal" => !self.can(AppPermission::Exec),
             "Events" => !self.can(AppPermission::EventsRead),
             _ => false,
         }

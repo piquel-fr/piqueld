@@ -62,7 +62,8 @@ pub(super) async fn open(
         .strip_prefix("http")
         .map(|rest| format!("ws{rest}"))
         .ok_or_else(|| ClientError::invalid_request("dashboard origin is not HTTP"))?;
-    let socket = WebSocket::new(&url).map_err(|error| ClientError::invalid_request(js_error(&error)))?;
+    let socket =
+        WebSocket::new(&url).map_err(|error| ClientError::invalid_request(js_error(&error)))?;
     socket.set_binary_type(BinaryType::Arraybuffer);
     let (sender, mut events) = unbounded();
     let opened = Closure::<dyn FnMut(Event)>::new({
