@@ -361,7 +361,7 @@ impl BollardDocker {
             .count();
         // Tasks of a service scaled to zero shut down after Swarm stops
         // wanting them running.
-        let stopping = replicas == 0 && tasks.iter().any(|task| task.state == TaskState::Running);
+        let stopping = replicas == 0 && tasks.iter().any(|task| task.state.is_live());
         match (running, failed) {
             (running, _) if running == usize::from(replicas) && !stopping => Convergence::Converged,
             (0, failed) if failed > 0 => Convergence::Failed,

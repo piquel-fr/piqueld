@@ -130,11 +130,7 @@ impl Store {
         {
             // Stopped once Swarm runs nothing, not merely once the flag is set.
             let down = observed.services.iter().all(|service| {
-                service.replicas == 0
-                    && service
-                        .tasks
-                        .iter()
-                        .all(|task| task.state != piqueld_core::resource::TaskState::Running)
+                service.replicas == 0 && service.tasks.iter().all(|task| !task.state.is_live())
             });
             if stopped && down { "stopped" } else { "ready" }
         } else {

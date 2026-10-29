@@ -1476,6 +1476,15 @@ pub enum TaskState {
     Unknown,
 }
 
+impl TaskState {
+    /// Whether the task's container is up, possibly still waiting on its
+    /// healthcheck.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Starting | Self::Running)
+    }
+}
+
 /// Sanitized observation of one Docker task.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
