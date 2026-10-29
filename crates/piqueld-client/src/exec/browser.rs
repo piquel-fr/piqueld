@@ -98,8 +98,8 @@ pub(super) async fn open(
         Some(SocketEvent::Open) => {}
         Some(SocketEvent::Closed(event)) => {
             return Err(exchange(&format!(
-                "the daemon refused the connection (close code {}); \
-                 the session may have expired",
+                "the daemon refused the connection (close code {}): \
+                 the session may have expired, or too many commands are running",
                 event.code()
             )));
         }
