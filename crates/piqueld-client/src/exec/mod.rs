@@ -12,8 +12,8 @@ pub use piqueld_core::exec::{
     ExecCommand, ExecCommandError, ExecFrame, ExecInput, ExecOutput, ExecRequest, TerminalSize,
 };
 
-#[cfg_attr(target_arch = "wasm32", path = "exec/browser.rs")]
-#[cfg_attr(not(target_arch = "wasm32"), path = "exec/native.rs")]
+#[cfg_attr(target_arch = "wasm32", path = "browser.rs")]
+#[cfg_attr(not(target_arch = "wasm32"), path = "native.rs")]
 mod socket;
 
 /// Receives output messages from a running command.
