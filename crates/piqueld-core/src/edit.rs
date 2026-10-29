@@ -124,6 +124,8 @@ pub enum ApplicationEdit {
         visibility: Visibility,
     },
     /// Set the visibility ceiling of every preview's routes, `[spec.previews]`.
+    /// Rejected for repository-backed applications, whose previews deploy
+    /// the manifest on their own branch.
     PreviewVisibility(Visibility),
 }
 
@@ -409,6 +411,11 @@ impl ApplicationEdit {
             } => manifest
                 .spec
                 .set_environment_visibility(&environment, visibility),
+            Self::PreviewVisibility(_) if manifest.spec.manifest.is_some() => {
+                return Err(EditError::Incompatible(
+                    "previews deploy the manifest on their own branch: set [spec.previews] visibility there",
+                ));
+            }
             Self::PreviewVisibility(visibility) => manifest.spec.previews.visibility = visibility,
         }
         Ok(())
@@ -644,9 +651,10 @@ pub struct EditOptions {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationEdit, ServiceEdit};
+    use super::{ApplicationEdit, EditError, ServiceEdit};
     use crate::manifest::{
-        ApplicationManifest, ApplicationSpec, Job, JobRun, Metadata, Route, Service, Source,
+        ApplicationManifest, ApplicationSpec, GitRepository, Job, JobRun, Metadata,
+        RepositoryManifest, Route, Service, Source, Visibility,
     };
 
     #[test]
@@ -715,5 +723,31 @@ mod tests {
         assert_eq!(manifest.spec.jobs, [] as [Job; 0]);
         assert_eq!(manifest.spec.services[0].depends_on, [] as [String; 0]);
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn preview_visibility_edits_are_rejected_once_previews_read_a_repository() {
+        let mut manifest = ApplicationManifest {
+            api_version: crate::manifest::APPLICATION_API_VERSION.into(),
+            kind: crate::manifest::APPLICATION_KIND.into(),
+            metadata: Metadata { name: "app".into() },
+            spec: ApplicationSpec::default(),
+        };
+        let edit = ApplicationEdit::PreviewVisibility(Visibility::Public);
+        edit.clone().apply(&mut manifest).unwrap();
+        assert_eq!(manifest.spec.previews.visibility, Visibility::Public);
+        manifest.spec.manifest = Some(RepositoryManifest {
+            repository: GitRepository {
+                url: "https://example.com/app.git".into(),
+                branch: "main".into(),
+                commit: None,
+            },
+            path: "piqueld.toml".into(),
+            sync: crate::sync::RepositorySync::default(),
+        });
+        assert!(matches!(
+            edit.apply(&mut manifest),
+            Err(EditError::Incompatible(_))
+        ));
     }
 }

@@ -911,8 +911,8 @@ with a certificate of its own.
 Hostnames are reserved as for environments: a preview reserves the hostnames
 its last fetched manifest renders, and two previews or environments rendering
 the same hostname conflict with `hostname_conflict`. Preview routes are private
-unless `[spec.previews] visibility = "public"`, which `piquelctl preview
-visibility` and the dashboard's Routes tab also set. Private hostnames need DNS
+unless `[spec.previews] visibility = "public"`, set in the manifest on the
+preview's branch. Private hostnames need DNS
 records pointing at the apps tailnet node (see
 [public and private routes](../guides/ingress.md#public-and-private-routes)).
 

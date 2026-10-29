@@ -66,9 +66,9 @@ pub(crate) enum PreviewCommand {
     /// Cap the visibility of every preview's routes in the saved manifest.
     ///
     /// Each route of a preview gets the stricter of its own visibility and
-    /// this cap, saved in the `[spec.previews]` block. Previews apply it on
-    /// their next deployment. Repository-backed applications set it in their
-    /// manifest instead.
+    /// this cap, saved in the `[spec.previews]` block. Previews deploy the
+    /// manifest on their own branch, so the command fails for
+    /// repository-backed applications: set it in that manifest instead.
     Visibility(VisibilityArgs),
     /// Print the most recent lines of a preview's Docker logs.
     Logs {

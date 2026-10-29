@@ -216,11 +216,21 @@ fn PreviewVisibility() -> impl IntoView {
                 <div>
                     <h3>"Preview visibility"</h3>
                     <p>
-                        "The strictest visibility preview routes get. Private, the default, keeps every preview route on the tailnet, whatever the route itself says; public leaves each route's own visibility. Previews apply it on their next deployment."
+                        "The strictest visibility preview routes get. Private, the default, keeps every preview route on the tailnet, whatever the route itself says; public leaves each route's own visibility."
+                        {move || {
+                            context
+                                .repository_backed()
+                                .then_some(
+                                    " Previews deploy the manifest on their own branch: set [spec.previews] visibility there.",
+                                )
+                        }}
                     </p>
                 </div>
             </header>
-            <fieldset class="stack-sm" disabled={move || context.blocked()}>
+            <fieldset
+                class="stack-sm"
+                disabled={move || context.blocked() || context.repository_backed()}
+            >
                 <label class="field">
                     <span>"Preview route visibility"</span>
                     <select
