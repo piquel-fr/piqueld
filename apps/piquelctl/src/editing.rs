@@ -15,10 +15,10 @@ use clap::{
 };
 use piqueld_client::{
     ApplicationView, ApplyApplicationRequest, ApplyOptions, Build, Client, Export, FileMode,
-    FileSource, GitRepository, HealthCheck, Import, Job, JobRun, JobVolumeAccess, Mount, Redirect,
-    RedirectStatus, RepositoryManifest, Rollout, RolloutOrder, Route, SavedApplication,
-    SecretMount, Service, ServiceFile, Source, SourceRepository, Template, Typed, Variable,
-    Visibility, Volume,
+    FileSource, GitRepository, HealthCheck, Import, Job, JobRun, JobVolumeAccess,
+    ManifestRepository, Mount, Redirect, RedirectStatus, RepositoryManifest, Rollout, RolloutOrder,
+    Route, SavedApplication, SecretMount, Service, ServiceFile, Source, SourceRepository, Template,
+    Typed, Variable, Visibility, Volume,
     edit::{ApplicationEdit, EditOptions, ServiceEdit, Variables},
     sync::RepositorySync,
 };
@@ -442,9 +442,10 @@ pub(crate) struct AddServiceArgs {
     #[arg(required_unless_present = "git", conflicts_with = "git")]
     image: Option<Template>,
     /// Build this Git repository with Docker instead of running an image.
-    /// It takes a clone URL, or a path on the daemon's host.
-    #[arg(long, value_name = "URL")]
-    git: Option<String>,
+    /// It takes a clone URL, a path on the daemon's host, or `self`: the
+    /// manifest's own repository, at the commit the manifest was read from.
+    #[arg(long, value_name = "URL|self")]
+    git: Option<BuildRepository>,
     // Boxed to keep the CLI command enum small.
     #[command(flatten)]
     build: Box<GitBuildArgs>,
@@ -453,21 +454,41 @@ pub(crate) struct AddServiceArgs {
 pub(crate) struct GitSourceArgs {
     #[command(flatten)]
     target: ServiceTarget,
-    /// Git clone URL, or a path on the daemon's host.
-    #[arg(id = "git", value_name = "URL")]
-    url: String,
+    /// Git clone URL, a path on the daemon's host, or `self`: the manifest's
+    /// own repository, at the commit the manifest was read from.
+    #[arg(id = "git", value_name = "URL|self")]
+    repository: BuildRepository,
     // Boxed to keep the CLI command enum small.
     #[command(flatten)]
     build: Box<GitBuildArgs>,
 }
+/// Repository a Git source builds, parsed like the manifest's `repository`:
+/// `self` selects the manifest's own repository, anything else is a clone URL
+/// or host path.
+#[derive(Clone, Debug)]
+pub(crate) enum BuildRepository {
+    Manifest,
+    Url(String),
+}
+impl From<String> for BuildRepository {
+    fn from(value: String) -> Self {
+        if value == "self" {
+            Self::Manifest
+        } else {
+            Self::Url(value)
+        }
+    }
+}
 // Git build settings; each flag requires the `git` argument (`--git` or the
-// positional URL of `source git`).
+// positional repository of `source git`).
 #[derive(Debug, Args)]
 pub(crate) struct GitBuildArgs {
-    /// Branch to build when no commit is pinned.
-    #[arg(long, requires = "git", default_value = "main")]
-    branch: String,
-    /// Build this full commit hash instead of the branch head.
+    /// Branch to build when no commit is pinned. Default: `main`. `self`
+    /// doesn't take one.
+    #[arg(long, requires = "git", value_name = "BRANCH")]
+    branch: Option<String>,
+    /// Build this full commit hash instead of the branch head. `self` doesn't
+    /// take one.
     #[arg(long, requires = "git")]
     commit: Option<String>,
     /// Dockerfile path, relative to the repository root.
@@ -490,14 +511,26 @@ pub(crate) struct GitBuildArgs {
     target: Option<Template>,
 }
 impl GitBuildArgs {
-    /// Git source that builds `url` with Docker using these settings.
-    fn source(&self, url: &str) -> Source {
-        Source::Git {
-            repository: SourceRepository::Git(GitRepository {
-                url: url.into(),
-                branch: self.branch.clone(),
+    /// Git source that builds `repository` with Docker using these settings.
+    /// Fails when `self` is given a branch or commit: it always builds the
+    /// manifest's commit.
+    fn source(&self, repository: &BuildRepository) -> Result<Source> {
+        let repository = match repository {
+            BuildRepository::Url(url) => SourceRepository::Git(GitRepository {
+                url: url.clone(),
+                branch: self.branch.clone().unwrap_or_else(|| "main".into()),
                 commit: self.commit.clone(),
             }),
+            BuildRepository::Manifest if self.branch.is_some() || self.commit.is_some() => {
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    "--branch and --commit do not apply to `self`, which builds the manifest's commit",
+                ));
+            }
+            BuildRepository::Manifest => SourceRepository::Manifest(ManifestRepository::Manifest),
+        };
+        Ok(Source::Git {
+            repository,
             build: Build::Docker {
                 dockerfile: self.dockerfile.clone(),
                 context: self.context.clone(),
@@ -508,7 +541,7 @@ impl GitBuildArgs {
                     .collect(),
                 target: self.target.clone(),
             },
-        }
+        })
     }
 }
 #[derive(Debug, Subcommand)]
@@ -1206,15 +1239,17 @@ impl VariableCommand {
 impl AddServiceArgs {
     /// The new service: its image or Git source, one replica, and no
     /// optional settings.
-    fn service(&self) -> Service {
-        Service {
+    fn service(&self) -> Result<Service> {
+        Ok(Service {
             name: self.target.service.clone(),
             source: self.git.as_ref().map_or_else(
-                || Source::Image {
-                    image: self.image.clone().expect("Clap requires image or Git"),
+                || {
+                    Ok(Source::Image {
+                        image: self.image.clone().expect("Clap requires image or Git"),
+                    })
                 },
-                |url| self.build.source(url),
-            ),
+                |repository| self.build.source(repository),
+            )?,
             replicas: Typed::Literal(1),
             environment: BTreeMap::new(),
             command: Vec::new(),
@@ -1227,7 +1262,7 @@ impl AddServiceArgs {
             depends_on: Vec::new(),
             rollout: Rollout::default(),
             receives_telemetry: false,
-        }
+        })
     }
 }
 
@@ -1238,7 +1273,7 @@ impl ServiceCommand {
         let (target, edit) = match self {
             Self::Add(args) => (
                 &args.target,
-                ApplicationEdit::AddService(Box::new(args.service())),
+                ApplicationEdit::AddService(Box::new(args.service()?)),
             ),
             Self::Remove(target) => (
                 target,
@@ -1246,7 +1281,7 @@ impl ServiceCommand {
             ),
             Self::Rename(args) => args.target.field(ServiceEdit::Name(args.value.clone())),
             Self::Replicas(args) => args.target.field(ServiceEdit::Replicas(args.value.clone())),
-            Self::Source { command } => command.edit(),
+            Self::Source { command } => command.edit()?,
             Self::Env { command } => command.edit(),
             Self::Command(args) => args.target.field(ServiceEdit::Command(args.value.clone())),
             Self::Arguments(args) => args
@@ -1272,12 +1307,12 @@ impl ServiceCommand {
 }
 impl SourceCommand {
     /// Maps the subcommand to its target service and source edit.
-    fn edit(&self) -> (&ServiceTarget, ApplicationEdit) {
-        match self {
+    fn edit(&self) -> Result<(&ServiceTarget, ApplicationEdit)> {
+        Ok(match self {
             Self::Image(args) => args.target.field(ServiceEdit::Image(args.value.clone())),
             Self::Git(args) => args
                 .target
-                .field(ServiceEdit::Source(args.build.source(&args.url))),
+                .field(ServiceEdit::Source(args.build.source(&args.repository)?)),
             Self::Url(args) => args.target.field(ServiceEdit::GitUrl(args.value.clone())),
             Self::Branch(args) => args
                 .target
@@ -1289,7 +1324,7 @@ impl SourceCommand {
                 .target
                 .field(ServiceEdit::Dockerfile(args.value.clone())),
             Self::Context(args) => args.target.field(ServiceEdit::Context(args.value.clone())),
-        }
+        })
     }
 }
 impl EnvironmentCommand {

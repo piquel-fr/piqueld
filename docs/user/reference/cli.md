@@ -552,6 +552,7 @@ piquelctl app service telemetry observability collector on --yes
 piquelctl app service add notes worker --git https://example.com/app.git --branch main --yes
 piquelctl app service source git notes web https://example.com/app.git --target runtime --build-arg ORIGIN=https://notes.example.com --yes
 piquelctl app service source git notes web https://example.com/app.git --branch main --yes
+piquelctl app service source git notes web self --dockerfile build/Dockerfile --yes
 piquelctl app service source branch notes web release --yes
 piquelctl app service source commit notes web --clear --yes
 piquelctl app service source dockerfile notes web build/Dockerfile --yes
@@ -609,6 +610,10 @@ and captures a deployment atomically, then waits for it; add `--no-wait` to retu
 its receipt immediately. No local manifest file is read or rewritten. The server
 validates the complete result, so removing a mounted volume is rejected until its
 mounts are removed. Removing declarations retains Docker volume data.
+In a repository-backed application, pass `self` instead of a Git URL, as in
+`source git notes web self` or `service add notes worker --git self`, to build
+the [manifest's own repository](manifest.md#git-build-sources). It builds the
+commit the manifest was read from, so it takes no `--branch` or `--commit`.
 `app file add` adds a read-only [file](manifest.md#files), or
 replaces the one at the same target: `--content` sets its text, `--from` reads
 a local file now and saves its content inline, and `--path` names a file in the

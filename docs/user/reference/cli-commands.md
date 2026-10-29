@@ -728,9 +728,9 @@ Options:
 - `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
 - `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
 - `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
-- `--git <URL>`: Build this Git repository with Docker instead of running an image. It takes a clone URL, or a path on the daemon's host.
-- `--branch <BRANCH>`: Branch to build when no commit is pinned. Default: `main`.
-- `--commit <COMMIT>`: Build this full commit hash instead of the branch head.
+- `--git <URL|self>`: Build this Git repository with Docker instead of running an image. It takes a clone URL, a path on the daemon's host, or `self`: the manifest's own repository, at the commit the manifest was read from.
+- `--branch <BRANCH>`: Branch to build when no commit is pinned. Default: `main`. `self` doesn't take one.
+- `--commit <COMMIT>`: Build this full commit hash instead of the branch head. `self` doesn't take one.
 - `--dockerfile <PATH>`: Dockerfile path, relative to the repository root. Default: `Dockerfile`.
 - `--context <PATH>`: Build context directory, relative to the repository root. Default: `.`.
 - `--build-arg <KEY=VALUE>`: Docker build argument. Repeat it to set several. Values aren't secret: Docker records them in the image.
@@ -854,14 +854,14 @@ Build a Git repository with Docker, replacing the service's source.
 Build settings you don't pass get their defaults.
 
 ```text
-piquelctl app service source git [OPTIONS] <APP> <SERVICE> <URL>
+piquelctl app service source git [OPTIONS] <APP> <SERVICE> <URL|self>
 ```
 
 Arguments:
 
 - `<APP>`: Application name or stable ID.
 - `<SERVICE>`: Service name.
-- `<URL>`: Git clone URL, or a path on the daemon's host.
+- `<URL|self>`: Git clone URL, a path on the daemon's host, or `self`: the manifest's own repository, at the commit the manifest was read from.
 
 Options:
 
@@ -870,8 +870,8 @@ Options:
 - `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
 - `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
 - `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
-- `--branch <BRANCH>`: Branch to build when no commit is pinned. Default: `main`.
-- `--commit <COMMIT>`: Build this full commit hash instead of the branch head.
+- `--branch <BRANCH>`: Branch to build when no commit is pinned. Default: `main`. `self` doesn't take one.
+- `--commit <COMMIT>`: Build this full commit hash instead of the branch head. `self` doesn't take one.
 - `--dockerfile <PATH>`: Dockerfile path, relative to the repository root. Default: `Dockerfile`.
 - `--context <PATH>`: Build context directory, relative to the repository root. Default: `.`.
 - `--build-arg <KEY=VALUE>`: Docker build argument. Repeat it to set several. Values aren't secret: Docker records them in the image.
