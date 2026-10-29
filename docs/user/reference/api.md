@@ -220,7 +220,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } }, "previews": { "domain": "preview.piquel.fr" } } }`; replaces every variable value, clearing those it omits |
 | PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of the environment with that name |
-| PUT | `/previews/visibility` | `{ "value": "public" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of every preview, `[spec.previews] visibility` |
+| PUT | `/previews/visibility` | `{ "value": "public" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of every preview, `[spec.previews] visibility`. Repository-backed applications get 409 `field_incompatible`: their previews read it from their branch's manifest |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -248,7 +248,7 @@ source/check settings require the appropriate variant; switch variants through
 `source` or `healthcheck`. Unknown fields, missing values, invalid manifests, and
 missing resources are rejected. Optional values must explicitly use null to clear.
 The same validation rules apply even with `force=true`. Repository-backed
-applications accept every edit; each applies to the manifests their deployments
+applications accept every edit except `/previews/visibility`; each applies to the manifests their deployments
 fetch (see [editing repository-backed applications](manifest.md#editing-repository-backed-applications)).
 Disconnecting a repository preserves saved services and volumes for local editing.
 Renaming a service updates its routes, its jobs, its export, and dependents'

@@ -15550,7 +15550,7 @@
     },
     "/api/v1/applications/{id}/previews/visibility": {
       "put": {
-        "description": "Every route of a preview is at most this visible; `private`, the\ndefault, keeps preview routes on the tailnet. Same query options,\nidempotency, and 200/202 responses as the other editing endpoints.",
+        "description": "Every route of a preview is at most this visible; `private`, the\ndefault, keeps preview routes on the tailnet. Repository-backed\napplications get 409 `field_incompatible`: their previews read it from\ntheir branch's manifest. Same query options, idempotency, and 200/202\nresponses as the other editing endpoints.",
         "operationId": "set_preview_visibility",
         "parameters": [
           {

@@ -110,8 +110,10 @@ edit_endpoint!(
     /// Sets the visibility ceiling of every preview, `[spec.previews] visibility`.
     ///
     /// Every route of a preview is at most this visible; `private`, the
-    /// default, keeps preview routes on the tailnet. Same query options,
-    /// idempotency, and 200/202 responses as the other editing endpoints.
+    /// default, keeps preview routes on the tailnet. Repository-backed
+    /// applications get 409 `field_incompatible`: their previews read it from
+    /// their branch's manifest. Same query options, idempotency, and 200/202
+    /// responses as the other editing endpoints.
     set_preview_visibility, put, "/api/v1/applications/{id}/previews/visibility", (id: String = "id"), VisibilityValue, |_, body: VisibilityValue| ApplicationEdit::PreviewVisibility(body.value));
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 edit_endpoint!(
