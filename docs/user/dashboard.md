@@ -72,7 +72,9 @@ of the tab: what you type, paste and resize reaches the command. Without it, the
 command gets no input and its output is shown as is. The terminal shows 16
 colors from the dashboard's palette, with other colors shown as the nearest of
 them, and keeps 5000 lines of history for the mouse wheel. To copy, select text
-and copy it as you would anywhere else. Ctrl+Shift+V or Command+V pastes.
+and copy it as you would anywhere else. Ctrl+Shift+V or Command+V pastes. On
+macOS, Option types characters, as in Terminal.app, rather than acting as
+Meta; with arrows and other named keys it still acts as Meta.
 
 The tab shows why a command could not start, such as `service_not_running`
 when the service has no running task, and the exit code once it ends. Switching
