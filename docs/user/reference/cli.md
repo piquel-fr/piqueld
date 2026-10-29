@@ -130,8 +130,9 @@ piquelctl notification retry <delivery-id>
 
 Listing deliveries needs `system:read`, and retrying them `system:operate`.
 The daemon refuses to retry a delivery that hasn't failed, that its destination
-no longer receives, or whose incident has since closed or opened again. The
-command then fails with `delivery_not_retryable` and exit code 3, and its
+no longer receives, or whose incident has since closed or opened again. It also
+refuses a failure after its destination received the recovery that followed it.
+The command then fails with `delivery_not_retryable` and exit code 3, and its
 message says why. See [notifications](../guides/observability.md#notifications).
 
 `env telemetry APP ENV on` grants an environment the daemon's
