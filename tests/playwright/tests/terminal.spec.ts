@@ -47,6 +47,10 @@ test('the terminal runs a command, relays input and resizes, and reports failure
   await expect(screen).toContainText('fixture ready');
   await page.keyboard.type('hi');
   await expect(screen).toContainText(/fixture ready\s+hi/);
+  // On macOS, Option types characters such as `@` on many layouts.
+  await page.evaluate(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' }));
+  await page.keyboard.press('Alt+@');
+  await expect(screen).toContainText(/fixture ready\s+hi@/);
   await page.setViewportSize({ width: 900, height: 700 });
   await expect(screen).toContainText(/resized to \d+x\d+/);
   await page.keyboard.press('Control+d');

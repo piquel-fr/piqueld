@@ -43,8 +43,9 @@ pub struct Key<'a> {
 
 impl Key<'_> {
     /// The bytes a terminal sends for this key, or `None` for keys left to the
-    /// browser: Ctrl+Shift+C/V (copy and paste) and keys with no terminal
-    /// encoding. `application_cursor` selects the cursor key mode
+    /// browser: Ctrl+Shift+V, which pastes, Ctrl+Shift+C, which terminals use
+    /// to copy and which must not interrupt the command as Ctrl+C would, and
+    /// keys with no terminal encoding. `application_cursor` selects the cursor key mode
     /// full-screen programs request.
     #[must_use]
     pub fn encode(&self, application_cursor: bool) -> Option<Vec<u8>> {

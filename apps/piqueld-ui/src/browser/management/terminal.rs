@@ -222,8 +222,9 @@ impl Console {
             Ok(request) => request,
             Err(error) => return self.status.set(Status::Failed(error)),
         };
-        self.terminal
-            .update_value(|terminal| *terminal = Terminal::new(terminal.size(), request.stdin));
+        self.terminal.update_value(|terminal| {
+            *terminal = Terminal::new(terminal.size(), request.tty.is_some());
+        });
         self.redraw();
         self.generation.update_value(|generation| *generation += 1);
         let current = self.generation.get_value();
@@ -272,13 +273,16 @@ impl Console {
         if event.is_composing() || event.meta_key() || !self.running() {
             return;
         }
-        // AltGr reports Control and Alt on some systems; its character is plain text.
-        let alt_graph = event.get_modifier_state("AltGraph");
+        // AltGr reports Control and Alt on some systems, and macOS's Option
+        // types characters such as `@` on many layouts: their characters are
+        // plain text. Named keys, such as Option+arrows, keep the modifier.
         let key = event.key();
+        let alt_graph = event.get_modifier_state("AltGraph");
+        let text = alt_graph || (key.chars().count() == 1 && Self::mac());
         let key = Key {
             key: &key,
             ctrl: event.ctrl_key() && !alt_graph,
-            alt: event.alt_key() && !alt_graph,
+            alt: event.alt_key() && !text,
             shift: event.shift_key(),
         };
         if let Some(bytes) = self
@@ -290,6 +294,14 @@ impl Console {
             self.send(ExecInput::Stdin(bytes));
             self.redraw();
         }
+    }
+
+    /// Whether the browser runs on macOS, where Option types characters.
+    fn mac() -> bool {
+        window()
+            .navigator()
+            .platform()
+            .is_ok_and(|platform| platform.starts_with("Mac"))
     }
 
     /// Sends pasted or composed text.
