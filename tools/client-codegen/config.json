@@ -216,6 +216,11 @@
       "rustType": "piqueld_core::api::PromoteRequest"
     },
     {
+      "schema": "RestoreRequest",
+      "name": "RestoreRequest",
+      "rustType": "piqueld_core::api::RestoreRequest"
+    },
+    {
       "schema": "Envelope_AcceptedPromotion",
       "name": "EnvelopeAcceptedPromotion",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::AcceptedPromotion>"

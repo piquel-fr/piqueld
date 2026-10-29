@@ -34,6 +34,8 @@ pub use promotion::{Promotion, PromotionCandidate, PromotionError};
 pub(crate) use repository::DeploymentInput;
 mod release;
 mod repository;
+mod restore;
+pub use restore::RestoreError;
 mod secret;
 mod status;
 mod stopped;
@@ -265,6 +267,9 @@ pub enum StoreError {
     /// A delivery retry was refused.
     #[error(transparent)]
     Retry(#[from] RetryError),
+    /// Restoring a deployment was refused.
+    #[error(transparent)]
+    Restore(#[from] RestoreError),
     /// A unique logical name or identifier already exists.
     #[error("resource already exists")]
     AlreadyExists,

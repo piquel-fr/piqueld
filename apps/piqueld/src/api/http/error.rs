@@ -4,7 +4,7 @@
 use super::JSON;
 use crate::api::ApplicationError;
 use crate::application::BoundaryError;
-use crate::store::{PromotionError, StoreError};
+use crate::store::{PromotionError, RestoreError, StoreError};
 use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
@@ -258,6 +258,26 @@ impl ApiError {
         Self::new(status, code, error.to_string()).details(details)
     }
 
+    /// Maps refused restores, with the deployment and what it lacks in
+    /// `details`. Both are conflicts: the deployment exists, but can't run
+    /// again as it did.
+    fn from_restore_error(error: &RestoreError) -> Self {
+        let (code, details) = match error {
+            RestoreError::NotRestorable { deployment, .. } => (
+                "deployment_not_restorable",
+                json!({"deployment": deployment}),
+            ),
+            RestoreError::SecretsGone {
+                deployment,
+                secrets,
+            } => (
+                "restore_secrets_unavailable",
+                json!({"deployment": deployment, "secrets": secrets}),
+            ),
+        };
+        Self::new(StatusCode::CONFLICT, code, error.to_string()).details(details)
+    }
+
     /// Maps hostname reservation conflicts selected by `From<StoreError>`,
     /// naming the hostname, and the sibling environment reserving it if any.
     ///
@@ -307,6 +327,7 @@ impl From<StoreError> for ApiError {
             | StoreError::PreviewRequiresRepository
             | StoreError::PreviewLimitReached(_)) => Self::from_environment_error(error),
             StoreError::Promotion(error) => Self::from_promotion_error(&error),
+            StoreError::Restore(error) => Self::from_restore_error(&error),
             StoreError::GenerationConflict { expected, actual } => Self::new(
                 StatusCode::CONFLICT,
                 "generation_conflict",

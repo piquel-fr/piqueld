@@ -294,17 +294,39 @@ impl Store {
             r#"SELECT (SELECT d.origin_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 AND o.promoted=1 ORDER BY d.id DESC LIMIT 1) AS current,(SELECT d.origin_json FROM deployments d JOIN operations o ON o.id=d.id WHERE o.environment_id=?1 ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1) AS latest"#,
             id
         )
-        .fetch_one(connection)
+        .fetch_one(&mut *connection)
         .await
         .map_err(StoreError::database)?;
-        let decode = |json: Option<String>| {
-            json.map(|json| serde_json::from_str(&json).map_err(StoreError::corrupt))
-                .transpose()
-        };
         Ok(PreviewOrigins {
-            current: decode(row.current)?,
-            latest: decode(row.latest)?,
+            current: Self::restored_origin_on(connection, row.current).await?,
+            latest: Self::restored_origin_on(connection, row.latest).await?,
         })
+    }
+
+    /// Decodes a deployment's origin and, for a restore, follows it back to
+    /// what the restored deployment came from, so a restored local snapshot
+    /// is still one.
+    async fn restored_origin_on(
+        connection: &mut SqliteConnection,
+        json: Option<String>,
+    ) -> Result<Option<DeploymentOrigin>, StoreError> {
+        let decode = |json: &str| serde_json::from_str(json).map_err(StoreError::corrupt);
+        let Some(mut origin) = json.as_deref().map(decode).transpose()? else {
+            return Ok(None);
+        };
+        // Restores name earlier deployments, kept until the preview is gone.
+        while let DeploymentOrigin::Restore { deployment } = &origin {
+            let json = sqlx::query_scalar!(
+                "SELECT origin_json FROM deployments WHERE id=?1",
+                deployment
+            )
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(StoreError::database)?
+            .ok_or(StoreError::Corrupt)?;
+            origin = decode(&json)?;
+        }
+        Ok(Some(origin))
     }
 
     /// Adds the Docker volumes of a preview's prepared target to its
@@ -455,7 +477,7 @@ impl Store {
 
 /// Where a preview's deployments came from: the one it runs, and its
 /// latest, which may still be deploying, or may have failed and left the
-/// current one running.
+/// current one running. A restore's is what it restored came from.
 pub struct PreviewOrigins {
     /// The deployment its current target comes from, if one was prepared.
     pub current: Option<DeploymentOrigin>,

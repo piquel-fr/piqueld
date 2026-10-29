@@ -4,7 +4,7 @@
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
     commands::{finish_operation, resolve_application, wait_for_deletion, wait_for_operation},
-    deployments::{Target, UrlArgs, WaitArgs, wait_for_accepted},
+    deployments::{HistoryArgs, RestoreArgs, Target, UrlArgs, WaitArgs, wait_for_accepted},
     editing::{EditFlags, on_off, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
     output::{
@@ -171,6 +171,13 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         window: LogArgs,
     },
+    /// List an environment's deployments, newest first: each one's outcome,
+    /// where it came from, and its release.
+    History(HistoryArgs<EnvironmentArgs>),
+    /// Deploy an earlier, succeeded deployment again exactly as it ran: its
+    /// rendered manifest, images and pinned secret versions. Jobs don't run,
+    /// and volume contents and migrations stay as they are.
+    Restore(RestoreArgs<NamedEnvironment>),
     /// Wait until a deployment of an environment is ready.
     ///
     /// The command never follows a newer deployment. It exits with code 3 if
@@ -278,6 +285,8 @@ impl EnvCommand {
             Self::Logs { target, window } => {
                 logs(console, client, &target.resolve(client).await?.1, window).await
             }
+            Self::History(args) => args.run(console, client).await,
+            Self::Restore(args) => args.run(console, client).await,
             Self::Wait(args) => args.run(console, client).await,
             Self::Url(args) => args.run(console, client).await,
         }
@@ -754,20 +763,14 @@ impl DeleteArgs {
     }
 }
 
-impl EnvironmentArgs {
+impl Target for EnvironmentArgs {
     /// Loads the application and selects the named or only environment.
     async fn resolve(&self, client: &Client) -> Result<(ApplicationView, EnvironmentView)> {
         select(client, &self.application, self.environment.as_deref()).await
     }
 }
 
-impl Target for EnvironmentArgs {
-    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
-        Ok(self.resolve(client).await?.1)
-    }
-}
-
-impl NamedEnvironment {
+impl Target for NamedEnvironment {
     /// Loads the application and selects the named environment.
     async fn resolve(&self, client: &Client) -> Result<(ApplicationView, EnvironmentView)> {
         select(client, &self.application, Some(&self.environment)).await

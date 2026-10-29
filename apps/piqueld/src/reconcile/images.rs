@@ -69,9 +69,9 @@ impl ImagesInUse {
 
     /// Makes sure every image of `sources` is present in `docker` before a
     /// deployment uses it again, pulling a missing registry image again by
-    /// its digest. Promoting a release calls it through the runtime boundary
-    /// (see `RuntimeBoundary::reuse_images`), and restoring a deployment
-    /// (#172) will too, keeping this guard until they saved their target.
+    /// its digest. Promoting a release and restoring a deployment call it
+    /// through the runtime boundary (see `RuntimeBoundary::reuse_images`),
+    /// keeping this guard until they saved their target.
     ///
     /// # Errors
     /// `ImageUnavailable`, naming the service and image, for the first

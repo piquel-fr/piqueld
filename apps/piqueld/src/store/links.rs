@@ -86,10 +86,22 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .flatten();
+        Self::bind_links_from_on(connection, target, &decode(previous)?).await
+    }
+
+    /// Binds the applications `target`'s exports and imports name, keeping
+    /// those `previous` bound while they still exist; see
+    /// [`piqueld_core::links::bind`]. A restore keeps its own bindings, so a
+    /// name another application took since gains nothing.
+    pub(super) async fn bind_links_from_on(
+        connection: &mut SqliteConnection,
+        target: &mut ResolvedApplication,
+        previous: &piqueld_core::links::Bindings,
+    ) -> Result<(), StoreError> {
         target.bindings = piqueld_core::links::bind(
             &target.exports,
             &target.imports,
-            &decode(previous)?,
+            previous,
             &Self::applications_by_name_on(connection).await?,
         );
         Ok(())

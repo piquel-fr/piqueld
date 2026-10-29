@@ -531,3 +531,48 @@ async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
     accept(prune()).await.unwrap();
     assert!(store.get(&preview.id).await.unwrap().delete_intent());
 }
+
+/// A restore of a local snapshot runs that snapshot, so its preview still
+/// counts as running one, however many restores lie in between.
+#[tokio::test]
+async fn restored_local_snapshots_are_still_local() {
+    let (_temp, store) = Store::temporary().await;
+    let application = save(&store, false).await;
+    let notes = "https://example.com/notes.git";
+    let created = local(
+        &store,
+        &application,
+        ("feat/x", None),
+        (notes, &"1".repeat(40)),
+    )
+    .await
+    .unwrap();
+    let preview = created.preview.id;
+    let restore = |of: &str| serde_json::json!({"type": "restore", "deployment": of}).to_string();
+    let mut restored = created.operation.operation_id;
+    for _ in 0..2 {
+        let deploy = Mutation::Preview(PreviewMutation::Deploy {
+            id: preview.clone(),
+        });
+        let (MutationResponse::Operation(accepted), _) = store
+            .accept(Daemon, deploy, None, false, None)
+            .await
+            .unwrap()
+        else {
+            panic!("operation")
+        };
+        sqlx::query("UPDATE deployments SET origin_json=?1 WHERE id=?2")
+            .bind(restore(&restored))
+            .bind(&accepted.operation_id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        restored = accepted.operation_id;
+    }
+    let origins = store.preview_origins(&preview).await.unwrap();
+    assert!(origins.local());
+    assert!(matches!(
+        origins.latest,
+        Some(piqueld_core::api::DeploymentOrigin::Local(_))
+    ));
+}

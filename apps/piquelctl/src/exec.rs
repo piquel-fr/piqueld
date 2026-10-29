@@ -11,7 +11,7 @@ use crate::{
 use clap::Args;
 use http::StatusCode;
 use piqueld_client::{
-    Client, ClientError, EnvironmentView, ServiceName,
+    ApplicationView, Client, ClientError, EnvironmentView, ServiceName,
     exec::{ExecCommand, ExecInput, ExecOutput, ExecReader, ExecRequest, ExecWriter, TerminalSize},
 };
 use rustix::termios::{Termios, tcgetwinsize};
@@ -60,10 +60,8 @@ pub(crate) struct ApplicationTarget {
 }
 
 impl Target for ApplicationTarget {
-    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
-        let selected =
-            crate::environments::select(client, &self.name_or_id, self.environment.as_deref());
-        Ok(selected.await?.1)
+    async fn resolve(&self, client: &Client) -> Result<(ApplicationView, EnvironmentView)> {
+        crate::environments::select(client, &self.name_or_id, self.environment.as_deref()).await
     }
 }
 
