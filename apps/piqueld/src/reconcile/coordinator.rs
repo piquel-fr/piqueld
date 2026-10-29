@@ -712,7 +712,8 @@ impl<D: DockerApi> Controller<D> {
             action.kind,
             piqueld_core::ActionKind::RemoveService { .. }
                 | piqueld_core::ActionKind::RemoveNetwork { .. }
-        ) && target.routes != accepted_routes
+        ) && !accepted_routes.is_empty()
+            && target.routes != accepted_routes
         {
             return Ok(false);
         }
