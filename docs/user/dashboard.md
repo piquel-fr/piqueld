@@ -76,9 +76,9 @@ and copy it as you would anywhere else. Ctrl+Shift+V or Command+V pastes. On
 macOS, Option types characters, as in Terminal.app, rather than acting as
 Meta; with arrows and other named keys it still acts as Meta.
 
-The tab shows why a command could not start, such as `service_not_running`
-when the service has no running task, and the exit code once it ends. Switching
-tabs keeps the session. **Disconnect**, running another command, or leaving the
+When a command can't start, the tab shows the daemon's reason, such as
+"Service has no running task". Once the command ends, it shows its exit code.
+Switching tabs keeps the session. **Disconnect**, running another command, or leaving the
 page stops the output, but the command may keep running in the task, as when
 `piquelctl` ends early. History records the command's start and exit, never the
 command.
