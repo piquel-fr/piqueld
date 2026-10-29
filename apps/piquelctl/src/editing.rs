@@ -5,7 +5,7 @@ use crate::{
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
-        reports::{FileRow, RouteRow, SavedDeploymentReport},
+        reports::{RouteRow, SavedDeploymentReport, ServiceRow},
     },
     support::{read_text, retry_transport},
 };
@@ -219,6 +219,11 @@ value_args! {
         #[arg(value_name = "TARGET")]
         value: String,
     }
+    SecretPathArgs(ServiceTarget) {
+        /// Container path of the secret file, under `/run/secrets`.
+        #[arg(value_name = "TARGET")]
+        value: String,
+    }
     HealthPortArgs(ServiceTarget) {
         /// Container port, from 1 to 65535.
         #[arg(value_name = "PORT")]
@@ -375,6 +380,14 @@ pub(crate) enum ServiceCommand {
     Mount {
         #[command(subcommand)]
         command: MountCommand,
+    },
+    /// Mount a secret into a service as a file, or remove a mount.
+    ///
+    /// These commands choose where secrets appear. Set their values, and who
+    /// may mount them, with `app secret`.
+    Secret {
+        #[command(subcommand)]
+        command: SecretMountCommand,
     },
     /// Set, change, or remove a service's health check.
     ///
@@ -584,15 +597,137 @@ pub(crate) enum MountCommand {
     /// Remove the mount at a container path.
     Remove(MountPathArgs),
 }
+// Application and optional service whose saved declarations a `list` shows.
+#[derive(Debug, Args)]
+pub(crate) struct ServiceListArgs {
+    /// Application name or stable ID.
+    app: String,
+    /// Service to list. Without it, every service is listed.
+    service: Option<String>,
+}
+impl ServiceListArgs {
+    /// Emits the `items` of each selected service, as saved.
+    async fn emit<T: Clone>(
+        &self,
+        client: &Client,
+        console: &mut Console,
+        items: fn(&Service) -> &[T],
+    ) -> Result<()>
+    where
+        Vec<ServiceRow<T>>: crate::output::Report,
+    {
+        let application = resolve_application(client, &self.app).await?;
+        let rows: Vec<_> = application
+            .application
+            .spec()
+            .services
+            .iter()
+            .filter(|candidate| {
+                self.service
+                    .as_ref()
+                    .is_none_or(|name| candidate.name == *name)
+            })
+            .flat_map(|candidate| {
+                items(candidate).iter().map(|item| ServiceRow {
+                    service: candidate.name.clone(),
+                    item: item.clone(),
+                })
+            })
+            .collect();
+        console.emit(&rows)
+    }
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum SecretMountCommand {
+    /// List the secrets the application's services mount, as saved.
+    List(ServiceListArgs),
+    /// Mount a secret as a read-only file, replacing any secret mounted at
+    /// the same path.
+    ///
+    /// A deployment fails while the secret has no value, or when the
+    /// environment may not mount it.
+    Add(AddSecretMountArgs),
+    /// Remove the secret mounted at a container path.
+    ///
+    /// Removing a path the service doesn't mount a secret at fails.
+    Remove(SecretPathArgs),
+}
+#[derive(Debug, Args)]
+pub(crate) struct AddSecretMountArgs {
+    #[command(flatten)]
+    target: ServiceTarget,
+    /// Secret name: one set with `app secret`, or one the manifest declares
+    /// to be generated. It may reference variables, such as
+    /// `${{ vars.<name> }}`, so each environment can mount its own secret.
+    secret: Template,
+    /// Absolute container path of the file, under `/run/secrets`.
+    #[arg(value_name = "TARGET")]
+    file: String,
+}
+impl SecretMountCommand {
+    /// Lists saved secret mounts, or edits one service's mounts client-side
+    /// and saves them together, like jobs: adding at a mounted target replaces
+    /// that mount in place, and removing an unknown target is an input error.
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let target = match self {
+            Self::List(args) => {
+                return args.emit(client, console, |service| &service.secrets).await;
+            }
+            Self::Add(args) => &args.target,
+            Self::Remove(args) => &args.target,
+        };
+        let current = resolve_application(client, &target.app).await?;
+        let mut secrets = current
+            .application
+            .spec()
+            .services
+            .iter()
+            .find(|service| service.name == target.service)
+            .ok_or_else(|| {
+                CliError::new(
+                    ErrorKind::Input,
+                    format!("service {:?} was not found", target.service),
+                )
+            })?
+            .secrets
+            .clone();
+        match self {
+            Self::List(_) => unreachable!("listing returned above"),
+            Self::Add(args) => {
+                let mount = SecretMount {
+                    name: args.secret.clone(),
+                    target: args.file.clone(),
+                };
+                match secrets
+                    .iter_mut()
+                    .find(|secret| secret.target == mount.target)
+                {
+                    Some(existing) => *existing = mount,
+                    None => secrets.push(mount),
+                }
+            }
+            Self::Remove(args) => {
+                let count = secrets.len();
+                secrets.retain(|secret| secret.target != args.value);
+                if secrets.len() == count {
+                    return Err(CliError::new(
+                        ErrorKind::Input,
+                        format!("no secret is mounted at {:?}", args.value),
+                    ));
+                }
+            }
+        }
+        let (target, edit) = target.field(ServiceEdit::Secrets(secrets));
+        target
+            .flags
+            .save_loaded(client, console, &current, &edit)
+            .await
+    }
+}
 #[derive(Debug, Subcommand)]
 pub(crate) enum FileCommand {
     /// List the files the application's services mount, as saved.
-    List {
-        /// Application name or stable ID.
-        app: String,
-        /// List only this service's files.
-        service: Option<String>,
-    },
+    List(ServiceListArgs),
     /// Mount a read-only file into a service, replacing any file at the same
     /// path.
     ///
@@ -651,23 +786,7 @@ impl FileCommand {
     /// target.
     pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (target, edit) = match self {
-            Self::List { app, service } => {
-                let application = resolve_application(client, app).await?;
-                let rows: Vec<_> = application
-                    .application
-                    .spec()
-                    .services
-                    .iter()
-                    .filter(|candidate| service.as_ref().is_none_or(|name| candidate.name == *name))
-                    .flat_map(|candidate| {
-                        candidate.files.iter().map(|file| FileRow {
-                            service: candidate.name.clone(),
-                            file: file.clone(),
-                        })
-                    })
-                    .collect();
-                return console.emit(&rows);
-            }
+            Self::List(args) => return args.emit(client, console, |service| &service.files).await,
             Self::Add(args) => args.target.field(ServiceEdit::File(ServiceFile {
                 target: args.file.clone(),
                 source: args.source.source().await?,
@@ -1298,6 +1417,7 @@ impl ServiceCommand {
                 .target
                 .field(ServiceEdit::ReceivesTelemetry(args.enabled)),
             Self::Mount { command } => command.edit(),
+            Self::Secret { command } => return command.run(client, console).await,
             Self::Health { command } => command.edit(),
             Self::Cpu(args) => args.target.field(ServiceEdit::Cpu(args.value.clone())),
             Self::Memory(args) => args.target.field(ServiceEdit::Memory(args.value.clone())),

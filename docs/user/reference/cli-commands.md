@@ -701,6 +701,7 @@ Commands:
 - [`piquelctl app service rollout`](#piquelctl-app-service-rollout): Set the order and monitor window of the service's rollouts.
 - [`piquelctl app service telemetry`](#piquelctl-app-service-telemetry): Choose whether the service receives the daemon's own telemetry.
 - [`piquelctl app service mount`](#piquelctl-app-service-mount): Mount a volume into a service, or remove a mount.
+- [`piquelctl app service secret`](#piquelctl-app-service-secret): Mount a secret into a service as a file, or remove a mount.
 - [`piquelctl app service health`](#piquelctl-app-service-health): Set, change, or remove a service's health check.
 - [`piquelctl app service cpu`](#piquelctl-app-service-cpu): Set the service's CPU limit, or remove it with `--clear`.
 - [`piquelctl app service memory`](#piquelctl-app-service-memory): Set the service's memory limit, or remove it with `--clear`.
@@ -1228,6 +1229,84 @@ Options:
 - `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
 - `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
 
+## `piquelctl app service secret`
+
+Mount a secret into a service as a file, or remove a mount.
+
+These commands choose where secrets appear. Set their values, and who may mount them, with `app secret`.
+
+```text
+piquelctl app service secret [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`piquelctl app service secret list`](#piquelctl-app-service-secret-list): List the secrets the application's services mount, as saved.
+- [`piquelctl app service secret add`](#piquelctl-app-service-secret-add): Mount a secret as a read-only file, replacing any secret mounted at the same path.
+- [`piquelctl app service secret remove`](#piquelctl-app-service-secret-remove): Remove the secret mounted at a container path.
+
+## `piquelctl app service secret list`
+
+List the secrets the application's services mount, as saved.
+
+```text
+piquelctl app service secret list [OPTIONS] <APP> [SERVICE]
+```
+
+Arguments:
+
+- `<APP>`: Application name or stable ID.
+- `[SERVICE]`: Service to list. Without it, every service is listed.
+
+## `piquelctl app service secret add`
+
+Mount a secret as a read-only file, replacing any secret mounted at the same path.
+
+A deployment fails while the secret has no value, or when the environment may not mount it.
+
+```text
+piquelctl app service secret add [OPTIONS] <APP> <SERVICE> <SECRET> <TARGET>
+```
+
+Arguments:
+
+- `<APP>`: Application name or stable ID.
+- `<SERVICE>`: Service name.
+- `<SECRET>`: Secret name: one set with `app secret`, or one the manifest declares to be generated. It may reference variables, such as `${{ vars.<name> }}`, so each environment can mount its own secret.
+- `<TARGET>`: Absolute container path of the file, under `/run/secrets`.
+
+Options:
+
+- `--deploy`: Also deploy the saved configuration.
+- `--no-wait`: Return once the change is saved, or its deployment accepted, without waiting for the deployment to end.
+- `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
+- `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
+- `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
+
+## `piquelctl app service secret remove`
+
+Remove the secret mounted at a container path.
+
+Removing a path the service doesn't mount a secret at fails.
+
+```text
+piquelctl app service secret remove [OPTIONS] <APP> <SERVICE> <TARGET>
+```
+
+Arguments:
+
+- `<APP>`: Application name or stable ID.
+- `<SERVICE>`: Service name.
+- `<TARGET>`: Container path of the secret file, under `/run/secrets`.
+
+Options:
+
+- `--deploy`: Also deploy the saved configuration.
+- `--no-wait`: Return once the change is saved, or its deployment accepted, without waiting for the deployment to end.
+- `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
+- `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
+- `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
+
 ## `piquelctl app service health`
 
 Set, change, or remove a service's health check.
@@ -1554,7 +1633,7 @@ piquelctl app file list [OPTIONS] <APP> [SERVICE]
 Arguments:
 
 - `<APP>`: Application name or stable ID.
-- `[SERVICE]`: List only this service's files.
+- `[SERVICE]`: Service to list. Without it, every service is listed.
 
 ## `piquelctl app file add`
 
