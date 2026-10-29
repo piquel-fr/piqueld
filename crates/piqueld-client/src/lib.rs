@@ -15,7 +15,6 @@ pub mod auth;
 /// Environment lifecycle, deployment, and observation contracts.
 pub mod environments;
 /// One-off commands in running service tasks.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod exec;
 /// Durable history and observability controls.
 pub mod observability;

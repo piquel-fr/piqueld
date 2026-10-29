@@ -650,7 +650,10 @@ lost, the session ends with the refusal, such as `401 authentication_required`
 or `403`, and the command, like after a disconnect, may keep running. When the daemon shuts down, the connection
 closes without a final message. `piqueld_core::exec` implements the
 messages. Progenitor's generated WebSocket methods do not build for WASM, so
-`piqueld-client` implements this method by hand for native targets. History
+`piqueld-client` implements this method by hand, natively and in the browser.
+The dashboard's session cookie and page `Origin` authenticate its handshake.
+Browsers hide the response to a refused handshake, so the dashboard can only
+report that the connection closed before it opened. History
 records `command_started` and `command_finished` events, never the command.
 
 `GET /api/v1/system/readiness` reports top-level `ready` plus separate `database`,

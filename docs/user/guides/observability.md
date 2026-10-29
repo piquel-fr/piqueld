@@ -28,8 +28,9 @@ Image cleanup journals each removal as a daemon-scoped `remove_image` action
 whose resource is the image ID, so its `action_succeeded` events list the
 removed images and `action_failed` the ones it had to keep.
 
-Commands run with `app exec` or `preview exec` record `command_started`, naming the account and
-task, and `command_finished` with its exit code. Their resource is the logical
+Commands run with `app exec`, `preview exec` or the dashboard's **Terminal** tab record `command_started`, naming the account and
+task, and `command_finished` with its exit code, or that its stream failed
+before it exited. Their resource is the logical
 service. Commands are never recorded because their arguments can contain secrets.
 
 An operation groups execution attempts; an attempt groups actions. Action events
@@ -78,7 +79,8 @@ bounded log and may contain text emitted by the build itself.
 
 The audit trail records who did what through the API: every refused request
 (missing credentials or permission, a hidden application, a rejected origin,
-or rate limiting), every write and sign-in, every command run with `app exec` or `preview exec`
+or rate limiting), every write and sign-in, every command run with `app exec`, `preview exec` or the
+dashboard's **Terminal** tab
 (and, separately, one refused when it starts because access was lost after
 connecting), and reads of logs, the daemon configuration, manifest downloads,
 and the account directory. Routine reads, such as dashboard polling of
@@ -120,7 +122,7 @@ after the request; each action keeps the actor it started under, even if
 someone else restarts the operation meanwhile. Events written directly by a request carry them too: secret
 writes and deletions (including the deletion's runtime action, even when a
 restart interrupts it), environment changes, the start and end of commands
-run with `app exec` or `preview exec`, secret key recovery, and diagnostics for failed requests. Events show them as one `actor`, tagged by `kind`: `account` with
+run with `app exec`, `preview exec` or the dashboard's **Terminal** tab, secret key recovery, and diagnostics for failed requests. Events show them as one `actor`, tagged by `kind`: `account` with
 `user_id` and `credential_id`, `operator` with the host operator's Unix user
 ID and its browser session (if any) as `session_id`, or, for deployments sync
 starts on push, `system` with `actor` `sync:poll` or `sync:webhook`. `actor` is

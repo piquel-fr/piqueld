@@ -1,8 +1,9 @@
 //! Isolated UI/API fixture for Playwright. Docker execution is deliberately
-//! stubbed: nothing ever deploys. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER=1`,
-//! the real controller deploys to the in-memory engine of
-//! [`piqueld::docker::fake`] instead, so deployments succeed and services
-//! report healthy, as the documentation screenshots show them.
+//! stubbed: nothing ever deploys, and commands in service `web` run a
+//! scripted terminal instead. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER=1`, the real
+//! controller deploys to the in-memory engine of [`piqueld::docker::fake`]
+//! instead, so deployments succeed and services report healthy, as the
+//! documentation screenshots show them.
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
@@ -15,6 +16,7 @@ use piqueld::{
 };
 use piqueld_core::{
     EnvironmentId, NormalizedApplication, ObservedApplication, ResolutionSet,
+    exec::{ExecInput, ExecOutput, ExecRequest},
     resource::ResolvedApplication,
 };
 use std::sync::Arc;
@@ -90,15 +92,37 @@ impl RuntimeBoundary for Runtime {
             Err(DockerError::Unavailable("browser fixture").into())
         }
     }
+    /// Only `web` has a running task; other services are not running.
     async fn create_exec(
         &self,
         _: &EnvironmentId,
-        _: &piqueld_core::exec::ExecRequest,
+        request: &ExecRequest,
     ) -> Result<Option<Exec>, BoundaryError> {
-        Err(DockerError::Unavailable("browser fixture").into())
+        Ok((request.service.as_str() == "web").then(|| Exec {
+            id: "fixture-exec".into(),
+            task: "fixture-task".into(),
+            tty: request.tty.is_some(),
+        }))
     }
-    async fn run_exec(&self, _: &Exec, _: ExecIo) -> Result<i64, BoundaryError> {
-        Err(DockerError::Unavailable("browser fixture").into())
+    /// Echoes input, reports resizes, and exits with code 3 at Ctrl-D.
+    async fn run_exec(&self, _: &Exec, mut io: ExecIo) -> Result<i64, BoundaryError> {
+        let mut output = vec![b"fixture ready\r\n".to_vec()];
+        loop {
+            for data in output.drain(..) {
+                if io.output.send(ExecOutput::Stdout(data)).await.is_err() {
+                    return Err(DockerError::Request("client disconnected").into());
+                }
+            }
+            match io.input.recv().await {
+                Some(ExecInput::Stdin(data)) if data.contains(&4) => return Ok(3),
+                Some(ExecInput::Stdin(data)) => output.push(data),
+                Some(ExecInput::Resize(size)) => output.push(
+                    format!("\r\nresized to {}x{}\r\n", size.width, size.height).into_bytes(),
+                ),
+                Some(ExecInput::CloseStdin) => {}
+                None => return Err(DockerError::Request("client disconnected").into()),
+            }
+        }
     }
     fn trigger_reconciliation(&self) {}
 }

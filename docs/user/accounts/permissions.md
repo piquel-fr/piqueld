@@ -108,7 +108,7 @@ its deployments.
 | `previews:delete` | Deleting and pruning previews |
 | `secrets:write` | Storing, regenerating and deleting secret values, and choosing which environments may mount them |
 | `logs:read` | Reading runtime, build and job logs, which may contain sensitive output |
-| `apps:exec` | Running commands in running containers, with `piquelctl app exec` and `preview exec`. A command reaches everything its container can, including secret values |
+| `apps:exec` | Running commands in running containers, with `piquelctl app exec`, `preview exec` and the dashboard's **Terminal** tab. A command reaches everything its container can, including secret values |
 | `events:read` | Reading the application's history, diagnostics and deployment analytics |
 
 ## Installation-wide permissions
