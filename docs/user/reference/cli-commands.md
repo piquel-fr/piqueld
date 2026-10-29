@@ -2961,7 +2961,7 @@ Options:
 
 Stop the application's only environment.
 
-Its routes are withdrawn and its services scale to zero, until it is started or deployed again. With several environments, use `env stop`. Needs `apps:deploy`.
+Its routes are withdrawn and its services scale to zero, until it is started, reconciled or deployed again. With several environments, use `env stop`. Needs `apps:deploy`.
 
 ```text
 piquelctl app stop [OPTIONS] <NAME_OR_ID>

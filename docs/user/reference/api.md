@@ -683,7 +683,7 @@ replicas, and the gateway serves none of its routes, withdrawing them before
 the request returns; if the gateway can't be reconfigured then, its next pass
 retries within ten seconds. Their hostnames stay reserved, and their
 certificates and managed DNS records stay in place, so starting serves them
-again at once.
+again within ten seconds.
 `EnvironmentView.run_state` is `stopped` (`running` otherwise, and from daemons
 older than stopping), its runtime health `stopped` once every service has
 scaled down, and its sync state `stopped`: pushes don't deploy it, and sync

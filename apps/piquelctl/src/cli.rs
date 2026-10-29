@@ -462,7 +462,7 @@ pub(crate) enum AppCommand {
     /// Stop the application's only environment.
     ///
     /// Its routes are withdrawn and its services scale to zero, until it is
-    /// started or deployed again. With several environments, use `env stop`.
+    /// started, reconciled or deployed again. With several environments, use `env stop`.
     /// Needs `apps:deploy`.
     Stop(TargetArgs),
     /// Start the application's only environment again.
