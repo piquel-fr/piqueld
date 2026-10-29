@@ -4,14 +4,14 @@ use crate::{deployments::Deployed, profiles::ProfileSummary, support::join_or};
 use piqueld_client::{
     AcceptedOperation, AcceptedPromotion, ActionReason, ActionRisk, ApplicationId, ApplicationLogs,
     ApplicationSummary, ApplicationView, BranchState, BuildLogPage, BuildRecord, CreatedPreview,
-    DeletedApplication, DeletedPreview, DeploymentOrigin, DnsStatus, EnvironmentChange,
-    EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView, EnvironmentView, Event,
-    Export, FileSource, ImageStatus, Import, LocalSnapshot, ManifestChange, MountedSecret,
-    Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
-    ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
-    SecretDeclaration, SecretGenerator, SecretMetadata, SecretMount, SecretProblem, ServiceFile,
-    ServiceImage, Source, StoredSecret, SystemStatus, TelemetryDestinationStatus, TelemetryStatus,
-    Template, UrlState, VariableValue,
+    DeletedApplication, DeletedPreview, DeploymentOrigin, DeploymentView, DnsStatus,
+    EnvironmentChange, EnvironmentDetailView, EnvironmentSource, EnvironmentStatusView,
+    EnvironmentView, Event, Export, FileSource, ImageStatus, Import, LocalSnapshot, ManifestChange,
+    MountedSecret, Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView,
+    ReleaseAvailability, ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl,
+    SavedApplication, SecretDeclaration, SecretGenerator, SecretMetadata, SecretMount,
+    SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret, SystemStatus,
+    TelemetryDestinationStatus, TelemetryStatus, Template, UrlState, VariableValue,
     links::ImportState,
     observability::{Bytes, DaemonStats, Uptime},
     sync::{SyncState, WebhookSecret, WebhookView, short_commit},
@@ -614,6 +614,9 @@ impl Names<'_> {
                 self.environment(environment.as_str())
             ),
             DeploymentOrigin::Release => "deployed again by release ID".into(),
+            DeploymentOrigin::Restore { deployment } => {
+                format!("restored from deployment {deployment}")
+            }
             DeploymentOrigin::Local(snapshot) => snapshot_origin(snapshot),
         }
     }
@@ -1530,6 +1533,43 @@ named!(Page<ReleaseView>, page, names, out, {
     }
     for release in &page.items {
         names.release(out, release)?;
+    }
+    out.next_cursor(page.next_cursor.as_deref())
+});
+
+// Each deployment, newest first, with its outcome, origin and release.
+named!(Page<DeploymentView>, page, names, out, {
+    if page.items.is_empty() {
+        out.line("No deployments.")?;
+    }
+    for deployment in &page.items {
+        let marks = [
+            (deployment.current_target, "current"),
+            (deployment.last_successful, "last successful"),
+        ]
+        .into_iter()
+        .filter_map(|(marked, mark)| marked.then_some(mark))
+        .collect::<Vec<_>>();
+        let operation = &deployment.operation;
+        out.line(format_args!(
+            "{}  {}  created {}{}",
+            operation.id,
+            operation.state,
+            operation.created_at_ms,
+            if marks.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", marks.join(", "))
+            }
+        ))?;
+        out.label("  Origin", names.origin(&deployment.origin))?;
+        out.label(
+            "  Release",
+            deployment
+                .release
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), ToString::to_string),
+        )?;
     }
     out.next_cursor(page.next_cursor.as_deref())
 });

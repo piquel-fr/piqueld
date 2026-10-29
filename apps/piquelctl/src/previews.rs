@@ -4,7 +4,9 @@
 use crate::{
     cli::LogArgs,
     commands::{resolve_application, wait_for_deletion, wait_for_operation},
-    deployments::{Deployed, Target, UrlArgs, WaitArgs, wait_for_accepted},
+    deployments::{
+        Deployed, HistoryArgs, RestoreArgs, Target, UrlArgs, WaitArgs, wait_for_accepted,
+    },
     environments::logs,
     error::{CliError, ErrorKind, Result},
     exec::ExecArgs,
@@ -69,6 +71,12 @@ pub(crate) enum PreviewCommand {
         #[command(flatten)]
         window: LogArgs,
     },
+    /// List a preview's deployments, newest first: each one's outcome and
+    /// where it came from.
+    History(HistoryArgs<PreviewArgs>),
+    /// Deploy an earlier, succeeded deployment of a preview again exactly as
+    /// it ran, without running its jobs.
+    Restore(RestoreArgs<PreviewArgs>),
     /// Wait until a deployment of a preview is ready.
     ///
     /// The command never follows a newer deployment. It exits with code 3 if
@@ -177,7 +185,7 @@ pub(crate) struct PreviewDeletionFlags {
     no_wait: bool,
 }
 
-impl PreviewArgs {
+impl Target for PreviewArgs {
     /// Loads the application and selects the preview.
     async fn resolve(&self, client: &Client) -> Result<(ApplicationView, EnvironmentView)> {
         let application = resolve_application(client, &self.application).await?;
@@ -195,12 +203,6 @@ impl PreviewArgs {
                 )
             })?;
         Ok((application, preview))
-    }
-}
-
-impl Target for PreviewArgs {
-    async fn environment(&self, client: &Client) -> Result<EnvironmentView> {
-        Ok(self.resolve(client).await?.1)
     }
 }
 
@@ -236,6 +238,8 @@ impl PreviewCommand {
                 let (_, preview) = target.resolve(client).await?;
                 logs(console, client, &preview, window).await
             }
+            Self::History(args) => args.run(console, client).await,
+            Self::Restore(args) => args.run(console, client).await,
             Self::Wait(args) => args.run(console, client).await,
             Self::Url(args) => args.run(console, client).await,
             Self::Exec(_) => unreachable!("exec sessions run without the command timeout"),

@@ -1026,8 +1026,16 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                 each={move || history.items.get()}
                 key={|d| d.operation.id.clone()}
                 children={move |initial| {
+                    let newer = {
+                        let id = initial.operation.id.clone();
+                        Signal::derive(move || {
+                            history.items.with(|items| {
+                                items.first().is_some_and(|newest| newest.operation.id != id)
+                            })
+                        })
+                    };
                     let deployment = live_row(history.items, initial, |d| &d.operation.id);
-                    view! { <DeploymentCard deployment={deployment} /> }
+                    view! { <DeploymentCard deployment={deployment} newer={newer} /> }
                 }}
             />
             {load_older(
@@ -1042,9 +1050,11 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
 
 /// Expandable deployment summary with details, snapshot and attempts tabs.
 /// Starts expanded when it matches the `?deployment=` query; attempts load
-/// lazily the first time their tab is opened.
+/// lazily the first time their tab is opened. `newer` is whether a newer
+/// deployment is listed: one that failed before replacing the current target
+/// leaves Restore offered on it.
 #[component]
-fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
+fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> impl IntoView {
     let context = editor();
     let application = context.id();
     let initial = deployment.get_untracked();
@@ -1101,8 +1111,38 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                     tab.get() != "Details"
                 }}>
                     {move || {
-                        let DeploymentView { operation: op, release, origin, .. } = deployment
-                            .get();
+                        let DeploymentView {
+                            operation: op,
+                            release,
+                            origin,
+                            succeeded_at_ms,
+                            current_target,
+                            ..
+                        } = deployment.get();
+                        let restore = (succeeded_at_ms.is_some()
+                            && (!current_target || newer.get())
+                            && context.can_restore())
+                            .then(|| {
+                                let id = op.id.clone();
+                                view! {
+                                    <div class="toolbar">
+                                        <p class="hint">
+                                            "Restoring deploys this deployment again exactly as it ran: its manifest, images and secret versions. Its jobs don't run again, and volume contents and migrations stay as they are."
+                                        </p>
+                                        <div class="toolbar-end">
+                                            <button
+                                                type="button"
+                                                class="btn btn-sm"
+                                                disabled={move || context.action_blocked()}
+                                                on:click={move |_| context.restore(id.clone())}
+                                            >
+                                                {icon(Icon::Restore)}
+                                                "Restore"
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+                            });
                         let release = release
                             .map_or_else(
                                 || "Not recorded".into_any(),
@@ -1110,6 +1150,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                             );
                         view! {
                             <div class="stack-sm">
+                                {restore}
                                 <dl class="kv">
                                     <dt>"Operation ID"</dt>
                                     <dd>
@@ -1177,6 +1218,45 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                 </div>
             </div>
         </article>
+    }
+}
+
+impl EditorContext {
+    /// Whether the caller may restore deployments of the shown environment:
+    /// `apps:deploy`, or `previews:deploy` in a preview.
+    fn can_restore(self) -> bool {
+        let preview = self
+            .selected_environment()
+            .is_some_and(|environment| environment.preview().is_some());
+        self.can(if preview {
+            AppPermission::PreviewsDeploy
+        } else {
+            AppPermission::Deploy
+        })
+    }
+
+    /// Confirms, then restores `deployment` of the shown environment or
+    /// preview exactly as it ran.
+    fn restore(self, deployment: String) {
+        if !confirm(&format!(
+            "Restore deployment {deployment}? Its jobs don't run again, and volume contents and migrations stay as they are."
+        )) {
+            return;
+        }
+        let Some(environment) = self.selected_environment() else {
+            return;
+        };
+        self.mutate(
+            move |client| {
+                let (environment, deployment) = (environment.clone(), deployment.clone());
+                async move { client.restore_deployment(&environment, &deployment).await }
+            },
+            move |_| {
+                self.notice
+                    .set("Restore accepted. Follow its progress below.".into());
+                self.refresh_dashboard();
+            },
+        );
     }
 }
 

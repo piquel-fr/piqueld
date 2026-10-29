@@ -33,6 +33,7 @@ pub(super) enum Icon {
     Key,
     Copy,
     GitBranch,
+    Restore,
 }
 
 impl Icon {
@@ -100,6 +101,9 @@ impl Icon {
             }
             Self::GitBranch => {
                 r#"<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>"#
+            }
+            Self::Restore => {
+                r#"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>"#
             }
         }
     }

@@ -7021,6 +7021,11 @@ async fn previews_permissions_manage_previews() {
     let build = format!("/api/v1/builds/{}/logs", f.build(&preview).await);
     let (status, body) = f.router.call(&f.agent, "GET", &build, none.clone()).await;
     assert_eq!(status, 200, "{body}");
+    // Restoring is allowed too: only the deployment is unknown.
+    let restore = format!("/api/v1/previews/{preview}/restore");
+    let request = serde_json::json!({"deployment": "operation-00000000000000000000000000000000"});
+    let (status, body) = f.router.call(&f.agent, "POST", &restore, request).await;
+    assert_eq!(status, 404, "{body}");
     let delete = format!("/api/v1/previews/{preview}");
     assert_eq!(f.router.status(&f.agent, "DELETE", &delete).await, 202);
 }

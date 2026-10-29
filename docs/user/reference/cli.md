@@ -140,7 +140,7 @@ withdraws its routes at once and its services scale to zero replicas, keeping
 their configuration, volumes and secrets. It waits until its runtime reports
 `stopped`, unless `--no-wait`, fails if the deployment the stop runs again
 fails, and ends early if the environment is started or deployed meanwhile. A stopped environment stays stopped until `env
-start`, `env reconcile`, a deployment, or a promotion into it; pushes don't
+start`, `env reconcile`, a deployment, a restore, or a promotion into it; pushes don't
 deploy it meanwhile, and sync deploys the head it missed once it starts. `env
 start APP [ENV]` confirms, then starts it again, retrying its latest operation
 like `env reconcile` and waiting for it. Stopping a deployment in progress lets
@@ -228,6 +228,37 @@ unusable secret, without changing anything. It exits with the conflict code 3
 when the plan is blocked, as it is by each missing image that can't be pulled
 again (`image_unavailable`), or lists secrets. `--release ID --plan` plans an
 earlier release for any environment.
+
+`env history APP [ENV]` lists an environment's deployments, newest first, three
+per page (`--cursor` for older ones): each one's ID, outcome, where it came
+from, its release, and which is the current target and the last successful
+one.
+
+`env restore APP ENV DEPLOYMENT` deploys an earlier deployment again exactly as
+it ran: its rendered manifest, its images and the secret versions it pinned,
+never newer ones. It is recorded as a new deployment restored from that one,
+which becomes the maintained target, so drift repair keeps it. It works for any
+environment, promoted ones included, and needs no application revision. It asks
+for confirmation (`--yes`), then waits unless `--no-wait`, reporting like
+`env deploy`. `preview history` and `preview restore` do the same for a preview.
+
+A restore fetches and builds nothing, and never runs jobs: re-running an old
+deployment's migrations against newer data is exactly what it must avoid. It
+does not revert data either. Volume contents and migrations that ran since
+stay as they are, so the restored code must cope with them; expand/contract
+migrations keep old code compatible.
+
+Before deploying anything, a restore fails with:
+
+- `deployment_not_restorable` for a deployment that never succeeded.
+- `image_unavailable`, naming the service and image, when an image is gone and
+  can't be pulled again by digest. A build is never rebuilt. Image cleanup
+  keeps each environment's last `images.keep_deployments` successful
+  deployments, and only a preview's current one.
+- `restore_secrets_unavailable`, naming the secrets whose pinned versions were
+  deleted or discarded by key recovery since.
+- `secret_access_denied` for a stored secret whose access no longer allows the
+  environment.
 
 A [preview](manifest.md#previews) is a disposable deployment of
 one branch of a repository-backed application. `preview` commands address a

@@ -310,6 +310,7 @@ impl Store {
                 | PreviewMutation::Delete { id }
                 | PreviewMutation::Prune { id, .. },
             ) => Self::environment_owner_on(tx, id).await?,
+            Mutation::Restore(restore) => Self::environment_owner_on(tx, restore.parts().0).await?,
         };
         let target = match (&owner, mutation) {
             (None, Mutation::Save { .. }) => Target::New,
@@ -490,6 +491,7 @@ impl Store {
             }
             Mutation::Reconcile { id } => Self::start_on(tx, &id, expected, now).await,
             Mutation::Stop { id } => Self::stop_on(tx, &id, expected, now).await,
+            Mutation::Restore(restore) => Box::pin(Self::restore_on(tx, restore)).await,
             Mutation::Promotion(mutation) => self.promotion_on(tx, mutation, expected, now).await,
             // Boxed: preview changes would otherwise grow every acceptance future.
             Mutation::Preview(mutation) => {

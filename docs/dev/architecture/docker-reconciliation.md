@@ -35,7 +35,7 @@ preparation, a fresh concrete plan, and before-rollout jobs succeed, promotion
 switches the maintained target before the remaining services roll out. Job
 prerequisites may roll out before promotion. Promotion and active repair share the mutation
 lock, so old-target repair cannot continue after promotion. There is no automatic
-rollback after rollout starts.
+rollback after rollout starts; restoring a deployment (below) rolls back by hand.
 
 Promoting a release into a
 [promoted environment](../../user/reference/manifest.md#promoted-environments) (`env
@@ -50,6 +50,17 @@ built from its own source fails with `environment_promoted` instead of fetching,
 building, or rolling out a target it prepared before, unless that target is
 already the one the environment runs: repairing its drift rolls nothing new in.
 
+Restoring a deployment (`env restore`, `preview restore`) has no preparation
+phase either. The daemon checks that the deployment succeeded and that its
+images are present, pulling a missing registry image again by digest, while
+holding image cleanup off; accepting the request then copies the deployment's
+rendered manifest, release and secret pins into a new deployment, refusing
+pinned versions deleted or discarded since, and saves its prepared target with
+it. The controller rolls that target out as a retry would, but never runs its
+jobs, and from then maintains it like any other: drift repair keeps the
+restored deployment, never the one it replaced. Volume contents and
+migrations stay as they are.
+
 Saving an identical normalized manifest does not schedule work. Apply with
 deployment creates a new deployment even when the manifest is unchanged.
 Explicit reconcile requests
@@ -59,7 +70,7 @@ preparation if it never completed. New deployments resolve all sources again.
 Maintaining the active target during preparation does not replace the requested
 candidate or report it as successfully deployed.
 
-Before promotion, each deployment runs its `before-rollout` jobs as Swarm
+Before promotion, each deployment except a restore runs its `before-rollout` jobs as Swarm
 replicated jobs pinned to the local node, without restarts, health checks, or
 network aliases. A job's container is its service's, plus the environment
 variables and secrets the job declares. A blocked plan runs no jobs; otherwise the private network and

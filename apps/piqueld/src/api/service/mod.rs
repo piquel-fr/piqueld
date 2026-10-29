@@ -10,6 +10,7 @@ mod observability;
 mod previews;
 mod promotions;
 mod queries;
+mod restores;
 mod startup;
 mod sync;
 mod system;
@@ -168,6 +169,10 @@ pub enum Mutation {
         /// Stable environment ID.
         id: EnvironmentId,
     },
+    /// Deploy an earlier, succeeded deployment of an environment or preview
+    /// again exactly as it ran. Needs no application revision: the
+    /// deployment pins everything it deploys.
+    Restore(Restore),
     /// Opt an environment in or out of its application's sync. Needs no
     /// application revision, since it changes nothing an environment deploys.
     SetSync {
@@ -232,6 +237,39 @@ pub enum SourceChoice {
     Branch(TrackedBranch),
     /// Receive releases promoted from this environment.
     PromoteFrom(EnvironmentId),
+}
+
+/// An earlier deployment to restore, through the endpoint of its kind: each
+/// finds only environments, or only previews.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "of", rename_all = "snake_case")]
+pub enum Restore {
+    /// A deployment of an environment.
+    Environment {
+        /// Stable environment ID.
+        id: EnvironmentId,
+        /// The deployment to restore.
+        deployment: String,
+    },
+    /// A deployment of a preview.
+    Preview {
+        /// Stable preview ID.
+        id: EnvironmentId,
+        /// The deployment to restore.
+        deployment: String,
+    },
+}
+
+impl Restore {
+    /// The environment or preview, and the deployment of it to restore.
+    #[must_use]
+    pub fn parts(&self) -> (&EnvironmentId, &str) {
+        match self {
+            Self::Environment { id, deployment } | Self::Preview { id, deployment } => {
+                (id, deployment)
+            }
+        }
+    }
 }
 
 /// A change to a promoted environment, or making one.
@@ -342,8 +380,8 @@ impl Mutation {
     /// environment's, for environment changes), whose repository connection
     /// is currently `connection`: `Write`, and `Deploy` too for saves and
     /// edits that deploy, and for changes sync then deploys (see
-    /// [`Self::deploys_on_push`]). Previews need `previews:deploy` to create
-    /// and deploy, and `previews:delete` to delete, which `Deploy` and
+    /// [`Self::deploys_on_push`]). Previews need `previews:deploy` to create,
+    /// deploy and restore, and `previews:delete` to delete, which `Deploy` and
     /// `Delete` include.
     #[must_use]
     pub fn required(
@@ -368,8 +406,10 @@ impl Mutation {
             | Self::Promotion(PromotionMutation::Promote { .. })
             | Self::Reconcile { .. }
             | Self::Stop { .. }
+            | Self::Restore(Restore::Environment { .. })
             | Self::Sync(_) => &[Deploy],
-            Self::Preview(
+            Self::Restore(Restore::Preview { .. })
+            | Self::Preview(
                 PreviewMutation::Create { .. }
                 | PreviewMutation::Deploy { .. }
                 | PreviewMutation::Local { .. },
@@ -465,7 +505,7 @@ impl Mutation {
     }
 
     /// Whether submitting this change without `force` lacks the revision
-    /// precondition it needs: every change but reconcile, stopping, sync,
+    /// precondition it needs: every change but reconcile, stopping, restores, sync,
     /// telemetry grants and previews needs the inspected revision, and saves over a nonzero one also the
     /// inspected identity.
     const fn lacks_precondition(&self, expected_generation: Option<u64>) -> bool {
@@ -489,6 +529,7 @@ impl Mutation {
             | Self::Delete { .. } => expected_generation.is_none(),
             Self::Reconcile { .. }
             | Self::Stop { .. }
+            | Self::Restore(_)
             | Self::SetSync { .. }
             | Self::SetTelemetry { .. }
             | Self::Sync(_)

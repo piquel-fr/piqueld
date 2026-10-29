@@ -5,7 +5,7 @@ use super::extract::{IDEMPOTENCY_KEY, optional_header};
 use super::{
     ApiError, ApiJson, ApiPath, ApiQuery, ApiState, accepted, ok, openapi::ApiErrorResponse,
 };
-use crate::api::{Mutation, PromotionMutation, SourceChoice};
+use crate::api::{Mutation, PromotionMutation, Restore, SourceChoice};
 use crate::auth::Identity;
 use axum::{
     Extension,
@@ -18,7 +18,7 @@ use piqueld_core::api::{
     AcceptedOperation, AcceptedPromotion, CreateEnvironmentRequest, Envelope,
     EnvironmentBranchRequest, EnvironmentDetailView, EnvironmentRequest, EnvironmentSourceRequest,
     EnvironmentStatusView, EnvironmentTelemetryRequest, EnvironmentView, PlanView, PromoteRequest,
-    PromotionSelection,
+    PromotionSelection, RestoreRequest,
 };
 use piqueld_core::sync::EnvironmentSyncRequest;
 use piqueld_core::{
@@ -520,7 +520,7 @@ pub(super) async fn reconcile(
 /// Its services scale to zero replicas, keeping their configuration, volumes
 /// and secrets, and the gateway stops serving its routes before the request
 /// returns, or on its next pass if that fails. It stays stopped until it is
-/// started, deployed, promoted into or reconciled; sync deploys nothing to it
+/// started, deployed, restored, promoted into or reconciled; sync deploys nothing to it
 /// meanwhile. Returns 202 with its latest operation: run again when its
 /// deployment had rolled out and has ended, so the services stop now, or as
 /// is while it is in progress, which then rolls out with no replicas. 404
@@ -570,4 +570,46 @@ pub(super) async fn start(
     query: ApiQuery<GenerationQuery>,
 ) -> Result<Response, ApiError> {
     reconcile(state, identity, id, headers, query).await
+}
+
+/// Restores an earlier deployment of an environment exactly.
+///
+/// Deploys `deployment` again as it ran: its rendered manifest, its images
+/// and the secret versions it pinned, recorded as a new deployment whose
+/// origin names it, which becomes the maintained target. Nothing is rendered,
+/// fetched or built, and jobs never run. Volume contents and migrations are
+/// not reverted. Refused unless it succeeded (`deployment_not_restorable`),
+/// its images are present or can be pulled again by digest
+/// (`image_unavailable`), and the secret versions it pinned still exist
+/// (`restore_secrets_unavailable`, listing them). Needs no application
+/// revision. Previews restore through `restorePreviewDeployment`. Repeating a
+/// request with the same `Idempotency-Key` returns the original response.
+#[utoipa::path(post,path="/api/v1/environments/{id}/restore",operation_id="restoreDeployment",
+    params(("id"=String,Path),("Idempotency-Key"=Option<String>,Header)),
+    request_body=RestoreRequest,
+    responses((status=202,description="Restore accepted",body=Envelope<AcceptedOperation>),
+    (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),
+    (status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),
+    (status=500,response=inline(ApiErrorResponse)),(status=502,response=inline(ApiErrorResponse)),
+    (status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn restore(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+    ApiPath(id): ApiPath<String>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<RestoreRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = optional_header(&headers, IDEMPOTENCY_KEY)?;
+    Ok(accepted(
+        state
+            .restore(
+                identity.actor(),
+                Restore::Environment {
+                    id: EnvironmentId::parse(id)?,
+                    deployment: request.deployment,
+                },
+                request_id.as_deref(),
+            )
+            .await?,
+    ))
 }
