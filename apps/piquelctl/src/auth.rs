@@ -186,6 +186,29 @@ impl Credentials {
         }
         Ok(account)
     }
+    /// Saves the new username of account `id` after `account update` renames
+    /// it, so `--account` finds its login by the new name. Does nothing, and
+    /// creates no file, without a saved login for it on this daemon.
+    pub(crate) fn rename(cli: &Cli, id: &str, username: &str) -> Result<()> {
+        // Without a credentials location there is no saved login to rename.
+        let Ok(path) = Self::path() else {
+            return Ok(());
+        };
+        let key = Self::key(cli);
+        if Self::read_at(&path)?.login(&key, id).is_none() {
+            return Ok(());
+        }
+        Self::update_at(&path, |credentials| {
+            if let Some(account) = credentials.login(&key, id) {
+                username.clone_into(&mut account.username);
+            }
+            Ok(())
+        })
+    }
+    /// The saved login of account `id` under endpoint `key`.
+    fn login(&mut self, key: &str, id: &str) -> Option<&mut Account> {
+        self.endpoints.get_mut(key)?.accounts.get_mut(id)
+    }
     /// Adds a bearer token to `client`: `PIQUELD_TOKEN` wins over the saved login.
     /// `login` skips this, and without any token the client is returned unchanged.
     pub(crate) fn attach(cli: &Cli, client: Client) -> Result<Client> {

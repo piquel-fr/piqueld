@@ -98,10 +98,12 @@ the link, see the next section.
 Then, signed in as their account or as that administrator:
 
 1. On their card on the **Accounts** page, select **Remove** next to the lost
-   passkey.
+   passkey, or run `piquelctl account passkey remove` with its ID, from
+   `piquelctl account passkey list bob`.
 2. If the passkey may have been stolen, select **Revoke all** under
-   **Sessions and API tokens**. Removing a passkey doesn't end the sessions it
-   opened.
+   **Sessions and API tokens**, or run
+   `piquelctl token revoke --all --user bob`. Removing a passkey doesn't end
+   the sessions it opened.
 
 ## No administrator can sign in
 

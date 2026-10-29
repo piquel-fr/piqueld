@@ -108,8 +108,11 @@ carol (01a16b4c-8584-7390-a0cb-b6b2c348ec20)
   events:read on blog
 ```
 
-`--account` matches the username exactly as it was when you logged in. After
-an account is renamed, select it by ID, or log in again.
+`--account` matches the username exactly as it was when you logged in. When
+you rename an account with
+[`piquelctl account update`](accounts.md#edit-a-profile), its saved login on
+that daemon is renamed too. After a rename on the dashboard, select the login
+by ID, or log in again.
 
 `piquelctl logout` revokes the login and removes it from the file. With
 `--account`, it signs that account out.

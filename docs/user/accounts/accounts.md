@@ -1,8 +1,8 @@
 # Managing accounts
 
 Invite people to piqueld, help them add passkeys, and remove their access when
-they leave. You do this on the dashboard's **Accounts** page;
-`piquelctl account` covers the most common tasks.
+they leave. You do this on the dashboard's **Accounts** page or with
+`piquelctl account`.
 
 ## Before you start
 
@@ -93,7 +93,19 @@ expire. Enrollment links show **Add a passkey to** and the account's name.
 ![Pending links: an invitation from alice granting apps:read and apps:deploy on blog, and an enrollment link from alice to add a passkey to carol, each expiring in 23 hours with a Revoke button](../../images/accounts/pending-links.png)
 
 Select **Revoke** to cancel a link before it's used. Deleting the account that
-issued a link also revokes it. `piquelctl` doesn't list or revoke links.
+issued a link also revokes it.
+
+With `piquelctl`, list the links to find the one to revoke, then revoke it by
+its ID:
+
+```console
+$ piquelctl account invitation list
+01a16b52-3f0e-7c41-9d2a-6b8e0f4c7d15 invitation by alice (expires at Unix 1793262000)
+  apps:read on blog
+  apps:deploy on blog
+01a16b53-7a21-7e93-8c4f-2d9b1e6a0c38 enrollment for carol by alice (expires at Unix 1793262600)
+$ piquelctl account invitation revoke 01a16b52-3f0e-7c41-9d2a-6b8e0f4c7d15
+```
 
 ## Add a passkey
 
@@ -154,8 +166,19 @@ first; revoke the ones you no longer need under **Pending links**.
 Under **Passkeys**, edit a **Passkey name** and select **Rename**.
 
 Removing a passkey can't be undone, and the dashboard doesn't ask to confirm.
-To remove one, select **Remove** next to it. `piquelctl` doesn't rename or
-remove passkeys.
+To remove one, select **Remove** next to it.
+
+With `piquelctl`, list the passkeys to find their IDs, then rename or remove
+one:
+
+```console
+$ piquelctl account passkey list bob
+01a16b4f-2c8d-7b16-a5e3-9f0d4c7b2e61 Laptop (bob)
+$ piquelctl account passkey rename 01a16b4f-2c8d-7b16-a5e3-9f0d4c7b2e61 "Work laptop"
+$ piquelctl account passkey remove 01a16b4f-2c8d-7b16-a5e3-9f0d4c7b2e61
+```
+
+`account passkey remove` asks you to confirm first.
 
 Removing a passkey stops it from signing in, but it doesn't end the sessions
 and tokens already open. If the passkey was lost or stolen,
@@ -170,7 +193,14 @@ Under **Profile**, change the **Username** or the **Display name**, then select
   It is unique regardless of case: `Alice` and `alice` are the same name.
 - A display name is optional, up to 200 bytes.
 
-`piquelctl` doesn't edit profiles.
+With `piquelctl`, give the new `--username`, `--display-name`, or both:
+
+```console
+piquelctl account update bob --username robert --display-name "Robert"
+```
+
+If you saved a `piquelctl` login for the account, its name changes with it, so
+`--account robert` selects it.
 
 Renaming an account doesn't change its ID, which the
 [audit trail](../guides/observability.md#audit-trail) and saved CLI logins
@@ -191,9 +221,20 @@ shows what it may do, when it was last used, and when it expires.
   your own account.
 - **Activity** opens its requests in the audit trail.
 
-`piquelctl token list` lists your own sessions and tokens, and
-`piquelctl token revoke <id>` revokes one; see
-[revoke a token](cli-and-tokens.md#revoke-a-token).
+With `piquelctl`, `token list` lists your own sessions and tokens, and
+`token revoke <id>` revokes one; see
+[revoke a token](cli-and-tokens.md#revoke-a-token). Add `--user` for someone
+else's account, and `--all` to revoke them all:
+
+```console
+piquelctl token list --user bob
+piquelctl token revoke --all --user bob
+```
+
+Without `--user`, `token revoke --all` signs your own account out everywhere,
+including the `piquelctl` login running it. An API token or
+[limited login](cli-and-tokens.md#ask-for-less-access) can't do this for its
+own account.
 
 ## Delete an account
 
@@ -204,7 +245,12 @@ links it issued. It can't be undone. Its requests stay in the audit trail.
 2. Confirm in the dialog that asks whether to delete the account and all its
    passkeys, sessions, and tokens.
 
-You can delete your own account. `piquelctl` doesn't delete accounts.
+You can delete your own account. With `piquelctl`, which asks you to confirm
+first:
+
+```console
+piquelctl account delete bob
+```
 
 ## Troubleshooting
 
