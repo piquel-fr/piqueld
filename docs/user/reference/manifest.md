@@ -736,6 +736,10 @@ generates a new version for the next deployment. A value discarded by key
 recovery has nothing left to keep, so the next deployment that mounts it
 generates a new one. Removing a declaration retains the generated value.
 
+Besides applying a manifest, declarations can be edited with
+`piquelctl app generated-secret`, the **Generated secrets** card of the dashboard's
+Secrets tab, or `PUT /api/v1/applications/{id}/generated-secrets`.
+
 ## Promoted environments
 
 A promoted environment never builds and never fetches. It only receives

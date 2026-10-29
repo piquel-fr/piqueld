@@ -9,8 +9,9 @@ use piqueld_client::{
     Export, FileSource, ImageStatus, Import, LocalSnapshot, ManifestChange, MountedSecret,
     Operation, OperationState, Page, PlanView, PreviewUsage, PreviewView, ReleaseAvailability,
     ReleaseId, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SavedApplication,
-    SecretMetadata, SecretMount, SecretProblem, ServiceFile, ServiceImage, Source, StoredSecret,
-    SystemStatus, TelemetryDestinationStatus, TelemetryStatus, Template, UrlState, VariableValue,
+    SecretDeclaration, SecretGenerator, SecretMetadata, SecretMount, SecretProblem, ServiceFile,
+    ServiceImage, Source, StoredSecret, SystemStatus, TelemetryDestinationStatus, TelemetryStatus,
+    Template, UrlState, VariableValue,
     links::ImportState,
     sync::{SyncState, WebhookSecret, WebhookView, short_commit},
     system::{IngressStatus, PublicIngressStatus, RouteStatus},
@@ -287,6 +288,23 @@ report!(Vec<Export> as [Export], self, out, {
             export.applications.join(","),
             if export.previews { "yes" } else { "no" }
         ))
+    })
+});
+
+// `generated-secret list` result.
+report!(Vec<SecretDeclaration> as [SecretDeclaration], self, out, {
+    out.table(self, "No generated secrets declared.", "NAME  GENERATES", |out, secret| {
+        match secret.generate {
+            SecretGenerator::Random { bytes, encoding } => {
+                out.line(format_args!(
+                    "{}  {bytes} random bytes, {encoding}",
+                    secret.name
+                ))
+            }
+            SecretGenerator::Rsa { bits } => {
+                out.line(format_args!("{}  {bits}-bit RSA key", secret.name))
+            }
+        }
     })
 });
 

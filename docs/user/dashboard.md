@@ -174,7 +174,9 @@ with the apps tailnet node's name and addresses. With `system:operate`,
 **Check DNS providers** checks their credentials now. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed
 health merged in when the application has one environment. The Secrets tab
-holds the application's secret store and each service's secret file references. The Overview tab shows the application's identity, configuration
+holds the application's secret store, the secrets piqueld generates (each a
+random value or an RSA key; changing or removing one keeps values already
+generated), and each service's secret file references. The Overview tab shows the application's identity, configuration
 revision, and environments, and the delete action. Builds and Events cover every
 environment, each linking to its environment, and include application-wide
 events such as edits and renames; a deleted environment's events remain until
