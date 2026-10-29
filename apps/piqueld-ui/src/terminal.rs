@@ -234,13 +234,15 @@ impl Terminal {
     }
 
     /// Returns to the live screen and encodes pasted text, bracketed when the
-    /// program asked for it so it is not run as typed commands.
+    /// program asked for it so it is not run as typed commands. Bracketed text
+    /// loses its escape characters, so it cannot end the bracket early.
     pub fn paste(&mut self, text: &str) -> Vec<u8> {
         let screen = self.parser.screen_mut();
         screen.set_scrollback(0);
         // Terminals send Enter as a carriage return.
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if screen.bracketed_paste() {
+            let text = text.replace('\x1b', "");
             format!("\x1b[200~{text}\x1b[201~").into_bytes()
         } else {
             text.into_bytes()
@@ -510,5 +512,10 @@ mod tests {
         assert_eq!(terminal.paste("a\nb"), b"a\rb");
         let _ = terminal.write(b"\x1b[?2004h");
         assert_eq!(terminal.paste("a"), b"\x1b[200~a\x1b[201~");
+        // A pasted end marker would run the rest as typed commands.
+        assert_eq!(
+            terminal.paste("a\x1b[201~\nrm"),
+            b"\x1b[200~a[201~\rrm\x1b[201~"
+        );
     }
 }
