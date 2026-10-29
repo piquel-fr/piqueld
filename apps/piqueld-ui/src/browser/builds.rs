@@ -1,5 +1,5 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
-use super::format::{duration, timestamp};
+use super::format::timestamp;
 use super::logs::{LogKind, LogViewer, StreamFilter};
 use super::ui::{
     Icon, PageHeader, Tone, build_badge, code_or, empty, expander_summary, icon, load_older,
@@ -12,7 +12,8 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
-    access::AppPermission, observability::Bytes,
+    access::AppPermission,
+    observability::{Bytes, Elapsed},
 };
 
 /// `/builds` page: build history across all applications.
@@ -417,7 +418,7 @@ fn build_summary_time(build: &BuildRecord) -> AnyView {
 fn build_duration(build: &BuildRecord) -> String {
     build.finished_at_ms.map_or_else(
         || "In progress".into(),
-        |finished| duration(finished.saturating_sub(build.started_at_ms)),
+        |finished| Elapsed::from_millis(finished.saturating_sub(build.started_at_ms)).to_string(),
     )
 }
 

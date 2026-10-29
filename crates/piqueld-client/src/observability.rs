@@ -64,6 +64,54 @@ impl fmt::Display for Uptime {
     }
 }
 
+/// A duration as people read it: `850 ms`, `3.2 s`, `4 min 12 s` or
+/// `2 h 5 min`. The dashboard and `piquelctl` show durations this way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Elapsed(pub Duration);
+
+impl Elapsed {
+    /// From whole milliseconds, such as a difference of timestamps; negative
+    /// ones are zero.
+    #[must_use]
+    pub fn from_millis(milliseconds: i64) -> Self {
+        Self(Duration::from_millis(
+            u64::try_from(milliseconds).unwrap_or(0),
+        ))
+    }
+
+    /// From fractional milliseconds, such as analytics means; negative,
+    /// non-finite or unrepresentable ones are zero.
+    #[must_use]
+    pub fn from_millis_f64(milliseconds: f64) -> Self {
+        Self(Duration::try_from_secs_f64(milliseconds / 1000.0).unwrap_or_default())
+    }
+}
+
+impl fmt::Display for Elapsed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let milliseconds = self.0.as_millis();
+        match milliseconds {
+            0..=999 => write!(formatter, "{milliseconds} ms"),
+            // Tenths of a second, rounded half up, below the 60.0 s that is
+            // shown as a minute.
+            1_000..=59_949 => {
+                let tenths = (milliseconds + 50) / 100;
+                write!(formatter, "{}.{} s", tenths / 10, tenths % 10)
+            }
+            59_950..=3_599_999 => {
+                let seconds = (milliseconds + 500) / 1_000;
+                write!(formatter, "{} min {} s", seconds / 60, seconds % 60)
+            }
+            _ => write!(
+                formatter,
+                "{} h {} min",
+                milliseconds / 3_600_000,
+                (milliseconds % 3_600_000) / 60_000
+            ),
+        }
+    }
+}
+
 impl Client {
     /// Reads a filtered page of durable history.
     /// # Errors
@@ -224,7 +272,7 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bytes, Uptime};
+    use super::{Bytes, Elapsed, Uptime};
     use std::time::Duration;
 
     #[test]
@@ -252,5 +300,22 @@ mod tests {
         ] {
             assert_eq!(Uptime(Duration::from_secs(seconds)).to_string(), text);
         }
+    }
+
+    #[test]
+    fn elapsed_uses_the_largest_fitting_units() {
+        for (milliseconds, text) in [
+            (-5, "0 ms"),
+            (850, "850 ms"),
+            (12_340, "12.3 s"),
+            (59_949, "59.9 s"),
+            (59_950, "1 min 0 s"),
+            (252_000, "4 min 12 s"),
+            (7_500_000, "2 h 5 min"),
+        ] {
+            assert_eq!(Elapsed::from_millis(milliseconds).to_string(), text);
+        }
+        assert_eq!(Elapsed::from_millis_f64(3_245.7).to_string(), "3.2 s");
+        assert_eq!(Elapsed::from_millis_f64(f64::NAN).to_string(), "0 ms");
     }
 }

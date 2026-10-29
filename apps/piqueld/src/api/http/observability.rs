@@ -55,7 +55,8 @@ pub(super) async fn resources(
 pub(super) struct AnalyticsQuery {
     /// Only include deployments of this environment.
     environment_id: Option<String>,
-    /// Inclusive Unix millisecond lower bound; defaults to 30 days before `until_ms`.
+    /// Inclusive Unix millisecond lower bound; defaults to 30 days before
+    /// `until_ms`, and no earlier than zero.
     since_ms: Option<i64>,
     /// Inclusive Unix millisecond upper bound; defaults to now.
     until_ms: Option<i64>,
@@ -77,7 +78,7 @@ pub(super) async fn analytics(
             &super::access::history(&identity.grants)?,
             query
                 .since_ms
-                .unwrap_or_else(|| until.saturating_sub(30 * 86_400_000)),
+                .unwrap_or_else(|| until.saturating_sub(30 * 86_400_000).max(0)),
             until,
         )
         .await?))

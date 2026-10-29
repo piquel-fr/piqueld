@@ -1622,6 +1622,68 @@ fn events_cli_reads_a_filtered_page() {
 }
 
 #[test]
+fn analytics_reads_one_environment_over_a_relative_window() {
+    let server = start_server(false, 2, |request| {
+        if request.path == "/api/v1/applications/app-notes-01" {
+            return Reply::json(two_environment_view());
+        }
+        let query = request
+            .path
+            .strip_prefix("/api/v1/analytics/deployments?")
+            .expect("an analytics request");
+        let parameters: BTreeMap<_, _> = query
+            .split('&')
+            .filter_map(|parameter| parameter.split_once('='))
+            .collect();
+        assert_eq!(parameters["environment_id"], "env-staging-01");
+        let bound = |name: &str| parameters[name].parse::<i64>().unwrap();
+        assert_eq!(bound("until_ms") - bound("since_ms"), 6 * 86_400_000);
+        Reply::json(json!({
+            "since_ms": 1, "until_ms": 2, "history_started_at_ms": 5, "pruned_through_ms": null,
+            "incomplete": true, "deployments": 3, "succeeded": 2, "failed": 1,
+            "failed_attempts": 2, "retry_attempts": 1, "action_retries": 0,
+            "mean_duration_ms": 65_400.0,
+            "actions": [{"phase": "pull", "count": 4, "mean_ms": 12_340.0}],
+            "failures": [{"code": "image_pull_failed", "count": 1}]
+        }))
+    });
+    let arguments = [
+        "analytics",
+        "--app",
+        "app-notes-01",
+        "--env",
+        "staging",
+        "--since",
+        "7d",
+        "--until",
+        "1d",
+    ];
+    let output = run_human(&server, &arguments);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "Environment: notes / staging",
+        "Deployments: 3 (2 succeeded, 1 failed by their latest attempt)",
+        "Mean attempt duration: 1 min 5 s",
+        "pull  4  12.3 s",
+        "image_pull_failed  1",
+    ] {
+        assert!(stdout.contains(line), "{stdout}");
+    }
+    assert!(
+        stderr.contains("reaches before retained history (recorded from Unix ms 5)"),
+        "{stderr}"
+    );
+    assert_eq!(server.finish().len(), 2);
+
+    let server = start_server(false, 0, |_| unreachable!("an invalid window is not sent"));
+    let output = run(&server, &["analytics", "--since", "1d", "--until", "7d"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(server.finish().is_empty());
+}
+
+#[test]
 fn apply_defaults_to_saving_without_preview_or_operation_polling() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);

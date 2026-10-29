@@ -1,6 +1,6 @@
 //! Event history, diagnostics, daemon statistics and settings, analytics,
 //! and the audit trail.
-use super::format::{duration, duration_f64, now_ms, timestamp};
+use super::format::{now_ms, timestamp};
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, metric, notice, when,
 };
@@ -13,7 +13,9 @@ use piqueld_client::{
     Client, DEFAULT_PAGE_SIZE, Event, EventActor,
     access::{GlobalPermission, Permission},
     audit::{AuditEvent, AuditFilter, AuditLink, AuditOutcome},
-    observability::{Bytes, DaemonStats, DeploymentAnalytics, EventFilter, EventScope, Uptime},
+    observability::{
+        Bytes, DaemonStats, DeploymentAnalytics, Elapsed, EventFilter, EventScope, Uptime,
+    },
 };
 use std::time::Duration;
 
@@ -317,7 +319,7 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
         event.retry.map(|retry| format!("request {retry}")),
         event
             .duration_ms
-            .map(|ms| duration(i64::try_from(ms).unwrap_or(i64::MAX))),
+            .map(|ms| Elapsed(Duration::from_millis(ms)).to_string()),
         event.error_code.clone(),
         event.action_id.clone().map(|id| format!("action {id}")),
         match &event.actor {
@@ -658,7 +660,9 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                 {metric("Failed", a.failed.to_string(), Some("latest attempt"))}
                 {metric(
                     "Mean attempt",
-                    a.mean_duration_ms.map_or_else(|| "—".into(), duration_f64),
+                    a
+                        .mean_duration_ms
+                        .map_or_else(|| "—".into(), |ms| Elapsed::from_millis_f64(ms).to_string()),
                     Some("completed deployment attempts"),
                 )}
             </div>
@@ -703,7 +707,7 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                                             <tr>
                                                 <td>{r.phase}</td>
                                                 <td class="num">{r.count}</td>
-                                                <td class="num">{duration_f64(r.mean_ms)}</td>
+                                                <td class="num">{Elapsed::from_millis_f64(r.mean_ms).to_string()}</td>
                                             </tr>
                                         }
                                     })

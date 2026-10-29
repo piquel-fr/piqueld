@@ -192,6 +192,13 @@ pub(crate) fn looks_like_application_id(value: &str) -> bool {
     piqueld_client::ApplicationId::parse(value).is_ok()
 }
 
+/// The current time in Unix milliseconds, like the daemon's timestamps.
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |now| i64::try_from(now.as_millis()).unwrap_or(i64::MAX))
+}
+
 /// Formats a duration in whole seconds when exact, else in milliseconds.
 ///
 /// ```text

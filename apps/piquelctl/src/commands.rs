@@ -72,6 +72,7 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
             BuildCommand::Logs { id, before } => build_logs(client, console, *id, *before).await,
         },
         Command::Operation(args) => args.run(client, console).await,
+        Command::Analytics(args) => args.run(client, console).await,
         Command::Events {
             application,
             environment,
