@@ -16,7 +16,7 @@ use leptos_router::hooks::use_navigate;
 use piqueld_client::sync::short_commit;
 use piqueld_client::{
     BranchState, Client, CreatePreviewRequest, DeploymentOrigin, DiagnosticView, EnvironmentView,
-    PreviewView, PrunePreviewsRequest,
+    PreviewView, PrunePreviewsRequest, access::AppPermission,
 };
 
 impl EditorContext {
@@ -155,7 +155,8 @@ fn bounds(bounds: Vec<DiagnosticView>) -> AnyView {
 }
 
 /// The application's previews with their status and branch state, read when
-/// the tab opens and on refresh. "Prune gone" deletes those whose branch is gone.
+/// the tab opens and on refresh. "Prune gone" deletes those whose branch is
+/// gone, with `previews:delete`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn PreviewList() -> impl IntoView {
@@ -231,6 +232,7 @@ pub(super) fn PreviewList() -> impl IntoView {
                         type="button"
                         class="btn btn-danger"
                         title="Delete every preview whose branch is gone"
+                        hidden={move || !context.can(AppPermission::PreviewsDelete)}
                         disabled={move || context.blocked() || gone().is_empty()}
                         on:click={prune}
                     >
@@ -270,7 +272,7 @@ pub(super) fn PreviewList() -> impl IntoView {
 
 /// "New preview" button and dialog. Creates and deploys a preview of a branch,
 /// or finds the existing one of that branch and slot, then opens its
-/// deployments.
+/// deployments. The button is shown with `previews:deploy`.
 #[component]
 fn NewPreview() -> impl IntoView {
     let context = editor();
@@ -306,6 +308,7 @@ fn NewPreview() -> impl IntoView {
         <button
             type="button"
             class="btn btn-primary"
+            hidden={move || !context.can(AppPermission::PreviewsDeploy)}
             disabled={move || context.blocked() || !context.repository_backed()}
             on:click={move |_| opened.set(true)}
         >
@@ -342,8 +345,8 @@ fn NewPreview() -> impl IntoView {
 }
 
 /// One preview's row, opening its page, with its slug, slot, branch state,
-/// sync state with the head it last synced, and status. Delete reloads `list`
-/// once accepted.
+/// sync state with the head it last synced, and status. Delete, shown with
+/// `previews:delete`, reloads `list` once accepted.
 #[component]
 fn PreviewRow(
     view: PreviewView,
@@ -388,6 +391,7 @@ fn PreviewRow(
                 type="button"
                 class="btn btn-danger btn-sm"
                 aria-label={format!("Delete preview {name}")}
+                hidden={move || !context.can(AppPermission::PreviewsDelete)}
                 disabled={move || context.blocked() || deleting}
                 on:click={move |_| {
                     preview
@@ -408,7 +412,7 @@ fn PreviewRow(
 /// "Redeploy branch head" button of a preview's page: deploys the head of
 /// its branch again, replacing any local snapshot it runs, then shows its
 /// deployments. Snapshots are only deployed from a worktree, by
-/// `piquelctl preview deploy <app> --local`.
+/// `piquelctl preview deploy <app> --local`. Hidden without `previews:deploy`.
 #[component]
 pub(super) fn PreviewActions() -> impl IntoView {
     let context = editor();
@@ -440,6 +444,7 @@ pub(super) fn PreviewActions() -> impl IntoView {
                     "Deploy the head of this preview's branch from the repository, replacing a local snapshot it runs. Deploy a new snapshot from its worktree with `{command}`.",
                 )
             }}
+            hidden={move || !context.can(AppPermission::PreviewsDeploy)}
             disabled={move || context.environment_action_blocked()}
             on:click={deploy}
         >
@@ -553,7 +558,7 @@ pub(super) fn PreviewSettings() -> impl IntoView {
 }
 
 /// Danger-zone card of a preview's page: deletes it with every volume it
-/// created, then returns to the previews.
+/// created, then returns to the previews. Hidden without `previews:delete`.
 #[component]
 pub(super) fn DeletePreview() -> impl IntoView {
     let context = editor();
@@ -574,7 +579,10 @@ pub(super) fn DeletePreview() -> impl IntoView {
         });
     };
     view! {
-        <section class="card card-danger">
+        <section
+            class="card card-danger"
+            hidden={move || !context.can(AppPermission::PreviewsDelete)}
+        >
             <header>
                 <div>
                     <h3>"Delete preview"</h3>

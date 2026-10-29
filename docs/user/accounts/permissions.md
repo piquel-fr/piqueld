@@ -187,6 +187,9 @@ previews permissions can't hand out the others.
   needs `events:read` on it.
 - Events are numbered across the whole installation, so you can tell that
   events you can't read happened, but not what they were or where.
+- The dashboard hides the pages, tabs and buttons you can't use. On an
+  application you can read but not change, without `apps:write`, the
+  configuration forms are read-only.
 
 ## Who may create applications
 

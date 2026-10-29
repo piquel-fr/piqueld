@@ -1,5 +1,8 @@
 import { stat } from 'node:fs/promises';
-import { test, expect, api, auth, adminToken, register, proof, Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony } from '../fixtures.js';
+import {
+  test, expect, api, auth, adminToken, call, register, proof, webManifest, applicationTab, environmentTab, title, head,
+  Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
+} from '../fixtures.js';
 
 test('setup gates anonymous access, closes permanently, and supports username-less login', async ({ page, daemon, passkeys }) => {
   void passkeys;
@@ -71,6 +74,48 @@ test('invitations carry grants and limit what the new account may see and change
   expect(denied.status).toBe(403);
   expect(denied.body.code).toBe('permission_denied');
   expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).toEqual([bob.id]);
+});
+
+test('an application shows only the controls the account may use on it', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('limited'), expected_generation: 0 });
+  const app: string = saved.application_id;
+  const [environment] = (await call(page, 'GET', `applications/${app}`)).environments;
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
+    { permission: 'apps:read', applications: [app] },
+    { permission: 'secrets:write', applications: [app] },
+  ] })).invitation_url;
+  await register(page, link, 'bob');
+
+  // Bob may read the application, but not rename, deploy, or delete it.
+  await page.goto(`/dashboard/applications/${app}`);
+  await expect(title(page)).toHaveText('limited');
+  await expect(head(page).getByRole('button')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Delete application', exact: true })).toHaveCount(0);
+  await expect(applicationTab(page, 'Events')).toHaveCount(0);
+  await applicationTab(page, 'Environments').click();
+  await expect(page.getByRole('list', { name: 'Environments' }).getByRole('link')).toHaveText(['production']);
+  await expect(page.getByRole('list', { name: 'Environments' }).getByRole('button')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'New environment', exact: true })).toHaveCount(0);
+
+  // Its configuration is read-only, while secrets:write still stores secrets.
+  await applicationTab(page, 'Secrets').click();
+  await expect(page.getByText('Read-only: editing this configuration requires the apps:write permission.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add secret file', exact: true })).toBeDisabled();
+  const store = page.locator('.card', { has: page.getByRole('heading', { name: 'Secret store', exact: true }) });
+  await store.getByLabel('Secret name', { exact: true }).fill('token');
+  await store.getByLabel('Value', { exact: true }).fill('hunter2');
+  await store.getByRole('button', { name: 'Save secret', exact: true }).click();
+  await expect(store.getByText('Secret saved. Deploy to use its new version.')).toBeVisible();
+
+  // A link to a hidden tab opens the environment's overview instead.
+  await page.goto(`/dashboard/applications/${app}/environments/${environment.id}?tab=logs`);
+  await expect(environmentTab(page, 'Overview')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Logs')).toHaveCount(0);
+  await expect(environmentTab(page, 'Events')).toHaveCount(0);
+  await expect(head(page).getByRole('button')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Delete environment', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rename environment', exact: true })).toBeDisabled();
 });
 
 test('copy buttons are hidden without a clipboard API, as on plain HTTP origins', async ({ page, account }) => {

@@ -12,6 +12,7 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     Source,
+    access::AppPermission,
     edit::{ApplicationEdit, ServiceEdit},
 };
 
@@ -116,7 +117,8 @@ const NAME_FORM: &str = "service-name";
 
 /// Service page: the service's renamable title, one tab per `Section` settings
 /// group plus a scoped log tab, and a remove button that saves the service's
-/// removal and returns to the service list.
+/// removal and returns to the service list. Editing is disabled without
+/// `apps:write`, which also hides the rename and remove buttons.
 #[component]
 pub(super) fn ServiceEditor(name: String) -> impl IntoView {
     let context = editor();
@@ -181,6 +183,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
                 <button
                     type="button"
                     class="btn btn-danger"
+                    hidden={move || !context.can(AppPermission::Write)}
                     disabled={move || context.action_blocked()}
                     on:click={remove}
                 >
@@ -189,9 +192,16 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs label="Service sections" options={&SERVICE_TABS} selected={selected} />
+        <Tabs
+            label="Service sections"
+            options={&SERVICE_TABS}
+            selected={selected}
+            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
+        />
         <div class="stack">
-            <Show when={move || selected.get() == "Logs"}>
+            {move || {
+                if selected.get() == "Logs" { None } else { context.read_only_notice() }
+            }} <Show when={move || selected.get() == "Logs"}>
                 <ServiceLogs name={log_service.clone()} />
             </Show> {groups}
         </div>

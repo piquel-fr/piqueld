@@ -20,8 +20,8 @@ use piqueld_client::sync::short_commit;
 use piqueld_client::{
     ApplicationManifest, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentChange, EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest,
-    EnvironmentView, TrackedBranch, Visibility,
-    access::{GlobalPermission, Permission},
+    EnvironmentView, RepositoryManifest, TrackedBranch, Visibility,
+    access::{AppPermission, GlobalPermission, Permission},
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
 };
@@ -512,6 +512,7 @@ fn PromotionSource(
 /// "New environment" button and dialog; opens the created environment. It
 /// builds its own source, choosing the branch to follow for a
 /// repository-backed application, or is promoted from another environment.
+/// The button is shown with `apps:write`.
 #[component]
 fn NewEnvironment() -> impl IntoView {
     let context = editor();
@@ -561,6 +562,7 @@ fn NewEnvironment() -> impl IntoView {
         <button
             type="button"
             class="btn btn-primary"
+            hidden={move || !context.can(AppPermission::Write)}
             disabled={move || context.action_blocked()}
             on:click={move |_| {
                 name.set(String::new());
@@ -629,6 +631,8 @@ fn NewEnvironment() -> impl IntoView {
 /// from another environment. Saving changes only where later deployments
 /// come from; nothing is redeployed. An environment following a branch also
 /// shows whether pushes to it deploy it, with a button to opt in or out.
+/// Changing either needs `apps:write`, and opting in while the repository
+/// syncs `apps:deploy` too.
 #[component]
 fn SourceSettings() -> impl IntoView {
     let context = editor();
@@ -676,8 +680,12 @@ fn SourceSettings() -> impl IntoView {
     let sources = Signal::derive(move || context.promotion_sources(&id.get_value()));
     let name = move || context.selected_name();
     let declared = move || context.source_declared(&name());
+    let writable = move || context.can(AppPermission::Write);
     let blocked = move || {
-        context.change_blocked(Some(SOURCE_FORM)) || context.selected_deleting() || declared()
+        context.change_blocked(Some(SOURCE_FORM))
+            || context.selected_deleting()
+            || declared()
+            || !writable()
     };
     let sync_blocked =
         move || context.action_blocked() || context.selected_deleting() || declared();
@@ -818,6 +826,21 @@ fn SourceSettings() -> impl IntoView {
                 sync()
                     .map(|(environment, state)| {
                         let (badge, reason) = sync_badge(state);
+                        let opting_in = !environment.sync;
+                        let allowed = move || {
+                            writable()
+                                && (!opting_in || context.can(AppPermission::Deploy)
+                                    || !context
+                                        .saved
+                                        .with(|saved| {
+                                            saved
+                                                .application
+                                                .spec()
+                                                .manifest
+                                                .as_ref()
+                                                .is_some_and(RepositoryManifest::syncs)
+                                        }))
+                        };
                         view! {
                             <dl class="kv">
                                 <dt>"Deploy on push"</dt>
@@ -825,7 +848,7 @@ fn SourceSettings() -> impl IntoView {
                                 <dt>"Last synced"</dt>
                                 <dd>{last_synced(environment.synced)}</dd>
                             </dl>
-                            <div class="form-actions">
+                            <div class="form-actions" hidden={move || !allowed()}>
                                 <button
                                     type="button"
                                     class="btn"
@@ -929,7 +952,7 @@ impl EditorContext {
 }
 
 /// The visibility ceiling of the environment page's environment, saved in
-/// `[spec.environments.<name>]`.
+/// `[spec.environments.<name>]`. Read-only without `apps:write`.
 #[component]
 fn EnvironmentVisibility() -> impl IntoView {
     let context = editor();
@@ -970,7 +993,7 @@ fn EnvironmentVisibility() -> impl IntoView {
             <form class="stack-sm" on:submit={save}>
                 <fieldset
                     class="stack-sm"
-                    disabled={move || context.blocked()}
+                    disabled={move || context.blocked() || !context.can(AppPermission::Write)}
                 >
                     <label class="field">
                         <span>"Route visibility"</span>
@@ -994,7 +1017,8 @@ fn EnvironmentVisibility() -> impl IntoView {
                         type="submit"
                         class="btn"
                         disabled={move || {
-                            context.blocked() || !draft.changed()
+                            context.blocked() || !context.can(AppPermission::Write)
+                                || !draft.changed()
                         }}
                     >
                         "Save visibility"
@@ -1007,7 +1031,8 @@ fn EnvironmentVisibility() -> impl IntoView {
 
 /// Source, visibility, rename and deletion of the environment page's
 /// environment. Deletion returns to the application's environments once
-/// accepted.
+/// accepted. Renaming needs `apps:write`, deleting `apps:delete`, and
+/// retrying a deletion, which reconciles, `apps:deploy`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EnvironmentSettings() -> impl IntoView {
@@ -1019,6 +1044,12 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
     Effect::new(move |_| draft.follow(current()));
     let name = draft.value;
     let deleting = move || context.selected_deleting();
+    let renaming_blocked = move || {
+        context.change_blocked(Some(NAME_FORM))
+            || deleting()
+            || context.declared(&current())
+            || !context.can(AppPermission::Write)
+    };
     let rename = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         let value = name.get_untracked();
@@ -1064,13 +1095,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                 </div>
             </header>
             <form class="stack-sm" on:submit={rename}>
-                <fieldset
-                    class="stack-sm"
-                    disabled={move || {
-                        context.change_blocked(Some(NAME_FORM)) || deleting()
-                            || context.declared(&current())
-                    }}
-                >
+                <fieldset class="stack-sm" disabled={renaming_blocked}>
                     {text_field("Environment name", name)}
                     <dl class="kv">
                         <dt>"Environment ID"</dt>
@@ -1083,10 +1108,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                     <button
                         type="submit"
                         class="btn"
-                        disabled={move || {
-                            context.change_blocked(Some(NAME_FORM)) || deleting() || !draft.changed()
-                                || context.declared(&current())
-                        }}
+                        disabled={move || renaming_blocked() || !draft.changed()}
                         title={move || {
                             context
                                 .declared(&current())
@@ -1103,7 +1125,13 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
                 </div>
             </form>
         </section>
-        <section class="card card-danger">
+        <section
+            class="card card-danger"
+            hidden={move || {
+                !context
+                    .can(if deleting() { AppPermission::Deploy } else { AppPermission::Delete })
+            }}
+        >
             <header>
                 <div>
                     <h3>"Delete environment"</h3>
