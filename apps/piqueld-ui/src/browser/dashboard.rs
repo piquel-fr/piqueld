@@ -1,5 +1,5 @@
 //! Sidebar navigation, overview metrics, application directory, and recent deployments.
-use super::format::{bytes, timestamp};
+use super::format::timestamp;
 use super::ui::{
     Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
 };
@@ -11,6 +11,7 @@ use leptos_router::components::A;
 use piqueld_client::{
     Client, PreviewUsage,
     access::{GlobalPermission, Permission},
+    observability::Bytes,
     system::{
         CertificateStatus, DependencyStatus, DnsProviderStatus, ImageStatus, PublicIngressStatus,
         ReadinessStatus, TelemetryStatus,
@@ -462,9 +463,9 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
             usage.total,
             limits.max_total,
             usage.cpu_millis,
-            bytes(usage.memory_bytes),
+            Bytes(usage.memory_bytes),
             limits.default_cpu_millis,
-            bytes(limits.default_memory_bytes),
+            Bytes(limits.default_memory_bytes),
             limits.max_replicas,
         ),
     )
@@ -481,7 +482,7 @@ fn images_card(images: &ImageStatus) -> AnyView {
             &format!(
                 "{} kept. Cleanup removed {} of images since the daemon started, last {}.",
                 images.images,
-                bytes(images.reclaimed_bytes),
+                Bytes(images.reclaimed_bytes),
                 timestamp(at)
             ),
         ),

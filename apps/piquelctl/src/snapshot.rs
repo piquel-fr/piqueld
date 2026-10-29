@@ -17,7 +17,7 @@
 //!    repository has, or with the whole history only when asked to (see
 //!    [`History`]).
 use crate::error::{CliError, ErrorKind, Result};
-use piqueld_client::{LocalSnapshot, SnapshotLimits, sync::short_commit};
+use piqueld_client::{LocalSnapshot, SnapshotLimits, observability::Bytes, sync::short_commit};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -78,24 +78,6 @@ pub(crate) struct Bundle {
     pub(crate) snapshot: LocalSnapshot,
     /// Commits of `HEAD` it carries besides the snapshot commit.
     commits: u64,
-}
-
-/// A size in bytes, shown in the largest whole unit.
-///
-/// ```text
-/// 12 KiB, 3 MiB, 512 bytes
-/// ```
-struct Size(u64);
-
-impl std::fmt::Display for Size {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            bytes if bytes >= 1 << 30 => write!(formatter, "{} GiB", bytes >> 30),
-            bytes if bytes >= 1 << 20 => write!(formatter, "{} MiB", bytes >> 20),
-            bytes if bytes >= 1 << 10 => write!(formatter, "{} KiB", bytes >> 10),
-            bytes => write!(formatter, "{bytes} bytes"),
-        }
-    }
 }
 
 impl Worktree {
@@ -302,7 +284,7 @@ impl Worktree {
         let largest = sizes
             .iter()
             .take(5)
-            .map(|(size, path)| format!("{path} ({})", Size(*size)))
+            .map(|(size, path)| format!("{path} ({})", Bytes(*size)))
             .collect::<Vec<_>>()
             .join(", ");
         Err(CliError::new(
@@ -311,9 +293,9 @@ impl Worktree {
                 "the snapshot's {entries} files and directories take {}, more than the daemon \
                  checks out ({} entries, {}); ignore what the preview doesn't need. \
                  Largest: {largest}",
-                Size(total),
+                Bytes(total),
                 limits.max_files,
-                Size(limits.max_tree_bytes),
+                Bytes(limits.max_tree_bytes),
             ),
         ))
     }
@@ -433,11 +415,11 @@ impl Bundle {
     /// What is being uploaded.
     ///
     /// ```text
-    /// 12 KiB against 0123456789ab: 2 unpushed commits and the snapshot
-    /// 3 MiB with the whole history: 140 commits and the snapshot
+    /// 12.0 KiB against 0123456789ab: 2 unpushed commits and the snapshot
+    /// 3.4 MiB with the whole history: 140 commits and the snapshot
     /// ```
     pub(crate) fn describe(&self) -> String {
-        let size = Size(self.length);
+        let size = Bytes(self.length);
         let commits = self.commits;
         match &self.snapshot.base {
             Some(base) => format!(
@@ -456,8 +438,8 @@ impl Bundle {
                 format!(
                     "the snapshot is {}, more than the daemon's {} upload limit; \
                      ignore what the preview doesn't need",
-                    Size(self.length),
-                    Size(limits.max_upload_bytes)
+                    Bytes(self.length),
+                    Bytes(limits.max_upload_bytes)
                 ),
             )),
             _ => Ok(()),
@@ -922,7 +904,7 @@ mod tests {
         let Err(error) = worktree.snapshot("feat/x", Some(&limits)).await else {
             panic!("files over the limit must be refused");
         };
-        assert!(error.to_string().contains("large.bin (4 KiB)"), "{error}");
+        assert!(error.to_string().contains("large.bin (4.0 KiB)"), "{error}");
         assert_eq!(state(&work), before);
         let few = SnapshotLimits {
             max_files: 2,

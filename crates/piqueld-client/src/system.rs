@@ -1,9 +1,9 @@
 //! Control-plane status, configuration, and readiness.
 pub use piqueld_core::api::{
     CertificateStatus, DependencyStatus, DnsProviderStatus, DnsRecordState, DnsRecords, DnsStatus,
-    ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus, ReadinessStatus,
-    RouteStatus, SnapshotLimits, SystemStatus, TailnetStatus, TelemetryDestinationStatus,
-    TelemetryReceiver, TelemetryStatus,
+    HostConfiguration, ImageStatus, IngressStatus, PrivateIngressStatus, PublicIngressStatus,
+    ReadinessStatus, RouteStatus, SnapshotLimits, SystemStatus, TailnetStatus,
+    TelemetryDestinationStatus, TelemetryReceiver, TelemetryStatus,
 };
 
 use crate::{Client, ClientError, client::EnvelopedCall};
@@ -29,9 +29,7 @@ impl Client {
     /// Reads effective daemon configuration without changing host settings.
     /// # Errors
     /// Returns transport, API or decoding errors.
-    pub async fn system_configuration(
-        &self,
-    ) -> Result<piqueld_core::api::HostConfiguration, ClientError> {
+    pub async fn system_configuration(&self) -> Result<HostConfiguration, ClientError> {
         self.generated.system_configuration().data().await
     }
 
