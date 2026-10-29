@@ -1212,7 +1212,7 @@ restart, or when Docker could not report a job's status, a still-running job is
 resumed rather than started again. Its timeout counts from when it started, so
 resuming never extends it.
 Retrying a promoted deployment or repairing drift never runs jobs, and
-neither does [restoring](piquelctl.md) an earlier deployment with `env
+neither does [restoring](api.md#restoring-a-deployment) an earlier deployment with `env
 restore`: running its old migrations against newer data is exactly the risk a
 restore avoids. A restore does not revert data either, so write migrations in
 expand/contract steps that the previous version still runs against. A deployment

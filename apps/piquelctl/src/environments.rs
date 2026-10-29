@@ -132,7 +132,7 @@ pub(crate) enum EnvCommand {
     /// Stop an environment, keeping its configuration, volumes and secrets.
     ///
     /// Its routes are withdrawn and its services scale to zero. It stays
-    /// stopped until `env start`, `env reconcile`, a deployment or a promotion
+    /// stopped until `env start`, `env reconcile`, a deployment, a restore or a promotion
     /// into it; pushes don't deploy it meanwhile. The command asks for
     /// confirmation and waits until its services have stopped. Previews are
     /// deleted instead.

@@ -1109,7 +1109,9 @@ fn DeploymentCard(deployment: Signal<DeploymentView>) -> impl IntoView {
                             current_target,
                             ..
                         } = deployment.get();
-                        let restore = (succeeded_at_ms.is_some() && !current_target)
+                        let restore = (succeeded_at_ms.is_some()
+                            && !current_target
+                            && context.can(AppPermission::Deploy))
                             .then(|| {
                                 let id = op.id.clone();
                                 view! {

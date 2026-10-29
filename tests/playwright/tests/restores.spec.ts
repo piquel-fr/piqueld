@@ -1,4 +1,4 @@
-import { test, expect, call, environmentTab, webManifest } from '../fixtures.js';
+import { test, expect, auth, call, environmentTab, register, webManifest, type Managed } from '../fixtures.js';
 import type { Route } from '@playwright/test';
 
 test('an earlier deployment is restored from the deployment history', async ({ page, account }) => {
@@ -44,4 +44,15 @@ test('an earlier deployment is restored from the deployment history', async ({ p
   await cards.nth(1).getByRole('button', { name: 'Restore', exact: true }).click();
   await expect(page.getByText('Restore accepted. Follow its progress below.', { exact: true })).toBeVisible();
   expect(restored).toEqual({ deployment: earlier });
+
+  // Restoring needs apps:deploy: an account that only reads isn't offered it.
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
+    { permission: 'apps:read', applications: [app] },
+  ] })).invitation_url;
+  await register(page, link, 'bob');
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await environmentTab(page, 'Deployments').click();
+  await cards.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  await expect(cards.nth(1)).toContainText('Origin');
+  await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 });

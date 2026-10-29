@@ -140,7 +140,7 @@ withdraws its routes at once and its services scale to zero replicas, keeping
 their configuration, volumes and secrets. It waits until its runtime reports
 `stopped`, unless `--no-wait`, fails if the deployment the stop runs again
 fails, and ends early if the environment is started or deployed meanwhile. A stopped environment stays stopped until `env
-start`, `env reconcile`, a deployment, or a promotion into it; pushes don't
+start`, `env reconcile`, a deployment, a restore, or a promotion into it; pushes don't
 deploy it meanwhile, and sync deploys the head it missed once it starts. `env
 start APP [ENV]` confirms, then starts it again, retrying its latest operation
 like `env reconcile` and waiting for it. Stopping a deployment in progress lets

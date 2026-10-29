@@ -9237,6 +9237,94 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Restores an earlier deployment of an environment exactly
+
+    Deploys `deployment` again as it ran: its rendered manifest, its images
+    and the secret versions it pinned, recorded as a new deployment whose
+    origin names it, which becomes the maintained target. Nothing is rendered,
+    fetched or built, and jobs never run. Volume contents and migrations are
+    not reverted. Refused unless it succeeded (`deployment_not_restorable`),
+    its images are present or can be pulled again by digest
+    (`image_unavailable`), and the secret versions it pinned still exist
+    (`restore_secrets_unavailable`, listing them). Needs no application
+    revision. Previews restore through `restorePreviewDeployment`. Repeating a
+    request with the same `Idempotency-Key` returns the original response.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/restore`
+
+    */
+    pub async fn restore_deployment<'a>(
+        &'a self,
+        id: &'a str,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::RestoreRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/restore",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "restore_deployment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            408u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            502u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Lists an environment's generated secrets
 
     Returns metadata only; secret values are write-only and never returned.
@@ -9671,7 +9759,7 @@ impl Client {
     Its services scale to zero replicas, keeping their configuration, volumes
     and secrets, and the gateway stops serving its routes before the request
     returns, or on its next pass if that fails. It stays stopped until it is
-    started, deployed, promoted into or reconciled; sync deploys nothing to it
+    started, deployed, restored, promoted into or reconciled; sync deploys nothing to it
     meanwhile. Returns 202 with its latest operation: run again when its
     deployment had rolled out and has ended, so the services stop now, or as
     is while it is in progress, which then rolls out with no replicas. 404
@@ -10778,6 +10866,90 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Restores an earlier deployment of a preview exactly
+
+    Deploys `deployment` again as it ran, as `restoreDeployment` does for an
+    environment: its rendered manifest, its images and the secret versions it
+    pinned, without fetching, building, or running jobs. Refused unless it
+    succeeded (`deployment_not_restorable`), its images are present or can be
+    pulled again by digest (`image_unavailable`), and the secret versions it
+    pinned still exist (`restore_secrets_unavailable`).
+
+    Sends a `POST` request to `/api/v1/previews/{id}/restore`
+
+    */
+    pub async fn restore_preview_deployment<'a>(
+        &'a self,
+        id: &'a str,
+        idempotency_key: Option<&'a str>,
+        body: &'a piqueld_core::api::RestoreRequest,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/previews/{}/restore",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .json(&body)
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "restore_preview_deployment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            408u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            415u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            502u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             503u16 => Err(Error::ErrorResponse(

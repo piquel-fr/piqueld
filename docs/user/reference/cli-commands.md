@@ -3107,6 +3107,8 @@ Commands:
 - [`piquelctl env start`](#piquelctl-env-start): Start a stopped environment again.
 - [`piquelctl env secret`](#piquelctl-env-secret): List, regenerate, or delete an environment's generated secrets.
 - [`piquelctl env logs`](#piquelctl-env-logs): Print the most recent lines of an environment's Docker logs.
+- [`piquelctl env history`](#piquelctl-env-history): List an environment's deployments, newest first: each one's outcome, where it came from, and its release.
+- [`piquelctl env restore`](#piquelctl-env-restore): Deploy an earlier, succeeded deployment again exactly as it ran: its rendered manifest, images and pinned secret versions. Jobs don't run, and volume contents and migrations stay as they are.
 - [`piquelctl env wait`](#piquelctl-env-wait): Wait until a deployment of an environment is ready.
 - [`piquelctl env url`](#piquelctl-env-url): Print the URLs of an environment's routes, and whether each is ready.
 
@@ -3393,7 +3395,7 @@ Options:
 
 Stop an environment, keeping its configuration, volumes and secrets.
 
-Its routes are withdrawn and its services scale to zero. It stays stopped until `env start`, `env reconcile`, a deployment or a promotion into it; pushes don't deploy it meanwhile. The command asks for confirmation and waits until its services have stopped. Previews are deleted instead.
+Its routes are withdrawn and its services scale to zero. It stays stopped until `env start`, `env reconcile`, a deployment, a restore or a promotion into it; pushes don't deploy it meanwhile. The command asks for confirmation and waits until its services have stopped. Previews are deleted instead.
 
 ```text
 piquelctl env stop [OPTIONS] <APPLICATION> [ENVIRONMENT]
@@ -3530,6 +3532,42 @@ Options:
 - `--tail <TAIL>`: Show at most this many of the most recent lines, from 1 to 1000, merged across services. Default: `200`.
 - `--since-seconds <SECONDS>`: Only show output written within this many seconds, from 1 to 86400 (a day). Default: `3600`.
 
+## `piquelctl env history`
+
+List an environment's deployments, newest first: each one's outcome, where it came from, and its release.
+
+```text
+piquelctl env history [OPTIONS] <APPLICATION> [ENVIRONMENT]
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `[ENVIRONMENT]`: Environment name or stable ID. You can omit it when the application has exactly one environment.
+
+Options:
+
+- `--cursor <CURSOR>`: Cursor from the previous page.
+
+## `piquelctl env restore`
+
+Deploy an earlier, succeeded deployment again exactly as it ran: its rendered manifest, images and pinned secret versions. Jobs don't run, and volume contents and migrations stay as they are.
+
+```text
+piquelctl env restore [OPTIONS] <APPLICATION> <ENVIRONMENT> <DEPLOYMENT>
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `<ENVIRONMENT>`: Environment name or stable ID.
+- `<DEPLOYMENT>`: The deployment to restore, as `history` lists it; it must have succeeded.
+
+Options:
+
+- `--yes`: Skip the interactive confirmation prompt.
+- `--no-wait`: Return after the daemon accepts the restore.
+
 ## `piquelctl env wait`
 
 Wait until a deployment of an environment is ready.
@@ -3584,6 +3622,8 @@ Commands:
 - [`piquelctl preview list`](#piquelctl-preview-list): List an application's previews with their status and branch state.
 - [`piquelctl preview show`](#piquelctl-preview-show): Show one preview, its URLs, and the state of its branch.
 - [`piquelctl preview logs`](#piquelctl-preview-logs): Print the most recent lines of a preview's Docker logs.
+- [`piquelctl preview history`](#piquelctl-preview-history): List a preview's deployments, newest first: each one's outcome and where it came from.
+- [`piquelctl preview restore`](#piquelctl-preview-restore): Deploy an earlier, succeeded deployment of a preview again exactly as it ran, without running its jobs.
 - [`piquelctl preview wait`](#piquelctl-preview-wait): Wait until a deployment of a preview is ready.
 - [`piquelctl preview url`](#piquelctl-preview-url): Print the URLs of a preview's routes, and whether each is ready.
 - [`piquelctl preview exec`](#piquelctl-preview-exec): Run a one-off command in a running task of a preview's service, streaming its output.
@@ -3689,6 +3729,44 @@ Options:
   Defaults to every service.
 - `--tail <TAIL>`: Show at most this many of the most recent lines, from 1 to 1000, merged across services. Default: `200`.
 - `--since-seconds <SECONDS>`: Only show output written within this many seconds, from 1 to 86400 (a day). Default: `3600`.
+
+## `piquelctl preview history`
+
+List a preview's deployments, newest first: each one's outcome and where it came from.
+
+```text
+piquelctl preview history [OPTIONS] <APPLICATION> <PREVIEW>
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `<PREVIEW>`: Preview ID, slug, or branch, matched in that order.
+
+Options:
+
+- `--slot <SLOT>`: The preview's slot. Needed to address a preview with a slot by its branch.
+- `--cursor <CURSOR>`: Cursor from the previous page.
+
+## `piquelctl preview restore`
+
+Deploy an earlier, succeeded deployment of a preview again exactly as it ran, without running its jobs.
+
+```text
+piquelctl preview restore [OPTIONS] <APPLICATION> <PREVIEW> <DEPLOYMENT>
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `<PREVIEW>`: Preview ID, slug, or branch, matched in that order.
+- `<DEPLOYMENT>`: The deployment to restore, as `history` lists it; it must have succeeded.
+
+Options:
+
+- `--slot <SLOT>`: The preview's slot. Needed to address a preview with a slot by its branch.
+- `--yes`: Skip the interactive confirmation prompt.
+- `--no-wait`: Return after the daemon accepts the restore.
 
 ## `piquelctl preview wait`
 

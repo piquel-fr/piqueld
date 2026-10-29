@@ -520,7 +520,7 @@ pub(super) async fn reconcile(
 /// Its services scale to zero replicas, keeping their configuration, volumes
 /// and secrets, and the gateway stops serving its routes before the request
 /// returns, or on its next pass if that fails. It stays stopped until it is
-/// started, deployed, promoted into or reconciled; sync deploys nothing to it
+/// started, deployed, restored, promoted into or reconciled; sync deploys nothing to it
 /// meanwhile. Returns 202 with its latest operation: run again when its
 /// deployment had rolled out and has ended, so the services stop now, or as
 /// is while it is in progress, which then rolls out with no replicas. 404
