@@ -190,7 +190,8 @@ progress.
 `env promote --plan` prints the release and its provenance and images, its
 origin, the rendered changes, the runtime plan, new (empty) volumes, and each
 unusable secret, without changing anything. It exits with the conflict code 3
-when the plan is blocked or lists secrets. `--release ID --plan` plans an
+when the plan is blocked, as it is by each missing image that can't be pulled
+again (`image_unavailable`), or lists secrets. `--release ID --plan` plans an
 earlier release for any environment.
 
 A [preview](manifest.md#previews) is a disposable deployment of
@@ -710,7 +711,10 @@ on a service with a writable volume.
 show rendered values, and it lists the value of every variable in scope, such as
 `vars.domain` and `env.name`. A reference without a value fails the plan with
 `variable_value_missing`. Without `--env`, the application's only environment is
-used; with several, the plan compares the saved manifest as written. Plans list,
+used; with several, the plan compares the saved manifest as written and says
+that runtime actions are not planned. Likewise, a plan that must first resolve or
+build sources says that network, volume and service changes are left to the
+deployment; it still lists source resolution and declared jobs. Plans list,
 under `Environments:`, how saving the manifest would change the environments it
 [declares](manifest.md#declared-environments).
 

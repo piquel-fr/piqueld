@@ -27,7 +27,7 @@ pub enum RepositorySync {
     Poll {
         /// Seconds between listings, from 60 to 86,400.
         #[serde(default = "RepositorySync::default_interval")]
-        #[schema(default = RepositorySync::default_interval)]
+        #[schema(default = RepositorySync::default_interval, maximum = 4_294_967_295_u32)]
         interval_seconds: u32,
     },
     /// List the branch heads when GitHub reports a push.

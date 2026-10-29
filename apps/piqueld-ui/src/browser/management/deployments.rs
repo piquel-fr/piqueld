@@ -19,7 +19,8 @@ use leptos_router::hooks::use_navigate;
 use piqueld_client::{
     ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
     EnvironmentView, HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView,
-    PromoteRequest, SecretProblem, Service, Source, Template, ValidatedRollout,
+    PromoteRequest, ReleaseAvailability, RuntimeCoverage, SecretProblem, Service, Source, Template,
+    ValidatedRollout,
 };
 use std::fmt::Display;
 
@@ -522,7 +523,12 @@ pub(super) fn PromoteAction(
         plan.with(|plan| {
             let plan = plan.as_ref()?;
             let release = plan.release.as_ref()?;
-            if !release.secrets.is_empty() {
+            if !release.secrets.is_empty()
+                || matches!(
+                    release.release.availability,
+                    Some(ReleaseAvailability::Unavailable { .. })
+                )
+            {
                 return None;
             }
             let mut request = selection.get_value();
@@ -751,8 +757,11 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
             <div class="section-header">
                 <h3>"Planned actions"</h3>
             </div>
+            {plan.runtime_coverage.note().map(|note| view! { <p class="hint">{note}</p> })}
             {if plan.plan.actions.is_empty() {
-                view! { <p class="hint">"No runtime actions are required."</p> }.into_any()
+                (plan.runtime_coverage == RuntimeCoverage::Complete)
+                    .then(|| view! { <p class="hint">"No runtime actions are required."</p> })
+                    .into_any()
             } else {
                 view! {
                     <ul class="stack-sm">

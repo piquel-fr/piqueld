@@ -262,7 +262,7 @@ Service whose image, environment, secrets, volumes, resource limits and network 
 
 ### `spec.jobs[].timeout_seconds`
 
-Type: integer. Default: `300`.
+Type: integer of at most 4294967295. Default: `300`.
 
 Seconds the job may run before the deployment fails, from 1 to 86,400.
 
@@ -346,7 +346,7 @@ Type: `"off"`, `"poll"` or `"webhook"`. Required.
 
 ### `spec.manifest.sync.interval_seconds`
 
-Type: integer. Only with `mode = "poll"`. Default: `300`.
+Type: integer of at most 4294967295. Only with `mode = "poll"`. Default: `300`.
 
 Seconds between listings, from 60 to 86,400.
 
@@ -457,13 +457,13 @@ Type: `"random"` or `"rsa"`. Required.
 
 ### `spec.secrets[].generate.bits`
 
-Type: integer. Required with `type = "rsa"`.
+Type: integer of at most 65535. Required with `type = "rsa"`.
 
 Size of the key in bits: 2048, 3072 or 4096.
 
 ### `spec.secrets[].generate.bytes`
 
-Type: integer. Required with `type = "random"`.
+Type: integer of at most 65535. Required with `type = "random"`.
 
 Number of random bytes before encoding, from 16 to 512.
 
@@ -533,7 +533,7 @@ Whether the service receives the daemon's traces, metrics and logs, on a socket 
 
 ### `spec.services[].replicas`
 
-Type: integer or [typed template](#typed-template). Default: `1`.
+Type: integer of at most 65535 or [typed template](#typed-template). Default: `1`.
 
 Number of containers, from 1 to 100.
 
@@ -608,7 +608,7 @@ Command and arguments to run. It can't be empty.
 
 ### `spec.services[].healthcheck.interval_seconds`
 
-Type: integer or [typed template](#typed-template). Default: `10`.
+Type: integer of at most 4294967295 or [typed template](#typed-template). Default: `10`.
 
 Seconds between checks, from 1 to 3,600.
 
@@ -620,25 +620,25 @@ Absolute HTTP path to request.
 
 ### `spec.services[].healthcheck.port`
 
-Type: integer or [typed template](#typed-template). Required with `type = "http"`.
+Type: integer of at most 65535 or [typed template](#typed-template). Required with `type = "http"`.
 
 Container port to request, from 1 to 65535.
 
 ### `spec.services[].healthcheck.retries`
 
-Type: integer or [typed template](#typed-template). Default: `3`.
+Type: integer of at most 4294967295 or [typed template](#typed-template). Default: `3`.
 
 Consecutive failed checks that make a container unhealthy, from 1 to 100.
 
 ### `spec.services[].healthcheck.start_period_seconds`
 
-Type: integer or [typed template](#typed-template). Default: `0`.
+Type: integer of at most 4294967295 or [typed template](#typed-template). Default: `0`.
 
 Seconds after a container starts during which failed checks don't count, up to 3,600.
 
 ### `spec.services[].healthcheck.timeout_seconds`
 
-Type: integer or [typed template](#typed-template). Default: `3`.
+Type: integer of at most 4294967295 or [typed template](#typed-template). Default: `3`.
 
 Seconds a check may take before it fails, from 1 to the interval.
 
@@ -670,13 +670,13 @@ CPU and memory limits of each of a service's containers. Set at least one.
 
 ### `spec.services[].resources.cpu_millis`
 
-Type: integer or [typed template](#typed-template). Optional.
+Type: integer of at most 4294967295 or [typed template](#typed-template). Optional.
 
 CPU limit in thousandths of a CPU, from 1 to 1,048,576: `500` is half a CPU.
 
 ### `spec.services[].resources.memory_bytes`
 
-Type: integer or [typed template](#typed-template). Optional.
+Type: integer of at most 18446744073709551615 or [typed template](#typed-template). Optional.
 
 Memory limit in bytes, from 1 to 9,223,372,036,854,775,807.
 
@@ -686,7 +686,7 @@ How Docker replaces a service's containers during a deployment, one at a time. A
 
 ### `spec.services[].rollout.monitor_seconds`
 
-Type: integer or [typed template](#typed-template). Optional.
+Type: integer of at most 4294967295 or [typed template](#typed-template). Optional.
 
 Seconds Docker watches each new container for failure before it replaces the next one, from 1 to 3,600. 30 when unset.
 

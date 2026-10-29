@@ -9,7 +9,7 @@ use piqueld_core::{
     api::{
         ApplicationSummary, ApplicationView, DiagnosticView, EnvironmentDetailView,
         EnvironmentStatusView, EnvironmentView, MAX_PAGE_SIZE, ManifestChange, Page, PlanView,
-        RouteUrl, ServiceRolloutView,
+        RouteUrl, RuntimeCoverage, ServiceRolloutView,
     },
     compile_application,
     manifest::{
@@ -308,7 +308,7 @@ impl ApplicationService {
             let repository = repository.or(template.spec().manifest.as_ref());
             Ok(template.render(&RenderContext::preview(target, repository))?)
         };
-        let (operation, identical, changes, rendering, mut plan) = if let Some(environment) =
+        let (operation, identical, changes, rendering, plan) = if let Some(environment) =
             &environment
         {
             let repository = environment.tracking()?.repository();
@@ -331,7 +331,7 @@ impl ApplicationService {
                     &proposed.to_input(),
                 ),
                 Some(rendering),
-                plan,
+                Some(plan),
             )
         } else if let Some(current) = &current {
             let saved = current.application.spec();
@@ -340,7 +340,7 @@ impl ApplicationService {
                 saved == template.spec(),
                 ManifestChange::between(Some(saved), template.spec()),
                 None,
-                Plan::default(),
+                None,
             )
         } else {
             // What `apply --deploy` deploys first.
@@ -351,12 +351,14 @@ impl ApplicationService {
                 .preview_plan(&rendering.application, &environment, None)
                 .await?;
             let changes = ManifestChange::between(None, &rendering.application.spec().to_input());
-            (None, false, changes, Some(rendering), plan)
+            (None, false, changes, Some(rendering), Some(plan))
         };
         let environments = template
             .spec()
             .environment_changes(&declarations, current.is_some().then_some(&environments))
             .map_err(StoreError::from)?;
+        let runtime_coverage = RuntimeCoverage::of(plan.as_ref());
+        let mut plan = plan.unwrap_or_default();
         let (rollouts, variables) = match rendering {
             Some(rendering) => {
                 plan.warn_rollouts(&rendering.application);
@@ -375,6 +377,7 @@ impl ApplicationService {
             changes,
             environments,
             plan,
+            runtime_coverage,
             rollouts,
             variables,
             release: None,

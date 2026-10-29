@@ -53,11 +53,10 @@ impl ManifestChange {
 
     /// Compares the specification a repository-backed application last read
     /// from its repository with its saved one, like [`Self::between`], plus
-    /// what plans leave out: generated secret declarations, keyed by name,
-    /// and each declared environment, with the settings of its source.
+    /// what plans leave out: each declared environment, with the settings of
+    /// its source.
     ///
     /// ```text
-    /// secrets.token                  -> {"generate":{"type":"random",...}}
     /// environments.staging           -> "declared"
     /// environments.staging.branch    -> "release"
     /// ```
@@ -65,13 +64,6 @@ impl ManifestChange {
     pub fn edits(read: &ApplicationSpec, saved: &ApplicationSpec) -> Vec<Self> {
         let fields = |spec: &ApplicationSpec| {
             let mut fields = BTreeMap::new();
-            for secret in &spec.secrets {
-                let mut value = serde_json::to_value(secret).unwrap_or(Value::Null);
-                if let Value::Object(object) = &mut value {
-                    object.remove("name");
-                }
-                fields.insert(format!("secrets.{}", secret.name), value);
-            }
             for (name, config) in &spec.environments {
                 fields.insert(format!("environments.{name}"), "declared".into());
                 let source = [
@@ -140,8 +132,8 @@ impl ManifestChange {
     /// Flattens a specification into comparable field paths. Services and jobs
     /// contribute one entry per top-level setting except `name`, and services
     /// one per file, keyed by target, which summarizes inline content by size
-    /// and digest; routes are keyed by hostname, volumes only record presence,
-    /// and variables are keyed by name.
+    /// and digest; routes are keyed by hostname, generated secret declarations
+    /// by name, volumes only record presence, and variables are keyed by name.
     ///
     /// ```text
     /// manifest                              -> repository manifest settings
@@ -151,6 +143,7 @@ impl ManifestChange {
     /// jobs.migrate.service                  -> "web"
     /// routes.app.example.com                -> {"service":"web","port":3000}
     /// volumes.data                          -> "present (retained if removed)"
+    /// secrets.session                       -> {"generate":{"bytes":32,"encoding":"hex","type":"random"}}
     /// variables.domain                      -> "example.com"
     /// environments.staging.variables.domain -> "staging.example.com"
     /// environments.staging.visibility       -> "private"
@@ -211,8 +204,9 @@ impl ManifestChange {
                 }
             }
         }
-        for (path, route) in entries("routes", "hostname", &mut fields) {
-            fields.insert(path, Value::Object(route));
+        let routes = entries("routes", "hostname", &mut fields);
+        for (path, whole) in [routes, entries("secrets", "name", &mut fields)].concat() {
+            fields.insert(path, Value::Object(whole));
         }
         entries("volumes", "name", &mut fields);
         // Jobs run in declared order, so a reordering is a change of its own.
@@ -353,8 +347,7 @@ TOKEN="old-secret"
         assert!(ManifestChange::between(Some(&original), &original).is_empty());
     }
 
-    /// Edits list generated secrets and environment sources too, which plans
-    /// leave out.
+    /// Edits list environment sources too, which plans leave out.
     #[test]
     fn edits_list_secret_declarations_and_environment_sources() {
         let spec = |body: &str| {
@@ -374,7 +367,48 @@ TOKEN="old-secret"
             .map(|change| change.field)
             .collect::<Vec<_>>();
         assert_eq!(fields, ["environments.production.branch", "secrets.token"]);
-        assert!(ManifestChange::between(Some(&read), &saved).is_empty());
+        let planned = ManifestChange::between(Some(&read), &saved);
+        assert_eq!(planned[0].field, "secrets.token");
+        assert_eq!(planned.len(), 1);
+    }
+
+    #[test]
+    fn changes_show_generated_secret_declarations() {
+        let input = r#"api_version="piqueld.dev/v1alpha1"
+kind="Application"
+[metadata]
+name="example"
+[[spec.services]]
+name="web"
+[spec.services.source]
+type="image"
+image="example:1"
+"#;
+        let id = crate::ApplicationId::parse("app-example-01").unwrap();
+        let original = crate::parse_toml(input).unwrap().normalize(id.clone());
+        let mut declared = original.to_manifest();
+        declared.spec.secrets = vec![crate::manifest::SecretDeclaration {
+            name: "session".into(),
+            generate: crate::manifest::SecretGenerator::Random {
+                bytes: 16,
+                encoding: crate::manifest::SecretEncoding::Hex,
+            },
+        }];
+        let declared = declared.validate().unwrap().normalize(id);
+        let changes = ManifestChange::between(
+            Some(&original.spec().to_input()),
+            &declared.spec().to_input(),
+        );
+        assert_eq!(
+            changes
+                .iter()
+                .map(|change| (change.field.as_str(), change.after.as_deref()))
+                .collect::<Vec<_>>(),
+            [(
+                "secrets.session",
+                Some(r#"{"generate":{"bytes":16,"encoding":"hex","type":"random"}}"#)
+            )]
+        );
     }
 
     #[test]

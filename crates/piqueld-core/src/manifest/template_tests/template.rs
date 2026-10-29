@@ -342,6 +342,35 @@ fn saved_hostnames_skip_missing_invalid_and_deployment_only_values() {
     assert_eq!(names, ["upper.example.com", "literal.example.com"]);
 }
 
+/// A name read alongside `deployment.id` or `git.*` still changes the
+/// rendering, so the rename is not alike.
+#[test]
+fn renders_like_compares_names_read_with_deployment_values() {
+    let renamed = |hostname: &str| {
+        let mut manifest = base();
+        manifest.spec.manifest = Some(repository());
+        manifest.spec.routes = vec![Route {
+            hostname: hostname.into(),
+            name: None,
+            visibility: Visibility::Private,
+            service: Some("web".into()),
+            port: Some(80),
+            redirect: None,
+        }];
+        let template = normalize(manifest);
+        let target = environment("production");
+        let renamed = template
+            .clone()
+            .with_name(crate::ApplicationName::parse("renamed").unwrap());
+        template.renders_like(&target, &renamed, &target)
+    };
+    assert!(renamed("${{ deployment.id }}-${{ git.sha }}.example.com"));
+    assert!(!renamed("${{ app.name }}-${{ deployment.id }}.example.com"));
+    assert!(!renamed("${{ app.name }}-${{ git.branch }}.example.com"));
+    // Renders the same for both names, but is no valid hostname.
+    assert!(!renamed("${{ deployment.id }} invalid.example.com"));
+}
+
 #[test]
 fn validation_errors_sort_by_path_then_code_stably() {
     let error = |path: &str, code: &str, message: &str| ValidationError::new(code, path, message);
