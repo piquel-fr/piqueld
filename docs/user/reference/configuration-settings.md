@@ -120,7 +120,7 @@ The longest lifetime, in days, of new API tokens. When unset, tokens may have an
 
 Type: string. Optional.
 
-The website's canonical origin, such as `https://piqueld.example.com`. Passkeys only work on this origin, and API mutations and WebSocket upgrades that send an `Origin` header must match it. It must be HTTPS, except `http://localhost` for development. When unset, it is `https://` followed by `ingress.private.dashboard_hostname` if that is set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is set, otherwise `http://localhost:7845`.
+The website's canonical origin, such as `https://piqueld.example.com`. Passkeys only work on this origin, and API mutations and WebSocket upgrades that send an `Origin` header must match it. It must be HTTPS, except `http://localhost` or a subdomain of it, such as `http://dev.localhost`, for development. When unset, it is `https://` followed by `ingress.private.dashboard_hostname` if that is set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is set, otherwise `http://localhost:7845`.
 
 ## `[build_history]`
 

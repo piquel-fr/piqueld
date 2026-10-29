@@ -3,18 +3,23 @@
 //! The shared tailnet node runs under a supervisor of its own.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::{self, TryLockError};
 use std::io::{IsTerminal, Read, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
+use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     InspectContainerOptions, RestartContainerOptions, StartContainerOptions,
 };
-use rustix::process::{Pid, Signal, getpid, kill_process};
+use rustix::fs::OFlags;
+use rustix::process::{Pid, Signal, getpid, kill_process, test_kill_process};
 use tokio::process::Command;
 
 use super::{DATA_LABEL, Instance, Phase, RUNTIME_LABEL, State, Tailnet, WORKTREE_LABEL};
@@ -23,6 +28,17 @@ use crate::process::{Job, Shutdown};
 
 /// The daemon allows ten seconds to finish in-flight requests.
 const GRACE: Duration = Duration::from_secs(11);
+
+/// Who holds an instance's dev.pid, as [`Supervisor::holder`] reads it.
+pub(super) enum Holder {
+    /// No supervisor runs.
+    Nobody,
+    /// The supervisor started from this worktree runs.
+    Worktree(PathBuf),
+    /// A supervisor runs without recording its worktree, as older xtask
+    /// builds did, or is still claiming dev.pid.
+    Unrecorded,
+}
 
 /// A background xtask process, such as an instance's supervisor, found through
 /// the dev.pid it locks while it runs, so a file left behind by a crash never
@@ -41,15 +57,51 @@ impl Supervisor {
 
     /// The supervisor's process, while it runs.
     pub(super) fn running(&self) -> Option<Pid> {
-        let mut file = fs::File::open(&self.pid_file).ok()?;
+        Self::pid(self.record()?.split(|&byte| byte == b'\n').next()?)
+    }
+
+    /// Who holds an instance's dev.pid. A worktree's record follows the pid,
+    /// ends with a newline, and names a live process: while a supervisor
+    /// claims dev.pid, it briefly holds a partial record, or still the record
+    /// of a supervisor that exited.
+    pub(super) fn holder(&self) -> Holder {
+        let Some(record) = self.record() else {
+            return Holder::Nobody;
+        };
+        let mut lines = record.splitn(2, |&byte| byte == b'\n');
+        let live = lines
+            .next()
+            .and_then(Self::pid)
+            .is_some_and(|pid| test_kill_process(pid).is_ok());
+        lines
+            .next()
+            .filter(|_| live)
+            .and_then(|rest| rest.strip_suffix(b"\n"))
+            .map_or(Holder::Unrecorded, |worktree| {
+                Holder::Worktree(PathBuf::from(OsStr::from_bytes(worktree)))
+            })
+    }
+
+    /// dev.pid's contents, while a supervisor holds its lock. Opening it never
+    /// blocks, even when another user replaced it with a FIFO.
+    fn record(&self) -> Option<Vec<u8>> {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(OFlags::NONBLOCK.bits().cast_signed())
+            .open(&self.pid_file)
+            .ok()?;
         // Taking the lock means no supervisor holds it; dropping the file
         // releases it again.
         let Err(TryLockError::WouldBlock) = file.try_lock_shared() else {
             return None;
         };
-        let mut pid = String::new();
-        file.read_to_string(&mut pid).ok()?;
-        Pid::from_raw(pid.trim().parse().ok()?)
+        let mut record = Vec::new();
+        file.read_to_end(&mut record).ok()?;
+        Some(record)
+    }
+
+    fn pid(line: &[u8]) -> Option<Pid> {
+        Pid::from_raw(std::str::from_utf8(line).ok()?.trim().parse().ok()?)
     }
 
     /// Locks dev.pid and records our pid in it, for as long as the returned
@@ -137,8 +189,7 @@ enum Event {
 impl Instance {
     /// Supervises the instance in the foreground until a signal stops it.
     pub(super) async fn run(&self) -> Result<()> {
-        Self::create_private_dir(&self.config.server.runtime_dir)?;
-        let _claim = self.supervisor().claim().await?;
+        let _claim = self.claim().await?;
         // Signals arriving while the engine starts stop the first build.
         let mut shutdown = Shutdown::listen()?;
         let result = async {
@@ -155,10 +206,21 @@ impl Instance {
         result
     }
 
+    /// Claims the instance's dev.pid and records this worktree after the pid,
+    /// so `just dev config --force` can tell this worktree's running instance
+    /// from one that a copied configuration names.
+    pub(super) async fn claim(&self) -> Result<fs::File> {
+        let mut claim = self.supervisor().claim().await?;
+        let record = [b"\n", self.workspace.root().as_os_str().as_bytes(), b"\n"].concat();
+        claim
+            .write_all(&record)
+            .context("record the worktree in dev.pid")?;
+        Ok(claim)
+    }
+
     /// Runs the supervisor in the background, unless it runs, and returns once
     /// it holds dev.pid.
     pub(super) async fn start(&self) -> Result<()> {
-        Self::create_private_dir(&self.config.server.runtime_dir)?;
         self.supervisor()
             .launch(&["dev", "run"], &self.file("dev.log"))
             .await
@@ -294,21 +356,31 @@ impl Instance {
 
     /// Starts this instance's Docker engine when the configuration points at
     /// it. The container and its image store persist across restarts; `clean`
-    /// removes them.
+    /// removes them. A container whose mounts no longer match the
+    /// configuration, such as after `just dev config --force` moved the
+    /// runtime directory, is recreated, keeping its image store.
     async fn start_engine(&self) -> Result<()> {
         if !self.private_engine() {
             return Ok(());
         }
-        let data = &self.config.server.data_dir;
         Self::create_private_dir(&self.file("docker"))?;
-        Self::create_private_dir(data)?;
+        Self::create_private_dir(&self.config.server.data_dir)?;
         let engine = Engine::host().await?;
         let name = self.container();
-        match engine
+        let body = self.engine_container(&name);
+        let existing = match engine
             .inspect_container(&name, None::<InspectContainerOptions>)
             .await
         {
-            Ok(container) => {
+            Ok(container) => Some(container),
+            Err(error) if Engine::is_not_found(&error) => None,
+            Err(error) => return Err(error).context("inspect the instance's engine"),
+        };
+        let binds = |config: Option<&HostConfig>| config.and_then(|config| config.binds.clone());
+        match existing {
+            Some(container)
+                if binds(container.host_config.as_ref()) == binds(body.host_config.as_ref()) =>
+            {
                 if container.state.and_then(|state| state.running) != Some(true) {
                     engine
                         .start_container(&name, None::<StartContainerOptions>)
@@ -321,31 +393,41 @@ impl Instance {
                         .await?;
                 }
             }
-            Err(error) if Engine::is_not_found(&error) => {
-                let image = Engine::dind_image();
-                engine.pull_missing(&image).await?;
-                let (root, data, runtime) = (
-                    self.workspace.root().display().to_string(),
-                    data.display().to_string(),
-                    self.config.server.runtime_dir.display().to_string(),
-                );
-                // The data directory is mounted at the same path because the
-                // daemon bind-mounts files from it, such as the ingress
-                // configuration.
-                let mut body = Engine::dind_container(
-                    image,
-                    format!("{runtime}/docker"),
-                    [format!("{name}:/var/lib/docker"), format!("{data}:{data}")],
-                );
-                body.labels = Some(HashMap::from([
-                    (WORKTREE_LABEL.to_owned(), root),
-                    (DATA_LABEL.to_owned(), data),
-                    (RUNTIME_LABEL.to_owned(), runtime),
-                ]));
+            existing => {
+                if let Some(container) = existing {
+                    self.check_owner(&name, container.config.and_then(|config| config.labels))?;
+                    eprintln!("[dev] recreating {name} for the configured directories");
+                    // The image store is a named volume, which outlives it.
+                    engine.remove(&name).await?;
+                }
+                engine
+                    .pull_missing(body.image.as_deref().unwrap_or_default())
+                    .await?;
                 engine.launch(Some(&name), body).await?;
             }
-            Err(error) => return Err(error).context("inspect the instance's engine"),
         }
         engine.wait_for_dind(&name).await
+    }
+
+    /// The definition of this instance's engine, `name`.
+    fn engine_container(&self, name: &str) -> ContainerCreateBody {
+        let (root, data, runtime) = (
+            self.workspace.root().display().to_string(),
+            self.config.server.data_dir.display().to_string(),
+            self.config.server.runtime_dir.display().to_string(),
+        );
+        // The data directory is mounted at the same path because the daemon
+        // bind-mounts files from it, such as the ingress configuration.
+        let mut body = Engine::dind_container(
+            Engine::dind_image(),
+            format!("{runtime}/docker"),
+            [format!("{name}:/var/lib/docker"), format!("{data}:{data}")],
+        );
+        body.labels = Some(HashMap::from([
+            (WORKTREE_LABEL.to_owned(), root),
+            (DATA_LABEL.to_owned(), data),
+            (RUNTIME_LABEL.to_owned(), runtime),
+        ]));
+        body
     }
 }

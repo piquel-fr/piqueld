@@ -38,7 +38,7 @@
         },
         "public_url": {
           "default": null,
-          "description": "The website's canonical origin, such as `https://piqueld.example.com`.\nPasskeys only work on this origin, and API mutations and WebSocket\nupgrades that send an `Origin` header must match it. It must be HTTPS,\nexcept `http://localhost` for development. When unset, it is\n`https://` followed by `ingress.private.dashboard_hostname` if that is\nset, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is\nset, otherwise `http://localhost:7845`.",
+          "description": "The website's canonical origin, such as `https://piqueld.example.com`.\nPasskeys only work on this origin, and API mutations and WebSocket\nupgrades that send an `Origin` header must match it. It must be HTTPS,\nexcept `http://localhost` or a subdomain of it, such as\n`http://dev.localhost`, for development. When unset, it is\n`https://` followed by `ingress.private.dashboard_hostname` if that is\nset, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is\nset, otherwise `http://localhost:7845`.",
           "type": [
             "string",
             "null"

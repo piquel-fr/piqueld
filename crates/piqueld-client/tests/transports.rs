@@ -146,6 +146,38 @@ async fn typed_client_resolves_dns_and_preserves_the_host_header() {
 }
 
 #[tokio::test]
+async fn localhost_subdomains_reach_loopback_with_credentials() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/api/v1/system/status",
+                get(move |headers: HeaderMap| async move {
+                    assert_eq!(headers["host"], format!("dev.localhost:{port}"));
+                    assert_eq!(headers["authorization"], "Bearer secret");
+                    status().await
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    // The client pins `*.localhost` to loopback rather than trusting the
+    // system resolver, which is what makes plain HTTP credentials safe there.
+    let response = Client::tcp(&format!("http://dev.localhost:{port}"))
+        .unwrap()
+        .with_bearer("secret")
+        .unwrap()
+        .system_status()
+        .await
+        .unwrap();
+    assert_eq!(response.status, "running");
+    server.abort();
+}
+
+#[tokio::test]
 async fn typed_client_uses_ipv6() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -3,6 +3,14 @@ use crate::access::Grants;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Whether `host` is `localhost` or a subdomain of it, such as a development
+/// instance's `<instance>.localhost`. Browsers resolve these names to loopback
+/// and treat them as secure contexts even over HTTP.
+#[must_use]
+pub fn is_localhost(host: &str) -> bool {
+    host == "localhost" || host.ends_with(".localhost")
+}
+
 /// Public account information.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct User {

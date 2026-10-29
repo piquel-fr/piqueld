@@ -32,12 +32,13 @@ minutes: run it as a background command rather than polling. If it prints:
 
 ## Iterate
 
-Every save under `apps/piqueld`, `apps/piqueld-ui`, `crates`, or the Cargo
-manifests rebuilds and restarts the daemon. Run `just dev wait` after editing
-and before testing: it treats files saved after the current build started as
-unbuilt, so it never returns the previous build. Then reload the preview with
-`preview_navigate`. Data survives restarts; pending passkey ceremonies and CLI
-device logins do not.
+Every save under `apps/piqueld`, `apps/piqueld-ui`, `crates`, `migrations`, the
+Cargo manifests and build settings, or `piqueld.local.toml` rebuilds and
+restarts the daemon. Run `just dev wait` after editing and before testing: it
+treats files saved after the current build started as unbuilt, so it never
+returns the previous build. Then reload the preview with `preview_navigate`.
+Data survives restarts; pending passkey ceremonies and CLI device logins do
+not.
 
 ## Use it
 
@@ -45,7 +46,7 @@ device logins do not.
   only origin where passkeys and sign-in work: either
   `https://piqueld-dev.<tailnet>.ts.net:<port>` when the instance serves on the
   shared tailnet node, which the user can also open from their own devices,
-  or `http://localhost:<port>` (never `127.0.0.1`).
+  or `http://<instance>.localhost:<port>` (never `localhost` or `127.0.0.1`).
 - **CLI:** `just ctl <args>` runs this worktree's `piquelctl` against the
   instance's socket.
 - **Signing in:** `just ctl` needs no login: it acts as the host operator,

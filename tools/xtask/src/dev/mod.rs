@@ -9,37 +9,44 @@ mod tailnet;
 use std::collections::HashMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use bollard::models::{ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
     InspectContainerOptions, ListContainersOptionsBuilder, RemoveVolumeOptions,
 };
 use clap::Subcommand;
+use rustix::process::getuid;
 use serde::{Deserialize, Serialize};
 
 use crate::Workspace;
 use crate::docker::Engine;
-use supervisor::Supervisor;
+use supervisor::{Holder, Supervisor};
 use tailnet::{Tailnet, TailnetCommand};
 
 const CONFIG_FILE: &str = "piqueld.local.toml";
-/// Holds every instance's sockets and logs. It is in /tmp because every
-/// session sees it, unlike /run/user.
-const RUNTIME_ROOT: &str = "/tmp/piqueld-dev";
-/// Changes to these rebuild and restart the daemon. It embeds the dashboard at
-/// compile time, so the UI crate is watched too.
-const SOURCES: [&str; 5] = [
+/// Held every user's runtime directories before [`Instance::runtime_root`];
+/// `just dev config --force` moves a configuration that still uses it.
+const LEGACY_RUNTIME_ROOT: &str = "/tmp/piqueld-dev";
+/// Changes to these rebuild and restart the daemon. It embeds the dashboard and
+/// the migrations at compile time, so they are watched too, as are the build
+/// settings, and it reads its configuration at startup.
+const SOURCES: [&str; 9] = [
     "apps/piqueld",
     "apps/piqueld-ui",
     "crates",
+    "migrations",
     "Cargo.toml",
     "Cargo.lock",
+    ".cargo/config.toml",
+    "rust-toolchain.toml",
+    CONFIG_FILE,
 ];
 /// Labels on each instance's engine, which let `prune` find what to delete.
 const WORKTREE_LABEL: &str = "io.piqueld.dev.worktree";
@@ -193,7 +200,52 @@ impl Instance {
             bail!("{CONFIG_FILE} is missing; write it with `just dev config`");
         }
         let config = Config::read(&path)?;
-        Ok(Self { workspace, config })
+        let instance = Self { workspace, config };
+        instance.own_runtime_dir()?;
+        Ok(instance)
+    }
+
+    /// Creates the runtime directory unless it exists, and checks that it and
+    /// its parent are the user's alone, before any task touches the sockets,
+    /// logs, or dev.pid in it.
+    fn own_runtime_dir(&self) -> Result<()> {
+        let dir = &self.config.server.runtime_dir;
+        let parent = dir.parent().context("runtime_dir has no parent")?;
+        if parent == Path::new(LEGACY_RUNTIME_ROOT) {
+            eprintln!(
+                "warning: runtime_dir is in {LEGACY_RUNTIME_ROOT}, which other users can claim; \
+                 run `just dev stop`, then `just dev config --force`"
+            );
+        }
+        Self::own_private_dir(parent.to_owned())?;
+        Self::own_private_dir(dir.clone())?;
+        Ok(())
+    }
+
+    /// Whether `workspace`'s own supervisor runs from `runtime_dir`. It would
+    /// restart the daemon with a replaced configuration, out of reach of the
+    /// tasks that read it. A configuration copied from another worktree names
+    /// that worktree's instance instead, which is not ours to stop.
+    /// Fails when the running supervisor's worktree is unknown.
+    fn runs_from(runtime_dir: &Path, workspace: &Workspace) -> Result<bool> {
+        match Supervisor::in_dir(runtime_dir).holder() {
+            Holder::Nobody => Ok(false),
+            Holder::Worktree(owner) => Ok(owner == workspace.root()),
+            Holder::Unrecorded => bail!(
+                "an instance that records no worktree, such as one started by an older xtask, \
+                 is running from {}; stop it from the worktree that started it \
+                 (`just dev stop`), then run `just dev config --force`",
+                runtime_dir.display()
+            ),
+        }
+    }
+
+    /// Whether `dir` and its parent are directories only the current user can
+    /// access, so that files in it, such as dev.pid, can be trusted.
+    fn private_runtime_dir(dir: &Path) -> bool {
+        dir.parent()
+            .is_some_and(|parent| Self::check_private(parent).is_ok())
+            && Self::check_private(dir).is_ok()
     }
 
     async fn load_or_configure(workspace: Workspace) -> Result<Self> {
@@ -212,17 +264,63 @@ impl Instance {
         Ok(state_home.join("piqueld-dev"))
     }
 
+    /// Holds every instance's sockets and logs, and the tailnet node's. It is
+    /// in /tmp because every session sees it, unlike /run/user, so it is named
+    /// after the user and must be theirs alone: another user may have created
+    /// it first.
+    fn runtime_root() -> Result<PathBuf> {
+        Self::own_private_dir(format!("/tmp/piqueld-dev-{}", getuid().as_raw()).into())
+    }
+
+    /// Creates `path` unless it exists, then checks it with [`Self::check_private`].
+    fn own_private_dir(path: PathBuf) -> Result<PathBuf> {
+        if let Err(error) = fs::DirBuilder::new().mode(0o700).create(&path)
+            && error.kind() != io::ErrorKind::AlreadyExists
+        {
+            return Err(error).with_context(|| format!("create {}", path.display()));
+        }
+        Self::check_private(&path)?;
+        Ok(path)
+    }
+
+    /// Checks that `path` is a directory, not a symbolic link, that only the
+    /// current user can access.
+    fn check_private(path: &Path) -> Result<()> {
+        let metadata =
+            fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
+        ensure!(
+            metadata.is_dir()
+                && metadata.uid() == getuid().as_raw()
+                && metadata.mode() & 0o777 == 0o700,
+            "{} is not a directory only you can access; remove it",
+            path.display()
+        );
+        Ok(())
+    }
+
     /// Writes the worktree's configuration unless it exists and `force` is
     /// unset. Returns whether it did. While the shared tailnet node is logged
     /// in, the instance also serves on it, at its localhost port.
     async fn configure(workspace: &Workspace, force: bool) -> Result<bool> {
         let path = workspace.root().join(CONFIG_FILE);
-        if path.exists() && !force {
-            return Ok(false);
+        if path.exists() {
+            if !force {
+                return Ok(false);
+            }
+            if let Ok(config) = Config::read(&path)
+                && Self::runs_from(&config.server.runtime_dir, workspace)?
+            {
+                bail!(
+                    "the instance is running; run `just dev stop`, then `just dev config --force`"
+                );
+            }
         }
         let name = Self::name_for(workspace)?;
         let data = Self::state_root()?.join(&name);
-        let runtime = Path::new(RUNTIME_ROOT).join(&name);
+        let runtime = Self::runtime_root()?.join(&name);
+        // Held until the configuration is written, so a concurrent setup of
+        // another worktree cannot pick the same port.
+        let _lock = Self::lock_ports()?;
         let port = Self::free_port(workspace)?;
         let quote = |path: &Path| toml::Value::from(path.display().to_string()).to_string();
         let tailnet = Tailnet::new()?;
@@ -242,7 +340,7 @@ https_port = {port}",
                     eprintln!("the tailnet node is unavailable: {error:#}");
                 }
                 eprintln!("`just dev tailnet up` serves new instances on the tailnet");
-                format!("[auth]\npublic_url = \"http://localhost:{port}\"")
+                format!("[auth]\npublic_url = \"http://{name}.localhost:{port}\"")
             }
         };
         let (data, socket, runtime) = (
@@ -263,6 +361,9 @@ runtime_dir = {runtime}
 # The browser preview opens public_url; the Unix socket serves the CLI.
 listen_mode = "localhost"
 port = {port}
+# The instance's own host on localhost: browsers send a host's cookies to
+# all of its ports.
+allowed_hosts = ["{name}.localhost"]
 
 {origin}
 
@@ -308,7 +409,10 @@ auto_initialize_swarm = true
         workspace.root().hash(&mut hasher);
         // The low 32 bits are plenty to tell a few checkouts apart.
         let hash = hasher.finish() & 0xffff_ffff;
-        Ok(format!("{}-{hash:08x}", slug.trim_matches('-')))
+        // The name is also a DNS label, which cannot start with a hyphen.
+        Ok(format!("{}-{hash:08x}", slug.trim_matches('-'))
+            .trim_start_matches('-')
+            .to_owned())
     }
 
     /// The lowest port from 7846 that nothing listens on and no other
@@ -325,6 +429,23 @@ auto_initialize_swarm = true
                 !claimed.contains(port) && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
             })
             .context("no free port")
+    }
+
+    /// Locks the choice of ports across worktrees until the returned file is
+    /// dropped, waiting for any other worktree's setup to finish.
+    fn lock_ports() -> Result<fs::File> {
+        let root = Self::state_root()?;
+        Self::create_private_dir(&root)?;
+        let path = root.join("ports.lock");
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("lock {}", path.display()))?;
+        Ok(file)
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -490,21 +611,14 @@ auto_initialize_swarm = true
     async fn clean(&self) -> Result<()> {
         let engine = Engine::host().await?;
         let container = self.container();
-        // A configuration copied from another worktree names its instance.
         match engine
             .inspect_container(&container, None::<InspectContainerOptions>)
             .await
         {
-            Ok(inspected) => {
-                let labels = inspected.config.and_then(|config| config.labels);
-                if let Some(owner) = labels
-                    .as_ref()
-                    .and_then(|labels| labels.get(WORKTREE_LABEL))
-                    && Path::new(owner) != self.workspace.root()
-                {
-                    bail!("{container} belongs to {owner}; run `just dev config --force` here");
-                }
-            }
+            Ok(inspected) => self.check_owner(
+                &container,
+                inspected.config.and_then(|config| config.labels),
+            )?,
             Err(error) if Engine::is_not_found(&error) => {}
             Err(error) => return Err(error).context("inspect the instance's engine"),
         }
@@ -516,6 +630,20 @@ auto_initialize_swarm = true
         engine.remove_dev_instance(&container, &dirs).await?;
         eprintln!("removed instance {}", self.name());
         Ok(())
+    }
+
+    /// Fails unless `container`, with these labels, is this worktree's engine:
+    /// a configuration copied from another worktree names that worktree's
+    /// engine, and a container that `just dev` did not create is not ours to
+    /// delete.
+    fn check_owner(&self, container: &str, labels: Option<HashMap<String, String>>) -> Result<()> {
+        match labels.unwrap_or_default().get(WORKTREE_LABEL) {
+            Some(owner) if Path::new(owner) == self.workspace.root() => Ok(()),
+            Some(owner) => {
+                bail!("{container} belongs to {owner}; run `just dev config --force` here")
+            }
+            None => bail!("{container} was not created by `just dev`; kept it"),
+        }
     }
 
     /// Replaces xtask with this worktree's piquelctl; returns only on failure.
@@ -535,8 +663,9 @@ auto_initialize_swarm = true
 
 impl Engine {
     /// Removes an instance's engine, its image store, and `dirs`. Only
-    /// directories directly under a `piqueld-dev` directory are deleted, so a
-    /// configuration pointing elsewhere never loses data.
+    /// directories directly under a `piqueld-dev` directory, such as the state
+    /// root, or under the runtime root are deleted, so a configuration pointing
+    /// elsewhere never loses data.
     async fn remove_dev_instance(&self, container: &str, dirs: &[impl AsRef<Path>]) -> Result<()> {
         self.remove(container).await?;
         if let Err(error) = self
@@ -546,6 +675,8 @@ impl Engine {
         {
             return Err(error).context("remove the instance's image store");
         }
+        let runtime_root =
+            fs::canonicalize(Instance::runtime_root()?).context("resolve the runtime root")?;
         for dir in dirs {
             // Checking the resolved path keeps symbolic links from redirecting
             // the deletion. A missing directory has nothing to delete.
@@ -555,7 +686,7 @@ impl Engine {
             let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
                 continue;
             };
-            if parent.file_name() != Some("piqueld-dev".as_ref()) {
+            if parent.file_name() != Some("piqueld-dev".as_ref()) && parent != runtime_root {
                 eprintln!("kept {}", dir.display());
             } else if fs::remove_dir_all(&dir).is_err() && dir.exists() {
                 // Containers may have left root-owned files behind, which only
@@ -596,8 +727,10 @@ impl Engine {
                 continue;
             }
             // A supervisor from before its worktree was removed may still run.
-            if let Some(runtime) = labels.get(RUNTIME_LABEL) {
-                Supervisor::in_dir(Path::new(runtime)).stop().await?;
+            if let Some(runtime) = labels.get(RUNTIME_LABEL).map(Path::new)
+                && Instance::private_runtime_dir(runtime)
+            {
+                Supervisor::in_dir(runtime).stop().await?;
             }
             let dirs: Vec<&String> = [DATA_LABEL, RUNTIME_LABEL]
                 .iter()
@@ -608,5 +741,98 @@ impl Engine {
             eprintln!("removed the instance of {worktree}");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(root: &Path) -> Instance {
+        instance_in(root, Path::new("/runtime"))
+    }
+
+    fn instance_in(root: &Path, runtime_dir: &Path) -> Instance {
+        let config = format!(
+            "[server]\ndata_dir = \"/data\"\nruntime_dir = {}",
+            toml::Value::from(runtime_dir.display().to_string())
+        );
+        Instance {
+            workspace: Workspace {
+                root: root.to_owned(),
+            },
+            config: toml::from_str(&config).unwrap(),
+        }
+    }
+
+    #[test]
+    fn clean_only_removes_this_worktrees_engine() {
+        let instance = instance(Path::new("/worktrees/a"));
+        let owned = |labels| instance.check_owner("engine", labels).is_ok();
+        let labelled = |worktree: &str| {
+            Some(HashMap::from([(
+                WORKTREE_LABEL.to_owned(),
+                worktree.to_owned(),
+            )]))
+        };
+        assert!(owned(labelled("/worktrees/a")));
+        assert!(!owned(labelled("/worktrees/b")));
+        assert!(!owned(Some(HashMap::new())));
+        assert!(!owned(None));
+    }
+
+    #[test]
+    fn runtime_root_is_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        assert!(Instance::own_private_dir(root.clone()).is_ok());
+        assert_eq!(fs::metadata(&root).unwrap().mode() & 0o777, 0o700);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Instance::own_private_dir(root).is_err());
+        let link = parent.path().join("link");
+        std::os::unix::fs::symlink(parent.path(), &link).unwrap();
+        assert!(Instance::own_private_dir(link).is_err());
+    }
+
+    #[tokio::test]
+    async fn config_force_only_waits_for_this_worktrees_instance() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = Instance::own_private_dir(temporary.path().join("root")).unwrap();
+        // A custom runtime_dir, not named after the instance.
+        let runtime = Instance::own_private_dir(root.join("rt")).unwrap();
+        let mine = instance_in(Path::new("/worktrees/a"), &runtime);
+        let runs_from = |root: &str| {
+            let workspace = Workspace { root: root.into() };
+            Instance::runs_from(&runtime, &workspace).unwrap()
+        };
+        assert!(!runs_from("/worktrees/a"));
+        let claim = mine.claim().await.unwrap();
+        assert!(runs_from("/worktrees/a"));
+        // A configuration copied from another worktree names its instance.
+        assert!(!runs_from("/worktrees/b"));
+        drop(claim);
+        // A supervisor that records no worktree, as older xtask builds did.
+        let _claim = Supervisor::in_dir(&runtime).claim().await.unwrap();
+        let workspace = Workspace {
+            root: "/worktrees/a".into(),
+        };
+        assert!(Instance::runs_from(&runtime, &workspace).is_err());
+    }
+
+    #[test]
+    fn migrations_and_configuration_are_sources() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("migrations")).unwrap();
+        let instance = instance(root.path());
+        let built = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!instance.sources_changed_since(built));
+        fs::write(root.path().join("migrations/0001_new.sql"), "").unwrap();
+        assert!(instance.sources_changed_since(built));
+        let built = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(root.path().join(CONFIG_FILE), "").unwrap();
+        assert!(instance.sources_changed_since(built));
     }
 }

@@ -13,9 +13,16 @@ use std::{
 ///
 /// The nested Cargo must never share this build's target directory: the outer
 /// Cargo holds its build-directory lock until the build script returns, so
-/// sharing would deadlock. Cargo's jobserver, flag, wrapper, and profile
-/// overrides are stripped because they describe the host build rather than
-/// the nested one, which its own profile alone defines.
+/// sharing would deadlock. The nested Cargo joins the outer build's jobserver
+/// (`CARGO_MAKEFLAGS`), so both share one limit on parallel jobs.
+///
+/// The outer rustflags, rustc wrappers, and profile overrides are stripped
+/// because they describe the host build: host rustflags such as
+/// `-C target-cpu=native` or linker arguments break a wasm32 build, and would
+/// also override the nested target's own rustflags
+/// (`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, `target.<triple>.rustflags`), which
+/// still apply; `cargo clippy` sets `RUSTC_WORKSPACE_WRAPPER`. The nested
+/// profile alone defines the rest.
 pub struct NestedCargo {
     /// `<outer target dir>-<suffix>`, e.g. `target-ui`.
     target_dir: PathBuf,
@@ -38,8 +45,7 @@ impl NestedCargo {
         profile: &str,
         target: &str,
     ) -> Result<PathBuf, Box<dyn Error>> {
-        const HOST_SETTINGS: [&str; 7] = [
-            "CARGO_MAKEFLAGS",
+        const HOST_SETTINGS: [&str; 6] = [
             "RUSTFLAGS",
             "RUSTDOCFLAGS",
             "CARGO_ENCODED_RUSTFLAGS",
