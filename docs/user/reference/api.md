@@ -360,9 +360,8 @@ History endpoints accept `cursor` for subsequent pages.
 deploys an earlier deployment of the environment again exactly as it ran: its
 rendered manifest and values, its release, its prepared target with the same
 images, and the secret versions it pinned. The new deployment's origin is
-`{ "type": "restore", "deployment": "operation-..." }` and its target is
-saved on acceptance, so the controller only rolls it out and then maintains
-it like any other. Nothing is rendered, fetched or built, and no newer input
+`{ "type": "restore", "deployment": "operation-..." }`, and it becomes the
+maintained target like any other deployment. Nothing is rendered, fetched or built, and no newer input
 is substituted. Jobs never run, on the restore or on its retries: an earlier
 deployment's before-rollout migrations must not run against newer data. Volume
 contents and migrations are not reverted.
@@ -372,7 +371,7 @@ work. Before anything is accepted it fails with 404 for a deployment of another
 environment, 409 `deployment_not_restorable` (`details.deployment`) for one
 that never succeeded, and 409 `image_unavailable` naming the service and image
 when an image is gone and can't be pulled again by digest; a missing registry
-image is pulled again first. Acceptance fails with 409
+image is re-pulled first. Acceptance fails with 409
 `restore_secrets_unavailable`, listing in `details.secrets` every secret whose
 pinned version was deleted or discarded by key recovery since, with
 `secret_access_denied` for a stored secret whose access list no longer allows

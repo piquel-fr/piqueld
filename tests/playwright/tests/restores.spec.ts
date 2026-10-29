@@ -17,6 +17,7 @@ test('an earlier deployment is restored from the deployment history', async ({ p
       ...deployment,
       operation: { ...deployment.operation, id: 'operation-0123456789abcdf0' },
       origin: { type: 'restore', deployment: earlier },
+      succeeded_at_ms: Date.now(),
       current_target: true,
     };
     await route.fulfill({ json: { data: { items: [restore, succeeded], next_cursor: null } } });
