@@ -165,6 +165,22 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await expect(page.locator('.table', { hasText: 'browser-test' })).toContainText('requested');
 });
 
+test('saves the preview visibility ceiling from the Routes tab', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  const app = page.url().split('/').pop()!;
+  await applicationTab(page, 'Routes').click();
+  const select = page.getByRole('combobox', { name: 'Preview route visibility', exact: true });
+  await expect(select).toHaveValue('private');
+  await select.selectOption('public');
+  await save(page);
+  await page.reload();
+  await applicationTab(page, 'Routes').click();
+  await expect(select).toHaveValue('public');
+  const { application } = await call(page, 'GET', `applications/${app}`);
+  expect(application.spec.previews.visibility).toBe('public');
+});
+
 test('adds, reorders, and removes jobs', async ({ page, account }) => {
   void account;
   await createApplication(page);

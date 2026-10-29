@@ -3134,6 +3134,7 @@ Commands:
 - [`piquelctl preview deploy`](#piquelctl-preview-deploy): Deploy the head of a preview's branch again, or a snapshot of your Git worktree with `--local`.
 - [`piquelctl preview list`](#piquelctl-preview-list): List an application's previews with their status and branch state.
 - [`piquelctl preview show`](#piquelctl-preview-show): Show one preview, its URLs, and the state of its branch.
+- [`piquelctl preview visibility`](#piquelctl-preview-visibility): Cap the visibility of every preview's routes in the saved manifest.
 - [`piquelctl preview logs`](#piquelctl-preview-logs): Print the most recent lines of a preview's Docker logs.
 - [`piquelctl preview wait`](#piquelctl-preview-wait): Wait until a deployment of a preview is ready.
 - [`piquelctl preview url`](#piquelctl-preview-url): Print the URLs of a preview's routes, and whether each is ready.
@@ -3218,6 +3219,29 @@ Arguments:
 Options:
 
 - `--slot <SLOT>`: The preview's slot. Needed to address a preview with a slot by its branch.
+
+## `piquelctl preview visibility`
+
+Cap the visibility of every preview's routes in the saved manifest.
+
+Each route of a preview gets the stricter of its own visibility and this cap, saved in the `[spec.previews]` block. Previews apply it on their next deployment. Repository-backed applications set it in their manifest instead.
+
+```text
+piquelctl preview visibility [OPTIONS] <APPLICATION> <VISIBILITY>
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `<VISIBILITY>`: The strictest visibility preview routes get. `private`, the default, keeps every route on the tailnet; `public` restricts nothing. Values: `public`, `private`.
+
+Options:
+
+- `--deploy`: Also deploy the saved configuration.
+- `--no-wait`: Return once the change is saved, or its deployment accepted, without waiting for the deployment to end.
+- `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
+- `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
+- `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
 
 ## `piquelctl preview logs`
 
