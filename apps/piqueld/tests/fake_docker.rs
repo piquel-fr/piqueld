@@ -397,12 +397,12 @@ impl ControllerHarness {
 
     /// The replicas Docker runs of the first service.
     async fn replicas(&self) -> u16 {
-        self.docker
-            .observe(&environment(&self.application))
-            .await
-            .unwrap()
-            .services[0]
-            .replicas
+        self.replicas_of(&environment(&self.application)).await
+    }
+
+    /// The replicas Docker runs of environment `id`'s first service.
+    async fn replicas_of(&self, id: &EnvironmentId) -> u16 {
+        self.docker.observe(id).await.unwrap().services[0].replicas
     }
 
     async fn repair_drift(&self) {
@@ -1138,6 +1138,60 @@ async fn telemetry_sockets_are_mounted_while_the_environment_is_granted() {
     assert_eq!(mounted(&harness).await, None, "revoking unmounts it");
     harness.scan().await;
     assert!(!sockets.exists(), "and removes the directories");
+}
+
+/// Stopping scales every service to zero and reports the runtime stopped:
+/// the deployment that rolled out runs again with no replicas, and after a
+/// later one failed before rolling out, repair stops what runs. Starting
+/// runs them again, and so does deploying.
+#[tokio::test]
+async fn stopped_environments_run_no_replicas_until_started_or_deployed() {
+    let harness = ControllerHarness::new().await;
+    let applications = harness.applications();
+    let first = harness.apply(manifest(), None).await;
+    harness.finish(&first).await;
+    let id = first.environment_id.clone();
+    let health = async || harness.store.status(&id).await.unwrap().runtime_health;
+    let replicas = async || harness.replicas_of(&id).await;
+
+    let stopped = applications.stop(&id).await.unwrap();
+    assert_eq!(stopped.id, first.id, "the rolled out deployment runs again");
+    harness.finish(&stopped).await;
+    assert_eq!(replicas().await, 0);
+    assert_eq!(health().await.as_deref(), Some("stopped"));
+    harness.scan().await;
+    assert_eq!(replicas().await, 0, "repair keeps it stopped");
+
+    let started = applications.reconcile(&id, None).await.unwrap();
+    harness.finish(&started).await;
+    assert_eq!(replicas().await, 1);
+    assert_eq!(health().await.as_deref(), Some("ready"));
+
+    let mut unstable = manifest();
+    unstable.spec.services[0].source = piqueld_core::Source::Image {
+        image: "ghcr.io/example/unstable:1".into(),
+    };
+    harness.docker.arm_tag_flips(100).await;
+    let failed = harness.apply(unstable, None).await;
+    harness.scan().await;
+    assert_eq!(
+        harness.operation(&failed.id).await.state,
+        OperationState::Failed
+    );
+    let stopped = applications.stop(&id).await.unwrap();
+    assert_eq!(
+        (stopped.id.as_str(), stopped.state),
+        (failed.id.as_str(), OperationState::Failed),
+        "a deployment that never rolled out is not retried"
+    );
+    harness.scan().await;
+    assert_eq!(replicas().await, 0, "repair stops the active target");
+
+    harness.docker.arm_tag_flips(0).await;
+    let deployed = harness.apply(manifest(), None).await;
+    harness.finish(&deployed).await;
+    assert_eq!(replicas().await, 1);
+    assert!(!harness.store.get(&id).await.unwrap().environment.stopped());
 }
 
 #[tokio::test]
@@ -3411,6 +3465,27 @@ async fn job_dependencies_converge_before_migration_and_other_services() {
     );
     assert!(rollout[6..].contains(&"ensure web".to_owned()));
     assert!(rollout[6..].contains(&"ensure other".to_owned()));
+}
+
+#[tokio::test]
+async fn jobs_of_a_deployment_stopped_before_them_still_reach_their_dependencies() {
+    let harness = ControllerHarness::new().await;
+    let operation = harness.apply(manifest_with_job_dependencies(), None).await;
+    let id = &operation.environment_id;
+    harness.applications().stop(id).await.unwrap();
+    harness.finish(&operation).await;
+    assert_eq!(
+        harness.docker.job_starts.lock().await[0].services,
+        2,
+        "the migration's dependencies run"
+    );
+    let observed = harness.docker.observe(id).await.unwrap();
+    assert!(
+        observed
+            .services
+            .iter()
+            .all(|service| service.replicas == 0)
+    );
 }
 
 #[tokio::test]

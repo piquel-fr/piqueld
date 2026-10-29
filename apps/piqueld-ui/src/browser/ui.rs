@@ -211,7 +211,7 @@ impl ApplicationHealth {
             Self::Degraded => Tone::Warn,
             Self::Failed => Tone::Bad,
             Self::Pending => Tone::Pending,
-            Self::NotDeployed => Tone::Neutral,
+            Self::NotDeployed | Self::Stopped => Tone::Neutral,
         }
     }
 }

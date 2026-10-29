@@ -312,8 +312,9 @@ impl BollardDocker {
     /// Otherwise desired-running tasks are counted: a task is healthy when
     /// running and, if a healthcheck is configured, reported healthy (without
     /// one, only an explicit unhealthy verdict disqualifies it). Exactly
-    /// `replicas` healthy tasks is `Converged`; failures with no healthy task
-    /// is `Failed`; failures alongside healthy tasks is `Degraded`.
+    /// `replicas` healthy tasks is `Converged`, once no task runs at all for
+    /// a service scaled to zero; failures with no healthy task is `Failed`;
+    /// failures alongside healthy tasks is `Degraded`.
     pub(super) fn convergence(
         tasks: &[ObservedTask],
         replicas: u16,
@@ -358,8 +359,11 @@ impl BollardDocker {
                         || task.healthy == Some(false))
             })
             .count();
+        // Tasks of a service scaled to zero shut down after Swarm stops
+        // wanting them running.
+        let stopping = replicas == 0 && tasks.iter().any(|task| task.state.is_live());
         match (running, failed) {
-            (running, _) if running == usize::from(replicas) => Convergence::Converged,
+            (running, _) if running == usize::from(replicas) && !stopping => Convergence::Converged,
             (0, failed) if failed > 0 => Convergence::Failed,
             (_, failed) if failed > 0 => Convergence::Degraded,
             _ => Convergence::Updating,
@@ -506,6 +510,22 @@ mod tests {
         assert!(!configured);
         assert_eq!(
             BollardDocker::convergence(&[running(None)], 1, None, configured),
+            Convergence::Converged
+        );
+    }
+
+    #[test]
+    fn services_scaled_to_zero_converge_once_their_tasks_stopped() {
+        let stopping = ObservedTask {
+            desired_running: false,
+            ..running(None)
+        };
+        assert_eq!(
+            BollardDocker::convergence(&[stopping], 0, None, false),
+            Convergence::Updating
+        );
+        assert_eq!(
+            BollardDocker::convergence(&[], 0, None, false),
             Convergence::Converged
         );
     }

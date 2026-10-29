@@ -457,8 +457,20 @@ pub(crate) enum AppCommand {
     /// It runs the operation again with its saved inputs, without fetching the
     /// manifest or resolving sources again. If the operation is still in
     /// progress, it waits for it instead. With several environments, use
-    /// `env reconcile`. Needs `apps:deploy`.
+    /// `env reconcile`. A stopped environment starts. Needs `apps:deploy`.
     Reconcile(TargetArgs),
+    /// Stop the application's only environment.
+    ///
+    /// Its routes are withdrawn and its services scale to zero, until it is
+    /// started, reconciled or deployed again. With several environments, use `env stop`.
+    /// Needs `apps:deploy`.
+    Stop(TargetArgs),
+    /// Start the application's only environment again.
+    ///
+    /// Like `app reconcile`, it retries the latest operation with its saved
+    /// inputs. With several environments, use `env start`. Needs
+    /// `apps:deploy`.
+    Start(TargetArgs),
     /// Deploy the application's only environment.
     ///
     /// It fetches the manifest again, from the environment's branch for a
@@ -729,7 +741,8 @@ impl RevisionArgs {
     }
 }
 
-// Application selection, confirmation, and waiting shared by `app reconcile` and `app deploy`.
+// Application selection, confirmation, and waiting shared by `app reconcile`,
+// `app stop`, `app start` and `app deploy`.
 #[derive(Debug, Args)]
 pub(crate) struct TargetArgs {
     /// Application name or stable ID.
@@ -738,7 +751,8 @@ pub(crate) struct TargetArgs {
     pub(crate) flags: OperationFlags,
 }
 
-// Precondition, confirmation, and waiting flags shared by deploy and reconcile.
+// Precondition, confirmation, and waiting flags shared by deploy, reconcile,
+// stop and start.
 #[derive(Debug, Args)]
 pub(crate) struct OperationFlags {
     /// Fail unless the application is at this generation.

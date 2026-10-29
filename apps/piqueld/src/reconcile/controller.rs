@@ -98,14 +98,14 @@ impl<D: DockerApi> Controller<D> {
             return Ok("cancelled");
         }
         let outcome = match &result {
-            Ok(()) => "succeeded",
+            Ok(_) => "succeeded",
             Err(error) => error.code(),
         };
         let persisted = match result {
-            Ok(()) if operation.kind == OperationKind::Delete => {
+            Ok(_) if operation.kind == OperationKind::Delete => {
                 self.store.finish_delete_operation(operation).await
             }
-            Ok(()) => {
+            Ok(stopped) => {
                 self.store
                     .transition_operation(
                         &operation.id,
@@ -113,7 +113,16 @@ impl<D: DockerApi> Controller<D> {
                         OperationState::Succeeded,
                         None,
                     )
-                    .await
+                    .await?;
+                // A stop or start accepted while it ran left it unchanged;
+                // it runs again under that state. Once it succeeded, a later
+                // one reopens it itself.
+                if self.store.is_stopped(&operation.environment_id).await? != stopped {
+                    self.store
+                        .request_reconcile(&operation.environment_id, &operation.id)
+                        .await?;
+                }
+                Ok(())
             }
             Err(OperationError::Cancelled | OperationError::Superseded) => {
                 // A request may already have superseded the operation while a Docker
@@ -152,12 +161,13 @@ impl<D: DockerApi> Controller<D> {
     /// (environments have no volume inventory, so they keep theirs). The
     /// environment's next operation waits for this one, and repair for the
     /// mutation lock, so nothing publishes configs meanwhile. A failed removal is only logged, and left
-    /// to the next operation, except that a deletion is retried.
+    /// to the next operation, except that a deletion is retried. Returns
+    /// whether the environment was stopped as the final plan saw it.
     async fn execute_and_cleanup(
         &self,
         operation: &Operation,
         cancellation: &CancellationToken,
-    ) -> Result<(), OperationError> {
+    ) -> Result<bool, OperationError> {
         // Keep preparation and persistence state out of the discovery future.
         let executed = Box::pin(self.execute_operation(operation, cancellation)).await;
         if cancellation.is_cancelled() {
@@ -170,7 +180,7 @@ impl<D: DockerApi> Controller<D> {
                 .prune_files(&self.ownership_labels(&operation.environment_id))
                 .await
         };
-        executed?;
+        let stopped = executed?;
         match pruned {
             Err(error) if operation.kind == OperationKind::Delete => return Err(error.into()),
             Err(error) => tracing::warn!(?error, "removing unused service files failed"),
@@ -190,7 +200,7 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
             self.enforce_telemetry(&operation.environment_id).await?;
         }
-        Ok(())
+        Ok(stopped)
     }
 
     /// Removes every volume in a preview's inventory, including volumes later
@@ -257,13 +267,14 @@ impl<D: DockerApi> Controller<D> {
     ///
     /// The convergence deadline bounds time without progress: it restarts each
     /// time a service converges, so a dependency chain gets the full timeout per
-    /// link while a single stuck service still times out.
+    /// link while a single stuck service still times out. Returns whether the
+    /// environment was stopped as the final plan saw it.
     #[tracing::instrument(skip_all, fields(phase = "convergence"))]
     async fn execute_operation(
         &self,
         operation: &Operation,
         cancellation: &CancellationToken,
-    ) -> Result<(), OperationError> {
+    ) -> Result<bool, OperationError> {
         let request = Box::pin(self.operation_request(operation, cancellation)).await?;
         let ownership = self.ownership_labels(&operation.environment_id);
         if operation.kind != OperationKind::Delete
@@ -306,10 +317,11 @@ impl<D: DockerApi> Controller<D> {
             self.check_current(operation).await?;
             self.store.record_health(&operation.id, &observed).await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
+            let stopped = self.store.is_stopped(&operation.environment_id).await?;
             let runtime_request = match &request {
                 PlanRequest::Reconcile { desired } => PlanRequest::Reconcile {
                     desired: self
-                        .runtime_target(desired, &accepted_routes, &observed)
+                        .runtime_target(desired, &accepted_routes, &observed, stopped)
                         .await?,
                 },
                 _ => request.clone(),
@@ -317,25 +329,7 @@ impl<D: DockerApi> Controller<D> {
             let plan = Plan::from_request(&runtime_request, &observed);
             self.check_plan(operation, &plan).await?;
             if operation.kind != OperationKind::Delete {
-                {
-                    let _guard = self.mutations.lock().await;
-                    self.check_current(operation).await?;
-                    self.store.publish_prepared(operation).await?;
-                }
-                // Gateway I/O has its own writer lock. Never hold the global
-                // Docker mutation lock while waiting for another app's routing.
-                if let PlanRequest::Reconcile { desired } = &request {
-                    tokio::time::timeout_at(
-                        deadline,
-                        self.sync_routes(
-                            operation,
-                            &desired.routes,
-                            plan.desired_resources_ready(),
-                        ),
-                    )
-                    .await
-                    .map_err(|_| OperationError::ConvergenceTimeout)??;
-                }
+                self.publish(operation, &request, &plan, deadline).await?;
             }
             if self.store.applied_routes(&operation.environment_id).await? != accepted_routes {
                 // Replan after cutover before dropping old ingress attachments.
@@ -353,14 +347,50 @@ impl<D: DockerApi> Controller<D> {
                 {
                     return Err(OperationError::Superseded);
                 }
-                return Ok(());
+                return Ok(stopped);
             };
-            self.execute_action(action, operation, &ownership, cancellation, deadline)
-                .await?;
+            self.execute_action(
+                action,
+                operation,
+                &ownership,
+                stopped,
+                cancellation,
+                deadline,
+            )
+            .await?;
             if matches!(action.kind, piqueld_core::ActionKind::WaitForService { .. }) {
                 deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
             }
         }
+    }
+
+    /// Publishes `operation`'s prepared target, then stages the routes of
+    /// `request`'s target, ready once `plan`'s resources are, within
+    /// `deadline`.
+    async fn publish(
+        &self,
+        operation: &Operation,
+        request: &PlanRequest,
+        plan: &Plan,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), OperationError> {
+        {
+            let _guard = self.mutations.lock().await;
+            self.check_current(operation).await?;
+            self.store.publish_prepared(operation).await?;
+        }
+        // Gateway I/O has its own writer lock. Never hold the global
+        // Docker mutation lock while waiting for another app's routing.
+        if let PlanRequest::Reconcile { desired } = request {
+            let ready = plan.desired_resources_ready();
+            tokio::time::timeout_at(
+                deadline,
+                self.sync_routes(operation, &desired.routes, ready),
+            )
+            .await
+            .map_err(|_| OperationError::ConvergenceTimeout)??;
+        }
+        Ok(())
     }
 
     /// Public exposure must be withdrawn within the deletion's convergence budget.
@@ -440,7 +470,7 @@ impl<D: DockerApi> Controller<D> {
                     StoreError::IllegalTransition => OperationError::Superseded,
                     other => other.into(),
                 })?;
-            let table = self.store.routing_table().await?;
+            let table = self.store.served_table().await?;
             self.store.acknowledge_routes(&table).await?;
         }
         Ok(())

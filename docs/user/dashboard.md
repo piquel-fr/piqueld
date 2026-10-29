@@ -111,6 +111,14 @@ environment's next deployment, or a push to its branch when it deploys on push,
 returns to its own branch. A service's Logs tab reads the only
 environment's logs, or links to each environment's logs.
 
+A deployed environment's page also offers **Stop**, which confirms, then
+[stops](reference/api.md#stopped-environments) it: the gateway withdraws its routes and
+its services scale to zero, keeping their configuration and volumes. Its
+health then shows **Stopped** on its page, in the Environments list, and on the
+application, and its Source card says pushes don't deploy it. **Start** runs it
+again, as does deploying or promoting into it. Previews have no Stop; delete
+them instead.
+
 A promoted environment never builds, so its page and its Environments row offer
 **Promote from \<source>** instead of Preview and Deploy, and its source's page
 offers **Promote**, before Deploy, listing the environments promoted from it, each
@@ -373,8 +381,8 @@ the Source tab;
 **Rotate secret** confirms first, since the previous secret stops verifying at
 once. Neither is retried automatically when its outcome is unknown, as a retry
 would rotate the secret again. On an environment's Overview, the **Source** card says
-whether pushes deploy it (following, off, pinned, not opted in, or waiting
-for a deployment, with the reason) and the branch head of its last
+whether pushes deploy it (following, off, pinned, not opted in, stopped, or
+waiting for a deployment, with the reason) and the branch head of its last
 deployment ("Not pushed" when a local snapshot was deployed before its branch
 existed); **Deploy on push** opts it in without a saved revision, and
 **Stop deploying on push** opts it out. A

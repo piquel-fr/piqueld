@@ -1113,6 +1113,19 @@ impl ResolvedApplication {
         self
     }
 
+    /// Runs no replica of any service while `stopped`, keeping every other
+    /// setting, so a stopped environment's services stay in place and start
+    /// again as they were. Like links, never part of a prepared target.
+    #[must_use]
+    pub fn with_stopped(mut self, stopped: bool) -> Self {
+        if stopped {
+            for service in &mut self.services {
+                service.replicas = 0;
+            }
+        }
+        self
+    }
+
     /// Whether the target declares exports or imports, without which it takes
     /// part in no link.
     #[must_use]
@@ -1461,6 +1474,15 @@ pub enum TaskState {
     #[default]
     #[serde(other)]
     Unknown,
+}
+
+impl TaskState {
+    /// Whether the task's container is up, possibly still waiting on its
+    /// healthcheck.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Starting | Self::Running)
+    }
 }
 
 /// Sanitized observation of one Docker task.

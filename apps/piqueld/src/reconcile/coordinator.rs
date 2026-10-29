@@ -463,8 +463,9 @@ impl<D: DockerApi> Controller<D> {
         let request = if application.delete_intent() {
             self.delete_request(application.id())
         } else if let Some(target) = target {
+            let stopped = self.store.is_stopped(application.id()).await?;
             PlanRequest::Reconcile {
-                desired: self.runtime_target(target, &[], &observed).await?,
+                desired: self.runtime_target(target, &[], &observed, stopped).await?,
             }
         } else {
             return Ok(());
@@ -595,7 +596,8 @@ impl<D: DockerApi> Controller<D> {
         target: &piqueld_core::ResolvedApplication,
         observed: &piqueld_core::ObservedApplication,
     ) -> Result<bool, StoreError> {
-        let desired = self.runtime_target(target, &[], observed).await?;
+        let stopped = self.store.is_stopped(&target.id).await?;
+        let desired = self.runtime_target(target, &[], observed, stopped).await?;
         let plan = Plan::from_request(&PlanRequest::Reconcile { desired }, observed);
         Ok(
             plan.is_blocked()
@@ -632,12 +634,10 @@ impl<D: DockerApi> Controller<D> {
     /// Keeps the currently active (published) target healthy while the latest
     /// operation has not been promoted.
     ///
-    /// Applies at most `Plan::next_repair` per call, under the global
-    /// mutation lock and in its own journal entry. Skips deletions, promoted
-    /// operations, blocked plans, and removals that would drop resources still
-    /// referenced by routes awaiting cutover. While the deployment may still
-    /// roll out, prepared job prerequisites and services stopped for an
-    /// exclusive job are left to it; once it has ended, repair restores them.
+    /// Applies at most `Plan::next_repair` per call (see `repair_once`),
+    /// except in a stopped environment, whose services scale down without
+    /// waiting, so it applies repairs until one would have to wait. Skips
+    /// deletions and promoted operations.
     async fn maintain_active(
         &self,
         id: &EnvironmentId,
@@ -651,14 +651,41 @@ impl<D: DockerApi> Controller<D> {
         let Some(target) = app.resolved else {
             return Ok(());
         };
+        // Each repair changes one resource, so the target bounds them.
+        let bound = target.services.len() + target.networks.len() + 1;
+        for _ in 0..bound {
+            if !self.repair_once(id, operation_id, &target).await?
+                || !self.store.is_stopped(id).await?
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies `Plan::next_repair` toward `target`, the active target, under
+    /// the global mutation lock and in its own journal entry, and returns
+    /// whether it did. Skips blocked plans, operations no longer the latest
+    /// or promoted since, environments stopped or started since, and
+    /// removals that would drop resources still
+    /// referenced by routes awaiting cutover. While the deployment may still
+    /// roll out, prepared job prerequisites and services stopped for an
+    /// exclusive job are left to it; once it has ended, repair restores them.
+    async fn repair_once(
+        &self,
+        id: &EnvironmentId,
+        operation_id: &str,
+        target: &piqueld_core::ResolvedApplication,
+    ) -> Result<bool, OperationError> {
         let accepted_routes = self.store.applied_routes(id).await?;
         let observed = self.docker.observe(id).await?;
+        let stopped = self.store.is_stopped(id).await?;
         let desired = self
-            .runtime_target(&target, &accepted_routes, &observed)
+            .runtime_target(target, &accepted_routes, &observed, stopped)
             .await?;
         let mut plan = Plan::from_request(&PlanRequest::Reconcile { desired }, &observed);
         if plan.is_blocked() {
-            return Ok(());
+            return Ok(false);
         }
         let _guard = self.mutations.lock().await;
         if self
@@ -667,8 +694,9 @@ impl<D: DockerApi> Controller<D> {
             .await?
             .is_none_or(|op| op.id != operation_id)
             || self.store.is_promoted(operation_id).await?
+            || self.store.is_stopped(id).await? != stopped
         {
-            return Ok(());
+            return Ok(false);
         }
         // Reread under the lock: a retry may have reopened a failed operation.
         if let Some(prepared) = self
@@ -678,15 +706,16 @@ impl<D: DockerApi> Controller<D> {
             plan.preserve_job_prerequisites(&prepared, &observed);
         }
         let Some(action) = plan.next_repair() else {
-            return Ok(());
+            return Ok(false);
         };
         if matches!(
             action.kind,
             piqueld_core::ActionKind::RemoveService { .. }
                 | piqueld_core::ActionKind::RemoveNetwork { .. }
-        ) && target.routes != accepted_routes
+        ) && !accepted_routes.is_empty()
+            && target.routes != accepted_routes
         {
-            return Ok(());
+            return Ok(false);
         }
         let ownership = self.ownership_labels(id);
         let journal = self
@@ -710,7 +739,7 @@ impl<D: DockerApi> Controller<D> {
             },
             Err(error) => Err(error),
         };
-        self.close_action(&journal, result).await
+        self.close_action(&journal, result).await.map(|()| true)
     }
 
     /// Prunes daemon events, the audit trail, receipts, expired auth state,

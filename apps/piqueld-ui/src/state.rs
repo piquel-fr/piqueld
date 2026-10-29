@@ -51,6 +51,8 @@ pub enum ApplicationHealth {
     Failed,
     /// The daemon has not reported a terminal health category.
     Pending,
+    /// The environment is stopped: its services run no replicas.
+    Stopped,
 }
 
 impl ApplicationHealth {
@@ -66,15 +68,23 @@ impl ApplicationHealth {
         }
     }
 
+    /// [`Self::Stopped`] when the environment is `stopped`, whatever its
+    /// status reports, else this health.
+    #[must_use]
+    pub const fn unless_stopped(self, stopped: bool) -> Self {
+        if stopped { Self::Stopped } else { self }
+    }
+
     /// Rank used to summarize several environments by their least healthy one.
     #[must_use]
     pub const fn severity(self) -> u8 {
         match self {
             Self::Converged => 0,
-            Self::NotDeployed => 1,
-            Self::Pending => 2,
-            Self::Degraded => 3,
-            Self::Failed => 4,
+            Self::Stopped => 1,
+            Self::NotDeployed => 2,
+            Self::Pending => 3,
+            Self::Degraded => 4,
+            Self::Failed => 5,
         }
     }
 
@@ -98,6 +108,7 @@ impl ApplicationHealth {
             Self::Degraded => "Degraded",
             Self::Failed => "Failed",
             Self::Pending => "Pending",
+            Self::Stopped => "Stopped",
         }
     }
 }

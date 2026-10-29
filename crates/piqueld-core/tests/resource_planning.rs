@@ -748,6 +748,29 @@ fn dependents_roll_out_only_after_their_dependencies_converge() {
 }
 
 #[test]
+fn stopped_dependents_scale_down_without_waiting_for_their_dependencies() {
+    let running = dependent_application();
+    let stopped = running.clone().with_stopped(true);
+    // `db` is still shutting down while `server` and `web` run.
+    let mut observation = dependent_observation(&running, Convergence::Updating, &[]);
+    for (service, observed) in running.services.iter().zip(&mut observation.services) {
+        if service.logical_name.as_str() == "db" {
+            observed.replicas = 0;
+        }
+    }
+    assert_eq!(
+        service_steps(&stopped, &observation),
+        [
+            "ensure_service server",
+            "ensure_service web",
+            "wait_for_service db",
+            "wait_for_service server",
+            "wait_for_service web",
+        ]
+    );
+}
+
+#[test]
 fn active_repair_stops_at_a_dependency_still_converging() {
     let desired = dependent_application();
     let repair = |missing: &[&str]| {

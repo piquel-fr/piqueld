@@ -1,4 +1,4 @@
-import { test, expect, call, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, call, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** `environments` with a second environment, `staging` or, to `collide`,
@@ -194,4 +194,30 @@ test('a service receives telemetry once its environment is granted it', async ({
   await expect(page.getByRole('button', { name: 'Revoke telemetry', exact: true })).toBeEnabled();
   const environment = await call(page, 'GET', `environments/${app}`) as { telemetry: boolean };
   expect(environment.telemetry).toBe(true);
+});
+
+test('a deployed environment stops and starts from its page', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('stopping'), expected_generation: 0 });
+  const app = saved.application_id as string;
+  await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
+  // Stop shows once the environment is deployed.
+  await resolveEnvironment(page, app, saved.generation);
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+
+  page.once('dialog', async dialog => {
+    expect(dialog.message()).toContain('routes are withdrawn');
+    await dialog.accept();
+  });
+  const stopped = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${app}/stop`));
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  expect((await stopped).status()).toBe(202);
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeEnabled();
+  expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('stopped');
+
+  const started = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${app}/start`));
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
+  expect((await started).status()).toBe(202);
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
+  expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('running');
 });

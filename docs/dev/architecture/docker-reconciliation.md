@@ -167,7 +167,9 @@ Operation state describes progress toward intent. Runtime health is recorded
 separately, so a failed replacement can coexist with healthy existing services.
 It is `ready` only when every service the environment expects is running and
 converged: those of the deployment in progress, else of the active target. A missing
-service makes it `degraded`, and no running service `absent`. Status reports
+service makes it `degraded`, and no running service `absent`. A
+[stopped](../../user/reference/api.md#stopped-environments) environment is `stopped` instead of
+`ready` once its services have scaled down. Status reports
 when health was last observed (`health_observed_at_ms`); health scans refresh
 it, so an old time means it is stale.
 The intent generation and last resolved target generation are exposed separately;
@@ -349,6 +351,24 @@ itself.
 An exporting environment links to at most 64 importing environments. The
 oldest keep their links; imports of newer ones stay unconnected until a slot
 frees up.
+
+## Stopped environments
+
+A [stopped](../../user/reference/api.md#stopped-environments) environment's services are planned
+with no replicas. Like links, this is projected each time a target is planned,
+from the environment's state as it is now, and is never part of a prepared
+target, so its services keep every other setting and starting restores their
+replicas without preparing anything. Stopping reruns a deployment that rolled
+out, which then converges to zero replicas once their last containers have
+exited; a deployment in progress plans the same and rolls out with none. Stopping or starting ends a convergence wait in
+progress, so the operation replans at once, and an operation that succeeds
+under a plan that predates either runs again right away. When the latest deployment never rolled out,
+active-target repair applies every change that needs no convergence wait in
+one pass, rather than one per scan, so the services of the target the
+environment runs all scale down at once. Job preparation plans without it: a
+deployment started before the stop still runs its `before-rollout` jobs
+against running startup dependencies, then rolls out with no replicas, and a
+job already running keeps the dependencies it started with until it ends.
 
 ## Telemetry sockets
 

@@ -826,7 +826,11 @@ impl DockerApi for FakeDocker {
         let observed = self.observed.lock().await;
         self.job_starts.lock().await.push(JobStart {
             job: job.logical_name.to_string(),
-            services: observed.services.len(),
+            services: observed
+                .services
+                .iter()
+                .filter(|service| service.replicas > 0)
+                .count(),
             networks: observed.networks.len(),
             volumes: observed.volumes.len(),
         });

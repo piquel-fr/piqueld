@@ -98,8 +98,12 @@ impl<D: DockerApi> Controller<D> {
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
             let accepted_routes = self.store.applied_routes(&operation.environment_id).await?;
+            // A job runs against its dependencies even after a stop, which
+            // the rollout that follows then scales down. Its waits still end
+            // when the environment is stopped or started.
+            let stopped = self.store.is_stopped(&operation.environment_id).await?;
             let desired = self
-                .runtime_target(target, &accepted_routes, &observed)
+                .runtime_target(target, &accepted_routes, &observed, false)
                 .await?;
             let projected = desired
                 .jobs
@@ -111,8 +115,15 @@ impl<D: DockerApi> Controller<D> {
             let Some(action) = plan.next_job_preparation(target, job, &observed) else {
                 return Ok(projected.unwrap_or_else(|| job.clone()));
             };
-            self.execute_action(&action, operation, ownership, cancellation, deadline)
-                .await?;
+            self.execute_action(
+                &action,
+                operation,
+                ownership,
+                stopped,
+                cancellation,
+                deadline,
+            )
+            .await?;
             if matches!(action.kind, ActionKind::WaitForService { .. }) {
                 deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
             }

@@ -116,9 +116,19 @@ async fn app(
         AppCommand::Apply(args) => args.run(client, console).await,
         AppCommand::Delete(args) => args.run(client, console).await,
         AppCommand::Reconcile(args) => {
-            let (application, environment) =
-                environments::select(client, &args.name_or_id, None).await?;
-            environments::reconcile(client, console, &application, &environment, &args.flags).await
+            environments::Lifecycle::Reconcile
+                .run_on_application(client, console, args)
+                .await
+        }
+        AppCommand::Stop(args) => {
+            environments::Lifecycle::Stop
+                .run_on_application(client, console, args)
+                .await
+        }
+        AppCommand::Start(args) => {
+            environments::Lifecycle::Start
+                .run_on_application(client, console, args)
+                .await
         }
         AppCommand::Rename(args) => {
             let edit = piqueld_client::edit::ApplicationEdit::Name(args.new_name.clone());

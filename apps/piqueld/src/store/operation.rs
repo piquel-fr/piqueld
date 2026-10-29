@@ -456,7 +456,9 @@ impl Store {
     /// Starts a new operation for environment `app` within `tx`:
     /// 1. supersedes any requested or running operation, recording events and attempt snapshots;
     /// 2. inserts a `requested` operation at its application's current generation;
-    /// 3. records the kind's request event.
+    /// 3. records the kind's request event;
+    /// 4. starts the environment unless it deletes it: deploying a stopped
+    ///    environment starts it.
     ///
     /// Its creation time is `now`, or just after the environment's newest
     /// operation's if the clock went back since: every query takes the
@@ -485,6 +487,9 @@ impl Store {
             OperationKind::Delete => "deletion_requested",
         };
         Self::operation_event(tx, &id, event, None, now).await?;
+        if kind != OperationKind::Delete {
+            Self::mark_stopped_on(tx, app_id, false, now).await?;
+        }
         Self::operation_on(tx, &id).await
     }
 }

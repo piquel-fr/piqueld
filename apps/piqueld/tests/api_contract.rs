@@ -2292,6 +2292,40 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     );
 }
 
+/// Stopping needs a deployment and lasts until the environment is started,
+/// which reconciles it, or deployed. A deployment in progress continues.
+#[tokio::test]
+async fn environments_stay_stopped_until_started_or_deployed() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let saved = api.save().await;
+    let (client, id) = (&api.client, saved.application_id.as_str());
+    let stopped = async || client.environment(id).await.unwrap().stopped();
+    assert_eq!(
+        api_error(client.stop_environment(id, None).await.unwrap_err()).code,
+        "not_found"
+    );
+
+    let deployed = client
+        .deploy_environment(id, saved.generation, None)
+        .await
+        .unwrap();
+    let stop = client.stop_environment(id, None).await.unwrap();
+    assert_eq!(stop.operation_id, deployed.operation_id);
+    assert!(stopped().await);
+    let start = client.start_environment(id, None).await.unwrap();
+    assert_eq!(start.operation_id, deployed.operation_id);
+    assert!(!stopped().await);
+
+    client.stop_environment(id, None).await.unwrap();
+    let redeployed = client
+        .deploy_environment(id, saved.generation, None)
+        .await
+        .unwrap();
+    assert_ne!(redeployed.operation_id, deployed.operation_id);
+    assert!(!stopped().await, "deploying starts it");
+}
+
 #[tokio::test]
 async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     let temp = tempfile::tempdir().unwrap();

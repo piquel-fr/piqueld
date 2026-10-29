@@ -1241,7 +1241,8 @@ async fn each_listener_serves_only_its_own_routes() {
             .collect::<std::collections::BTreeSet<_>>()
     };
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&table, Some(&edge), None);
+    let configuration =
+        ingress.build_configuration(&table, &ingress.exact_hostnames(&table), Some(&edge), None);
     let servers = &configuration["apps"]["http"]["servers"];
     for (https, http, host) in [
         ("public", "public_http", "www.example.com"),
@@ -1290,7 +1291,8 @@ async fn each_listener_serves_only_its_own_routes() {
 
     // Without private ingress, private routes are served nowhere, never on
     // the public listener.
-    let configuration = ingress.build_configuration(&table, None, None);
+    let configuration =
+        ingress.build_configuration(&table, &ingress.exact_hostnames(&table), None, None);
     let servers = configuration["apps"]["http"]["servers"]
         .as_object()
         .unwrap();
@@ -1323,7 +1325,8 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
     .map(|(id, routes)| (EnvironmentId::parse(id).unwrap(), routes))
     .into();
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&table, Some(&edge), None);
+    let configuration =
+        ingress.build_configuration(&table, &ingress.exact_hostnames(&table), Some(&edge), None);
     let servers = &configuration["apps"]["http"]["servers"];
     let matchers = |server: &str, host: &str| {
         servers[server]["routes"]
@@ -1514,7 +1517,7 @@ async fn the_webhook_hostname_forwards_only_its_webhook_path_to_the_daemon() {
     let hooks = Hostname::parse("hooks.example.com").unwrap();
     let (engine, ingress) = private_ingress().await;
     let ingress = ingress.with_webhooks(Some(hooks.clone()));
-    let configuration = ingress.build_configuration(&RoutingTable::new(), None, None);
+    let configuration = ingress.build_configuration(&RoutingTable::new(), &[], None, None);
     let public = &configuration["apps"]["http"]["servers"]["public"];
     assert_eq!(
         public["tls_connection_policies"][0]["match"]["sni"],
@@ -1572,7 +1575,7 @@ async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
         ..private_config()
     });
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration = ingress.build_configuration(&RoutingTable::new(), Some(&edge), None);
+    let configuration = ingress.build_configuration(&RoutingTable::new(), &[], Some(&edge), None);
     let servers = &configuration["apps"]["http"]["servers"];
     assert_eq!(
         servers["private"]["tls_connection_policies"][0]["match"]["sni"],
@@ -1600,7 +1603,7 @@ async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
         [dashboard.clone().into()].into()
     );
     // Until the private listener runs, it is served nowhere.
-    let configuration = ingress.build_configuration(&RoutingTable::new(), None, None);
+    let configuration = ingress.build_configuration(&RoutingTable::new(), &[], None, None);
     assert!(configuration["apps"]["http"]["servers"]["private"].is_null());
 
     let mut config = crate::config::DaemonConfig::default();

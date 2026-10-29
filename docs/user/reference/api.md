@@ -70,7 +70,7 @@ is `{ "type": "preview", "branch": "feat/login", "slot": "agent-2", "slug":
 A preview's `name` is its slug and its `source` is its branch. Application
 views list previews separately in `previews`, never in `environments`, and the
 environment mutation endpoints (deploy, rename, branch, source, sync, telemetry,
-promote, delete, reconcile) return 404 for a preview's ID, as the preview endpoints do for an
+promote, delete, reconcile, stop, start) return 404 for a preview's ID, as the preview endpoints do for an
 environment's. The environment read endpoints (`GET /environments/{id}`,
 `detail`, `status`, `deployments` and their attempts, `logs`, `secrets`) accept
 a preview's ID. Preview creation,
@@ -137,7 +137,9 @@ when the complete normalized manifest is needed.
 | GET | `/api/v1/applications/{id}/releases` | The application's releases, newest first, twenty per page |
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |
 | DELETE | `/api/v1/environments/{id}` | Request deletion of one environment; no body |
-| POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed; an operation still in progress is returned unchanged |
+| POST | `/api/v1/environments/{id}/reconcile` | Retry the latest operation with its saved inputs once it has ended or failed, starting a stopped environment; an operation still in progress is returned unchanged |
+| POST | `/api/v1/environments/{id}/stop` | [Stop](#stopped-environments) the environment: withdraw its routes and scale its services to zero; 202 with its latest operation |
+| POST | `/api/v1/environments/{id}/start` | Start a stopped environment, as `reconcile` does; 202 with its latest operation |
 | GET | `/api/v1/applications/{id}/previews` | Previews with status, latest operation, hostnames, the `origin` of what they run and branch state (`exists`, `moved`, `gone`, `local` or `unknown`), from one `git ls-remote`, shared by the reads of a repository that arrive while it runs; at most four repositories are listed at once |
 | POST | `/api/v1/applications/{id}/previews` | Create and deploy a preview: `{ "branch": "feat/login", "slot": "agent-2" }`; 202 with `CreatedPreview` (`preview`, `operation`, `created: true`), or 200 with the existing preview of that branch and slot and its latest operation (`created: false`), never redeploying it. 409 `preview_requires_repository` without a manifest repository, `preview_limit_reached` over a `[previews]` limit |
 | POST | `/api/v1/applications/{id}/previews/local?branch=…&slot=…` | Deploy a [local snapshot](#local-snapshots): the body is a Git bundle (`application/octet-stream`); 202 with `CreatedPreview`. 408 `snapshot_timed_out`, 413 `snapshot_too_large`, 422 `snapshot_invalid` or `snapshot_base_unavailable` |
@@ -672,6 +674,36 @@ one; whether it exists is not told), or `full` (the exporter already links to 64
 older environments). A connected import reports the exporter's current name.
 `importers` lists the environments reaching its exported services, only from
 applications the caller can read. Daemons older than links omit the field.
+
+### Stopped environments
+
+`POST /api/v1/environments/{id}/stop` stops an environment until it is
+started: its services keep their configuration, volumes and secrets but run no
+replicas, and the gateway serves none of its routes, withdrawing them before
+the request returns; if the gateway can't be reconfigured then, its next pass
+retries within ten seconds. Their hostnames stay reserved, and their
+certificates and managed DNS records stay in place, so starting serves them
+again within ten seconds.
+`EnvironmentView.run_state` is `stopped` (`running` otherwise, and from daemons
+older than stopping), its runtime health `stopped` once every service has
+scaled down, and its sync state `stopped`: pushes don't deploy it, and sync
+deploys the head it missed once it starts. A stopped environment that receives
+telemetry gets none.
+
+Stopping responds 202 with the environment's latest operation. When its
+deployment had rolled out and has ended, the operation runs again with its saved
+inputs and no replicas, so the services stop within seconds; a deployment still
+in progress continues, rolling out with no replicas. A deployment that ended
+before rolling out is not retried: active-target repair scales down what the
+environment runs. Stopping needs `apps:deploy`, takes an optional
+`expected_generation`, and returns 404 before the environment's first
+deployment and 409 `application_busy` while it is deleted.
+
+`POST /api/v1/environments/{id}/start` starts it again, and so does every
+deployment you request: `deploy`, `reconcile` (which `start` is), a promotion
+into it, and a save or edit that deploys it. Starting retries the latest
+operation once it has ended or failed, so its services scale back to their
+replicas, and the gateway serves the routes again within ten seconds.
 
 ### URL readiness
 

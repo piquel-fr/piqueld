@@ -60,12 +60,14 @@ struct EnvironmentRow {
 }
 
 impl EnvironmentRow {
-    /// Health from the environment's status; missing or failed reads show as pending.
+    /// Health from the environment's status, `Stopped` while it is; missing
+    /// or failed reads show as pending.
     fn health(&self) -> ApplicationHealth {
         match (&self.status, &self.status_error) {
             (Some(status), None) => ApplicationHealth::from_server_state(status.state),
             _ => ApplicationHealth::Pending,
         }
+        .unless_stopped(self.environment.stopped())
     }
 }
 

@@ -9068,7 +9068,7 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
-    /*Reconciles an environment
+    /*Reconciles an environment, starting it if it is stopped
 
     Returns 202 with the environment's latest operation, requested again when it
     finished or failed, or as is while it is still in progress; 404 when the
@@ -9523,6 +9523,90 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Starts a stopped environment
+
+    Its services scale back to their replicas and the gateway serves its
+    routes again. Like `reconcileEnvironment`, which it is, returns 202 with
+    its latest operation, requested again when it finished or failed, or as
+    is while it is in progress; 404 when it was never deployed.
+    `expected_generation` is optional.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/start`
+
+    Arguments:
+    - `id`
+    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
+    - `force`: Explicitly bypass intent preconditions.
+    - `idempotency_key`
+    */
+    pub async fn start_environment<'a>(
+        &'a self,
+        id: &'a str,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/start",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "start_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Get environment status
 
     Sends a `GET` request to `/api/v1/environments/{id}/status`
@@ -9571,6 +9655,93 @@ impl Client {
                 crate::client::decode_response(response).await?,
             )),
             404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            500u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Stops an environment
+
+    Its services scale to zero replicas, keeping their configuration, volumes
+    and secrets, and the gateway stops serving its routes before the request
+    returns, or on its next pass if that fails. It stays stopped until it is
+    started, deployed, promoted into or reconciled; sync deploys nothing to it
+    meanwhile. Returns 202 with its latest operation: run again when its
+    deployment had rolled out and has ended, so the services stop now, or as
+    is while it is in progress, which then rolls out with no replicas. 404
+    when it was never deployed, 409 while it is deleted. `expected_generation` is optional.
+
+    Sends a `POST` request to `/api/v1/environments/{id}/stop`
+
+    Arguments:
+    - `id`
+    - `expected_generation`: Current intent revision; optional for reconcile, required for deletion unless forced.
+    - `force`: Explicitly bypass intent preconditions.
+    - `idempotency_key`
+    */
+    pub async fn stop_environment<'a>(
+        &'a self,
+        id: &'a str,
+        expected_generation: Option<u64>,
+        force: Option<bool>,
+        idempotency_key: Option<&'a str>,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/environments/{}/stop",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(2usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        if let Some(value) = idempotency_key {
+            header_map.append("Idempotency-Key", value.to_string().try_into()?);
+        }
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .query(&progenitor_client::QueryParam::new(
+                "expected_generation",
+                &expected_generation,
+            ))
+            .query(&progenitor_client::QueryParam::new("force", &force))
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "stop_environment",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            202u16 => crate::client::decode_response(response).await,
+            400u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            409u16 => Err(Error::ErrorResponse(
                 crate::client::decode_response(response).await?,
             )),
             500u16 => Err(Error::ErrorResponse(

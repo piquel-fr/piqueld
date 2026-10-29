@@ -711,6 +711,44 @@ impl EditorContext {
     }
 }
 
+impl EditorContext {
+    /// Stops or starts `environment`, then marks it so in the saved view.
+    /// Stopping withdraws its routes and scales its services to zero;
+    /// starting reconciles it, scaling them back up.
+    fn set_stopped(self, environment: String, stopped: bool) {
+        let id = environment.clone();
+        self.mutate(
+            move |client| {
+                let environment = environment.clone();
+                async move {
+                    if stopped {
+                        client.stop_environment(&environment, None).await
+                    } else {
+                        client.start_environment(&environment, None).await
+                    }
+                }
+            },
+            move |_| {
+                self.saved.update(|saved| {
+                    if let Some(environment) = saved
+                        .environments
+                        .iter_mut()
+                        .find(|environment| environment.id.as_str() == id)
+                    {
+                        environment.run_state = piqueld_client::RunState::new(stopped);
+                    }
+                });
+                self.notice.set(if stopped {
+                    "Stopping: its routes are withdrawn and its services scale to zero.".into()
+                } else {
+                    "Starting: its services scale back up and its routes are served again.".into()
+                });
+                self.refresh_dashboard();
+            },
+        );
+    }
+}
+
 /// Returns the enclosing `EditorContext`.
 fn editor() -> EditorContext {
     use_context().expect("application editor context")
@@ -1380,7 +1418,10 @@ fn EnvironmentPage() -> impl IntoView {
                         detail
                             .as_ref()
                             .filter(|detail| detail.environment.id.as_str() == id)
-                            .map(|detail| ApplicationHealth::from_server_state(detail.status.state))
+                            .map(|detail| {
+                                ApplicationHealth::from_server_state(detail.status.state)
+                                    .unless_stopped(detail.environment.stopped())
+                            })
                     })
                 })
         }

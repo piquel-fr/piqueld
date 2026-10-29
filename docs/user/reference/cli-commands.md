@@ -847,6 +847,8 @@ Commands:
 - [`piquelctl app apply`](#piquelctl-app-apply): Save a TOML manifest, creating or replacing the application it names.
 - [`piquelctl app delete`](#piquelctl-app-delete): Delete an application with all its environments and previews.
 - [`piquelctl app reconcile`](#piquelctl-app-reconcile): Retry the latest operation of the application's only environment.
+- [`piquelctl app stop`](#piquelctl-app-stop): Stop the application's only environment.
+- [`piquelctl app start`](#piquelctl-app-start): Start the application's only environment again.
 - [`piquelctl app deploy`](#piquelctl-app-deploy): Deploy the application's only environment.
 - [`piquelctl app rename`](#piquelctl-app-rename): Rename an application.
 - [`piquelctl app manifest`](#piquelctl-app-manifest): Print the saved manifest as TOML.
@@ -2937,10 +2939,54 @@ Options:
 
 Retry the latest operation of the application's only environment.
 
-It runs the operation again with its saved inputs, without fetching the manifest or resolving sources again. If the operation is still in progress, it waits for it instead. With several environments, use `env reconcile`. Needs `apps:deploy`.
+It runs the operation again with its saved inputs, without fetching the manifest or resolving sources again. If the operation is still in progress, it waits for it instead. With several environments, use `env reconcile`. A stopped environment starts. Needs `apps:deploy`.
 
 ```text
 piquelctl app reconcile [OPTIONS] <NAME_OR_ID>
+```
+
+Arguments:
+
+- `<NAME_OR_ID>`: Application name or stable ID.
+
+Options:
+
+- `--expected-generation <GENERATION>`: Fail unless the application is at this generation.
+
+  Without it, a deployment uses the generation it inspects, and a retry checks none.
+- `--yes`: Skip the confirmation prompt.
+- `--no-wait`: Return once the daemon accepts the operation, without waiting for it to end.
+
+## `piquelctl app stop`
+
+Stop the application's only environment.
+
+Its routes are withdrawn and its services scale to zero, until it is started, reconciled or deployed again. With several environments, use `env stop`. Needs `apps:deploy`.
+
+```text
+piquelctl app stop [OPTIONS] <NAME_OR_ID>
+```
+
+Arguments:
+
+- `<NAME_OR_ID>`: Application name or stable ID.
+
+Options:
+
+- `--expected-generation <GENERATION>`: Fail unless the application is at this generation.
+
+  Without it, a deployment uses the generation it inspects, and a retry checks none.
+- `--yes`: Skip the confirmation prompt.
+- `--no-wait`: Return once the daemon accepts the operation, without waiting for it to end.
+
+## `piquelctl app start`
+
+Start the application's only environment again.
+
+Like `app reconcile`, it retries the latest operation with its saved inputs. With several environments, use `env start`. Needs `apps:deploy`.
+
+```text
+piquelctl app start [OPTIONS] <NAME_OR_ID>
 ```
 
 Arguments:
@@ -3057,6 +3103,8 @@ Commands:
 - [`piquelctl env delete`](#piquelctl-env-delete): Delete an environment, keeping its named volumes.
 - [`piquelctl env deploy`](#piquelctl-env-deploy): Deploy an environment from its source.
 - [`piquelctl env reconcile`](#piquelctl-env-reconcile): Retry an environment's latest operation with the inputs it was given.
+- [`piquelctl env stop`](#piquelctl-env-stop): Stop an environment, keeping its configuration, volumes and secrets.
+- [`piquelctl env start`](#piquelctl-env-start): Start a stopped environment again.
 - [`piquelctl env secret`](#piquelctl-env-secret): List, regenerate, or delete an environment's generated secrets.
 - [`piquelctl env logs`](#piquelctl-env-logs): Print the most recent lines of an environment's Docker logs.
 - [`piquelctl env wait`](#piquelctl-env-wait): Wait until a deployment of an environment is ready.
@@ -3322,10 +3370,56 @@ Options:
 
 Retry an environment's latest operation with the inputs it was given.
 
-If the operation is still in progress, the command waits for it instead of starting it again.
+If the operation is still in progress, the command waits for it instead of starting it again. A stopped environment starts.
 
 ```text
 piquelctl env reconcile [OPTIONS] <APPLICATION> [ENVIRONMENT]
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `[ENVIRONMENT]`: Environment name or stable ID. You can omit it when the application has exactly one environment.
+
+Options:
+
+- `--expected-generation <GENERATION>`: Fail unless the application is at this generation.
+
+  Without it, a deployment uses the generation it inspects, and a retry checks none.
+- `--yes`: Skip the confirmation prompt.
+- `--no-wait`: Return once the daemon accepts the operation, without waiting for it to end.
+
+## `piquelctl env stop`
+
+Stop an environment, keeping its configuration, volumes and secrets.
+
+Its routes are withdrawn and its services scale to zero. It stays stopped until `env start`, `env reconcile`, a deployment or a promotion into it; pushes don't deploy it meanwhile. The command asks for confirmation and waits until its services have stopped. Previews are deleted instead.
+
+```text
+piquelctl env stop [OPTIONS] <APPLICATION> [ENVIRONMENT]
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `[ENVIRONMENT]`: Environment name or stable ID. You can omit it when the application has exactly one environment.
+
+Options:
+
+- `--expected-generation <GENERATION>`: Fail unless the application is at this generation.
+
+  Without it, a deployment uses the generation it inspects, and a retry checks none.
+- `--yes`: Skip the confirmation prompt.
+- `--no-wait`: Return once the daemon accepts the operation, without waiting for it to end.
+
+## `piquelctl env start`
+
+Start a stopped environment again.
+
+Its services run their replicas again and its routes are served. Like `env reconcile`, it retries the latest operation with the inputs it was given, or waits for it while it is in progress.
+
+```text
+piquelctl env start [OPTIONS] <APPLICATION> [ENVIRONMENT]
 ```
 
 Arguments:

@@ -824,7 +824,8 @@ impl Plan {
     /// services only get a wait; failed updates and unowned names block the
     /// plan. Ensures come first so independent services roll out together.
     /// An ensure whose dependency is still converging is deferred behind that
-    /// dependency's wait, and the remaining waits follow every ensure.
+    /// dependency's wait, unless it runs no replica, and the remaining waits
+    /// follow every ensure.
     fn ensure_services(
         &mut self,
         desired: &ResolvedApplication,
@@ -883,10 +884,13 @@ impl Plan {
                 },
                 reason,
             );
-            let waits_on_dependency = service
-                .depends_on
-                .iter()
-                .any(|dependency| waits.iter().any(|(name, _)| *name == dependency.as_str()));
+            // A service scaled to zero starts nothing, so a stopped
+            // environment's services all scale down at once.
+            let waits_on_dependency = service.replicas > 0
+                && service
+                    .depends_on
+                    .iter()
+                    .any(|dependency| waits.iter().any(|(name, _)| *name == dependency.as_str()));
             if waits_on_dependency {
                 deferred.push((service, ensure));
             } else {
