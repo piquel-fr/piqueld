@@ -521,7 +521,7 @@ fn resource_stats(stats: &DaemonStats) -> AnyView {
         ("Diagnostic occurrences", stats.diagnostics.to_string()),
         (
             "Retained build output",
-            bytes(u64::try_from(stats.build_output_bytes).unwrap_or(0)),
+            Bytes::from_i64(stats.build_output_bytes).to_string(),
         ),
         ("Running operations", stats.running_operations.to_string()),
         ("Queued operations", stats.queued_operations.to_string()),

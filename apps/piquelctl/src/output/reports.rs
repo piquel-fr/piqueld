@@ -439,7 +439,7 @@ report!(DaemonStats, self, out, {
     out.label("Diagnostic occurrences", self.diagnostics)?;
     out.label(
         "Retained build output",
-        Bytes(u64::try_from(self.build_output_bytes).unwrap_or(0)),
+        Bytes::from_i64(self.build_output_bytes),
     )?;
     out.label(
         "Operations",

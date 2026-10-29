@@ -12,8 +12,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
-    access::AppPermission,
-    observability::Bytes,
+    access::AppPermission, observability::Bytes,
 };
 
 /// `/builds` page: build history across all applications.
@@ -239,7 +238,7 @@ fn BuildCard(
                             <dt>"Resolved commit"</dt> <dd>{code_or(b.commit, "Not resolved")}</dd>
                             <dt>"Image"</dt> <dd>{code_or(b.image_id, "Not produced")}</dd>
                             <dt>"Retained output"</dt>
-                            <dd>{Bytes(u64::try_from(b.log_bytes).unwrap_or(0)).to_string()}</dd>
+                            <dd>{Bytes::from_i64(b.log_bytes).to_string()}</dd>
                         </dl>
                     }
                 }}

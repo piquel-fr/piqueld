@@ -13,6 +13,15 @@ use std::{fmt, time::Duration};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Bytes(pub u64);
 
+impl Bytes {
+    /// From a byte count the API reports signed, such as retained build
+    /// output; negative counts are zero.
+    #[must_use]
+    pub fn from_i64(bytes: i64) -> Self {
+        Self(u64::try_from(bytes).unwrap_or(0))
+    }
+}
+
 impl fmt::Display for Bytes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
