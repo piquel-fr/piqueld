@@ -754,11 +754,11 @@ mod tests {
         }
     }
 
-    /// Deleting an application removes grants on it, and revokes scoped
-    /// credentials that held grants only there instead of leaving them with
-    /// no access.
+    /// Deleting an application removes grants on it, and expires scoped
+    /// credentials that held grants only there a minute later instead of
+    /// leaving them with no access.
     #[tokio::test]
-    async fn deleting_an_application_revokes_tokens_left_without_grants() {
+    async fn deleting_an_application_expires_tokens_left_without_grants() {
         let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let shop = application(&store, "shop").await;
@@ -804,7 +804,14 @@ mod tests {
         store.mark_running(&operation.operation_id).await;
         let operation = store.operation(&operation.operation_id).await.unwrap();
         store.finish_delete_operation(&operation).await.unwrap();
-        assert!(store.credential_owner("blog-only").await.unwrap().is_none());
+        let left = store.credential_owner("blog-only").await.unwrap().unwrap();
+        assert!(left.grants.is_empty());
+        let expires_at =
+            sqlx::query_scalar!("SELECT expires_at FROM auth_credentials WHERE id='blog-only'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert!(expires_at.is_some_and(|at| at <= now_secs() + 60));
         assert!(store.credential_owner("session").await.unwrap().is_some());
         let both = store.credential_owner("both").await.unwrap().unwrap();
         assert_eq!(both.grants.app_scope(AppPermission::Read), Scope::one(shop));

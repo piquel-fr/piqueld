@@ -2,7 +2,7 @@ use super::*;
 use crate::api::http::Authenticator as _;
 use crate::store::{Invitation, Lockout, NewPasskey, PasskeyOwner, StoreError};
 use piqueld_core::access::{Denied, GlobalPermission, Grants, Permission, Preset, Scope};
-use piqueld_core::auth::{HostOperator, Manage, OperatorLink, User};
+use piqueld_core::auth::{HostOperator, Manage, OperatorLink, RegistrationStart, User};
 
 impl Identity {
     /// The account behind an identity a test signed in as.
@@ -672,9 +672,9 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
         f.auth.0.store.add_passkey(owner, passkey).await,
         Err(StoreError::Denied(Denied::Scoped))
     ));
-    let start = f.auth.device_start(None, None).await.unwrap();
+    let start = f.auth.device_start(None, None).unwrap();
     assert!(matches!(
-        f.auth.device_approve(&start.user_code, &ci).await,
+        f.auth.device_approve(&start.user_code, &ci),
         Err(AuthError::Denied(Denied::Scoped))
     ));
     // Nor can it change its own account, which needs no permission, but it
@@ -697,6 +697,36 @@ async fn tokens_act_within_their_grants_and_cannot_create_credentials() {
     }
     f.auth.logout(&ci).await.unwrap();
     assert!(f.auth.authenticate(&secret).await.is_err());
+}
+
+/// Without `accounts:manage`, a token sees only itself in the account
+/// directory: its account with the token's grants, and neither the account's
+/// passkeys nor its other credentials.
+#[tokio::test]
+async fn tokens_see_only_themselves_in_the_directory() {
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &developer()).await;
+    f.passkey(&alice).await;
+    let deploy = Preset::Deploy.grants(&Scope::All);
+    let create = Manage::CreateToken {
+        grants: deploy.clone(),
+        name: "ci".into(),
+        days: Some(30),
+        tailnet: None,
+    };
+    let secret = f.auth.manage(&alice, create).await.unwrap().token.unwrap();
+    let ci = f.auth.authenticate(&secret).await.unwrap();
+
+    let seen = f.auth.directory(&ci).await.unwrap();
+    assert_eq!(seen.users.len(), 1);
+    assert_eq!(seen.users[0].grants, deploy);
+    assert!(seen.passkeys.is_empty());
+    let credentials: Vec<_> = seen.credentials.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(credentials, [ci.credential_id().unwrap()]);
+    // Her own CLI session still sees her whole account.
+    let own = f.auth.directory(&alice).await.unwrap();
+    assert_eq!(own.users[0].grants, developer());
+    assert_eq!((own.passkeys.len(), own.credentials.len()), (1, 2));
 }
 
 /// A token keeps no access its owner lost after it authenticated: writes
@@ -852,27 +882,16 @@ async fn token_lifetimes_are_bounded_and_legacy_secrets_authenticate() {
 async fn device_logins_can_request_limited_sessions() {
     let f = Fixture::new().await;
     let alice = f.identity("alice", &developer()).await;
-    let start = f
-        .auth
-        .device_start(None, Some(Grants::admin()))
-        .await
-        .unwrap();
+    let start = f.auth.device_start(None, Some(Grants::admin())).unwrap();
     assert!(matches!(
-        f.auth.device_approve(&start.user_code, &alice).await,
+        f.auth.device_approve(&start.user_code, &alice),
         Err(AuthError::Denied(Denied::Exceeds))
     ));
     let read_only = Preset::ReadOnly.grants(&Scope::All);
-    let start = f
-        .auth
-        .device_start(None, Some(read_only.clone()))
-        .await
-        .unwrap();
-    let request = f.auth.device_inspect(&start.user_code).await.unwrap();
+    let start = f.auth.device_start(None, Some(read_only.clone())).unwrap();
+    let request = f.auth.device_inspect(&start.user_code).unwrap();
     assert_eq!(request.grants.as_ref(), Some(&read_only));
-    f.auth
-        .device_approve(&start.user_code, &alice)
-        .await
-        .unwrap();
+    f.auth.device_approve(&start.user_code, &alice).unwrap();
     let result = f.auth.device_poll(&start.device_code).await.unwrap();
     let session = f
         .auth
@@ -884,15 +903,8 @@ async fn device_logins_can_request_limited_sessions() {
     // Issuance re-checks the approver, who may have lost the access since.
     let root = f.identity("root", &Grants::admin()).await;
     f.passkey(&root).await;
-    let start = f
-        .auth
-        .device_start(None, Some(read_only.clone()))
-        .await
-        .unwrap();
-    f.auth
-        .device_approve(&start.user_code, &alice)
-        .await
-        .unwrap();
+    let start = f.auth.device_start(None, Some(read_only.clone())).unwrap();
+    f.auth.device_approve(&start.user_code, &alice).unwrap();
     f.auth
         .manage(
             &root,
@@ -1015,6 +1027,92 @@ async fn concurrent_passkey_and_account_deletions_keep_one_admin() {
     }
 }
 
+/// Revoking a credential or invitation that does not exist is reported,
+/// rather than succeeding without revoking anything.
+#[tokio::test]
+async fn revoking_unknown_ids_is_not_found() {
+    let f = Fixture::new().await;
+    let root = f.identity("root", &Grants::admin()).await;
+    for command in [
+        Manage::RevokeCredential { id: Auth::id() },
+        Manage::RevokeInvitation { id: Auth::id() },
+    ] {
+        let result = f.auth.manage(&root, command).await;
+        assert!(matches!(
+            result,
+            Err(AuthError::Store(StoreError::NotFound))
+        ));
+    }
+}
+
+/// Issuing an approved CLI login does not hold up other logins while it
+/// waits for storage, and answers one session once: a concurrent poll
+/// waits, and a poll cancelled after storing its session leaves it for the
+/// next poll, unless it was revoked meanwhile, which refuses the login.
+#[tokio::test]
+async fn device_polls_issue_once_without_blocking_other_logins() {
+    /// Approves a new login by `alice` and polls it until the poll is
+    /// cancelled waiting to store its session, which is then stored as if
+    /// that poll had committed just before. Returns the device code and
+    /// the stored session's credential.
+    async fn committed_then_cancelled(
+        f: &Fixture,
+        alice: &Identity,
+    ) -> (String, crate::store::NewCredential<'static>, String) {
+        let start = f.auth.device_start(None, None).unwrap();
+        f.auth.device_approve(&start.user_code, alice).unwrap();
+        let key = Auth::hash(&start.device_code);
+        let writer = f.auth.0.store.hold_writer().await;
+        let cancelled = tokio::spawn({
+            let auth = f.auth.clone();
+            let code = start.device_code.clone();
+            async move { auth.device_poll(&code).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Other logins proceed; the pending logins are not locked meanwhile,
+        // and a concurrent poll waits.
+        f.auth.device_start(None, None).unwrap();
+        f.auth.0.devices.lock().get_mut(&key).unwrap().next_poll = 0;
+        let concurrent = f.auth.device_poll(&start.device_code).await.unwrap();
+        assert_eq!(concurrent.status, "authorization_pending");
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        drop(writer);
+        let prepared = f.auth.0.devices.lock()[&key].prepared.clone().unwrap();
+        let credential = prepared.credential(None);
+        let store = &f.auth.0.store;
+        let stored = store.issue_for_credential_owner(alice.caller().unwrap(), &credential);
+        assert!(stored.await.unwrap().is_some());
+        f.auth.0.devices.lock().get_mut(&key).unwrap().next_poll = 0;
+        (start.device_code, credential, prepared.token)
+    }
+
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &Grants::admin()).await;
+    let cli_logins = async || f.auth.directory(&alice).await.unwrap().credentials.len() - 1;
+
+    let (code, _, token) = committed_then_cancelled(&f, &alice).await;
+    let issued = f.auth.device_poll(&code).await.unwrap();
+    assert_eq!(issued.status, "complete");
+    assert_eq!(issued.token.as_ref(), Some(&token));
+    f.auth.authenticate(&token).await.unwrap();
+    assert!(matches!(
+        f.auth.device_poll(&code).await,
+        Err(AuthError::Unauthorized)
+    ));
+    assert_eq!(cli_logins().await, 1);
+
+    let (code, credential, token) = committed_then_cancelled(&f, &alice).await;
+    let revoke = Manage::RevokeCredential { id: credential.id };
+    f.auth.manage(&alice, revoke).await.unwrap();
+    assert!(matches!(
+        f.auth.device_poll(&code).await,
+        Err(AuthError::Unauthorized)
+    ));
+    assert!(f.auth.authenticate(&token).await.is_err());
+    assert_eq!(cli_logins().await, 1, "the revoked session stays revoked");
+}
+
 #[tokio::test]
 async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
     let f = Fixture::new().await;
@@ -1027,7 +1125,7 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         )
         .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
-    let start = f.auth.device_start(None, None).await.unwrap();
+    let start = f.auth.device_start(None, None).unwrap();
     assert_eq!(
         f.auth.device_poll(&start.device_code).await.unwrap().status,
         "authorization_pending"
@@ -1036,21 +1134,12 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         f.auth.device_poll(&start.device_code).await.unwrap().status,
         "slow_down"
     );
-    f.auth
-        .device_approve(&start.user_code, &identity)
-        .await
-        .unwrap();
-    assert!(
-        f.auth
-            .device_approve(&start.user_code, &identity)
-            .await
-            .is_err()
-    );
+    f.auth.device_approve(&start.user_code, &identity).unwrap();
+    assert!(f.auth.device_approve(&start.user_code, &identity).is_err());
     f.auth
         .0
         .devices
         .lock()
-        .await
         .get_mut(&Auth::hash(&start.device_code))
         .unwrap()
         .next_poll = 0;
@@ -1060,11 +1149,8 @@ async fn device_approval_is_explicit_single_use_and_bound_to_a_live_session() {
         .await
         .unwrap();
     assert!(f.auth.device_poll(&start.device_code).await.is_err());
-    let start = f.auth.device_start(None, None).await.unwrap();
-    f.auth
-        .device_approve(&start.user_code, &identity)
-        .await
-        .unwrap();
+    let start = f.auth.device_start(None, None).unwrap();
+    f.auth.device_approve(&start.user_code, &identity).unwrap();
     f.auth.logout(&identity).await.unwrap();
     assert!(f.auth.device_poll(&start.device_code).await.is_err());
 }
@@ -1105,6 +1191,47 @@ async fn setup_link_is_private_stable_and_never_reopens() {
     assert!(!path.exists());
 }
 
+/// Registration refuses up front what finishing it would: a scoped
+/// credential adding a passkey, and a taken username, before any passkey
+/// is created.
+#[tokio::test]
+async fn registration_refuses_scoped_callers_and_taken_usernames_at_start() {
+    let f = Fixture::new().await;
+    let alice = f.identity("alice", &Grants::admin()).await;
+    let create = Manage::CreateToken {
+        grants: Preset::ReadOnly.grants(&Scope::All),
+        name: "ci".into(),
+        days: Some(30),
+        tailnet: None,
+    };
+    let secret = f.auth.manage(&alice, create).await.unwrap().token.unwrap();
+    let ci = f.auth.authenticate(&secret).await.unwrap();
+    let start = |invitation: Option<&str>, user_id: Option<&str>| RegistrationStart {
+        invitation: invitation.map(str::to_owned),
+        user_id: user_id.map(str::to_owned),
+        username: "ALICE".into(),
+        display_name: String::new(),
+        passkey_name: "Key".into(),
+    };
+    let own = start(None, Some(&alice.account().id));
+    assert!(matches!(
+        f.auth.registration_start(own, "browser", Some(&ci)).await,
+        Err(AuthError::Denied(Denied::Scoped))
+    ));
+    let invite = Manage::CreateInvitation {
+        grants: Grants::default(),
+    };
+    let link = f.auth.manage(&alice, invite).await.unwrap().invitation_url;
+    let link = link.unwrap();
+    let invitation = link.split_once("#invite=").unwrap().1;
+    assert!(matches!(
+        f.auth
+            .registration_start(start(Some(invitation), None), "browser", None)
+            .await,
+        Err(AuthError::Store(StoreError::AlreadyExists))
+    ));
+}
+
 #[tokio::test]
 async fn challenges_require_the_original_browser_and_expire() {
     let f = Fixture::new().await;
@@ -1115,7 +1242,7 @@ async fn challenges_require_the_original_browser_and_expire() {
     };
     assert!(matches!(
         f.auth.login_finish(input.clone(), "browser-two").await,
-        Err(AuthError::Unauthorized)
+        Err(AuthError::Invalid(_))
     ));
     assert!(f.auth.0.ceremonies.lock().await.contains_key(&ceremony.id));
     assert!(
@@ -1127,7 +1254,7 @@ async fn challenges_require_the_original_browser_and_expire() {
     assert!(!f.auth.0.ceremonies.lock().await.contains_key(&ceremony.id));
     assert!(matches!(
         f.auth.login_finish(input, "browser-one").await,
-        Err(AuthError::Unauthorized)
+        Err(AuthError::Invalid(_))
     ));
     let ceremony = f.auth.login_start("browser").await.unwrap();
     f.auth
@@ -1148,7 +1275,7 @@ async fn challenges_require_the_original_browser_and_expire() {
                 "browser"
             )
             .await,
-        Err(AuthError::Unauthorized)
+        Err(AuthError::Invalid(_))
     ));
 }
 
@@ -1487,12 +1614,11 @@ async fn device_inspection_reports_the_requester_until_approval() {
         .await;
     let identity = f.auth.authenticate(&token).await.unwrap();
     let peer = "192.0.2.7".parse().unwrap();
-    let start = f.auth.device_start(Some(peer), None).await.unwrap();
+    let start = f.auth.device_start(Some(peer), None).unwrap();
     assert_eq!(start.requester.as_deref(), Some("192.0.2.7"));
     let request = f
         .auth
         .device_inspect(&format!(" {} ", start.user_code.to_lowercase()))
-        .await
         .unwrap();
     assert_eq!(request.user_code, start.user_code);
     assert_eq!(request.requester.as_deref(), Some("192.0.2.7"));
@@ -1502,18 +1628,14 @@ async fn device_inspection_reports_the_requester_until_approval() {
         f.auth.device_poll(&start.device_code).await.unwrap().status,
         "authorization_pending"
     );
-    assert!(f.auth.device_inspect("AAAA-AAAA").await.is_err());
-    f.auth
-        .device_approve(&start.user_code, &identity)
-        .await
-        .unwrap();
-    assert!(f.auth.device_inspect(&start.user_code).await.is_err());
-    let local = f.auth.device_start(None, None).await.unwrap();
+    assert!(f.auth.device_inspect("AAAA-AAAA").is_err());
+    f.auth.device_approve(&start.user_code, &identity).unwrap();
+    assert!(f.auth.device_inspect(&start.user_code).is_err());
+    let local = f.auth.device_start(None, None).unwrap();
     assert!(local.requester.is_none());
     assert!(
         f.auth
             .device_inspect(&local.user_code)
-            .await
             .unwrap()
             .requester
             .is_none()
@@ -1612,6 +1734,12 @@ async fn operator_sign_in_links_work_once_and_act_as_the_operator() {
     assert_eq!(signed_in, operator);
     let again = f.auth.operator_sign_in(&link).await;
     assert!(matches!(again, Err(AuthError::Unauthorized)));
+    // Unusable links are turned away without waiting for the writer.
+    let writer = f.auth.0.store.hold_writer().await;
+    let guess = f.auth.operator_sign_in(&link);
+    let guess = tokio::time::timeout(std::time::Duration::from_secs(1), guess).await;
+    assert!(matches!(guess, Ok(Err(AuthError::Unauthorized))));
+    drop(writer);
     let identity = f.auth.authenticate(&token).await.unwrap();
     assert!(identity.user().is_none());
     assert_eq!(identity.grants, Grants::admin());

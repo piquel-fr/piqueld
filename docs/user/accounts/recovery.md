@@ -25,7 +25,9 @@ host operator (uid 0)
 - Members of the `piqueld` group aren't the host operator: they sign in with
   their own account. Over the network, nobody is.
 - With a saved login or `PIQUELD_TOKEN`, `piquelctl` acts as that account,
-  even when root runs it.
+  even when root runs it. `setup-link`, `recover-admin` and `sign-in-link`
+  never send them, so run by root or the daemon's user they always reach the
+  daemon as the host operator. `setup-link` only needs access to the socket.
 
 The host operator holds `admin` on every application, so it may do what an
 administrator does, except what needs an account. It has no passkeys or
@@ -162,9 +164,6 @@ losing it means, and how to recover with `system:operate`.
   user. Run it with `sudo` on the host, without `--url`. If the daemon runs in
   a container or a user namespace, the user has to match as the daemon sees
   it.
-- **`sign-in-link` answers 404 even as root.** It refuses requests that carry
-  a credential. Unset `PIQUELD_TOKEN`, or run `sudo piquelctl logout` if root
-  has a saved login for the socket.
 - **"recover-admin is only served over the daemon's Unix socket; use
   --socket".** `--url`, `PIQUELD_URL` or a connection profile points
   `piquelctl` at a network address. Recovery and sign-in links are never

@@ -574,7 +574,7 @@ piquelctl recover-admin [OPTIONS]
 
 Print a one-time link that signs a browser in as the host operator.
 
-The browser gets full access for 12 hours. The link works once within 10 minutes. Run it on the daemon host as root or as the daemon's user, without `PIQUELD_TOKEN` or a saved login: the daemon serves it only over its Unix socket, to the host operator. Issuing it raises a security notification.
+The browser gets full access for 12 hours. The link works once within 10 minutes. Run it on the daemon host as root or as the daemon's user: the daemon serves it only over its Unix socket, to the host operator. It never sends `PIQUELD_TOKEN` or a saved login. Issuing it raises a security notification.
 
 ```text
 piquelctl sign-in-link [OPTIONS]
@@ -2785,7 +2785,7 @@ Arguments:
 Options:
 
 - `--file <PATH>`: Read the value from this file.
-- `--stdin`: Read the value from standard input.
+- `--stdin`: Read the value from standard input, dropping one trailing newline. A terminal asks for it without echo.
 - `--environments <ENVIRONMENTS>`: Let only these environments mount the secret: comma-separated names or IDs, or `''` for none.
 - `--all-environments`: Let every environment mount the secret, including ones created later.
 

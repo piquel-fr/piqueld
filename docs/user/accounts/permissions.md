@@ -292,8 +292,8 @@ revoked can't use the access it lost.
 Connections that stay open check again while they last: event streams, and
 commands started with `apps:exec`. They notice a grant change, an account
 deletion or a revoked credential within a second. They notice everything else
-within about 30 seconds, such as an expired credential, a token revoked
-because its application was deleted, or a tailnet device that no longer
+within about 30 seconds, such as an expired credential, a token left without
+grants by its application's deletion, or a tailnet device that no longer
 matches a token's [binding](cli-and-tokens.md#bind-a-token-to-tailnet-devices).
 
 For a token bound to tailnet devices, each of these checks first looks the

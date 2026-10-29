@@ -170,6 +170,11 @@ They can't give anyone access, and they can't change their own account. They
 can revoke themselves. So a leaked token never outlives or exceeds its own
 limits.
 
+Without `accounts:manage`, a token only sees itself.
+`piquelctl account list` shows its account with the token's own access, and
+`piquelctl token list` shows the token alone. Your passkeys and your other
+sessions and tokens stay hidden from it.
+
 A token with `accounts:manage` can still edit other accounts' profiles and
 passkeys, revoke their sessions and tokens, and delete them, within its
 access. It can't change their grants.
@@ -243,7 +248,9 @@ Info: revoked 01a16b4e-6995-79b2-bfb1-0f72630a4d96
 Your logins are listed as `piquelctl`, and browser sessions as `Browser`.
 
 Deleting an application removes every grant on it. A token or limited login
-left with no grant at all is revoked.
+left with no grant at all can do nothing, and expires a minute later. That
+minute lets `piquelctl app delete`, run with such a token, see the
+deletion finish.
 
 ## How long credentials last
 

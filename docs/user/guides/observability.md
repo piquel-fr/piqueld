@@ -87,9 +87,12 @@ already allows) and CLI logins still awaiting approval, appear only in daemon
 logs. Records are written in the background so requests never wait for them;
 at most 1,024 wait at once, of which anonymous requests (made by neither an
 account nor the host operator) may hold only half; records beyond that are
-dropped and logged. On shutdown the daemon waits up to 10 seconds for pending records and logs any
+dropped and logged. The next record written then follows a `failed` record with
+status 503 and no caller, `audit records missing before this one: N`, counting
+those dropped or whose write failed, so the trail shows the gap. On shutdown the daemon waits up to 10 seconds for pending records and logs any
 it loses. Each record keeps the action
-(method and route template), outcome (`allowed`, `denied`, or `failed`), status,
+(method and route template; for account management, followed by the
+requested change, e.g. `POST /api/v1/auth/manage set_grants "<account ID>" (apps:read)`), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
 network address (and, through the [tailnet node](../reference/configuration.md#tailnet-node),
 the tailnet user or tags and device, such as `alice@example.com on laptop`),
@@ -313,7 +316,9 @@ Each destination has a unique name, such as `ops`, a kind (`json` or
 Listing destinations needs `system:read` or `notifications:manage`, and
 changing them `notifications:manage`. URLs are credentials: they are stored encrypted with
 the [secret master key](../reference/configuration.md#secret-storage) and never returned,
-and lost-key recovery deletes the destinations.
+and lost-key recovery deletes the destinations. Deliveries go straight to the
+destination. They never follow redirects or use a proxy set in the
+environment (`HTTPS_PROXY`), which would see the URL.
 
 Disabling a destination, removing a category, or narrowing its applications
 or previews cancels the pending deliveries affected; recoveries still follow

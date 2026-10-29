@@ -190,6 +190,29 @@ pub(crate) struct NewInvitation {
     pub(crate) expires_at: i64,
 }
 
+/// The part of the account directory a viewer may see.
+#[derive(Clone, Copy)]
+pub(crate) enum DirectoryView<'a> {
+    /// Every account, invitation, and host operator session.
+    All,
+    /// One account, by ID, with its passkeys and credentials.
+    Account(&'a str),
+    /// The caller's account, without passkeys, and only the caller's own
+    /// credential: what a credential limited to its own grants sees.
+    Credential(Caller<'a>),
+}
+
+impl<'a> DirectoryView<'a> {
+    /// The account and the credential the view is limited to, if any.
+    const fn limits(self) -> (Option<&'a str>, Option<&'a str>) {
+        match self {
+            Self::All => (None, None),
+            Self::Account(user) => (Some(user), None),
+            Self::Credential(caller) => (Some(caller.user_id), Some(caller.credential_id)),
+        }
+    }
+}
+
 /// The account behind a live credential.
 pub(crate) struct CredentialOwner {
     /// Credential class.
@@ -275,7 +298,7 @@ impl Store {
 
     /// Stores a host operator sign-in link for `hash`, valid until
     /// `expires_at`, and records that `operator` asked for it as a security
-    /// event. Expired links and sessions are removed.
+    /// event. [`Self::prune_auth`] removes it once expired.
     pub(crate) async fn create_operator_link(
         &self,
         id: &str,
@@ -284,14 +307,6 @@ impl Store {
         operator: HostOperator,
     ) -> Result<(), StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
-        let now = now_secs();
-        sqlx::query!(
-            "DELETE FROM auth_operator_sessions WHERE expires_at<=?1",
-            now
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(StoreError::database)?;
         sqlx::query!(
             "INSERT INTO auth_operator_sessions(id,secret_hash,uid,expires_at) VALUES(?1,?2,?3,?4)",
             id,
@@ -311,13 +326,26 @@ impl Store {
     /// Redeems the live sign-in link `link_hash` as a host operator browser
     /// session with secret hash `session_hash`, valid until `expires_at`.
     /// Returns the session's ID and operator, or `None` when the link was
-    /// already used, has expired, or never existed.
+    /// already used, has expired, or never existed. Such links are turned
+    /// away by a read, so guessing them never waits for the writer.
     pub(crate) async fn redeem_operator_link(
         &self,
         link_hash: &str,
         session_hash: &str,
         expires_at: i64,
     ) -> Result<Option<(String, HostOperator)>, StoreError> {
+        let now = now_secs();
+        let live = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_operator_sessions WHERE secret_hash=?1 AND redeemed=0 AND expires_at>?2) AS "live!: bool""#,
+            link_hash,
+            now
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        if !live {
+            return Ok(None);
+        }
         let (_writer, mut tx) = self.begin_immediate().await?;
         let now = now_secs();
         let row = sqlx::query!(
@@ -409,6 +437,17 @@ impl Store {
             (None, ..) => Invitation::Account,
             _ => return Err(StoreError::Corrupt),
         }))
+    }
+
+    /// Whether an account already uses `username`, regardless of case.
+    pub(crate) async fn username_taken(&self, username: &str) -> Result<bool, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_users WHERE username=?1) AS "taken!: bool""#,
+            username
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)
     }
 
     /// Serialized `WebAuthn` credentials registered to one account.
@@ -710,7 +749,7 @@ impl Store {
     /// Deletes one credential if `actor` may change its owner, or one host
     /// operator session if `actor` could manage an administrator, as that
     /// session acts with `admin`. A credential may always revoke itself, even
-    /// a scoped one. Unknown IDs are ignored.
+    /// a scoped one. Unknown IDs are `NotFound`.
     pub(crate) async fn revoke_credential(
         &self,
         actor: Actor<'_>,
@@ -741,6 +780,8 @@ impl Store {
                 .execute(&mut *tx)
                 .await
                 .map_err(StoreError::database)?;
+        } else {
+            return Err(StoreError::NotFound);
         }
         self.commit_access_change(tx).await
     }
@@ -760,16 +801,21 @@ impl Store {
         self.commit_access_change(tx).await
     }
 
-    /// Every account with its grants, passkey, live credential, and live
-    /// invitation, and every live host operator session, read in one
-    /// snapshot. Secrets and their hashes are never included.
-    pub(crate) async fn auth_directory(&self) -> Result<Directory, StoreError> {
+    /// The part of the account directory `view` covers, read in one
+    /// snapshot: accounts with their grants, passkeys and live credentials,
+    /// and, for [`DirectoryView::All`], live invitations and host operator
+    /// sessions. Secrets and their hashes are never included.
+    pub(crate) async fn auth_directory(
+        &self,
+        view: DirectoryView<'_>,
+    ) -> Result<Directory, StoreError> {
         let now = now_secs();
-        let idle = now - SESSION_IDLE_SECS;
+        let (user, credential) = view.limits();
         let mut tx = self.snapshot().await?;
         let users = sqlx::query_as!(
             User,
-            r#"SELECT id AS "id!",username,display_name FROM auth_users ORDER BY username"#
+            r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE ?1 IS NULL OR id=?1 ORDER BY username"#,
+            user
         )
         .fetch_all(&mut *tx)
         .await
@@ -781,15 +827,19 @@ impl Store {
         }
         let passkeys = sqlx::query_as!(
             PasskeyView,
-            r#"SELECT id AS "id!",user_id,name FROM auth_passkeys ORDER BY created_at"#
+            r#"SELECT id AS "id!",user_id,name FROM auth_passkeys WHERE (?1 IS NULL OR user_id=?1) AND ?2 IS NULL ORDER BY created_at"#,
+            user,
+            credential
         )
         .fetch_all(&mut *tx)
         .await
         .map_err(StoreError::database)?;
         let rows = sqlx::query!(
-            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at,scoped AS "scoped: bool",tailnet FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?2) ORDER BY created_at"#,
+            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at,scoped AS "scoped: bool",tailnet FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?1-?2) AND (?3 IS NULL OR user_id=?3) AND (?4 IS NULL OR id=?4) ORDER BY created_at"#,
             now,
-            idle
+            SESSION_IDLE_SECS,
+            user,
+            credential
         )
         .fetch_all(&mut *tx)
         .await
@@ -813,8 +863,9 @@ impl Store {
             });
         }
         let rows = sqlx::query!(
-            r#"SELECT id AS "id!",issuer_id,user_id,expires_at FROM auth_invitations WHERE expires_at>?1 ORDER BY expires_at"#,
-            now
+            r#"SELECT id AS "id!",issuer_id,user_id,expires_at FROM auth_invitations WHERE expires_at>?1 AND ?2 IS NULL ORDER BY expires_at"#,
+            now,
+            user
         )
         .fetch_all(&mut *tx)
         .await
@@ -831,8 +882,9 @@ impl Store {
             });
         }
         let rows = sqlx::query!(
-            r#"SELECT id AS "id!",uid,expires_at FROM auth_operator_sessions WHERE redeemed=1 AND expires_at>?1 ORDER BY expires_at"#,
-            now
+            r#"SELECT id AS "id!",uid,expires_at FROM auth_operator_sessions WHERE redeemed=1 AND expires_at>?1 AND ?2 IS NULL ORDER BY expires_at"#,
+            now,
+            user
         )
         .fetch_all(&mut *tx)
         .await
@@ -1010,6 +1062,7 @@ impl Store {
 
     /// Deletes an unused invitation if `actor` could have created it: it may
     /// change the enrollment target, or hand out the invitation's grants.
+    /// Unknown IDs are `NotFound`.
     pub(crate) async fn revoke_invitation(
         &self,
         actor: Actor<'_>,
@@ -1021,7 +1074,7 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         match target {
-            None => return Ok(()),
+            None => return Err(StoreError::NotFound),
             Some(Some(user_id)) => {
                 Self::check_account_on(&mut tx, actor, &user_id).await?;
             }
@@ -1064,6 +1117,46 @@ impl Store {
         let actor = Actor::Account(caller).attribution();
         Self::check_token_on(&mut tx, credential, actor).await?;
         tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Deletes auth state that can no longer be used: expired credentials
+    /// and browser sessions idle for a day, with their grants, and expired
+    /// invitations, admin recovery links, and host operator links and
+    /// sessions. Long-lived connections recheck their access when a
+    /// credential went.
+    pub(crate) async fn prune_auth(&self) -> Result<(), StoreError> {
+        let now = now_secs();
+        let idle = now - SESSION_IDLE_SECS;
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let credentials = sqlx::query!(
+            "DELETE FROM auth_credentials WHERE expires_at<=?1 OR (kind='browser' AND last_used_at<=?2)",
+            now,
+            idle
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        sqlx::query!("DELETE FROM auth_invitations WHERE expires_at<=?1", now)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM auth_recovery WHERE expires_at<=?1", now)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::query!(
+            "DELETE FROM auth_operator_sessions WHERE expires_at<=?1",
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        if credentials > 0 {
+            self.commit_access_change(tx).await
+        } else {
+            tx.commit().await.map_err(StoreError::database)
+        }
     }
 }
 
@@ -1232,5 +1325,60 @@ mod tests {
         tx.rollback().await.unwrap();
         drop(writer);
         assert!(!refresh.await.unwrap().unwrap());
+    }
+
+    /// Pruning deletes expired credentials, idle browser sessions, and
+    /// expired invitations, and keeps what can still be used.
+    #[tokio::test]
+    async fn pruning_deletes_unusable_auth_state() {
+        let (_dir, store) = Store::temporary().await;
+        let user = User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store.seed_auth_user(&user, &Grants::admin()).await;
+        let now = now_secs();
+        for (id, kind, expires_at) in [
+            ("expired", CredentialKind::Token, Some(now)),
+            ("idle", CredentialKind::Browser, Some(now + 3600)),
+            ("live", CredentialKind::Token, None),
+        ] {
+            let credential = NewCredential {
+                id: id.into(),
+                secret_hash: id.into(),
+                kind,
+                name: "Test",
+                expires_at,
+                grants: None,
+            };
+            store
+                .insert_credential(&user.id, &credential)
+                .await
+                .unwrap();
+        }
+        store.age_auth_credentials(SESSION_IDLE_SECS).await;
+        for (id, expires_at) in [("old", now), ("open", now + 3600)] {
+            sqlx::query!(
+                "INSERT INTO auth_invitations(id,issuer_id,secret_hash,expires_at) VALUES(?1,'alice',?1,?2)",
+                id,
+                expires_at
+            )
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+
+        store.prune_auth().await.unwrap();
+        let credentials = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM auth_credentials"#)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(credentials, ["live"]);
+        let invitations = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM auth_invitations"#)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(invitations, ["open"]);
     }
 }

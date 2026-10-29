@@ -25,7 +25,9 @@ return `503 storage_unavailable` with a log-correlated `details.diagnostic_id`;
 they do not attempt to persist a diagnostic in the failing database. See
 [observability](../../user/guides/observability.md#history-and-diagnostics).
 
-Authentication metadata shares the existing SQLite database. WebAuthn challenges
+Authentication metadata shares the existing SQLite database. The reconciler's
+periodic full scan deletes expired sessions, tokens, invitations and links
+(`Store::prune_auth`), so it does not grow with every sign-in. WebAuthn challenges
 and device requests are short-lived, bounded, server-side state; a daemon restart
 cancels pending ceremonies without invalidating durable credentials. All
 registration/login challenges are browser-bound and single-use. Registration
@@ -71,9 +73,18 @@ directory keeps the hostname, and with it the passkeys.
 - Redeeming a setup, invitation, enrollment or recovery secret consumes it in
   the same transaction that stores the passkey (and creates the account), and
   issues a browser session. A store refusal, such as a concurrent redemption,
-  answers 401. Username uniqueness (`COLLATE NOCASE`) is only checked there,
-  at the finish request, after the browser has created the passkey;
-  a conflict answers 409 `account_conflict` and leaves the invitation usable.
+  answers 400 `authentication_invalid`. Username uniqueness
+  (`COLLATE NOCASE`) is checked when registration starts, before the browser
+  creates the passkey, and enforced again there; a conflict answers 409
+  `account_conflict` and leaves the invitation usable.
+- Ceremony failures that say nothing about the caller's credentials answer
+  400 `authentication_invalid`: a challenge that expired, was already used,
+  or was started in another browser, a missing ceremony cookie, and a setup,
+  invitation or enrollment link that can no longer be redeemed. 401 means the
+  passkey or the signed-in session was refused. Host operator sign-in links,
+  which sign in without a passkey, answer 401 when unusable.
+- A scoped credential can't add a passkey, so `register/start` refuses it
+  with 403, as the finish request would.
 - An invitation or enrollment link is checked again at redemption against its
   issuer's current grants (see
   [authorization](authorization.md#links-act-with-their-issuers-authority)).
@@ -123,8 +134,11 @@ back to the host operator.
   timeout. Issuing logs a warning ("issued a host operator sign-in link") and
   raises `operator_sign_in_issued`; redemption logs "host operator signed in
   to the dashboard" at `info`.
-- `POST /auth/recovery` checks only the peer's user ID, so it ignores any
-  credential the CLI sends. It answers 409 `setup_pending` before the first
+- `POST /auth/recovery` requires the same host operator: with any
+  credential, even an unusable one, it answers 404 `endpoint_not_found`.
+  `piquelctl` sends none for `setup-link`, `recover-admin` and
+  `sign-in-link`, so a stale saved login can't lock root out of recovery. It
+  answers 409 `setup_pending` before the first
   account exists. The recovery link is a single row, replaced by every new
   one, valid for a day, and uses the `#invite=` fragment, so the dashboard
   shows the registration page. Issuing logs a warning and raises
@@ -198,6 +212,13 @@ comparison cannot tell callers apart.
   the 30-day CLI session, named `piquelctl`. If the approver's session ends
   before the next poll, no credential is issued. Approval doesn't create an
   account.
+- One poll at a time issues the session, without holding the pending logins
+  while it writes; a concurrent poll gets `authorization_pending`. The first
+  poll after approval prepares the session's secret and ID and stores them.
+  If that poll fails or is cancelled, the next one answers the same session
+  when it is stored and live. Otherwise it can't tell a session never stored
+  from one revoked since, so it refuses the login with 401 rather than
+  resurrect a revoked credential.
 - `piquelctl` checks that the daemon honoured requested limits: it compares
   the grants the start response echoes with the ones it asked for, and stops
   with "the daemon ignored the requested access; it predates limited logins"
@@ -255,8 +276,10 @@ when the server has already invalidated the session.
 
 ## Rate limits
 
-Public registration, login, and device-start requests are limited to 30 starts
-per TCP peer per minute, across all listeners. Requests refused for their Host,
+Public registration, login, and device-start requests, and redemptions of host
+operator sign-in links, are limited to 30 starts per TCP peer per minute,
+across all listeners. An unknown, used or expired sign-in link is turned away
+by a read, without waiting for the store's writer. Requests refused for their Host,
 Fetch Metadata, or Origin do not count. IPv6 peers are grouped by /64
 prefix, IPv4-mapped addresses count as IPv4, and Unix socket callers share one
 peer bucket. Excess requests receive
