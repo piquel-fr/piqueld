@@ -544,8 +544,8 @@ impl<D: DockerApi> Controller<D> {
     /// ends the deployment once no job container can still be running, and
     /// so does a failure whose own plan a conflict blocks: only an operator
     /// resolves that, and reconsidering the deployment then rolls its
-    /// prerequisites out again. Unless an exclusive job of it succeeded: the
-    /// services it stopped would run against data in the new format, so they
+    /// prerequisites out again. Unless a job of it that stops services
+    /// succeeded: they would run against data in the new format, so they
     /// stay stopped until the deployment continues. Other failures are
     /// retried, or reconsidered as soon as their plan is unblocked, so
     /// restoring the active target meanwhile would only churn their
@@ -564,7 +564,7 @@ impl<D: DockerApi> Controller<D> {
             || Self::job_failed(operation)
             || (operation.state == OperationState::Failed
                 && self.conflict_blocks(&prepared, observed).await?
-                && !self.migrated_exclusively(operation, &prepared).await?);
+                && !self.migrated_while_stopped(operation, &prepared).await?);
         let stopping = ended
             && !self
                 .store
@@ -574,18 +574,18 @@ impl<D: DockerApi> Controller<D> {
         Ok((!ended || stopping).then_some(prepared))
     }
 
-    /// Whether an exclusive job of `operation`, which prepared `target`,
-    /// succeeded, so the volumes it held are in their new format.
-    async fn migrated_exclusively(
+    /// Whether a job of `operation`, which prepared `target`, that stops
+    /// services succeeded, so what they use is in its new format.
+    async fn migrated_while_stopped(
         &self,
         operation: &Operation,
         target: &piqueld_core::ResolvedApplication,
     ) -> Result<bool, StoreError> {
         let succeeded = self.store.succeeded_jobs(&operation.id).await?;
-        Ok(target.jobs.iter().any(|job| {
-            job.exclusive_volumes().next().is_some()
-                && succeeded.contains(job.logical_name.as_str())
-        }))
+        Ok(target
+            .jobs
+            .iter()
+            .any(|job| job.stops_services() && succeeded.contains(job.logical_name.as_str())))
     }
 
     /// Whether a conflict blocks planning `target` against `observed`: one
@@ -669,8 +669,8 @@ impl<D: DockerApi> Controller<D> {
     /// or promoted since, environments stopped or started since, and
     /// removals that would drop resources still
     /// referenced by routes awaiting cutover. While the deployment may still
-    /// roll out, prepared job prerequisites and services stopped for an
-    /// exclusive job are left to it; once it has ended, repair restores them.
+    /// roll out, prepared job prerequisites and services stopped for a job
+    /// are left to it; once it has ended, repair restores them.
     async fn repair_once(
         &self,
         id: &EnvironmentId,

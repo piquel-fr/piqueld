@@ -87,7 +87,7 @@ impl<D: DockerApi> Controller<D> {
 
     /// Uses the full rollout plan to check blockers, but executes only shared
     /// infrastructure, this job's startup dependencies, and the removal of
-    /// services sharing its exclusive volumes. Replanning preserves dependency
+    /// the services it stops. Replanning preserves dependency
     /// ordering without promoting the candidate or touching other services.
     /// Each dependency receives its own convergence budget. Returns the run
     /// as last planned, joined to the links its environment imports.
@@ -256,10 +256,10 @@ impl<D: DockerApi> Controller<D> {
         let secrets = self
             .service_secrets(&job.container.secrets, ownership)
             .await?;
-        // An exclusive run starts once the services it stopped let go of its
-        // volumes; a newer deployment stops the wait. A run to resume holds
-        // them itself.
-        if job.exclusive_volumes().next().is_some() {
+        // A run that stops services starts once their tasks and containers
+        // have stopped; a newer deployment stops the wait. A run to resume
+        // already waited.
+        if job.stops_services() {
             let resumable = AtomicBool::new(false);
             self.retry(operation, journal, cancellation, || async {
                 let status = self.docker.job_status(job).await?;
@@ -270,7 +270,7 @@ impl<D: DockerApi> Controller<D> {
             if !resumable.load(Ordering::Relaxed) {
                 tokio::select! {
                     () = cancellation.cancelled() => return Err(OperationError::Cancelled),
-                    released = self.wait_unlocked(self.docker.wait_volumes_released(job)) => {
+                    released = self.wait_unlocked(self.docker.wait_services_stopped(job)) => {
                         released?;
                     }
                 }

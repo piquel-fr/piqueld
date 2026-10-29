@@ -1368,6 +1368,7 @@ fn dependency_jobs_must_precede_jobs_that_start_their_services() {
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds: 300,
             volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
+            stop_service: false,
         })
         .collect();
     manifest.clone().validate().unwrap();

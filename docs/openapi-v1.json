@@ -7983,6 +7983,11 @@
             "description": "Service whose image, environment, secrets, volumes, resource limits\nand network the job reuses. The job also waits for the service's\n`depends_on`.",
             "type": "string"
           },
+          "stop_service": {
+            "default": false,
+            "description": "Whether the job's service stops before the job runs, once the job's\nstartup dependencies are ready, so its previous version never runs\nagainst what the job changes. The service starts again with the\nrollout, or with the previous deployment if a job fails.",
+            "type": "boolean"
+          },
           "timeout_seconds": {
             "default": 300,
             "description": "Seconds the job may run before the deployment fails, from 1 to 86,400.",
@@ -12474,6 +12479,10 @@
           "service": {
             "$ref": "#/components/schemas/ServiceName",
             "description": "Service whose prepared container settings the job reuses."
+          },
+          "stop_service": {
+            "description": "Whether the job's service stops before the job runs. Omitted when\nunset, so spec hashes of applications that never set it stay\nunchanged.",
+            "type": "boolean"
           },
           "timeout_seconds": {
             "description": "Seconds the job may run before the deployment fails.",

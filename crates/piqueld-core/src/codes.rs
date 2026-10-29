@@ -152,7 +152,8 @@ pub const JOB_TIMEOUT_INVALID: &str = "job_timeout_invalid";
 pub const JOB_VOLUME_ACCESS_INVALID: &str = "job_volume_access_invalid";
 /// A job sets an environment variable or mounts at a target its service already does.
 pub const JOB_SETTING_CONFLICT: &str = "job_setting_conflict";
-/// An exclusive job stops the services sharing its volumes until rollout.
+/// A job stops its own service, or an exclusive job those sharing its volumes,
+/// until rollout.
 pub const JOB_STOPS_SERVICES: &str = "job_stops_services";
 
 /// Template text has a `${{` without a well-formed `namespace.name` reference.

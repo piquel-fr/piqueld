@@ -17,7 +17,7 @@ use bollard::{
 use piqueld_core::{
     DesiredJobRun,
     api::LogStream,
-    resource::{APPLICATION_LABEL, JOB_LABEL, JOB_OPERATION_LABEL},
+    resource::{APPLICATION_LABEL, JOB_LABEL, JOB_OPERATION_LABEL, SERVICE_LABEL},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,8 @@ const JOB_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
 const JOB_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Label carrying when a run's timeout expires, in Unix milliseconds.
 const JOB_DEADLINE_LABEL: &str = "io.piqueld.job-deadline";
+/// Label Swarm sets on each task's container, naming its service.
+const SWARM_SERVICE_LABEL: &str = "com.docker.swarm.service.name";
 
 impl BollardDocker {
     /// Converts a service specification into a single-completion job without
@@ -88,12 +90,12 @@ impl BollardDocker {
 
     /// Replaces any existing service of the job with this operation's run,
     /// labelled with when its timeout expires. Fails while a run of the job
-    /// is still live, or, for an exclusive run, while another service mounts
-    /// its volumes or their tasks and containers have not stopped; callers
-    /// wait for those with `DockerApi::wait_volumes_released` first. The
-    /// controller's mutation lock covers this and every service write, so
-    /// with [`Self::check_volumes_free`] a service never shares a volume with
-    /// an exclusive run.
+    /// is still live, or while a service the run stops exists or its tasks
+    /// and containers have not stopped; callers wait for those with
+    /// `DockerApi::wait_services_stopped` first. The controller's mutation
+    /// lock covers this and every service write, so with
+    /// [`Self::check_volumes_free`] a service never shares a volume with an
+    /// exclusive run.
     pub(super) async fn create_job(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
         if !job.has_valid_identity() {
             return Err(DockerError::OwnershipConflict);
@@ -110,10 +112,10 @@ impl BollardDocker {
                 "start a job while an earlier run is stopping",
             ));
         }
-        self.check_volumes_unused(job).await?;
-        if !self.volumes_released(job).await? {
+        self.check_services_removed(job).await?;
+        if !self.services_stopped(job).await? {
             return Err(DockerError::Request(
-                "start an exclusive job while its volume is in use",
+                "start a job while a service it stops is still running",
             ));
         }
         let node_id = self.local_node_id().await?;
@@ -129,10 +131,10 @@ impl BollardDocker {
         self.create_service_wire(&spec).await
     }
 
-    /// Fails while a service of the application, other than a job, mounts a
-    /// volume `job` holds exclusively: waiting cannot remove it.
-    async fn check_volumes_unused(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
-        if job.exclusive_volumes().next().is_none() {
+    /// Fails while a service of the application, other than a job, that
+    /// `job` stops exists: waiting cannot remove it.
+    async fn check_services_removed(&self, job: &DesiredJobRun) -> Result<(), DockerError> {
+        if !job.stops_services() {
             return Ok(());
         }
         let services = self
@@ -140,11 +142,15 @@ impl BollardDocker {
             .await?;
         if services.iter().any(|service| {
             let labels = service.spec.as_ref().and_then(|spec| spec.labels.as_ref());
+            let name = service.spec.as_ref().and_then(|spec| spec.name.as_deref());
             !labels.is_some_and(|labels| labels.contains_key(JOB_LABEL))
-                && Self::spec_mounts(service).any(|(volume, _)| job.holds_volume(volume))
+                && job.stops(
+                    name.unwrap_or_default(),
+                    Self::spec_mounts(service).map(|(volume, _)| volume),
+                )
         }) {
             return Err(DockerError::Request(
-                "start an exclusive job while a service mounts its volume",
+                "start a job while a service it stops exists",
             ));
         }
         Ok(())
@@ -302,20 +308,38 @@ impl BollardDocker {
             .into())
     }
 
-    /// Whether no task of the application's services that has not stopped,
-    /// and no running container, mounts a volume `job` holds exclusively.
-    /// Swarm stops the tasks of removed services asynchronously. Only the
-    /// application's services mount its volumes, so only their tasks are
-    /// listed.
-    pub(super) async fn volumes_released(&self, job: &DesiredJobRun) -> Result<bool, DockerError> {
+    /// Whether every service `job` stops has stopped: no task of the
+    /// application's services that has not stopped, and no running
+    /// container, belongs to its stopped service or mounts a volume it holds
+    /// exclusively. Swarm stops the tasks of removed services asynchronously.
+    /// Only the application's services mount its volumes, so only their
+    /// tasks are listed.
+    pub(super) async fn services_stopped(&self, job: &DesiredJobRun) -> Result<bool, DockerError> {
+        if !job.stops_services() {
+            return Ok(true);
+        }
+        let ownership = Self::ownership_filter(&job.container.labels)?;
+        // Tasks before containers: see `live_tasks`.
+        if job.stop_service {
+            let mut labels = ownership.clone();
+            labels.push(format!("{SERVICE_LABEL}={}", job.container.logical_name));
+            let service = job
+                .stopped_service()
+                .ok_or(DockerError::Validation("job ownership"))?;
+            if !self.live_tasks(&labels).await?.is_empty()
+                || !self
+                    .labelled_containers(vec![format!("{SWARM_SERVICE_LABEL}={service}")])
+                    .await?
+                    .is_empty()
+            {
+                return Ok(false);
+            }
+        }
         let volumes = job.exclusive_volumes().collect::<Vec<_>>();
         if volumes.is_empty() {
             return Ok(true);
         }
-        // Tasks before containers: see `live_tasks`.
-        let tasks = self
-            .live_tasks(&Self::ownership_filter(&job.container.labels)?)
-            .await?;
+        let tasks = self.live_tasks(&ownership).await?;
         for volume in volumes {
             let options = ListContainersOptionsBuilder::default()
                 .filters(&HashMap::from([("volume", vec![volume.to_string()])]))

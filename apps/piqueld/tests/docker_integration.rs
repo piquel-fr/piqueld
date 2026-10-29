@@ -659,7 +659,23 @@ impl SwarmScenario {
         volume_access: piqueld_core::manifest::JobVolumeAccess,
     ) -> piqueld_core::DesiredJobRun {
         self.environment
-            .job(&self.service, operation, script, volume_access)
+            .job(&self.service, operation, script, volume_access, false)
+    }
+
+    /// A service named `name` that keeps running until Docker kills it: `sh`
+    /// as PID 1 ignores SIGTERM, so a removed task stops only after the grace
+    /// period.
+    fn lingering_service(&self, name: &str) -> DesiredService {
+        let mut service = self.derived_service(name);
+        service.command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "while true; do sleep 1; done".into(),
+        ];
+        service.arguments.clear();
+        service.healthcheck = None;
+        service.secrets.clear();
+        service
     }
 
     /// Runs one-shot jobs derived from the service: they read its secret,
@@ -754,15 +770,7 @@ impl SwarmScenario {
     /// period, which starting the run doesn't wait for: callers wait first.
     async fn exclusive_jobs_hold_their_volume(&self) {
         let docker = &self.engine.docker;
-        let mut writer = self.derived_service("writer");
-        writer.command = vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "while true; do sleep 1; done".into(),
-        ];
-        writer.arguments.clear();
-        writer.healthcheck = None;
-        writer.secrets.clear();
+        let mut writer = self.lingering_service("writer");
         writer.mounts = vec![self.environment.data_mount()];
         self.engine.ensure_service_eventually(&writer).await;
 
@@ -783,7 +791,7 @@ impl SwarmScenario {
             docker.start_job(&job).await,
             Err(DockerError::Request(_))
         ));
-        docker.wait_volumes_released(&job).await.unwrap();
+        docker.wait_services_stopped(&job).await.unwrap();
         docker.start_job(&job).await.unwrap();
         assert!(matches!(
             docker.ensure_service(&writer).await,
@@ -800,6 +808,48 @@ impl SwarmScenario {
         .expect("the service starts once the run stopped");
         docker
             .remove_service(writer.name.as_str(), &self.environment.labels)
+            .await
+            .unwrap();
+    }
+
+    /// A run that stops its own service does not start while the service
+    /// exists, nor until its removed task stopped.
+    async fn jobs_wait_for_their_stopped_service(&self) {
+        let docker = &self.engine.docker;
+        let mut auth = self.lingering_service("auth");
+        auth.mounts.clear();
+        self.engine.ensure_service_eventually(&auth).await;
+        let job = self.environment.job(
+            &auth,
+            "operation-stop-service",
+            "echo migrated",
+            piqueld_core::manifest::JobVolumeAccess::ReadOnly,
+            true,
+        );
+        assert_eq!(job.stopped_service().as_ref(), Some(&auth.name));
+        assert!(matches!(
+            docker.start_job(&job).await,
+            Err(DockerError::Request(_))
+        ));
+        docker
+            .remove_service(auth.name.as_str(), &self.environment.labels)
+            .await
+            .unwrap();
+        assert!(matches!(
+            docker.start_job(&job).await,
+            Err(DockerError::Request(_))
+        ));
+        docker.wait_services_stopped(&job).await.unwrap();
+        docker.start_job(&job).await.unwrap();
+        assert_eq!(
+            Self::wait_job(docker, &job).await,
+            JobStatus::Finished {
+                exit_code: Some(0),
+                error: None
+            }
+        );
+        docker
+            .remove_jobs(&self.environment.labels, JobRuns::All)
             .await
             .unwrap();
     }
@@ -1011,6 +1061,7 @@ async fn swarm_init_create_replica_drift_restart_jobs_delete_and_volume_retentio
         .job_runs_are_waited_for_until_their_containers_stop()
         .await;
     scenario.exclusive_jobs_hold_their_volume().await;
+    scenario.jobs_wait_for_their_stopped_service().await;
     scenario.delete_retaining_volume(&http_service).await;
 }
 

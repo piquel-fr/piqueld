@@ -121,6 +121,7 @@ fn manifest_with_jobs(jobs: &[&str], timeout_seconds: u32) -> ApplicationManifes
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds,
             volume_access: piqueld_core::manifest::JobVolumeAccess::ReadOnly,
+            stop_service: false,
         })
         .collect();
     input
@@ -156,6 +157,14 @@ fn manifest_with_exclusive_job() -> ApplicationManifest {
     let mut input = manifest_with_jobs(&["migrate"], 300);
     input.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
     input
+}
+
+/// The fixture with one migration of `web` that stops `web` before it runs,
+/// once as an exclusive job and once by stopping its own service.
+fn manifests_with_web_stopping_job() -> [ApplicationManifest; 2] {
+    let mut own = manifest_with_jobs(&["migrate"], 300);
+    own.spec.jobs[0].stop_service = true;
+    [manifest_with_exclusive_job(), own]
 }
 
 /// A store, the prebuilt fixture resolved for it, and a controller over a
@@ -3657,15 +3666,24 @@ async fn a_deployment_blocked_by_a_conflict_rolls_back_its_job_prerequisites() {
     assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
-/// A conflict blocking a deployment after its exclusive job succeeded keeps
-/// the services the job stopped stopped, as they would run against data in
-/// the new format. The deployment continues once the conflict is resolved.
+/// A conflict blocking a deployment after a job that stops services
+/// succeeded keeps them stopped, as they would run against data in the new
+/// format. The deployment continues once the conflict is resolved.
 #[tokio::test]
-async fn a_conflict_after_an_exclusive_job_succeeded_keeps_its_services_stopped() {
+async fn a_conflict_after_a_job_stopping_services_succeeded_keeps_them_stopped() {
+    for replacement in manifests_with_web_stopping_job() {
+        a_conflict_after_the_job_succeeded_keeps_web_stopped(replacement).await;
+    }
+}
+
+/// Deploys `replacement`, whose job stops `web`, and blocks it by a conflict
+/// once the job runs.
+async fn a_conflict_after_the_job_succeeded_keeps_web_stopped(
+    mut replacement: ApplicationManifest,
+) {
     let harness = ControllerHarness::new().await;
     let first = harness.apply(manifest(), None).await;
     harness.finish(&first).await;
-    let mut replacement = manifest_with_exclusive_job();
     let mut extra = replacement.spec.services[0].clone();
     extra.name = "extra".into();
     extra.mounts.clear();
@@ -3695,28 +3713,37 @@ async fn a_conflict_after_an_exclusive_job_succeeded_keeps_its_services_stopped(
 }
 
 #[tokio::test]
-async fn exclusive_job_runs_while_its_volume_users_are_stopped() {
-    let harness = ControllerHarness::new().await;
-    let first = harness.apply(manifest(), None).await;
-    harness.finish(&first).await;
-    let operation = harness.apply(manifest_with_exclusive_job(), None).await;
-    harness.finish(&operation).await;
-    // The running web wrote the volume, so it stopped before the job and
-    // restarted with the rollout.
-    assert_eq!(
-        *harness.docker.job_starts.lock().await,
-        [JobStart {
-            job: "migrate".into(),
-            services: 0,
-            networks: 1,
-            volumes: 1
-        }]
-    );
-    assert_eq!(harness.docker.observed.lock().await.services.len(), 1);
+async fn jobs_run_while_the_services_they_stop_are_stopped() {
+    for replacement in manifests_with_web_stopping_job() {
+        let harness = ControllerHarness::new().await;
+        let first = harness.apply(manifest(), None).await;
+        harness.finish(&first).await;
+        let operation = harness.apply(replacement, None).await;
+        harness.finish(&operation).await;
+        // Web stopped before the job and restarted with the rollout.
+        assert_eq!(
+            *harness.docker.job_starts.lock().await,
+            [JobStart {
+                job: "migrate".into(),
+                services: 0,
+                networks: 1,
+                volumes: 1
+            }]
+        );
+        assert_eq!(harness.docker.observed.lock().await.services.len(), 1);
+    }
 }
 
 #[tokio::test]
-async fn failed_exclusive_job_restarts_stopped_services_once_its_run_stopped() {
+async fn failed_jobs_restart_the_services_they_stopped_once_their_run_stopped() {
+    for replacement in manifests_with_web_stopping_job() {
+        a_failed_job_restarts_web_once_its_run_stopped(replacement).await;
+    }
+}
+
+/// Deploys `replacement`, whose job stops `web`, with a failing job whose
+/// cleanup fails at first.
+async fn a_failed_job_restarts_web_once_its_run_stopped(replacement: ApplicationManifest) {
     let harness = ControllerHarness::new().await;
     let first = harness.apply(manifest(), None).await;
     harness.finish(&first).await;
@@ -3725,8 +3752,8 @@ async fn failed_exclusive_job_restarts_stopped_services_once_its_run_stopped() {
         .docker
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
-    let operation = harness.apply(manifest_with_exclusive_job(), None).await;
-    // While the run may still hold the volume, web stays stopped.
+    let operation = harness.apply(replacement, None).await;
+    // While the run may still be running, web stays stopped.
     for _ in 0..3 {
         assert_eq!(
             harness.scan_result(&operation).await,

@@ -517,6 +517,13 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "JobVolumeAccess::is_default")]
     #[schema(default = JobVolumeAccess::default)]
     pub volume_access: JobVolumeAccess,
+    /// Whether the job's service stops before the job runs, once the job's
+    /// startup dependencies are ready, so its previous version never runs
+    /// against what the job changes. The service starts again with the
+    /// rollout, or with the previous deployment if a job fails.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(default = false)]
+    pub stop_service: bool,
 }
 
 string_enum! {

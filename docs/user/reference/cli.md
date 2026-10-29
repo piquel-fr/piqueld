@@ -711,6 +711,7 @@ piquelctl app route remove notes notes.example.com --yes
 piquelctl env visibility notes staging private --yes
 piquelctl app job set notes migrate web --timeout-seconds 600 --yes -- notes migrate
 piquelctl app job set notes migrate web --volume-access exclusive --yes -- notes migrate
+piquelctl app job set notes migrate web --stop-service on --yes -- notes migrate
 piquelctl app job set notes migrate web --env OWNER_PASSWORD_FILE=/run/secrets/owner --secret owner-password=/run/secrets/owner --yes -- notes migrate
 piquelctl app job move notes migrate 1 --yes
 piquelctl app job remove notes migrate --yes
@@ -776,21 +777,24 @@ addresses. It also counts the previews against their limits, installation-wide
 and for each application you may read, flags a count left over a lowered limit,
 and sums the CPU and memory limits of the previews' deployed replicas.
 `job set` adds a job after the existing ones, or replaces the job with that name
-in place, keeping its timeout and volume access unless `--timeout-seconds` or
-`--volume-access` is given (300 seconds and `read-only` for a new job).
+in place, keeping its timeout, volume access and whether it stops its service
+unless `--timeout-seconds`, `--volume-access` or `--stop-service` is given
+(300 seconds, `read-only` and `off` for a new job).
 `--env KEY=VALUE` and `--secret NAME=TARGET`, repeated for several, set the
 environment variables and secret files only the job's container gets, added
 to its service's; given, they replace the job's own, which are otherwise kept.
 `--clear-env` and `--clear-secrets` remove them.
 `read-only` mounts the service's volumes read-only; `exclusive` keeps writable
-volumes writable and stops every service mounting them until the rollout. `job move` sets a job's 1-based position in the run order. Jobs run in
+volumes writable and stops every service mounting them until the rollout.
+`--stop-service on` stops the job's own service before it runs, until the
+rollout. `job move` sets a job's 1-based position in the run order. Jobs run in
 their saved order before each rollout; like routes, job edits
 preserve the other jobs and use the inspected generation.
 Each job inherits its referenced service's `depends_on`: those services and
 their transitive dependencies start or update and pass health checks before
 the job runs. Configure dependencies with `app service depends-on`. Other
 services wait for all jobs to succeed; after a failed job, repair rolls its
-dependencies back and restarts the services an exclusive job stopped. Jobs of dependency services must come earlier in the saved order.
+dependencies back and restarts the services the job stopped. Jobs of dependency services must come earlier in the saved order.
 `export set` lets the listed applications reach a service through a
 [link](manifest.md#links), replacing who may, and whether previews
 may, if it was already exported; `--previews` lets their previews too.

@@ -1233,8 +1233,11 @@ fn jobs_add_their_environment_and_secrets_to_their_container_only() {
     );
 }
 
-/// The fixture with an exclusive migration of `web`, which waits for `db`.
-fn exclusive_migration() -> piqueld_core::NormalizedApplication {
+/// The fixture with a migration of `web`, which waits for `db`, as
+/// `configure` sets it up.
+fn migration(
+    configure: impl FnOnce(&mut piqueld_core::manifest::Job),
+) -> piqueld_core::NormalizedApplication {
     let id = ApplicationId::parse("app-notes-01").unwrap();
     let mut manifest = parse_toml(&format!(
         "{}[[spec.services]]\nname = \"db\"\n[spec.services.source]\n\
@@ -1246,7 +1249,7 @@ fn exclusive_migration() -> piqueld_core::NormalizedApplication {
     .unwrap()
     .normalize(id.clone())
     .to_manifest();
-    manifest.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
+    configure(&mut manifest.spec.jobs[0]);
     for service in &mut manifest.spec.services {
         if service.name == "web" {
             service.depends_on = vec!["db".into()];
@@ -1270,20 +1273,46 @@ fn resolve_all(app: &piqueld_core::NormalizedApplication) -> ResolvedApplication
     compile_application(app, &environment(), instance(), &resolutions).unwrap()
 }
 
+/// The fixture's exclusive migration of `web`.
+fn exclusive_migration() -> piqueld_core::NormalizedApplication {
+    migration(|job| job.volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive)
+}
+
+/// The fixture's `web` service of `desired`.
+fn web(desired: &ResolvedApplication) -> &piqueld_core::DesiredService {
+    desired
+        .services
+        .iter()
+        .find(|service| service.logical_name.as_str() == "web")
+        .unwrap()
+}
+
 #[test]
 fn exclusive_jobs_stop_volume_users_after_dependencies_and_repair_keeps_them_stopped() {
     let desired = resolve_all(&exclusive_migration());
     let job = &desired.jobs[0];
-    let web = desired
-        .services
-        .iter()
-        .find(|service| service.logical_name.as_str() == "web")
-        .unwrap();
     assert_eq!(
         job.exclusive_volumes().collect::<Vec<_>>(),
-        [&web.mounts[0].volume_name]
+        [&web(&desired).mounts[0].volume_name]
     );
     assert!(!job.for_operation("operation-1").container.mounts[0].read_only);
+    assert_job_stops_web(&desired);
+}
+
+#[test]
+fn jobs_stop_their_own_service_after_dependencies_and_repair_keeps_it_stopped() {
+    let desired = resolve_all(&migration(|job| job.stop_service = true));
+    let job = &desired.jobs[0];
+    assert_eq!(job.exclusive_volumes().count(), 0);
+    assert_eq!(job.stopped_service().as_ref(), Some(&web(&desired).name));
+    assert_job_stops_web(&desired);
+}
+
+/// Preparing the fixture's migration starts `db`, then stops `web`, and
+/// repair of the previous target leaves `web` stopped.
+fn assert_job_stops_web(desired: &ResolvedApplication) {
+    let job = &desired.jobs[0];
+    let web = web(desired);
     let plan_for = |observed: &ObservedApplication| {
         Plan::from_request(
             &PlanRequest::Reconcile {
@@ -1294,17 +1323,17 @@ fn exclusive_jobs_stop_volume_users_after_dependencies_and_repair_keeps_them_sto
     };
     let next = |observed: &ObservedApplication| {
         plan_for(observed)
-            .next_job_preparation(&desired, job, observed)
+            .next_job_preparation(desired, job, observed)
             .map(|action| action.kind.to_string())
     };
 
     // The dependency starts first, then the running web stops.
-    let mut running = observed(&desired);
+    let mut running = observed(desired);
     running
         .services
         .retain(|service| service.name == web.name.as_str());
     assert_eq!(next(&running).as_deref(), Some("ENSURE SERVICE db"));
-    let mut ready = observed(&desired);
+    let mut ready = observed(desired);
     assert_eq!(next(&ready), Some(format!("REMOVE SERVICE {}", web.name)));
     ready
         .services
@@ -1312,13 +1341,13 @@ fn exclusive_jobs_stop_volume_users_after_dependencies_and_repair_keeps_them_sto
     assert_eq!(next(&ready), None);
 
     // Repair of the previous target must not restart web while the job may
-    // still run or has changed its volume.
+    // still run or has changed what web uses.
     let mut repair = plan_for(&ready);
     assert_eq!(
         repair.next_repair().unwrap().kind.to_string(),
         "ENSURE SERVICE web"
     );
-    repair.preserve_job_prerequisites(&desired, &ready);
+    repair.preserve_job_prerequisites(desired, &ready);
     assert!(repair.next_repair().is_none());
     assert!(
         repair
@@ -1375,6 +1404,27 @@ fn previews_list_jobs_after_their_dependencies_and_warn_about_stopped_services()
     assert_eq!(
         plan.actions.last().map(|action| action.kind.to_string()),
         Some("RUN JOB migrate".into())
+    );
+
+    // A job stopping its own service warns about that service alone.
+    let app = migration(|job| job.stop_service = true);
+    let mut plan = Plan::from_request(
+        &PlanRequest::Preview {
+            unresolved: Vec::new(),
+            desired: Some(resolve_all(&app)),
+        },
+        &ObservedApplication::default(),
+    );
+    plan.add_jobs(&app, &environment());
+    assert_eq!(
+        plan.diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.message.as_str()))
+            .collect::<Vec<_>>(),
+        [(
+            piqueld_core::codes::JOB_STOPS_SERVICES,
+            "job migrate stops web before it runs, until the rollout"
+        )]
     );
 }
 

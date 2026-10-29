@@ -19,6 +19,7 @@ struct JobDraft {
     secrets: Vec<(String, String)>,
     timeout: String,
     volume_access: JobVolumeAccess,
+    stop_service: bool,
 }
 
 impl Default for JobDraft {
@@ -31,6 +32,7 @@ impl Default for JobDraft {
             secrets: Vec::new(),
             timeout: Job::DEFAULT_TIMEOUT_SECONDS.to_string(),
             volume_access: JobVolumeAccess::default(),
+            stop_service: false,
         }
     }
 }
@@ -67,6 +69,7 @@ impl JobDraft {
                 .parse()
                 .map_err(|_| "Job timeout must be a whole number of seconds".to_owned())?,
             volume_access: self.volume_access,
+            stop_service: self.stop_service,
         })
     }
 }
@@ -89,6 +92,7 @@ impl From<Job> for JobDraft {
                 .collect(),
             timeout: job.timeout_seconds.to_string(),
             volume_access: job.volume_access,
+            stop_service: job.stop_service,
         }
     }
 }
@@ -297,7 +301,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                 <div>
                     <h3>"Jobs"</h3>
                     <p>
-                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Environment variables and secrets added here reach only the job's container, never the service's replicas, and can't replace ones the service sets. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment and dependencies return to the running deployment. Volumes are read-only unless the job has exclusive access, which stops every service using its writable volumes until the rollout. Each command element is one row; no shell parsing is applied."
+                        "Each deployment runs these commands to completion, in order, after preparing images. A job reuses its service's image, environment, secrets, and volume mounts, and waits for that service's startup dependencies to be healthy. Environment variables and secrets added here reach only the job's container, never the service's replicas, and can't replace ones the service sets. Dependencies start or update first; other services roll out only after all jobs succeed. A failed job stops the deployment and dependencies return to the running deployment. Volumes are read-only unless the job has exclusive access, which stops every service using its writable volumes until the rollout. A job can also stop its own service, so its previous version never runs against what the job changes. Each command element is one row; no shell parsing is applied."
                     </p>
                 </div>
             </header>
@@ -373,6 +377,19 @@ pub(super) fn JobSettings() -> impl IntoView {
                                             <option value={JobVolumeAccess::Exclusive
                                                 .as_str()}>"Exclusive"</option>
                                         </select>
+                                    </label>
+                                    <label class="checkbox">
+                                        <input
+                                            type="checkbox"
+                                            prop:checked={move || jobs.field(index, |j| j.stop_service)}
+                                            on:change={move |event| {
+                                                jobs.edit(
+                                                    index,
+                                                    |j| j.stop_service = event_target_checked(&event),
+                                                );
+                                            }}
+                                        />
+                                        <span>"Stop service first"</span>
                                     </label>
                                     <div class="btn-group">
                                         <button

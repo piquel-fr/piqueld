@@ -790,6 +790,10 @@ pub struct DesiredJob {
     /// setting existed read them only.
     #[serde(default)]
     pub volume_access: JobVolumeAccess,
+    /// Whether the job's own service stops before it runs. Omitted when unset,
+    /// like targets prepared before this setting existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stop_service: bool,
     /// The referenced service's container settings with the job's command,
     /// Docker name, and labels. Health checks never apply to jobs.
     pub container: DesiredService,
@@ -835,6 +839,7 @@ impl DesiredJob {
             run: job.run,
             timeout_seconds: job.timeout_seconds,
             volume_access: job.volume_access,
+            stop_service: job.stop_service,
             container,
         }
     }
@@ -862,10 +867,36 @@ impl DesiredJob {
     }
 
     /// Whether the job holds `volume`, a Docker volume name, exclusively.
-    #[must_use]
-    pub fn holds_volume(&self, volume: &str) -> bool {
+    fn holds_volume(&self, volume: &str) -> bool {
         self.exclusive_volumes()
             .any(|exclusive| exclusive.as_str() == volume)
+    }
+
+    /// Docker name of the job's own service when the job stops it before it
+    /// runs.
+    #[must_use]
+    pub fn stopped_service(&self) -> Option<DockerServiceName> {
+        let environment = Ownership::labelled_environment(&self.container.labels)?;
+        self.stop_service
+            .then(|| DockerServiceName::for_service(&environment, &self.container.logical_name))
+    }
+
+    /// Whether the job stops services before it runs: its own, or those
+    /// mounting a volume it holds exclusively.
+    #[must_use]
+    pub fn stops_services(&self) -> bool {
+        self.stop_service || self.exclusive_volumes().next().is_some()
+    }
+
+    /// Whether the service named `name`, a Docker service name, which mounts
+    /// `volumes`, must stop before the job runs and stay stopped until the
+    /// rollout: it is the job's stopped service, or mounts a volume the job
+    /// holds exclusively.
+    #[must_use]
+    pub fn stops<'a>(&self, name: &str, mut volumes: impl Iterator<Item = &'a str>) -> bool {
+        self.stopped_service()
+            .is_some_and(|service| service.as_str() == name)
+            || volumes.any(|volume| self.holds_volume(volume))
     }
 
     /// Returns this job's run for `operation`. Runs of read-only jobs mount

@@ -69,6 +69,11 @@ pub struct ValidatedJob {
     /// spec hashes of applications that never set it stay unchanged.
     #[serde(skip_serializing_if = "JobVolumeAccess::is_default")]
     pub volume_access: JobVolumeAccess,
+    /// Whether the job's service stops before the job runs. Omitted when
+    /// unset, so spec hashes of applications that never set it stay
+    /// unchanged.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stop_service: bool,
 }
 
 /// Validated service source.
@@ -816,6 +821,7 @@ impl ValidatedJob {
             run: value.run,
             timeout_seconds: value.timeout_seconds,
             volume_access: value.volume_access,
+            stop_service: value.stop_service,
         })
     }
 
@@ -830,6 +836,7 @@ impl ValidatedJob {
             run: self.run,
             timeout_seconds: self.timeout_seconds,
             volume_access: self.volume_access,
+            stop_service: self.stop_service,
         }
     }
 }

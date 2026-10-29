@@ -260,6 +260,12 @@ Type: string. Required.
 
 Service whose image, environment, secrets, volumes, resource limits and network the job reuses. The job also waits for the service's `depends_on`.
 
+### `spec.jobs[].stop_service`
+
+Type: boolean. Default: `false`.
+
+Whether the job's service stops before the job runs, once the job's startup dependencies are ready, so its previous version never runs against what the job changes. The service starts again with the rollout, or with the previous deployment if a job fails.
+
 ### `spec.jobs[].timeout_seconds`
 
 Type: integer of at most 4294967295. Default: `300`.

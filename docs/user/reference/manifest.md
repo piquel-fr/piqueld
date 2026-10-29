@@ -1142,6 +1142,7 @@ command = ["auth-service", "migrate"]
 run = "before-rollout"
 timeout_seconds = 300        # default
 volume_access = "read-only"  # default, or "exclusive"
+stop_service = false         # default
 
 [spec.jobs.environment]      # added to auth's, for the job only
 AUTH_DATABASE_OWNER_PASSWORD = "file:///run/secrets/database-password"
@@ -1177,6 +1178,25 @@ a writable volume, and the job's startup dependencies cannot mount it, or
 validation fails with `job_volume_access_invalid`. Plans warn with
 `job_stops_services`, naming the services that stop.
 
+A migration that drops or renames something the previous version of its
+service still uses would break that version while the job and rollout run.
+Set `stop_service = true` to stop the job's service first:
+
+```toml
+[[spec.jobs]]
+name = "migrate"
+service = "auth"
+command = ["auth-service", "migrate"]
+run = "before-rollout"
+stop_service = true
+```
+
+Once the job's dependencies are ready, `auth` stops. The job starts only
+after its containers have exited, and `auth` starts again with the rollout.
+This trades a short outage for never running the old code against a schema it
+doesn't understand. Plans warn with `job_stops_services`. To avoid the outage,
+split the change into migrations that each version can run beside.
+
 Jobs inherit their referenced service's `depends_on`. Before each job, those
 services and their transitive dependencies start or update to the prepared
 configuration and converge, including their health checks. For example, set
@@ -1197,14 +1217,14 @@ A non-zero exit, a rejected task, or exceeding `timeout_seconds` (1–86,400) fa
 the deployment with `job_failed` or `job_timeout`. Services outside the job's
 startup dependencies keep their previous configuration. While the deployment
 can still continue, active-target repair keeps the dependencies it started or
-updated and the services stopped for an exclusive job. Once a job has failed,
+updated and the services stopped for a job. Once a job has failed,
 the deployment was cancelled, or an ownership or immutable configuration
 conflict blocks the deployment's plan, and the job's container has stopped,
 repair returns them to the running deployment: dependencies roll back and
 stopped services start again. Data the job changed is not reverted. A
 deployment blocked by a conflict rolls out again once the conflict is
-resolved; if one of its exclusive jobs already succeeded, the services it
-stopped stay stopped until then, since they would run against migrated data. The application
+resolved; if one of its jobs that stops services already succeeded, the
+services it stopped stay stopped until then, since they would run against migrated data. The application
 stays degraded, and failed jobs are not retried automatically; deploy again
 after fixing the cause. Each job succeeds at most once per deployment: a
 retried deployment skips jobs that already succeeded, and after a daemon
