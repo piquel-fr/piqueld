@@ -180,9 +180,10 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 {promote_into()}
                 // A one-time revision overrides the branch the manifest is fetched from.
                 <Show when={move || {
-                    context
-                        .selected_environment()
-                        .is_some_and(|environment| environment.source.branch().is_some())
+                    context.can(AppPermission::Deploy)
+                        && context
+                            .selected_environment()
+                            .is_some_and(|environment| environment.source.branch().is_some())
                 }}>
                     <DeployRevision />
                 </Show>
