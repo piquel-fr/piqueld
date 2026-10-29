@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises';
 import {
-  test, expect, api, auth, adminToken, call, register, proof, webManifest, applicationTab, environmentTab, title, head,
+  test, expect, api, auth, adminToken, call, register, proof, resolveEnvironment, webManifest, applicationTab, environmentTab, title, head,
   Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
 } from '../fixtures.js';
 
@@ -109,7 +109,9 @@ test('an application shows only the controls the account may use on it', async (
   await store.getByRole('button', { name: 'Save secret', exact: true }).click();
   await expect(store.getByText('Secret saved. Deploy to use its new version.')).toBeVisible();
 
-  // A link to a hidden tab opens the environment's overview instead.
+  // A link to a hidden tab opens the environment's overview instead, and
+  // the deployed environment offers no Stop.
+  await resolveEnvironment(page, environment.id, saved.generation);
   await page.goto(`/dashboard/applications/${app}/environments/${environment.id}?tab=logs`);
   await expect(environmentTab(page, 'Overview')).toHaveAttribute('aria-current', 'page');
   await expect(environmentTab(page, 'Logs')).toHaveCount(0);

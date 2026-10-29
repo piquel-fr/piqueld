@@ -168,6 +168,24 @@ export async function rewrite(page: Page, path: string, edit: (data: Record<stri
   });
 }
 
+/** Shows environment `id` resolved at `generation` in application
+ * responses: the stubbed runtime never resolves a target. */
+export async function resolveEnvironment(page: Page, id: string, generation: number) {
+  const resolve = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(resolve);
+    if (typeof value !== 'object' || value === null) return;
+    const record = value as Record<string, unknown>;
+    if (record.id === id && 'resolved_generation' in record) record.resolved_generation = generation;
+    Object.values(record).forEach(resolve);
+  };
+  await page.route(url => url.pathname.startsWith('/api/v1/applications'), async (route: Route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    resolve(json);
+    await route.fulfill({ response, json });
+  });
+}
+
 /** The manifest of application `name`, running one `web` service from
  * `nginx:alpine`, with the rest of `spec`. */
 export const webManifest = (name: string, spec: Record<string, unknown> = {}) => ({

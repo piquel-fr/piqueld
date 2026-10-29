@@ -360,7 +360,7 @@ fn DeployRevision() -> impl IntoView {
 /// Stop, or Start once stopped, for the editor's target environment, once
 /// it has been deployed; not for previews. Stopping, after confirmation,
 /// withdraws its routes and scales its services to zero until it is started
-/// or deployed again.
+/// or deployed again. Hidden without `apps:deploy`.
 #[component]
 fn StopAction() -> impl IntoView {
     let context = editor();
@@ -371,9 +371,10 @@ fn StopAction() -> impl IntoView {
     };
     // Previews are deleted instead.
     let deployed = move || {
-        context.selected_environment().is_some_and(|environment| {
-            environment.preview().is_none() && environment.resolved_generation.is_some()
-        })
+        context.can(AppPermission::Deploy)
+            && context.selected_environment().is_some_and(|environment| {
+                environment.preview().is_none() && environment.resolved_generation.is_some()
+            })
     };
     let toggle = move |_| {
         let stopping = !stopped();

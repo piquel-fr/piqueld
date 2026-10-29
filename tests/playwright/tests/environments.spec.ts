@@ -1,4 +1,4 @@
-import { test, expect, call, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, call, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** `environments` with a second environment, `staging` or, to `collide`,
@@ -201,20 +201,8 @@ test('a deployed environment stops and starts from its page', async ({ page, acc
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('stopping'), expected_generation: 0 });
   const app = saved.application_id as string;
   await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
-  // The stubbed runtime never resolves a target; Stop shows once one is.
-  const resolve = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(resolve);
-    if (typeof value !== 'object' || value === null) return;
-    const record = value as Record<string, unknown>;
-    if (record.id === app && 'resolved_generation' in record) record.resolved_generation = saved.generation;
-    Object.values(record).forEach(resolve);
-  };
-  await page.route(url => url.pathname.startsWith('/api/v1/applications'), async route => {
-    const response = await route.fetch();
-    const json = await response.json();
-    resolve(json);
-    await route.fulfill({ response, json });
-  });
+  // Stop shows once the environment is deployed.
+  await resolveEnvironment(page, app, saved.generation);
   await page.goto(`/dashboard/applications/${app}/environments/${app}`);
 
   page.once('dialog', async dialog => {
