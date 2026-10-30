@@ -407,8 +407,17 @@ Then check that the gateway stopped, as [above](#turn-the-gateway-off).
 - **`Waiting for the gateway configuration to be applied`.** Check **HTTPS
   ingress** in **System status**. `Ingress unavailable: could not prepare the
   Caddy gateway (requires free ports 80/443 and Docker 28+)` means another
-  program uses port 80 or 443, or Docker is too old. If you run your own
-  reverse proxy for the dashboard, move it to other ports or another server.
+  program uses port 80 or 443, or Docker is too old. To see which, select
+  **Run checks** under **Installation checks** on the **Daemon status** page,
+  or run [`piquelctl doctor`](../reference/cli.md#installation-checks): the
+  **Ports 80/443** and **Docker Engine** checks say what's wrong. If you run
+  your own reverse proxy for the dashboard, move it to other ports or another
+  server.
+- **A route stays `pending` after its environment was stopped.** A
+  [stopped](../reference/api.md#stopped-environments) environment's routes
+  aren't served. It keeps its hostnames, certificates and DNS records, so
+  starting it serves them again within ten seconds: select **Start** on the
+  environment's page, or run `piquelctl env start <app> <environment>`.
 - **Saving fails with `hostname_conflict`.** Another environment or
   application already has the hostname, or piqueld uses it itself. See
   [the previous section](#give-each-environment-its-own-hostname).
