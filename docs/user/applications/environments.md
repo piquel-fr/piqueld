@@ -509,8 +509,8 @@ hello` and `piquelctl app start hello` do the same.
 A stopped environment stays stopped until you start it, deploy it, promote
 into it, reconcile it, as `piquelctl env reconcile` does, or
 [restore](restore.md) one of its deployments: each of those starts it again.
-Pushes don't deploy it meanwhile. Once it starts, it deploys the latest
-commit of its branch that it missed, if it
+Pushes don't deploy it meanwhile. Starting or reconciling it deploys the
+latest commit of its branch that it missed, if it
 [deploys on push](deploy-on-push.md#deploy-every-push). Previews can't be
 stopped: [delete them](previews.md#delete-a-preview) instead.
 

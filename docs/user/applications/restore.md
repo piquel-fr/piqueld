@@ -72,6 +72,9 @@ piquelctl preview history blog feat/login
 piquelctl preview restore blog feat/login <deployment-id>
 ```
 
+There is no restore in the manifest: it describes what to deploy, not which
+deployment to return to.
+
 ## What a restore deploys
 
 A restore deploys what the earlier deployment ran: its manifest with the
@@ -131,8 +134,8 @@ It runs the release of the deployment it restored.
   [Allow it](secrets-and-variables.md#choose-who-may-mount-a-stored-secret)
   again, or deploy instead.
 - **There is no Restore button.** The deployment didn't succeed, or it is
-  the newest one and the environment runs it. Without `apps:deploy`, the
-  dashboard doesn't offer it either.
+  the newest one and the environment runs it. Without `apps:deploy`, or
+  `previews:deploy` for a preview, the dashboard doesn't offer it either.
 
 [`piquelctl env restore`](../reference/cli-commands.md#piquelctl-env-restore)
 lists the command's options, and the
