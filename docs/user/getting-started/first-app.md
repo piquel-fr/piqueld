@@ -89,8 +89,9 @@ Manifest is valid for application "hello".
 $ piquelctl app apply --file hello.toml --deploy
 ```
 
-`app plan --file hello.toml` shows what a deployment would change before you
-run it. The [manifest reference](../reference/manifest.md) describes every
+To see what a deployment would change before you run it, select **Preview**
+on the application's page in the dashboard, or run
+`piquelctl app plan --file hello.toml`. The [manifest reference](../reference/manifest.md) describes every
 setting. `piquelctl app manifest hello` prints the manifest of an application
 you created in the dashboard or with `piquelctl`.
 
@@ -148,7 +149,9 @@ To run two replicas of `web`:
 
 When you're done, delete the application. This removes its containers and
 history, and deletes its previews with their volumes. Its environments' named
-volumes are kept, so that their data isn't lost by accident:
+volumes are kept, so that their data isn't lost by accident. In the
+dashboard, select **Delete application** on the application's **Overview**.
+Or run:
 
 ```console
 piquelctl app delete hello
