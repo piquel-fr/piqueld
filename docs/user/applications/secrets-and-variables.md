@@ -350,7 +350,8 @@ For example, to give a `staging` environment of `notes` a test SMTP account:
    ...
    ```
 
-4. Save your changes, and deploy each environment:
+4. If you changed the manifest, save it with
+   `piquelctl app apply --file notes.toml`. Then deploy each environment:
 
    ```console
    piquelctl --timeout 5m env deploy notes staging
