@@ -227,14 +227,17 @@ When you write the receiver:
 
 - **The test fails.** **Test** and `piquelctl notification test` say why. Check that the
   daemon's host can reach the URL, and that it accepts a POST request.
+  piqueld connects to it directly: it never follows a redirect or uses a
+  proxy, such as one set in `HTTPS_PROXY`.
 - **A notification never arrived.** Look it up in the delivery history. If it
   isn't there, check the destination's categories, applications and previews:
   the dashboard's **Destinations** list sums them up, and
   `piquelctl notification list` lists them.
-- **Retrying a delivery is refused.** A delivery can only be sent again while
-  its destination still exists unchanged, is enabled, and still receives its
-  category. A failure can't be sent again once its problem has been resolved,
-  and a recovery can't once the problem has come back.
+- **Retrying a delivery is refused.** The refusal, `delivery_not_retryable`,
+  says why. Only a failed delivery can be sent again, while its destination
+  still exists unchanged, is enabled, and still receives its category. A
+  failure can't be sent again once its problem has been resolved, and a
+  recovery can't once the problem has come back.
 - **Destinations disappeared.** Recovering a lost
   [secret key](../reference/configuration.md#secret-storage) deletes them,
   since their URLs were encrypted with it. Add them again.
