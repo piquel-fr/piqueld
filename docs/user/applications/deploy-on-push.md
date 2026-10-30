@@ -157,6 +157,23 @@ piquelctl app repository reset blog
 
 Add `--deploy` to also deploy it.
 
+## Deploy another branch or commit once
+
+To try another branch or commit in an environment without changing the
+branch it follows, deploy it once. In the dashboard, select **Deploy
+revision** on the environment's page. Choose **The head of a branch** and
+fill in **Branch name**, or **A commit** and its full **Commit hash**, then
+select **Deploy**. With `piquelctl`:
+
+```console
+piquelctl env deploy blog production --branch feat/login
+piquelctl env deploy blog production --commit <full-commit-hash>
+```
+
+The deployment reads the manifest and builds from that branch or commit.
+Nothing is saved: the environment's next deployment, or the next push to its
+branch when it deploys on push, returns to its own branch.
+
 ## Deploy every push
 
 Deploying on push is off by default. Turn it on for the application, then
@@ -216,7 +233,9 @@ pinned to a commit doesn't follow pushes. It starts following after its first
 deployment. A push during a
 deployment waits for it to finish, then the latest commit deploys, so commits
 pushed in between, or between two polls, don't deploy on their own. A
-deployment that fails is not retried until the next push. When the daemon
+deployment that fails is not retried until the next push. A
+[stopped](environments.md#stop-an-environment) environment doesn't follow
+pushes: once started, it deploys the latest commit it missed. When the daemon
 starts, it checks the repository once, in case it missed pushes while it was
 stopped.
 
@@ -339,7 +358,8 @@ shows each delivery and piqueld's response: `204` when it was accepted.
   under **Deploy on push**, and so does the `Sync` line of
   `piquelctl env show`: `off` when the application doesn't deploy on push,
   `off (not opted in)` when the environment isn't opted in,
-  `off (pinned)` when it deploys a pinned commit, and
+  `off (pinned)` when it deploys a pinned commit, `off (stopped)` when it is
+  [stopped](environments.md#stop-an-environment), and
   `off (waiting for a deployment)` until its first deployment, or the first
   one after its branch or the repository's URL changed. A deployment that
   failed waits for the next push: deploy by hand to retry it.

@@ -233,8 +233,15 @@ Git uses the daemon user's `~/.ssh` and `~/.gitconfig`, but not the host's
 When piqueld reads an application's manifest from Git, as described in
 [deploying on push](deploy-on-push.md), its services can build from that same
 repository. In the dashboard, set the service's **Source** to **Manifest
-repository with Dockerfile**. `piquelctl` can't switch a service to it. In the
-manifest:
+repository with Dockerfile**. With `piquelctl`, pass `self` instead of the
+repository's URL:
+
+```console
+piquelctl app service source git blog web self
+```
+
+`piquelctl app service add blog worker --git self` adds a service that builds
+from it. In the manifest:
 
 ```toml
 [spec.services.source]
