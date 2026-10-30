@@ -87,8 +87,9 @@ It works for any environment, including
 The restored deployment becomes the one piqueld keeps running. The saved
 configuration doesn't change, though: the environment's next deployment
 deploys its source again, as does the next push to its branch when it
-[deploys on push](deploy-on-push.md#deploy-every-push). Fix the cause, or
-revert it in the repository, before you deploy again.
+[deploys on push](deploy-on-push.md#deploy-every-push). piqueld also deploys a
+push it hasn't processed yet, such as one it missed while it was stopped.
+Fix the cause, or revert it in the repository, before you deploy again.
 
 > **Warning:** a restore never runs [jobs](jobs.md), and doesn't revert data.
 > Volumes keep their contents, and the migrations that ran since stay
