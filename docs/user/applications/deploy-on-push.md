@@ -24,7 +24,15 @@ deploy every push to a branch.
 
 ## Keep the manifest in the repository
 
-Commit the application's manifest to its repository, for example as
+This example deploys a static website. Its repository holds an `index.html`
+page and, at its root, a `Dockerfile` that serves it on port 80:
+
+```dockerfile
+FROM nginx:alpine
+COPY index.html /usr/share/nginx/html/
+```
+
+Commit the application's manifest next to them, for example as
 `infra/piqueld.toml`, and push it to `main`:
 
 ```toml

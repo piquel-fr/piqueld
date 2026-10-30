@@ -181,6 +181,7 @@ deleting or renaming them fails with `environment_declared`.
      ~ services.web.replicas   2 → 3
 
    Actions: 1 total · 0 runtime mutations · 0 destructive · 0 blocking
+     Network, volume, and service changes are not listed yet: the deployment plans them once it has resolved the sources. Source resolution and declared jobs are listed.
       1. Resolve image web
          no risk · resolution required
 
@@ -195,7 +196,9 @@ deleting or renaming them fails with `environment_declared`.
      web: start-first (derived) · monitor 30s
    ```
 
-   The plan shows the values production renders. piqueld sets system
+   The plan shows the values production renders. Its actions stop at
+   resolving the image: the deployment plans the scaling once it knows the
+   image. piqueld sets system
    variables, such as `env.name` and `app.name`, itself. The
    [manifest reference](../reference/manifest.md#variables) lists them, and
    the settings that accept variables.
@@ -500,8 +503,9 @@ piquelctl env start hello staging
 run again. For an application with a single environment, `piquelctl app stop
 hello` and `piquelctl app start hello` do the same.
 
-A stopped environment stays stopped until you start it, deploy it, or promote
-into it: each of those starts it again.
+A stopped environment stays stopped until you start it, deploy it, promote
+into it or reconcile it, as `piquelctl env reconcile` does: each of those
+starts it again.
 Pushes don't deploy it meanwhile. Once it starts, it deploys the latest
 commit of its branch that it missed, if it
 [deploys on push](deploy-on-push.md#deploy-every-push). Previews can't be

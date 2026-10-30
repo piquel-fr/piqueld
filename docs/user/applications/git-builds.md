@@ -12,8 +12,8 @@ repository out and builds the image on the host.
   machine, keep `PIQUELD_URL` set, as when you
   [signed it in](../getting-started/first-account.md#sign-piquelctl-in).
 - Creating an application needs `apps:create`, and changing and deploying it
-  `apps:write` and `apps:deploy` on it; see
-  [permissions](../accounts/permissions.md#grants).
+  `apps:write` and `apps:deploy` on it. Reading build output needs
+  `logs:read`; see [permissions](../accounts/permissions.md#grants).
 - The host can reach the repository. Public repositories work as they are;
   private ones need [an SSH key](#build-from-a-private-repository).
 - The host's `docker` command has the Buildx plugin, which builds the images.
