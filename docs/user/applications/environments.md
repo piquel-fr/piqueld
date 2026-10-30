@@ -17,8 +17,9 @@ runs to production without building it again.
 - For an environment to follow its own branch, or to deploy on push, the
   application reads its manifest from Git. See
   [deploying on push](deploy-on-push.md).
-- Adding environments needs `apps:write` on the application, deploying or
-  promoting them `apps:deploy`, and deleting them `apps:delete`. Creating the
+- Adding environments needs `apps:write` on the application, deploying,
+  promoting, stopping or starting them `apps:deploy`, and deleting them
+  `apps:delete`. Creating the
   application in [Set up staging and production](#set-up-staging-and-production)
   needs `apps:create`; see [permissions](../accounts/permissions.md#grants).
 - In that section, staging is private: it needs piqueld to serve
@@ -479,6 +480,32 @@ staging  ready  main  1  env-01a16d95dac072e2beee6b3df0553b0c
 
 `piquelctl env show blog production` also prints the release the
 environment runs, its variables and its URLs.
+
+## Stop an environment
+
+Stop an environment you don't need for a while, such as staging between
+tests. Its routes stop being served and its services stop, but it keeps its
+configuration, volumes and secrets, and its hostnames stay reserved for it.
+
+In the dashboard, select **Stop** on the environment's page, and confirm. Its
+health then shows **Stopped**, on its page and in the **Environments** tab.
+**Start**, in the same place, runs it again. With `piquelctl`:
+
+```console
+piquelctl env stop hello staging
+piquelctl env start hello staging
+```
+
+`env stop` waits until the services have stopped, and `env start` until they
+run again. For an application with a single environment, `piquelctl app stop
+hello` and `piquelctl app start hello` do the same.
+
+A stopped environment stays stopped until you start it, deploy it, or promote
+into it: each of those starts it again.
+Pushes don't deploy it meanwhile. Once it starts, it deploys the latest
+commit of its branch that it missed, if it
+[deploys on push](deploy-on-push.md#deploy-every-push). Previews can't be
+stopped: [delete them](previews.md#delete-a-preview) instead.
 
 ## Delete an environment
 
