@@ -122,7 +122,8 @@ test('shipping applications', async ({ page, daemon, cli, passkeys, gitHost }) =
 
 // docs/user/applications: the services, secrets, volumes and files of notes,
 // then the job of reader, the link from auth to notes, and a command in
-// notes, each continuing from the one before.
+// notes, from piquelctl and the Terminal tab, each continuing from the one
+// before.
 test('configuring applications', async ({ page, daemon, cli, passkeys }) => {
   void passkeys;
   await accountForm(page, daemon.setup);
@@ -212,4 +213,8 @@ server {
   const started = page.locator('article.event', { hasText: 'Command Started' });
   await expect(page.locator('article.event')).toHaveCount(1);
   await shoot(page, 'applications/command-events', started);
+  await environmentTab(page, 'Terminal').click();
+  await page.getByRole('combobox', { name: 'Service', exact: true }).selectOption('db');
+  await page.getByLabel('Command', { exact: true }).fill('psql -U notes');
+  await shoot(page, 'applications/terminal');
 });

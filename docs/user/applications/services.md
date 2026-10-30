@@ -156,6 +156,10 @@ In the manifest:
 POSTGRES_USER = "notes"
 ```
 
+Values reach the container as written, once
+[variables](secrets-and-variables.md#use-variables) are replaced. Docker's
+own templates, such as `{{.Service.Name}}`, aren't expanded.
+
 Don't put passwords here: [mount them as secrets](secrets-and-variables.md)
 instead.
 
@@ -346,6 +350,21 @@ In the manifest:
 cpu_millis = 500          # half a CPU core
 memory_bytes = 268435456  # 256 MiB
 ```
+
+## Rename a service
+
+In the dashboard, select the pencil beside the service's name, on its page.
+Fill in **Service name** and select **Save**. Save or discard your other edits
+to the service first. With `piquelctl`:
+
+```console
+piquelctl app service rename notes web frontend
+```
+
+Its routes, jobs and exports, and the services that depend on it, follow the
+new name. In the manifest, change its `name`, and every place that names it.
+Applications that [import](links.md) it must import the new name. The next
+deployment replaces the running service with one of the new name.
 
 ## Check that it works
 

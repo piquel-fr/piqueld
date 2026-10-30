@@ -148,7 +148,7 @@ Each deployment now runs the job before the rollout:
 - Once the job has succeeded, it rolls out the services.
 
 While the job runs, the previous version of `web`, if there is one, keeps
-serving.
+serving, unless the job [stops it first](#stop-the-service-while-the-job-runs).
 
 The job runs at every deployment, even when nothing changed, so it must succeed
 when there's nothing to do. `miniflux -migrate` then only checks that the
@@ -260,6 +260,40 @@ doesn't need it: its `web` mounts no volume.
 
 If the job, or a later one, fails, the services it stopped start again with
 their previous version, on the data the job changed.
+
+## Stop the service while the job runs
+
+A migration that drops or renames something the previous version still uses
+would break that version while the job runs. To avoid it, stop the job's own
+service first:
+
+- **In the dashboard,** check **Stop service first** on the job, on the
+  **Jobs** tab, and select **Save changes**.
+- **With `piquelctl`,** add `--stop-service on` to `job set`:
+
+  ```console
+  piquelctl --timeout 5m app job set reader migrate web --stop-service on --deploy -- miniflux -migrate
+  ```
+
+  `--stop-service off` turns it off again. Without either, `job set` keeps
+  the job's setting.
+- **In the manifest,** set `stop_service`:
+
+  ```diff
+   [[spec.jobs]]
+   name = "migrate"
+   service = "web"
+   command = ["miniflux", "-migrate"]
+   run = "before-rollout"
+  +stop_service = true
+  ```
+
+Once the job's startup dependencies are ready, piqueld stops the service, here
+`web`, and starts the job once its containers have exited. The service starts
+again with the rollout, or with its previous version if a job fails. It is
+unavailable meanwhile, and `piquelctl app plan` warns about it with
+`job_stops_services`. To avoid that outage, split the change into migrations
+that both versions can run beside.
 
 ## If a job fails
 
