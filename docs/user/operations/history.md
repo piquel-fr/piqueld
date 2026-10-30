@@ -31,9 +31,15 @@ Each line has the event's number, its time in Unix milliseconds, its kind, and
 then, where they apply, its operation, attempt, phase, resource, error code,
 message, and who caused it.
 
-To see where a deployment is, expand it on the environment's **Deployments**
-tab, which lists its steps. With `piquelctl`, run
-`piquelctl operation <operation-id>`, which also waits for it to finish.
+To follow a deployment's steps in the dashboard:
+
+1. On the environment's **Deployments** tab, select the deployment to expand
+   it.
+2. Select **Attempts**, which lists each time piqueld tried it.
+3. Select **Events** on an attempt to see its steps.
+
+With `piquelctl`, run `piquelctl operation <operation-id>`, which also waits
+for it to finish.
 
 ## Find out why something failed
 
@@ -99,7 +105,8 @@ The **Host settings** page shows the daemon's
 `piquelctl settings` prints it. Credentials appear only as the file they're
 read from. To change a setting, edit the configuration and restart the daemon.
 
-These pages and commands need the `system:read` permission.
+These pages, `doctor`, `resources` and `settings` need the `system:read`
+permission. `status` works for anyone signed in.
 
 The **Analytics** page sums up deployments over the last 24 hours, 7, 30 or 365
 days: how many succeeded or failed, how long attempts took, how often they were

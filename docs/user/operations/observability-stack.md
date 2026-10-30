@@ -81,7 +81,10 @@ its hostname, stay until you apply the file again.
    `app deploy` asks you to confirm, then waits until the deployment finishes.
    The stack now receives the telemetry of every application.
 
-6. Read Grafana's generated `admin` password:
+6. Read Grafana's generated `admin` password. In the dashboard, open the
+   environment's **Terminal** tab, choose the `grafana` **Service**, enter
+   `cat /run/secrets/grafana-admin-password` as the **Command**, and select
+   **Run**. Or run:
 
    ```console
    piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
