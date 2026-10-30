@@ -190,13 +190,15 @@ impl Environment {
 
     /// The `migrate` job's run by `operation`, derived from `service` as
     /// piqueld derives jobs, running `script` with `volume_access` to the
-    /// `data` volume, mounted writable at `/data`.
+    /// `data` volume, mounted writable at `/data`, and stopping `service`
+    /// first when `stop_service` is set.
     pub fn job(
         &self,
         service: &DesiredService,
         operation: &str,
         script: &str,
         volume_access: JobVolumeAccess,
+        stop_service: bool,
     ) -> piqueld_core::DesiredJobRun {
         let name = piqueld_core::JobName::parse("migrate").unwrap();
         let mut container = service.clone();
@@ -212,6 +214,7 @@ impl Environment {
             run: piqueld_core::manifest::JobRun::BeforeRollout,
             timeout_seconds: 60,
             volume_access,
+            stop_service,
             container,
         }
         .for_operation(operation)
@@ -224,6 +227,7 @@ impl Environment {
             operation,
             "echo migrated",
             JobVolumeAccess::ReadOnly,
+            false,
         )
     }
 }

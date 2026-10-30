@@ -438,6 +438,7 @@ image="example:1"
                     run: crate::manifest::JobRun::BeforeRollout,
                     timeout_seconds: 300,
                     volume_access: crate::manifest::JobVolumeAccess::ReadOnly,
+                    stop_service: false,
                 })
                 .collect();
             manifest

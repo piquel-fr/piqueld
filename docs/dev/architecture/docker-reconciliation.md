@@ -80,8 +80,9 @@ and converge using normal service health checks and convergence deadlines. The
 controller replans after each action and resets the deadline after each service
 converges. Jobs mount volumes read-only unless they declare exclusive access;
 an exclusive job then removes every service that mounts one of its writable
-volumes, and the adapter starts the run only once no other service mounts
-those volumes and their containers have stopped. Conversely, the adapter
+volumes, and a job declaring `stop_service` removes its own service. The
+adapter starts the run only once none of the services it stops exists and
+their tasks and containers have stopped. Conversely, the adapter
 refuses to create or update a service while a job service of the application
 mounts one of its volumes writable, or a container of a removed run still does.
 Both checks run under the controller's mutation lock, so a service never shares
@@ -93,9 +94,8 @@ starts only after its dependencies are ready. The run's deadline is recorded
 on its job service when it starts, so a resumed run keeps it. Jobs of a prerequisite service
 must precede jobs that need it; manifest validation rejects the opposite order.
 While the deployment may still roll out, active-target repair cannot revert or
-remove prepared job prerequisites or restart services stopped for an exclusive
-job, but continues maintaining other active services. Job services
-and their containers are labelled with the operation that started them. Every
+remove prepared job prerequisites or restart services stopped for a job, but
+continues maintaining other active services. Job services and their containers are labelled with the operation that started them. Every
 deployment not yet promoted, even one without jobs, first removes job services of earlier
 operations and waits until their containers have stopped, and a new run is only
 created after the replaced run's container has stopped, so runs never overlap. A
@@ -120,8 +120,8 @@ a cancellation or a failure whose own plan an ownership or immutable
 configuration conflict blocks, so repair restores the active target:
 prerequisites roll back and stopped services start again. Once the conflict is
 resolved, the blocked deployment rolls out again. A conflict does not end a
-deployment one of whose exclusive jobs succeeded: the services it stopped would
-run against data in the new format, so they stay stopped, and the prerequisites
+deployment one of whose jobs that stops services succeeded: those services
+would run against data in the new format, so they stay stopped, and the prerequisites
 stay, until the conflict is resolved and the deployment continues. Failures that are retried,
 including conflicts planning can't see and failed service updates, keep the
 prerequisites. Observation never

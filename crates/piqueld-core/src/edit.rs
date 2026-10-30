@@ -712,6 +712,7 @@ mod tests {
             run: JobRun::BeforeRollout,
             timeout_seconds: 300,
             volume_access: crate::manifest::JobVolumeAccess::ReadOnly,
+            stop_service: false,
         }])
         .apply(&mut manifest)
         .unwrap();

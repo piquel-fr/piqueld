@@ -2132,6 +2132,7 @@ Options:
 - `--volume-access <ACCESS>`: How the job mounts its service's volumes. By default, the job's current access, or `read-only` for a new job.
   - `read-only`: Mount every volume read-only, so the job runs beside the services.
   - `exclusive`: Keep writable volumes writable, and stop every service that mounts one until the rollout.
+- `--stop-service <on|off>`: `on` to stop the job's service before the job runs, once its startup dependencies are ready, until the rollout; `off` to run it beside the service. By default, the job's current setting, or `off` for a new job. Values: `on`, `off`.
 - `--env <KEY=VALUE>`: Environment variable for the job only, added to its service's. Repeat it to set several. They replace the job's own variables, which it keeps when you pass none.
 - `--clear-env`: Remove the job's own environment variables.
 - `--secret <NAME=TARGET>`: Secret for the job only, in addition to its service's, mounted at `TARGET`, an absolute path under `/run/secrets/` such as `/run/secrets/db`. Repeat it to mount several. They replace the job's own secrets, which it keeps when you pass none.

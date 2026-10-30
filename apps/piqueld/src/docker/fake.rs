@@ -930,7 +930,7 @@ impl DockerApi for FakeDocker {
         Ok(())
     }
 
-    async fn wait_volumes_released(
+    async fn wait_services_stopped(
         &self,
         _job: &piqueld_core::DesiredJobRun,
     ) -> Result<(), DockerError> {

@@ -239,11 +239,11 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.wait_jobs_stopped(ownership, runs).await
     }
-    async fn wait_volumes_released(
+    async fn wait_services_stopped(
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<(), DockerError> {
-        self.inner.wait_volumes_released(job).await
+        self.inner.wait_services_stopped(job).await
     }
     async fn remove_network(
         &self,

@@ -3449,6 +3449,7 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         run: JobRun::BeforeRollout,
         timeout_seconds: 60,
         volume_access: JobVolumeAccess::ReadOnly,
+        stop_service: false,
     };
     let options = |generation| EditOptions {
         expected_generation: Some(generation),

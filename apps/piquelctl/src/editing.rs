@@ -1020,6 +1020,11 @@ pub(crate) struct SetJobArgs {
     /// access, or `read-only` for a new job.
     #[arg(long, value_name = "ACCESS", value_parser = volume_access())]
     volume_access: Option<JobVolumeAccess>,
+    /// `on` to stop the job's service before the job runs, once its startup
+    /// dependencies are ready, until the rollout; `off` to run it beside the
+    /// service. By default, the job's current setting, or `off` for a new job.
+    #[arg(long, value_name = "on|off", value_parser = on_off())]
+    stop_service: Option<bool>,
     /// Environment variable for the job only, added to its service's. Repeat
     /// it to set several. They replace the job's own variables, which it keeps
     /// when you pass none.
@@ -1731,6 +1736,10 @@ impl JobCommand {
                     volume_access: args
                         .volume_access
                         .or_else(|| current.map(|job| job.volume_access))
+                        .unwrap_or_default(),
+                    stop_service: args
+                        .stop_service
+                        .or_else(|| current.map(|job| job.stop_service))
                         .unwrap_or_default(),
                 };
                 match existing {

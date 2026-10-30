@@ -375,10 +375,10 @@ pub trait DockerApi: Send + Sync + 'static {
     ) -> Result<(), DockerError>;
     /// Starts the run of `job`. Any existing service of the same job, including
     /// a finished run of the same operation, is removed first. Fails, without
-    /// waiting, while a run of the job or a task or container using a volume
-    /// it holds exclusively is still live, so two runs never overlap and an
-    /// exclusive run never shares its volume; callers wait for that first
-    /// with [`Self::wait_volumes_released`].
+    /// waiting, while a run of the job, or a task or container of a service
+    /// it stops, is still live, so two runs never overlap and a run never
+    /// overlaps a service it stops; callers wait for that first with
+    /// [`Self::wait_services_stopped`].
     async fn start_job(&self, job: &piqueld_core::DesiredJobRun) -> Result<(), DockerError>;
     /// Reads the progress of the run of `job` by its operation.
     async fn job_status(&self, job: &piqueld_core::DesiredJobRun)
@@ -406,10 +406,11 @@ pub trait DockerApi: Send + Sync + 'static {
         runs: JobRuns<'_>,
     ) -> Result<(), DockerError>;
     /// Waits until no task of the application's services that has not
-    /// stopped, and no running container, mounts a volume `job` holds
-    /// exclusively. Like [`Self::wait_jobs_stopped`], it changes nothing and
-    /// the caller bounds it.
-    async fn wait_volumes_released(
+    /// stopped, and no running container, belongs to the service `job` stops
+    /// or mounts a volume it holds exclusively. Like
+    /// [`Self::wait_jobs_stopped`], it changes nothing and the caller bounds
+    /// it.
+    async fn wait_services_stopped(
         &self,
         job: &piqueld_core::DesiredJobRun,
     ) -> Result<(), DockerError>;

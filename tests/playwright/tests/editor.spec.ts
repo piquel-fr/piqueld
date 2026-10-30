@@ -209,6 +209,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await job(0).getByLabel('Secret name', { exact: true }).fill('seed-password');
   await job(0).getByLabel('Container path', { exact: true }).fill('/run/secrets/seed');
   await job(1).getByLabel('Timeout (seconds)', { exact: true }).fill('60');
+  await job(1).getByLabel('Stop service first', { exact: true }).check();
   await job(1).getByRole('button', { name: 'Move up', exact: true }).click();
   await save(page);
   await page.reload();
@@ -216,6 +217,8 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await expect(job(0).getByLabel('Name', { exact: true })).toHaveValue('migrate');
   await expect(job(0).getByLabel('Command element', { exact: true }).nth(1)).toHaveValue('--all');
   await expect(job(0).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('60');
+  await expect(job(0).getByLabel('Stop service first', { exact: true })).toBeChecked();
+  await expect(job(1).getByLabel('Stop service first', { exact: true })).not.toBeChecked();
   await expect(job(1).getByLabel('Name', { exact: true })).toHaveValue('seed');
   await expect(job(1).getByLabel('Timeout (seconds)', { exact: true })).toHaveValue('300');
   await expect(job(1).getByLabel('Key', { exact: true })).toHaveValue('SEED_PASSWORD_FILE');

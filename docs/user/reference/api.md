@@ -559,8 +559,9 @@ the application's environments: `create`, `source` and `sync` changes, and
 `undeclared` environments it no longer declares (see
 [declared environments](manifest.md#declared-environments)). A `start-first` order set on a service with a writable volume adds
 a non-blocking `rollout_start_first_writable_volume` warning to the plan. Each job
-appears as a `run_job` action where the deployment runs it, and an exclusive job
-adds a non-blocking `job_stops_services` warning naming the services it stops. For an existing
+appears as a `run_job` action where the deployment runs it, and a job that
+stops its own service, or an exclusive job, adds a non-blocking
+`job_stops_services` warning naming the services it stops. For an existing
 environment, each import that would not connect adds a non-blocking
 `import_unconnected` warning, as do promotion plans. A service receiving
 telemetry in an environment not granted it adds a non-blocking

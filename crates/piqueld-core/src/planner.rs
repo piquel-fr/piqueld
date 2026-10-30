@@ -556,8 +556,9 @@ impl Plan {
 
     /// The next action before `job` can run, given this rollout plan toward
     /// `target`: shared networks and volumes, then the job's startup
-    /// dependencies, then removal of every other service that mounts one of
-    /// the job's exclusive volumes. `None` once the job may start.
+    /// dependencies, then removal of every service the job stops: its own
+    /// service when it declares `stop_service`, and every other service that
+    /// mounts one of its exclusive volumes. `None` once the job may start.
     #[must_use]
     pub fn next_job_preparation(
         &self,
@@ -582,10 +583,13 @@ impl Plan {
                 .services
                 .iter()
                 .find(|service| {
-                    service
-                        .mounts
-                        .iter()
-                        .any(|mount| job.holds_volume(&mount.volume_name))
+                    job.stops(
+                        &service.name,
+                        service
+                            .mounts
+                            .iter()
+                            .map(|mount| mount.volume_name.as_str()),
+                    )
                 })
                 .map(|service| {
                     PlanAction::new(
@@ -599,10 +603,10 @@ impl Plan {
     }
 
     /// Filters old-target repair actions that would revert or remove prepared
-    /// job prerequisites, or restart a service stopped so a job could use its
-    /// volumes exclusively. A prerequisite's wait remains only while it is
-    /// still converging, so it gates active dependents without blocking their
-    /// repair. Applies only while the deployment may still roll out.
+    /// job prerequisites, or restart a service stopped for a job: its own
+    /// service, or one mounting a volume it uses exclusively. A
+    /// prerequisite's wait remains only while it is still converging, so it
+    /// gates active dependents without blocking their repair. Applies only while the deployment may still roll out.
     pub fn preserve_job_prerequisites(
         &mut self,
         prepared: &ResolvedApplication,
@@ -619,18 +623,21 @@ impl Plan {
             .filter(|service| dependencies.contains(service.logical_name.as_str()))
             .map(|service| service.name.to_string())
             .collect::<BTreeSet<_>>();
-        // The previous version of a stopped service must not write a volume
-        // a job is changing, nor data the job already changed.
+        // The previous version of a stopped service must not run beside a
+        // job changing what it uses, nor against data the job already changed.
         let stopped = self
             .actions
             .iter()
             .filter_map(|action| match &action.kind {
                 ActionKind::EnsureService { service }
-                    if service.mounts.iter().any(|mount| {
-                        prepared
-                            .jobs
-                            .iter()
-                            .any(|job| job.holds_volume(mount.volume_name.as_str()))
+                    if prepared.jobs.iter().any(|job| {
+                        job.stops(
+                            service.name.as_str(),
+                            service
+                                .mounts
+                                .iter()
+                                .map(|mount| mount.volume_name.as_str()),
+                        )
                     }) =>
                 {
                     Some(service.name.to_string())
@@ -1123,7 +1130,8 @@ impl Plan {
 
     /// Lists each job where a deployment runs it: after source resolution,
     /// networks, volumes, and the job's startup dependencies, before any other
-    /// service change. Warns about the services each exclusive job stops.
+    /// service change. Warns about the services each job stops: its own with
+    /// `stop_service`, and those sharing its volumes when it is exclusive.
     /// Deployments run jobs before planning their rollout, so only previews
     /// list them.
     pub fn add_jobs(&mut self, application: &NormalizedApplication, environment: &EnvironmentId) {
@@ -1159,19 +1167,26 @@ impl Plan {
         }
         self.actions.extend(remaining);
         self.warn(spec.jobs.iter().filter_map(|job| {
+            let exclusive = job.volume_access == JobVolumeAccess::Exclusive;
             let volumes = spec
                 .services
                 .iter()
                 .find(|service| service.name == job.service)?
                 .mounts
                 .iter()
-                .filter(|mount| job.volume_access == JobVolumeAccess::Exclusive && !mount.read_only)
+                .filter(|mount| exclusive && !mount.read_only)
                 .map(|mount| &mount.volume)
                 .collect::<BTreeSet<_>>();
             let services = spec
                 .services
                 .iter()
-                .filter(|service| service.mounts.iter().any(|mount| volumes.contains(&mount.volume)))
+                .filter(|service| {
+                    (job.stop_service && service.name == job.service)
+                        || service
+                            .mounts
+                            .iter()
+                            .any(|mount| volumes.contains(&mount.volume))
+                })
                 .map(|service| service.name.as_str())
                 .collect::<Vec<_>>();
             (!services.is_empty()).then(|| {
@@ -1180,9 +1195,14 @@ impl Plan {
                     DiagnosticSeverity::Warning,
                     job.name.as_str(),
                     format!(
-                        "job {} uses its volumes exclusively: {} and any other running service mounting them stop before it runs and stay stopped until the rollout",
+                        "job {} stops {}{} before it runs, until the rollout",
                         job.name,
-                        services.join(", ")
+                        services.join(", "),
+                        if volumes.is_empty() {
+                            ""
+                        } else {
+                            " and any other running service mounting its volumes"
+                        }
                     ),
                 )
             })
