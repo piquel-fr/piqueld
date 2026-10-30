@@ -316,7 +316,8 @@ If no CLI login works any more,
 If you run piqueld's own tailnet node (`[tailscale]`), it keeps serving the
 API at its address, for `piquelctl`. `piquelctl status` then reports
 `Tailnet problem: auth.public_url is not https://piqueld.<tailnet>.ts.net, so passkeys do not work on this origin`,
-which is expected. Otherwise, run `sudo piquelctl` on the host, over the
+and the **Tailnet node** [installation check](../reference/cli.md#installation-checks)
+warns the same. Both are expected. Otherwise, run `sudo piquelctl` on the host, over the
 daemon's Unix socket.
 
 The [audit trail](../guides/observability.md#audit-trail) records the tailnet
