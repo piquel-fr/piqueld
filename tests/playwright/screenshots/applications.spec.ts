@@ -217,3 +217,22 @@ server {
   await page.getByLabel('Command', { exact: true }).fill('psql -U notes');
   await shoot(page, 'applications/terminal');
 });
+
+// docs/user/applications/restore.md: hello, deployed again after its change,
+// offers to restore its first deployment.
+test('restoring a deployment', async ({ page, daemon, cli, passkeys }) => {
+  void passkeys;
+  await accountForm(page, daemon.setup);
+  await submitRegistration(page);
+  const piquelctl = await Piquelctl.signIn(page, cli);
+  await piquelctl.apply(await manifest('user/getting-started/first-app.md'));
+  await piquelctl.run(['app', 'service', 'replicas', 'hello', 'web', '2', '--deploy', '--yes']);
+  await environment(page, 'hello', 'production');
+  await environmentTab(page, 'Deployments').click();
+  const deployments = page.locator('.expander', { hasText: 'Deployment #' });
+  await expect(deployments).toHaveCount(2);
+  await deployments.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  // Let its chevron finish turning.
+  await deployments.nth(1).evaluate(card => Promise.all(card.getAnimations({ subtree: true }).map(animation => animation.finished)));
+  await shoot(page, 'applications/restore', deployments.nth(1));
+});

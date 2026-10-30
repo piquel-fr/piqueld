@@ -154,7 +154,8 @@ The job runs at every deployment, even when nothing changed, so it must succeed
 when there's nothing to do. `miniflux -migrate` then only checks that the
 database is up to date.
 
-piqueld doesn't undo what a job changes, even when the deployment fails. Once
+piqueld doesn't undo what a job changes, even when the deployment fails, and
+[restoring](restore.md) an earlier deployment doesn't run its jobs again. Once
 the database holds data, [back it up](volumes-and-files.md#back-up-a-volume)
 before you deploy a version that migrates it.
 

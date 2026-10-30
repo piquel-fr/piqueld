@@ -21,6 +21,7 @@
   - [Building images from Git](user/applications/git-builds.md)
   - [Deploying on push](user/applications/deploy-on-push.md)
   - [Environments and promotion](user/applications/environments.md)
+  - [Restoring a deployment](user/applications/restore.md)
   - [Previews](user/applications/previews.md)
 - [Managing accounts](user/accounts/accounts.md)
 - [Permissions](user/accounts/permissions.md)
