@@ -39,9 +39,8 @@ select **Save changes** below it.
 
 With `piquelctl`, `piquelctl app service` has a command for each setting.
 
-The database's generated password is the exception: declare it in the
-manifest, then mount it in the dashboard or in the manifest. See
-[generating a secret](secrets-and-variables.md#generate-a-secret).
+To give the database its generated password, declare it and mount it as
+[generating a secret](secrets-and-variables.md#generate-a-secret) shows.
 
 ### From a manifest
 
