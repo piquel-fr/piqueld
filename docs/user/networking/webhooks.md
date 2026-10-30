@@ -22,8 +22,8 @@ which it accepts GitHub's push webhooks, and nothing else.
 - Run `piquelctl` on the host, or on any machine where it is signed in.
 - Generating the webhook secret needs the `apps:write`
   [permission](../accounts/permissions.md#grants) on the application, and
-  turning on deploying on push `apps:deploy` too. The dashboard hides the
-  controls you can't use.
+  turning on deploying on push `apps:deploy` too. The dashboard hides or
+  disables the controls you can't use.
 
 ## Set it up
 

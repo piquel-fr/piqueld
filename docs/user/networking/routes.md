@@ -21,7 +21,8 @@ see [private routes](private-routes.md).
 - Run `piquelctl` on the host, or on any machine where it is signed in.
 - Adding a route needs the `apps:write`
   [permission](../accounts/permissions.md#grants) on the application, and
-  deploying it `apps:deploy`. The dashboard hides the controls you can't use.
+  deploying it `apps:deploy`. The dashboard hides or disables the
+  controls you can't use.
 
 piqueld doesn't put a sign-in in front of your routes: anyone can open a
 public route, so your application handles its own authentication.
