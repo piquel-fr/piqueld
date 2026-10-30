@@ -19,6 +19,9 @@ see [private routes](private-routes.md).
 - An application whose service serves plain HTTP, such as `hello` from
   [Deploying your first application](../getting-started/first-app.md).
 - Run `piquelctl` on the host, or on any machine where it is signed in.
+- Adding a route needs the `apps:write`
+  [permission](../accounts/permissions.md#grants) on the application, and
+  deploying it `apps:deploy`. The dashboard hides the controls you can't use.
 
 piqueld doesn't put a sign-in in front of your routes: anyone can open a
 public route, so your application handles its own authentication.
@@ -138,10 +141,8 @@ The URL is `ready` once all of these hold:
 - the gateway serves the route;
 - piqueld itself fetched `https://hello.example.com`, with a trusted
   certificate, and reached this server's gateway;
-- its [DNS records](dns-records.md), if piqueld manages them, are in place.
-
-`ready` doesn't include the service's health, which the environment reports
-separately.
+- its [DNS records](dns-records.md), if piqueld manages them, are in place;
+- its service runs, with every replica healthy.
 
 Until then, it is `pending`, followed by what it waits for.
 
@@ -163,6 +164,9 @@ Each route is in one of these states:
 | `pending` | It waits for the gateway, DNS or its certificate. The next line says what to check. |
 | `failed` | It can't be served, for example without a certificate; the next line says why. |
 | `disabled` | The gateway, or [private routes](private-routes.md), are turned off. |
+
+Unlike the URL's readiness, a route's state doesn't include its service's
+health.
 
 ## Redirect a hostname
 
@@ -410,7 +414,8 @@ Then check that the gateway stopped, as [above](#turn-the-gateway-off).
   program uses port 80 or 443, or Docker is too old. To see which, select
   **Run checks** under **Installation checks** on the **Daemon status** page,
   or run [`piquelctl doctor`](../reference/cli.md#installation-checks): the
-  **Ports 80/443** and **Docker Engine** checks say what's wrong. If you run
+  **Ports 80/443** and **Docker Engine** checks say what's wrong. Running them
+  needs the `system:read` permission. If you run
   your own reverse proxy for the dashboard, move it to other ports or another
   server.
 - **A route stays `pending` after its environment was stopped.** A

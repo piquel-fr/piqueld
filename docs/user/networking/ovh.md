@@ -102,7 +102,9 @@ DNS provider: ovh (healthy, manages route records): example.com
 ```
 
 It lists every zone the keys can see. piqueld also lists them when it starts,
-and every hour, so a zone you add later is found within the hour.
+and every hour, so a zone you add later is found within the hour. Checking
+needs the `system:operate` [permission](../accounts/permissions.md#grants),
+and seeing the result `system:read`.
 
 ## How piqueld uses OVH
 
