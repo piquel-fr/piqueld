@@ -35,7 +35,7 @@ tokens, can't create invitation or enrollment links, and can't approve CLI
 logins. It isn't an account, so it doesn't count as one either: some account
 must still keep `admin` and a passkey.
 
-piqueld's history and [audit trail](../guides/observability.md#audit-trail)
+piqueld's history and [audit trail](../operations/audit.md)
 attribute what it does to the host operator and its Unix user, such as
 `host operator (uid 0)`, and to its browser session, if any.
 
@@ -55,7 +55,7 @@ link also works before the first account exists, so you can try a new
 installation from a browser.
 
 Every link raises a
-[`security` notification](../guides/observability.md#security-notifications),
+[`security` notification](../operations/audit.md#get-alerted),
 "A host operator sign-in link was issued over the Unix socket to uid 0", and
 the daemon logs a warning.
 

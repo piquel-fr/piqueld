@@ -60,8 +60,11 @@ export class Cli {
     if (token) env.PIQUELD_TOKEN = token;
     return new Process(join(bin, 'piquelctl'), ['--socket', this.daemon.socket, ...args], env);
   }
-  async run(args: string[], token?: string) {
+  /** Runs `piquelctl args` to completion, with `input`, when given, as its
+   * whole standard input. */
+  async run(args: string[], token?: string, input?: string) {
     const child = this.start(args, token);
+    if (input !== undefined) child.child.stdin.end(input);
     const timer = setTimeout(() => child.child.kill('SIGKILL'), 15_000);
     try {
       const code = await child.exited;

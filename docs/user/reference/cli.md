@@ -86,7 +86,7 @@ deployment stays until the branch moves. `env sync … off` opts it out again;
 `env sync` needs no revision and asks no confirmation. Turning sync on, or
 opting in while it is on, needs `apps:deploy` too.
 
-`notification` manages [notification destinations](../guides/observability.md#notifications).
+`notification` manages [notification destinations](../operations/notifications.md).
 `notification set NAME` creates a destination, or changes one; options it
 omits keep the current settings, and a new destination receives every category
 but `deployment_succeeded` about every application, without previews. The URL is read from `--url-file`
@@ -133,7 +133,7 @@ The daemon refuses to retry a delivery that hasn't failed, that its destination
 no longer receives, or whose incident has since closed or opened again. It also
 refuses a failure after its destination received the recovery that followed it.
 The command then fails with `delivery_not_retryable` and exit code 3, and its
-message says why. See [notifications](../guides/observability.md#notifications).
+message says why. See [notifications](../operations/notifications.md).
 
 `env stop APP [ENV]` confirms, then stops an environment: the gateway
 withdraws its routes at once and its services scale to zero replicas, keeping
@@ -149,7 +149,7 @@ is optional, as for reconcile. `env list` shows a stopped environment's state
 as `stopped`, and `env show` says so. Previews are deleted instead.
 
 `env telemetry APP ENV on` grants an environment the daemon's
-[telemetry](../guides/observability.md#receiving-telemetry-in-an-application): its
+[telemetry](../operations/telemetry.md#receive-telemetry-in-an-application): its
 receiving service, marked with `app service telemetry APP SERVICE on`, gets
 the traces, metrics and logs of every application. It needs `telemetry:grant`,
 which no preset includes. `off` revokes it, which stops export at once. Either
@@ -382,7 +382,7 @@ read-only commands, both requiring `system:read`, show what the dashboard's
 Daemon status and Host settings pages do:
 
 - `piquelctl resources` shows the daemon's
-  [resource measurements](../guides/observability.md#api-and-dashboard): uptime,
+  [resource measurements](../operations/history.md#watch-the-daemon-itself): uptime,
   resident memory, CPU usage, the database and its write-ahead log, free disk
   on the data directory's filesystem, retained events, diagnostics and build
   output, running and queued operations, and notification deliveries
@@ -394,7 +394,7 @@ Daemon status and Host settings pages do:
   [configuration](configuration.md), grouped as on the Host settings page.
   Credentials appear only as the file they are read from. Change settings in
   the daemon's TOML and restart it. Each read is recorded in the
-  [audit trail](../guides/observability.md#audit-trail).
+  [audit trail](../operations/audit.md).
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), hours (`h`), or days (`d`); a
@@ -950,7 +950,7 @@ events of all its environments, including deleted ones. `--environment ID` filte
 by stable environment ID. Deleting an application removes its history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
-`analytics` summarizes [deployment analytics](../guides/observability.md#api-and-dashboard),
+`analytics` summarizes [deployment analytics](../operations/history.md#watch-the-daemon-itself),
 as the dashboard's Analytics page does: deployments by the outcome of their
 latest attempt, the mean attempt duration, failed and retry attempts, action
 retries, mean durations per action phase, and the most frequent failure codes.
@@ -1001,11 +1001,11 @@ manages API tokens for your account (`--tailnet` binds one to a tailnet user
 or tag); `token list --user` and `token revoke --all [--user]` list and revoke
 every session and token of an account. `login` accepts the same grant options
 to ask for a limited session; see [ask for less access](../accounts/cli-and-tokens.md#ask-for-less-access).
-`piquelctl audit` reads the [audit trail](../guides/observability.md#audit-trail), one line
+`piquelctl audit` reads the [audit trail](../operations/audit.md), one line
 per request with the application or environment it addressed, filtered
 by `--user` (a username, or any account ID, including a deleted account's),
 `--credential`, and `--outcome`; `piquelctl audit verify` checks its
-[hash chain](../guides/observability.md#tamper-evidence). When no administrator can sign
+[hash chain](../operations/audit.md#check-that-nobody-changed-it). When no administrator can sign
 in, `sudo piquelctl recover-admin` on the daemon host prints a one-time link
 that creates a new administrator; see
 [recovering administrator access](../accounts/recovery.md#no-administrator-can-sign-in). Saved credentials are separate

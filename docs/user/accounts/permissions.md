@@ -121,9 +121,9 @@ These permissions always apply to the whole installation.
 | `system:read` | Reading the daemon's configuration, installation checks, resources, history and diagnostics, notification destinations and deliveries, and DNS providers and certificates |
 | `system:operate` | Recovering from a [lost secret key](../reference/configuration.md#recovering-from-a-lost-key), retrying notification deliveries, and checking DNS providers |
 | `accounts:manage` | Managing other accounts and invitations; see [who may manage accounts](#who-may-manage-accounts) |
-| `audit:read` | Reading every account's [audit trail](../guides/observability.md#audit-trail), and verifying its integrity. Everyone reads their own |
+| `audit:read` | Reading every account's [audit trail](../operations/audit.md), and verifying its integrity. Everyone reads their own |
 | `telemetry:grant` | Granting and revoking an environment's [telemetry](#telemetry) |
-| `notifications:manage` | Creating, changing, testing and deleting [notification destinations](../guides/observability.md#notifications). A destination can select any application, so this reveals every application's notifications |
+| `notifications:manage` | Creating, changing, testing and deleting [notification destinations](../operations/notifications.md). A destination can select any application, so this reveals every application's notifications |
 
 Every signed-in account may read the daemon's status and readiness, and the
 [OpenAPI document](../../openapi-v1.json), which names what each operation
@@ -260,7 +260,7 @@ and an environment's importers only list applications you can read.
 
 An environment granted telemetry gets the daemon's traces, metrics and logs
 from **every** application in its
-[receiving service](../guides/observability.md#receiving-telemetry-in-an-application).
+[receiving service](../operations/telemetry.md#receive-telemetry-in-an-application).
 So granting it can't depend on that application's own permissions: it needs
 `telemetry:grant` and reading the application.
 

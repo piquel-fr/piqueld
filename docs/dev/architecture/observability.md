@@ -1,12 +1,11 @@
 # Observability
 
-piqueld keeps structured control-plane history in SQLite. Operation records are
-execution state; events are the independently readable historical record. The
-daemon can also push its traces, metrics and logs to an OpenTelemetry collector;
-see [telemetry export](#telemetry-export). It does not manage collectors or
-monitor its own outages from outside, but an
-[example application](#observability-stack) deploys a collector with Prometheus,
-Tempo, Loki and Grafana.
+How the daemon records history and diagnostics, audits requests, delivers
+notifications and exports telemetry. To use these features, see the user
+guide's operations pages: [history](../../user/operations/history.md),
+[audit trail](../../user/operations/audit.md),
+[notifications](../../user/operations/notifications.md) and
+[telemetry](../../user/operations/telemetry.md).
 
 ## History and diagnostics
 
@@ -96,13 +95,13 @@ it loses. Each record keeps the action
 (method and route template; for account management, followed by the
 requested change, e.g. `POST /api/v1/auth/manage set_grants "<account ID>" (apps:read)`), outcome (`allowed`, `denied`, or `failed`), status,
 account, credential and its kind, whether the credential was limited, the
-network address (and, through the [tailnet node](../reference/configuration.md#tailnet-node),
+network address (and, through the [tailnet node](../../user/reference/configuration.md#tailnet-node),
 the tailnet user or tags and device, such as `alice@example.com on laptop`),
 request ID, addressed application or environment (with the environment's
 application, when the request was allowed or lacked a permission there, so a
 refusal never reveals who owns an environment hidden from its caller), and the
 permission a refusal lacked. Requests by the
-[host operator](../accounts/recovery.md#the-host-operator) have no account; they
+[host operator](../../user/accounts/recovery.md#the-host-operator) have no account; they
 record `operator` with its Unix user ID instead, shown as
 `host operator (uid 0)`, and its browser session as the credential, if any. Bodies are never recorded. Records copy the account and
 credential, so they outlive both, and application deletion keeps them.
@@ -162,34 +161,6 @@ prune more and move the anchor. Keep the reported anchor and newest record
 somewhere piqueld cannot change, such as a ticket or a scheduled job's log, and
 compare them later to detect that.
 
-### Security notifications
-
-The `security` notification category reports changes to who can access the
-daemon, and to where its notifications go, as daemon history events that each
-notify immediately:
-
-| Event | When |
-| --- | --- |
-| `admin_granted` | An account receives `admin` on every application: by an account change, an invitation, first-account setup, or an admin recovery link |
-| `privileged_token_created` | An API token is created without expiry or with `admin` |
-| `admin_recovery_issued` | `piquelctl recover-admin` issued a recovery link; see [recovering access](../accounts/recovery.md#no-administrator-can-sign-in) |
-| `operator_sign_in_issued` | `piquelctl sign-in-link` issued a link that signs a browser in as the host operator; see [the host operator](../accounts/recovery.md#the-host-operator) |
-| `access_denial_burst` | 20 requests from one address and account are refused within a minute; at most once every 10 minutes per address and account while it continues |
-| `credential_new_address` | A session, CLI login, or token already used elsewhere is used from a new network address (IPv6 by /64) |
-| `secret_key_recovered` | The secrets master key was recovered, discarding stored values |
-| `notification_destination_changed` | A [notification destination](#notifications) was created, changed, disabled or deleted. A changed destination receives it only when it stays the same receiver |
-
-### Daemon start notifications
-
-The `daemon_started` notification category reports each start of the daemon,
-including restarts for updates. Once its listeners are bound and Docker Swarm is
-ready, the daemon records a `daemon_started` event in daemon history whose
-resource is its version, and whose message names the previous version after a
-change, such as `piqueld 0.2.0 started (previously 0.1.0)`. A start that fails
-before then records no event. A missing notification alone does not prove that,
-since notifications may be disabled or delivery may fail: check daemon history
-for the event and the delivery history for its status.
-
 ## Ownership and retention
 
 `scope` determines ownership, independently of a contextual `environment_id`:
@@ -218,54 +189,11 @@ history intentionally removes that data rather than exposing deletion tombstones
 
 ## API and dashboard
 
-Routes require the permissions described in [permissions](../accounts/permissions.md):
-application history, diagnostics, and analytics are limited to the applications a
-caller holds `events:read` on, and daemon history requires `system:read`. See the generated
-[OpenAPI document](../../openapi-v1.json) for exact contracts.
+The API reference's [event history](../../user/reference/api.md#event-history)
+documents the routes, filters and event stream. The stream reads events from
+the journal in bounded pages, so slow clients never block writers.
 
-| Route | Purpose |
-| --- | --- |
-| `GET /api/v1/events` | Cursor pagination and filtering |
-| `GET /api/v1/events/stream` | Replay and follow committed history through SSE |
-| `GET /api/v1/diagnostics/{id}` | Original event and details for an occurrence |
-| `GET /api/v1/system/resources` | Cached process, storage and queue measurements |
-| `GET /api/v1/analytics/deployments` | Deployment outcomes, retries, durations and failure codes |
-| `GET /api/v1/notifications/destinations` | [Notification destinations](#notifications), without URLs; `system:read` or `notifications:manage` |
-| `PUT /api/v1/notifications/destinations/{name}` | Create or replace a destination |
-| `DELETE /api/v1/notifications/destinations/{name}` | Delete a destination |
-| `POST /api/v1/notifications/destinations/{name}/test` | Send a test notification now |
-| `GET /api/v1/notifications/deliveries` | Credential-free delivery history |
-| `POST /api/v1/notifications/deliveries/{id}/retry` | Retry a failed delivery under current policy; `system:operate`. 409 `delivery_not_retryable` names why one cannot be |
-
-Event filters: `application_id` (application-wide events and those of all its
-environments), `environment_id`, `operation_id`, `attempt`, `action_id`, `kind`,
-`error_code`, `errors_only`, `scope`, `since_ms`, `until_ms`, and `descending`.
-Pages contain at most 100 records and use opaque `v1:<id>` cursors. Oldest-first
-ordering remains the default. Timestamps are Unix milliseconds.
-
-SSE uses the same filters with oldest-first ordering. Set `Last-Event-ID` to the
-last received SSE ID to reconnect (it takes precedence over `cursor`). Without a
-cursor, replay starts at retained history. Events are read from the journal in
-bounded pages; slow clients do not block writers. When the filter excludes newer
-events, the stream sends an ID-only message so `Last-Event-ID` still advances. A stale resume position receives
-HTTP 410, or a terminal `history_expired` event if pruning happens during the
-stream. A terminal `stream_error` indicates a storage failure. Clients should
-refresh their snapshot before reconnecting after an expired history response.
-Streams recheck the caller's access while open (see
-[when access changes take effect](../accounts/permissions.md#when-access-changes-take-effect)): history it may no longer read
-stops arriving, and a caller that lost access entirely receives a terminal
-`access_ended` message whose data is the refusal's `ErrorBody`. Streams end
-without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
-
-Read deployment analytics for the last 7 days:
-
-```console
-piquelctl analytics --since 7d
-```
-
-`--app` and `--env` limit them to one environment; see the
-[CLI reference](../reference/cli.md). The dashboard adds Events, Errors,
-Analytics, Notifications and Daemon status.
+The dashboard adds Events, Errors, Analytics, Notifications and Daemon status.
 Application pages include scoped history; diagnostics link to related operation
 history. Error feedback links to the specific diagnostic where available. Views
 refresh while visible. Host settings are displayed read-only; credentials show
@@ -277,47 +205,17 @@ diagnostic counts, retained build-output bytes, operation queues, and pending/fa
 measurements that are unavailable are null and omitted from exported metrics, not
 zero.
 These are current samples; piqueld does not persist a resource time series.
-`piquelctl resources` and `piquelctl settings` show the measurements and the
-host settings in a terminal; see [piquelctl](../reference/cli.md).
 
 ## Notifications
 
 Notifications go to destinations: webhooks stored in the database and managed
-through the API, `piquelctl notification`, or the dashboard's Notifications
-page. Changes apply at once. For example, to send deployment failures about
-`shop` to Discord, mentioning a role:
-
-```console
-piquelctl notification set ops --kind discord --url-file discord-url \
-  --categories deployment_failures,recovery --apps shop \
-  --message 'deployment_failures=<@&123456789012345678>'
-piquelctl notification test ops
-```
-
-Each destination has a unique name, such as `ops`, a kind (`json` or
-`discord`), a URL, and chooses what it receives:
-
-- **Categories**: `build_failures`, `deployment_failures`,
-  `service_degradation`, `daemon_failures`, `recovery`, `security` (see
-  [security notifications](#security-notifications)), `daemon_started`
-  (see [daemon start notifications](#daemon-start-notifications)) and
-  `deployment_succeeded`, each successful deployment. A new destination
-  receives all of them but `deployment_succeeded`. A deployment that clears a
-  failure a destination was sent waits for that recovery: once the recovery
-  is delivered the deployment is not sent too, and otherwise it is.
-- **A message per category**, of 1–1000 characters, sent with each of its
-  notifications. Discord sends it as the message text, so mentions in it, such
-  as a role's `<@&ROLE_ID>`, notify; nothing else in a notification does.
-- **Applications**: every application, including later ones, or a list, by
-  ID so renaming one keeps it selected. Daemon notifications, such as daemon
-  failures, security events and daemon starts, reach a destination whatever
-  its applications.
-- **Previews**: whether it receives notifications about previews; a new
-  destination does not.
+through the API, `piquelctl notification`, or the dashboard. See the user
+guide's [notifications](../../user/operations/notifications.md) for what a
+destination receives and how to set one up.
 
 Listing destinations needs `system:read` or `notifications:manage`, and
 changing them `notifications:manage`. URLs are credentials: they are stored encrypted with
-the [secret master key](../reference/configuration.md#secret-storage) and never returned,
+the [secret master key](../../user/reference/configuration.md#secret-storage) and never returned,
 and lost-key recovery deletes the destinations. Deliveries go straight to the
 destination. They never follow redirects or use a proxy set in the
 environment (`HTTPS_PROXY`), which would see the URL.
@@ -418,7 +316,7 @@ Without an endpoint, nothing is exported there; an application can still
 `http://` sends in plain text, so use
 it only on loopback or a private network. `headers_file` holds gRPC metadata sent
 with every export, such as a collector token, as one `name: value` per line. It
-is a [credential file](../reference/configuration.md#credential-files): relative paths
+is a [credential file](../../user/reference/configuration.md#credential-files): relative paths
 resolve against `$CREDENTIALS_DIRECTORY`, and only its path is ever shown.
 Endpoints cannot carry credentials or a path. Configuration is read at startup;
 restart after changing it.
@@ -532,7 +430,7 @@ collector does not accept is dropped rather than retried, so an unreachable
 collector costs one request per second at most. A collector that accepts no
 export for a minute raises one `telemetry_export_failed` daemon diagnostic
 (`dependency_health_changed`), notified under `daemon_failures` once it has
-lasted `failure_threshold_seconds`, and a recovery event once exports succeed
+lasted the two-minute failure threshold, and a recovery event once exports succeed
 again. Telemetry still queued at shutdown gets five seconds to be sent.
 
 `piquelctl status` and the Daemon status page show each destination: its
@@ -553,7 +451,7 @@ A collector deployed as a piqueld application, such as the OpenTelemetry
 Collector, can receive the daemon's telemetry directly. The daemon runs on the
 host and can't reach an overlay network, and piqueld doesn't publish ports, so
 it exports over a Unix socket in a directory it shares with the collector,
-as it does with the [ingress gateway](ingress.md).
+as it does with the [ingress gateway](../../user/guides/ingress.md).
 
 1. Mark the collector's service in the manifest. At most one service per
    application may (`telemetry_receiver_duplicate`), with one replica
@@ -573,8 +471,8 @@ as it does with the [ingress gateway](ingress.md).
    Telemetry settings in the dashboard edit it too.
 
 2. Grant the environment telemetry. This needs the `telemetry:grant`
-   [permission](../accounts/permissions.md#telemetry), held only by `admin`,
-   since the receiving service gets the telemetry of every application:
+   [permission](../../user/accounts/permissions.md#telemetry), which `admin` holds
+   and which can also be granted on its own, since the receiving service gets the telemetry of every application:
 
    ```console
    piquelctl env telemetry observability production on
@@ -607,7 +505,7 @@ service:
     logs: { receivers: [otlp], exporters: [debug] }
 ```
 
-Mount it with a [file](../reference/manifest.md#files), for example at
+Mount it with a [file](../../user/reference/manifest.md#files), for example at
 `/etc/otelcol-contrib/config.yaml`. The daemon exports to every granted
 environment's receiving service alongside `[telemetry] endpoint`, which is
 optional, with the same records, bounded queues and guarantees: it never
@@ -618,7 +516,7 @@ listen again when it restarts. A receiver failing for a minute raises the same `
 diagnostic, attributed to its environment and notified under
 `service_degradation`.
 
-The mount follows the grant live, like [links](../reference/manifest.md#links):
+The mount follows the grant live, like [links](../../user/reference/manifest.md#links):
 it is never part of a deployment.
 
 - **Revoking** the grant, or deleting the environment, stops export to its
@@ -649,119 +547,3 @@ include error details. Grant it only to an application whose writers and
 deployers you trust with that, as you would with `system:read`. Its receiving
 service also runs as the daemon's user, which matters only if it escapes its
 container: nothing of the daemon's beyond the socket directory is mounted.
-
-## Observability stack
-
-[`examples/observability/application.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/observability/application.toml)
-is an application that stores piqueld's telemetry and lets you explore it: an
-OpenTelemetry Collector receiving the daemon's telemetry, Prometheus, Tempo and
-Loki storing its metrics, traces and logs, and Grafana on a private route, with
-a data source for each. It is a small starting point, with no dashboards, that
-you can extend.
-
-The manifest holds every configuration file inline, so it deploys from the
-file alone, without a repository. Edits you make to the application, such as
-its hostname, stay until you apply the file again.
-
-### Before you start
-
-- Your instance serves [private routes](ingress.md#public-and-private-routes)
-  on its tailnet, with a [DNS-01 provider](ingress.md#dns-01-certificates) for
-  the zone of Grafana's hostname.
-- You can create applications, change and deploy them, and run commands in
-  them: `apps:create`, `apps:write`, `apps:deploy` and `apps:exec`. Granting
-  the stack the daemon's telemetry also needs `telemetry:grant`, an
-  installation-wide permission that no preset includes: `admin` holds it, or
-  it can be granted on its own. See
-  [permissions](../accounts/permissions.md#grants).
-- `piquelctl` is signed in to your instance, on a machine with a checkout of
-  piqueld's repository. Run the commands in this section from the checkout's
-  root. Without a checkout, download `application.toml` and pass its path
-  instead.
-
-### Deploy it
-
-1. Choose Grafana's hostname, such as `grafana.example.com`, and point it at
-   the instance. Like any
-   [private route](ingress.md#dns-for-private-routes), it needs `A` and `AAAA`
-   records to the apps node's tailnet addresses, unless piqueld
-   [manages the zone's records](ingress.md#managed-dns-records).
-
-2. Save the manifest, then set your hostname in place of
-   `grafana.example.com`, the manifest's placeholder:
-
-   ```console
-   piquelctl app apply --file examples/observability/application.toml
-   piquelctl app variable set observability grafana_hostname grafana.example.com
-   ```
-
-   `app apply` creates the `observability` application, with its `collector`,
-   `prometheus`, `tempo`, `loki` and `grafana` services. Both commands ask you
-   to confirm. In the dashboard, the application's **Variables** tab sets the
-   hostname too.
-
-3. Grant the application's environment the daemon's telemetry, then deploy it:
-
-   ```console
-   piquelctl env telemetry observability production on
-   piquelctl app deploy observability
-   ```
-
-   `app deploy` asks you to confirm, then waits until the deployment finishes.
-   Grant the telemetry first: without it, the collector can't start, and the
-   deployment fails. The stack now receives the telemetry of every
-   application; see
-   [receiving telemetry](#receiving-telemetry-in-an-application).
-
-### Check that it works
-
-`piquelctl status` shows the telemetry receiver connected. Open the URL that
-`piquelctl env url observability` prints, from the tailnet, and sign in as
-`admin` with the generated password:
-
-```console
-piquelctl app exec observability grafana -- cat /run/secrets/grafana-admin-password
-```
-
-Then open **Explore** in Grafana and pick a data source:
-
-- **Prometheus** has the daemon's metrics, with `job="piqueld"`, and the
-  resource usage of each container, labelled with its attributes, such as
-  `piqueld_application`.
-- **Loki** has the daemon's logs and every container's output. Query them by
-  `service_name`, such as `{service_name="piqueld"}`.
-- **Tempo** has the daemon's traces. Search them by service or by name.
-
-Prometheus keeps metrics for 15 days and Tempo traces for 14, their images'
-defaults. Loki keeps logs until you delete its volume. Grafana keeps nothing
-between restarts, so the password stays the generated one; add a volume at
-`/var/lib/grafana` to keep the dashboards you create.
-
-### Send applications' telemetry to it
-
-Other applications can send their own telemetry to the collector. Export it to
-them, here `my-app`:
-
-```console
-piquelctl app export set observability collector --applications my-app --deploy
-```
-
-The application's **Links** tab in the dashboard edits exports too. Then import
-the collector in each of them, and point its OpenTelemetry SDK at it:
-
-```toml
-[[spec.imports]]
-application = "observability"
-service = "collector"
-
-[[spec.services]]
-name = "web"
-[spec.services.environment]
-OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.observability:4317"
-OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
-```
-
-The collector also accepts OTLP/HTTP on port 4318. Importing applications can
-send any telemetry, including records that pass for the daemon's, so export it
-only to applications you trust. A name no application holds is granted to
-whichever application [takes it first](../reference/manifest.md#links).

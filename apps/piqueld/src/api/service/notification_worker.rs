@@ -150,7 +150,7 @@ impl ApplicationService {
     /// Attempts webhook deliveries one at a time until cancelled, claiming
     /// the next as soon as one is attempted, and checking again every second
     /// while none is due. Errors are logged and never stop the worker.
-    pub(super) async fn deliver_notifications(&self, cancellation: CancellationToken) {
+    pub async fn deliver_notifications(&self, cancellation: CancellationToken) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut idle = true;

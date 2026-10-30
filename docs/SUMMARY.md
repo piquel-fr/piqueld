@@ -17,8 +17,12 @@
 - [Recovering access](user/accounts/recovery.md)
 - [Dashboard](user/dashboard.md)
 - [HTTP ingress](user/guides/ingress.md)
-- [Observability](user/guides/observability.md)
-- [Backups and upgrades](user/guides/backups-and-upgrades.md)
+- [History and diagnostics](user/operations/history.md)
+- [Audit trail](user/operations/audit.md)
+- [Notifications](user/operations/notifications.md)
+- [Exporting telemetry](user/operations/telemetry.md)
+- [Deploying an observability stack](user/operations/observability-stack.md)
+- [Backups and upgrades](user/operations/backups.md)
 
 # Reference
 
@@ -45,6 +49,7 @@
 
 - [Module boundaries](dev/architecture/dependency-flow.md)
 - [Persistence](dev/architecture/persistence.md)
+- [Observability](dev/architecture/observability.md)
 - [Resource planning](dev/architecture/resource-planning.md)
 - [Docker reconciliation](dev/architecture/docker-reconciliation.md)
 - [Authentication](dev/architecture/authentication.md)
