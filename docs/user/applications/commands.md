@@ -1,7 +1,7 @@
 # Running commands in a container
 
 Run a one-off command in a running container of a service, such as a database
-console or an administration task, with `piquelctl`.
+console or an administration task, from the dashboard or with `piquelctl`.
 
 ## Before you start
 
@@ -11,10 +11,35 @@ console or an administration task, with `piquelctl`.
 - The service has a running replica.
 - Run the commands on this page on the host, or on any machine where
   `piquelctl` is [signed in](../getting-started/first-account.md#sign-piquelctl-in).
-  You don't need SSH access to the host. The dashboard can't run commands.
+  You don't need SSH access to the host.
 - The examples use `notes`, from [Configuring services](services.md).
 
 ## Run a command
+
+The command runs in one running replica of the service, as the container's
+user, with its environment variables, secrets, volumes and network.
+
+### In the dashboard
+
+1. Open the environment, such as **production** on the `notes` application's
+   **Environments** tab, then its **Terminal** tab.
+2. Choose `db` as the **Service**, and fill in **Command** with
+   `psql -U notes`. It is `/bin/sh` unless you change it.
+3. Select **Run**.
+
+![The Terminal tab of notes' production environment, with the service db and the command psql -U notes](../../images/applications/terminal.png)
+
+The command gets a terminal the size of the tab, so you can type, paste and
+use Ctrl-C. Uncheck **Interactive terminal** to run it without input instead.
+Once it ends, the tab shows its exit code.
+
+The command line is split into arguments as a shell would, but no shell runs
+it: to use pipes or variables, run one, such as `sh -c 'ls | wc -l'`.
+
+Switching to another tab keeps the session. **Disconnect**, running another
+command, or leaving the page closes it.
+
+### With piquelctl
 
 ```console
 $ piquelctl app exec notes db -- psql -U notes -c "SELECT pg_size_pretty(pg_database_size('notes'))"
@@ -29,9 +54,7 @@ Everything after `--` is the program to run and its arguments. `piquelctl`
 prints the command's output as it comes, and exits with the command's exit
 code.
 
-The command runs in one running replica of the service, as the container's
-user, with its environment variables, secrets, volumes and network. It runs
-without a shell. To use pipes or variables, run one:
+It runs without a shell. To use pipes or variables, run one:
 
 ```console
 piquelctl app exec notes db -- sh -c 'ls /var/lib/postgresql/data | wc -l'
@@ -43,7 +66,7 @@ When the application has several environments, name one with `--env`:
 piquelctl app exec notes db --env staging -- psql -U notes
 ```
 
-## Send input to the command
+### Send input to the command
 
 `-i` sends what you pipe to `piquelctl` to the command, such as a database
 dump to restore:
@@ -64,7 +87,10 @@ piquelctl app exec notes web -it -- sh
 
 ## Run a command in a preview
 
-`preview exec` runs a command in a [preview](previews.md) instead. Name the
+In the dashboard, open the [preview](previews.md) from the application's
+**Previews** tab, and use its **Terminal** tab.
+
+With `piquelctl`, `preview exec` runs a command in a preview. Name the
 preview by its branch, its slug or its ID, and add `--slot` for a preview with
 a slot. If `notes` read its manifest from Git and had a preview of branch
 `feat/login`:
@@ -90,7 +116,8 @@ request.
 
 If `piquelctl` stops before the command ends, for example when you close its
 terminal or lose the connection, the command keeps running in the container
-until it ends on its own. The history then records that the command's stream
+until it ends on its own. So does a command you disconnect from in the
+dashboard. The history then records that the command's stream
 failed, instead of its exit code.
 
 To stop such a command, run another one that stops it, such as `kill` with its
@@ -104,8 +131,9 @@ ends, but the command may keep running.
 
 ## Troubleshooting
 
-- **`service_not_running`.** The service has no running replica in that
-  environment. Deploy it, or check its health.
+- **`service_not_running`, or "Service has no running task" in the
+  dashboard.** The service has no running replica in that environment.
+  Deploy it, or check its health.
 - **`environment required`.** The application has several environments. Name
   one with `--env`.
 - **`--tty requires standard input to be a terminal`.** `-t` only works when

@@ -35,13 +35,29 @@ A secret's value comes from one of two places:
 
 ## Generate a secret
 
-Only the manifest declares generated secrets: neither the dashboard nor
-`piquelctl` can. Once declared, a generated secret can also be mounted in the
-dashboard, on the service's **secret files** card, as a
-[stored secret](#store-a-secret) is.
+Declare the secret, then mount it in a service, as a file under
+`/run/secrets/`. `notes`, from [Configuring services](services.md), already
+generates the database's password, `db-password`, and mounts it in `db`.
+To declare another one, such as `session-key`:
 
-`notes.toml`, from [Configuring services](services.md), already generates the
-database's password. These are the lines that do it:
+- **In the dashboard,** open the application's **Secrets** tab. On the
+  **Generated secrets** card, select **Add generated secret**, fill in
+  **Secret name**, choose what it **Generates**, and select **Save changes**.
+- **With `piquelctl`:**
+
+  ```console
+  piquelctl app generated-secret set notes session-key --bytes 32
+  ```
+
+  `--rsa-bits 3072` makes an RSA key instead. `app generated-secret list
+  notes` lists the declarations, and `app generated-secret remove` removes
+  one.
+- **In the manifest,** add a `[[spec.secrets]]` table.
+
+Then mount it [as a stored secret is mounted](#store-a-secret), on the
+service's **secret files** card, with `piquelctl app service secret add`, or
+with a `[[spec.services.secrets]]` table. These are the lines of `notes.toml`
+that generate and mount `db-password`:
 
 ```toml
 [[spec.services]]
@@ -70,9 +86,7 @@ generate = { type = "random", bytes = 32 }
 - `POSTGRES_PASSWORD_FILE` tells PostgreSQL to read its password from that
   file.
 
-To mount the same secret in another service, add a `[[spec.services.secrets]]`
-table to that service's entry. To generate another secret, also declare it in
-a `[[spec.secrets]]` table of its own. Then deploy.
+Deploy once the secret is mounted.
 
 The first deployment that mounts `db-password` generates its value: 32 random
 bytes, written as 64 hexadecimal characters. Each environment gets its own
@@ -80,8 +94,8 @@ value and keeps it: later deployments and changes to the declaration never
 replace it.
 
 `generate` can also write the bytes as `base64url`, with
-`encoding = "base64url"`, or make an RSA private key, with
-`{ type = "rsa", bits = 3072 }`.
+`encoding = "base64url"` or `--encoding base64url`, or make an RSA private
+key, with `{ type = "rsa", bits = 3072 }`.
 [Manifest settings](../reference/manifest-settings.md#specsecretsgenerate-1)
 lists every option.
 
@@ -121,20 +135,31 @@ After you confirm, it prints:
 Saved smtp-password generation 1, mountable by every environment. Deploy to use it.
 ```
 
-piqueld stores the value byte for byte, including the newline at the end
+piqueld stores the file byte for byte, including the newline at the end
 that most editors add. Write the file with `printf '%s'` to leave it out.
-To pipe the value in instead, use `--stdin`, with `--yes`, since
-`piquelctl` can't ask you to confirm while it reads the value:
+To pipe the value in instead, use `--stdin`, which drops one trailing
+newline, with `--yes`, since `piquelctl` can't ask you to confirm while it
+reads the value:
 
 ```console
-printf '%s' "$SMTP_PASSWORD" | piquelctl app secret notes set smtp-password --stdin --yes
+echo "$SMTP_PASSWORD" | piquelctl app secret notes set smtp-password --stdin --yes
 ```
+
+Run in a terminal without a pipe, `--stdin` asks for the value instead, and
+doesn't show what you type.
 
 Values are 1 to 512,000 bytes long. Avoid typing them in a command, where
 your shell history keeps them.
 
-`piquelctl` has no command for a service's secret mounts: mount it in the
-dashboard or in the manifest.
+Then mount it in `web`, and point `web` at the file:
+
+```console
+piquelctl app service secret add notes web smtp-password /run/secrets/smtp-password
+piquelctl app service env set notes web SMTP_PASSWORD_FILE /run/secrets/smtp-password
+```
+
+`app service secret list notes web` lists the service's mounts, and
+`app service secret remove notes web /run/secrets/smtp-password` removes one.
 
 ### In the manifest
 
@@ -252,8 +277,9 @@ piqueld also sets a few variables itself, such as `${{ app.name }}` and
 `${{ env.name }}`. See [variables](../reference/manifest.md#variables) for
 them, and for the settings that accept references.
 
-Variables are not secret: the manifest, `piquelctl app show` and the dashboard
-show their values. Keep passwords in secrets.
+Variables are not secret: plans, `piquelctl app show` and `env show`,
+deployments and the dashboard show their values, even in environment
+variables. Keep passwords in secrets.
 
 ### Mount a different secret in each environment
 
@@ -293,6 +319,13 @@ For example, to give a `staging` environment of `notes` a test SMTP account:
 
 3. Then name `web`'s mount `${{ vars.smtp_secret }}`. In the dashboard, set
    **Secret name** on its **secret files** card, and select **Save changes**.
+   With `piquelctl`, mount it again at the same path, which replaces the
+   mount:
+
+   ```console
+   piquelctl app service secret add notes web '${{ vars.smtp_secret }}' /run/secrets/smtp-password
+   ```
+
    In the manifest:
 
    ```diff
