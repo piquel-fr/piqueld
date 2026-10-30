@@ -757,7 +757,7 @@ unmounts it by target, and `app service secret list` shows each service's
 saved mounts. Values and who may mount them are managed with `app secret`.
 Route edits preserve other routes and use the inspected generation to reject
 concurrent changes. `route add` and `route redirect` take an exact hostname or a
-[wildcard](../guides/ingress.md#wildcard-routes) such as `*.tenants.notes.example.com`,
+[wildcard](../networking/wildcards.md) such as `*.tenants.notes.example.com`,
 which serves every name one label below it; quote it for the shell. `route redirect` defaults to status 308 and appends the
 request path and query to the destination; use `--status` and
 `--no-preserve-path` to change that. Routes are private (tailnet only) unless
@@ -768,7 +768,7 @@ and `env visibility` caps every route of one environment at `private` (or lifts
 the cap with `public`) in the saved manifest. Deploy after saving to activate or
 remove routing. `route list` shows each deployed route with its name, environment,
 effective visibility, state, destination, whether piqueld
-[manages its DNS records](../guides/ingress.md#managed-dns-records) (`manual`, `managed`,
+[manages its DNS records](../networking/dns-records.md) (`manual`, `managed`,
 `pending` or `dns_conflict`) and the records its hostname needs, followed by the
 cause while it is not ready. `piquelctl status` also shows the
 public and private listeners: the ingress mode (ports 80/443, or the Cloudflare

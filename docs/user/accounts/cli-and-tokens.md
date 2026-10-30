@@ -199,7 +199,7 @@ saved logins alone.
 ## Bind a token to tailnet devices
 
 When piqueld has its own [tailnet node](../reference/configuration.md#tailnet-node),
-or a [dashboard hostname](../guides/ingress.md#dashboard-hostname), you can
+or a [dashboard hostname](../networking/private-routes.md#serve-the-dashboard-on-your-own-domain), you can
 bind a token to a tailnet user or tag. A leaked CI token is then useless
 outside your tailnet's CI runners.
 
@@ -284,7 +284,7 @@ a new token.
   tailnet node (tailscale.enabled) or a dashboard hostname
   (ingress.private.dashboard_hostname)".** Turn on piqueld's
   [tailnet node](../reference/configuration.md#tailnet-node) or set a
-  [dashboard hostname](../guides/ingress.md#dashboard-hostname).
+  [dashboard hostname](../networking/private-routes.md#serve-the-dashboard-on-your-own-domain).
 - **A bound token is refused with `tailnet_binding_mismatch`.** Use it
   through piqueld's tailnet address, from a device with that user or tag.
   `tailnet_unavailable` (503) means `tailscaled` didn't answer in time: retry.

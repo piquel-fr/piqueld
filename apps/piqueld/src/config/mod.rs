@@ -524,6 +524,7 @@ pub struct AcmeConfig {
     /// Let's Encrypt's production CA.
     pub directory: String,
     /// An email address the CA may send expiry and policy notices to.
+    /// piqueld sends it only when it first registers its account with the CA.
     pub email: Option<String>,
 }
 

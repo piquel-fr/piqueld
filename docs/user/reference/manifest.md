@@ -57,7 +57,7 @@ is deleted. Secret values are never manifest fields (manifests may only ask piqu
 generate them), and there are no manifest
 fields for directly published ports. HTTP routes, by exact or wildcard
 hostname, are declared in `spec.routes`; see [Routes](#routes) and
-[managed ingress](../guides/ingress.md).
+[managed ingress](../networking/routes.md).
 
 Rollouts start each replacement task before stopping the old one, except for
 services that mount any volume without `read_only = true`. Those stop the old
@@ -81,7 +81,7 @@ control data. Environment values and mount targets reach the container as
 written once [variables](#variables) are rendered. Docker Swarm's own `{{ }}`
 templates, such as `{{.Service.Name}}`, are not expanded.
 `PIQUELD_INGRESS_PROXIES` is reserved; piqueld injects it into
-routed services (see [managed ingress](../guides/ingress.md#client-addresses)).
+routed services (see [managed ingress](../networking/routes.md#read-the-clients-address)).
 Health-check paths are absolute, health-check timeouts cannot exceed their
 interval, and resource limits must specify CPU, memory, or both.
 
@@ -629,7 +629,7 @@ unpinned branch, redeploys when its branch moves:
   applications, environments, and previews read it.
 - **`webhook`** lists them when GitHub reports a push, and once after the
   daemon starts, since pushes reported while it was down may not have
-  deployed. See [webhooks](../guides/ingress.md#push-webhooks) for exposing the
+  deployed. See [webhooks](../networking/webhooks.md) for exposing the
   endpoint and `piquelctl app repository webhook` for its URL and secret. A
   delivery only says that something moved: piqueld lists the branches itself
   and never deploys a commit a payload names. A missed delivery waits for
@@ -919,7 +919,7 @@ port = 8080
 
 In practice these hostnames go through a variable, so environments keep their
 own: `hostname = "${{ vars.domain }}"` with `domain` set per environment and in
-`[spec.previews.variables]`. A [wildcard route](../guides/ingress.md#wildcard-routes) such
+`[spec.previews.variables]`. A [wildcard route](../networking/wildcards.md) such
 as `*.${{ env.slug }}.dev.example.com` gives each preview a subdomain per tenant,
 with a certificate of its own.
 
@@ -928,7 +928,7 @@ its last fetched manifest renders, and two previews or environments rendering
 the same hostname conflict with `hostname_conflict`. Preview routes are private
 unless `[spec.previews] visibility = "public"`. Private hostnames need DNS
 records pointing at the apps tailnet node (see
-[public and private routes](../guides/ingress.md#public-and-private-routes)).
+[public and private routes](../networking/private-routes.md)).
 
 **Secrets.** Each preview generates its own `spec.secrets` values. It mounts a
 stored secret only when the secret's access allows previews; otherwise its
@@ -1394,8 +1394,8 @@ default to `private`.
 visibility = "private"
 ```
 
-See [public and private routes](../guides/ingress.md#public-and-private-routes) for
-listeners, the apps tailnet node and DNS.
+See [private routes](../networking/private-routes.md) for the apps tailnet
+node and DNS.
 
 Each route either references a service in the same application and its internal
 HTTP port (1–65535), or sets `redirect` instead:
@@ -1416,7 +1416,7 @@ Up to 64 routes are allowed. Hostnames are public ASCII
 DNS names (use Punycode for internationalized domains), normalized to lowercase
 without a trailing dot. Paths, schemes, and hostname ports are rejected. A hostname
 starting with `*.`, such as `*.tenants.example.com`, is a
-[wildcard route](../guides/ingress.md#wildcard-routes): it serves every name one label below
+[wildcard route](../networking/wildcards.md): it serves every name one label below
 `tenants.example.com` that no exact route claims. `*` is allowed only as the
 first label.
 A hostname belongs to one application across saved, captured, and deployed state.

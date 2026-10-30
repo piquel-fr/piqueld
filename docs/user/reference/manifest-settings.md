@@ -8,7 +8,7 @@ generated from the manifest's
 [JSON Schema](manifest.md#validation-and-editor-support), so your editor shows
 the same descriptions. For how the settings work together, read the
 [application manifest](manifest.md) reference and the guides, such as
-[HTTP ingress](../guides/ingress.md).
+[serving an application over HTTPS](../networking/routes.md).
 
 Each table's section is headed by the line that starts it in the file, such
 as `[[spec.services]]`. Each setting is named by its full TOML path:
@@ -56,7 +56,7 @@ Type: table. Required.
 
 What the application runs, and how it deploys.
 
-## `[metadata]`
+## `[metadata]` table
 
 The application's identity.
 
@@ -66,7 +66,7 @@ Type: string. Required.
 
 Name of the application. A manifest with another name applies to another application, so rename one with `piquelctl app rename`.
 
-## `[spec]`
+## `[spec]` table
 
 What the application runs, and how its environments and previews deploy it.
 
@@ -136,7 +136,7 @@ Type: array of tables. Optional.
 
 Named volumes the services mount, at most 64.
 
-## `[spec.environments.<environment>]`
+## `[spec.environments.<environment>]` table
 
 Declares an environment and where it deploys from. Without `promote_from`, the environment builds its own manifest: the saved one, or a branch of the `spec.manifest` repository. A block that sets none of `branch`, `commit`, `promote_from` and `sync` leaves an existing environment's source as it is, unless the previous manifest set one of them: removing them returns the environment to the default source.
 
@@ -176,7 +176,7 @@ Type: `"public"` or `"private"`. Default: `"public"`.
 
 The strictest visibility the environment's routes get. `public` restricts nothing; `private` keeps every route on the tailnet.
 
-## `[[spec.exports]]`
+## `[[spec.exports]]` table
 
 A service of this application that other applications may reach over a private link, as `<service>.<application>`.
 
@@ -198,7 +198,7 @@ Type: string. Required.
 
 Service of this application to export, at most once.
 
-## `[[spec.imports]]`
+## `[[spec.imports]]` table
 
 A service of another application this application reaches over a private link, as `<service>.<application>`.
 
@@ -220,7 +220,7 @@ Type: string. Required.
 
 Service that application exports, imported at most once.
 
-## `[[spec.jobs]]`
+## `[[spec.jobs]]` table
 
 A container that runs to completion during each deployment, such as a database migration.
 
@@ -278,7 +278,7 @@ Type: `"read-only"` or `"exclusive"`. Default: `"read-only"`.
 
 How the job mounts its service's volumes. `read-only` mounts every volume read-only, so the job runs beside the services. `exclusive` keeps the writable volumes writable, and stops every service mounting them while the job runs.
 
-## `[[spec.jobs.secrets]]`
+## `[[spec.jobs.secrets]]` table
 
 A secret mounted as a file. A name `spec.secrets` declares mounts the environment's generated value; any other name mounts a value from the application's secret store.
 
@@ -294,7 +294,7 @@ Type: string. Required.
 
 Absolute path of the file under `/run/secrets/`, unique in the service.
 
-## `[spec.manifest]`
+## `[spec.manifest]` table
 
 The Git repository and file each deployment reads the manifest from.
 
@@ -316,7 +316,7 @@ Type: table. Default: `{ mode = "off" }`.
 
 Whether pushes to the repository deploy environments and previews.
 
-## `[spec.manifest.repository]`
+## `[spec.manifest.repository]` table
 
 A Git repository and the revision to check out. Git uses the host's credentials.
 
@@ -338,7 +338,7 @@ Type: string. Required.
 
 Clone URL or local path of the repository. It can't contain credentials.
 
-## `[spec.manifest.sync]`
+## `[spec.manifest.sync]` table
 
 Whether pushes to the manifest repository deploy. It applies to every preview, and to every environment that opted in and follows a branch without a pinned commit.
 
@@ -356,7 +356,7 @@ Type: integer of at most 4294967295. Only with `mode = "poll"`. Default: `300`.
 
 Seconds between listings, from 60 to 86,400.
 
-## `[spec.previews]`
+## `[spec.previews]` table
 
 Settings shared by every preview.
 
@@ -372,7 +372,7 @@ Type: `"public"` or `"private"`. Default: `"private"`.
 
 The strictest visibility preview routes get. `private` keeps every route on the tailnet; `public` restricts nothing.
 
-## `[[spec.routes]]`
+## `[[spec.routes]]` table
 
 An HTTP route: requests for a hostname go to a service, or get a redirect. A route sets either `service` and `port`, or `redirect`.
 
@@ -412,7 +412,7 @@ Type: `"public"` or `"private"`. Default: `"private"`.
 
 Who may connect: `public` for the internet, or `private` for the tailnet only. The environment's or the previews' visibility can make it stricter, never looser.
 
-## `[spec.routes.redirect]`
+## `[spec.routes.redirect]` table
 
 A redirect the gateway answers with.
 
@@ -434,7 +434,7 @@ Type: [template](#template). Required.
 
 Absolute `http` or `https` URL to redirect to, with a lowercase hostname and no query or fragment. It can't target a hostname the route serves.
 
-## `[[spec.secrets]]`
+## `[[spec.secrets]]` table
 
 A secret whose value piqueld generates for each environment when one of its deployments first needs it. Later deployments and manifest edits keep that value; `piquelctl env secret regenerate` replaces it. A value is never shared with another environment.
 
@@ -450,7 +450,7 @@ Type: string. Required.
 
 Name of the secret, unique in the application. It can't reference variables.
 
-## `[spec.secrets.generate]`
+## `[spec.secrets.generate]` table
 
 How piqueld generates a secret's value.
 
@@ -479,7 +479,7 @@ Type: `"hex"` or `"base64url"`. Only with `type = "random"`. Default: `"hex"`.
 
 Text encoding of the bytes: lowercase `hex`, or unpadded `base64url`.
 
-## `[[spec.services]]`
+## `[[spec.services]]` table
 
 A service: containers running one image, kept at their replica count.
 
@@ -567,7 +567,7 @@ Type: table. Required.
 
 Where the service's image comes from: a prebuilt image, or a Git build.
 
-## `[[spec.services.files]]`
+## `[[spec.services.files]]` table
 
 A read-only file mounted into a service's containers, from exactly one source: `path` in the manifest's repository, or inline `content`. Its content can't be empty, and is at most 500 KiB.
 
@@ -595,7 +595,7 @@ Type: string. Required.
 
 Absolute path of the file in the container, unique among the service's mount, secret and file targets. It can't be in `/run/secrets` or `/run/piqueld`.
 
-## `[spec.services.healthcheck]`
+## `[spec.services.healthcheck]` table
 
 How Docker checks that a service's containers are healthy.
 
@@ -648,7 +648,7 @@ Type: integer of at most 4294967295 or [typed template](#typed-template). Defaul
 
 Seconds a check may take before it fails, from 1 to the interval.
 
-## `[[spec.services.mounts]]`
+## `[[spec.services.mounts]]` table
 
 A volume mounted into a service's containers.
 
@@ -670,7 +670,7 @@ Type: string. Required.
 
 Name of a volume in `spec.volumes`.
 
-## `[spec.services.resources]`
+## `[spec.services.resources]` table
 
 CPU and memory limits of each of a service's containers. Set at least one.
 
@@ -686,7 +686,7 @@ Type: integer of at most 18446744073709551615 or [typed template](#typed-templat
 
 Memory limit in bytes, from 1 to 9,223,372,036,854,775,807.
 
-## `[spec.services.rollout]`
+## `[spec.services.rollout]` table
 
 How Docker replaces a service's containers during a deployment, one at a time. An empty block keeps the defaults.
 
@@ -702,7 +702,7 @@ Type: `"stop-first"`, `"start-first"` or [typed template](#typed-template). Opti
 
 `stop-first` stops the old container before starting its replacement, with a short downtime. `start-first` starts the replacement first, so both briefly run side by side. When unset, `stop-first` if the service mounts a volume writable or receives telemetry, `start-first` otherwise.
 
-## `[[spec.services.secrets]]`
+## `[[spec.services.secrets]]` table
 
 A secret mounted as a file. A name `spec.secrets` declares mounts the environment's generated value; any other name mounts a value from the application's secret store.
 
@@ -718,7 +718,7 @@ Type: string. Required.
 
 Absolute path of the file under `/run/secrets/`, unique in the service.
 
-## `[spec.services.source]`
+## `[spec.services.source]` table
 
 Where a service's image comes from.
 
@@ -747,7 +747,7 @@ Type: `"self"` or table. Required with `type = "git"`.
 
 Repository to build: `"self"` for the manifest's own repository, at the commit the manifest was read from, or a table naming another one. `"self"` needs `spec.manifest`.
 
-## `[spec.services.source.build]`
+## `[spec.services.source.build]` table
 
 How to build a Git source's image.
 
@@ -781,7 +781,7 @@ Type: [template](#template). Optional.
 
 Stage of a multi-stage Dockerfile to build. By default, the final stage.
 
-## `[spec.services.source.repository]`
+## `[spec.services.source.repository]` table
 
 A Git repository and the revision to check out. Git uses the host's credentials.
 
@@ -803,7 +803,7 @@ Type: string. Required.
 
 Clone URL or local path of the repository. It can't contain credentials.
 
-## `[[spec.volumes]]`
+## `[[spec.volumes]]` table
 
 A named volume the services mount. Its data is kept across deployments, and when the application is deleted. A preview's volumes are deleted with the preview.
 

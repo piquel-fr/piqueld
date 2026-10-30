@@ -156,17 +156,33 @@ export async function accountForm(page: Page, link: string) {
   await fillRegistration(page, link, 'alice', { display: 'Alice', passkey: 'Laptop' });
 }
 
+/** The text of `guide`, a page under docs/. */
+const guideText = (guide: string) => readFile(new URL(guide, docs), 'utf8');
+
+/** Runs piquelctl with `args`, as the signed-in account. */
+async function piquelctl(page: Page, cli: Cli, args: string[]) {
+  const result = await cli.run(args, await adminToken(page, 'Screenshots'));
+  expect(result.code, result.stderr).toBe(0);
+}
+
 /** Deploys the first manifest of `guide`, a page under docs/, with
  * `piquelctl app apply`, as the guide does, authenticated by a token of the
  * signed-in account. */
 export async function deployFrom(page: Page, cli: Cli, guide: string) {
-  const markdown = await readFile(new URL(guide, docs), 'utf8');
-  const manifest = markdown.match(/```toml\n([\s\S]*?)```/)?.[1];
+  const manifest = (await guideText(guide)).match(/```toml\n([\s\S]*?)```/)?.[1];
   if (!manifest) throw new Error(`${guide} shows no TOML manifest`);
   const file = join(cli.daemon.directory, 'manifest.toml');
   await writeFile(file, manifest);
-  const applied = await cli.run(['app', 'apply', '--file', file, '--deploy', '--yes'], await adminToken(page, 'Screenshots'));
-  expect(applied.code, applied.stderr).toBe(0);
+  await piquelctl(page, cli, ['app', 'apply', '--file', file, '--deploy', '--yes']);
+}
+
+/** Runs the first `piquelctl <command> …` line of `guide`, a page under
+ * docs/, as the guide does, without its confirmation prompt. */
+export async function runFrom(page: Page, cli: Cli, guide: string, command: string) {
+  const line = (await guideText(guide)).split('\n').map(line => line.trim())
+    .find(line => line.startsWith(`piquelctl ${command} `));
+  if (!line) throw new Error(`${guide} shows no piquelctl ${command} command`);
+  await piquelctl(page, cli, [...line.split(/\s+/).slice(1), '--yes']);
 }
 
 /** The Overview, once every application is healthy and the latest deployment succeeded. */
@@ -177,13 +193,18 @@ export async function overview(page: Page) {
   await expect(page.getByRole('region', { name: 'Recent deployments' }).getByRole('row').nth(1)).toContainText(/succeeded/i);
 }
 
-/** Environment `name` of application `app`, reached as a reader would, once
- * its services converged. */
-export async function environment(page: Page, app: string, name: string) {
-  await page.getByRole('link', { name: 'Applications', exact: true }).click();
+/** Application `app`'s page, reached as a reader would. */
+async function application(page: Page, app: string) {
+  await page.getByRole('navigation', { name: 'Dashboard navigation' }).getByRole('link', { name: 'Applications', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Applications');
   await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link').filter({ hasText: app }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(app);
+}
+
+/** Environment `name` of application `app`, reached as a reader would, once
+ * its services converged. */
+export async function environment(page: Page, app: string, name: string) {
+  await application(page, app);
   await applicationTab(page, 'Environments').click();
   await page.getByRole('main').getByRole('link').filter({ hasText: name }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
@@ -244,3 +265,23 @@ export async function signUp(browser: Browser, link: string, username: string, d
     } finally { await passkeys.close(); }
   } finally { await context.close(); }
 }
+/** The Routes tab of application `app`, once its saved routes and the
+ * ingress status are loaded. */
+export async function routes(page: Page, app: string) {
+  await application(page, app);
+  await applicationTab(page, 'Routes').click();
+  await expect(card(page, 'Routes').getByRole('textbox', { name: 'Hostname' }).first()).not.toHaveValue('');
+  await expect(card(page, 'Deployed routes')).not.toContainText('Waiting for the ingress status');
+}
+
+/** The Source tab of application `app`, once its GitHub webhook card is
+ * loaded. */
+export async function source(page: Page, app: string) {
+  await application(page, app);
+  await applicationTab(page, 'Source').click();
+  await expect(card(page, 'GitHub webhook').getByText('Payload URL', { exact: true })).toBeVisible();
+}
+
+/** The card of the current page headed `heading`. */
+export const card = (page: Page, heading: string) =>
+  page.locator('section.card', { has: page.getByRole('heading', { name: heading, exact: true }) });

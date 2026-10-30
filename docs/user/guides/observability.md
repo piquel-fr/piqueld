@@ -553,7 +553,7 @@ A collector deployed as a piqueld application, such as the OpenTelemetry
 Collector, can receive the daemon's telemetry directly. The daemon runs on the
 host and can't reach an overlay network, and piqueld doesn't publish ports, so
 it exports over a Unix socket in a directory it shares with the collector,
-as it does with the [ingress gateway](ingress.md).
+as it does with the ingress gateway.
 
 1. Mark the collector's service in the manifest. At most one service per
    application may (`telemetry_receiver_duplicate`), with one replica
@@ -665,9 +665,10 @@ its hostname, stay until you apply the file again.
 
 ### Before you start
 
-- Your instance serves [private routes](ingress.md#public-and-private-routes)
-  on its tailnet, with a [DNS-01 provider](ingress.md#dns-01-certificates) for
-  the zone of Grafana's hostname.
+- Your instance serves [private routes](../networking/private-routes.md)
+  on its tailnet, with a
+  [DNS-01 provider](../networking/wildcards.md#dns-01-certificates) for the
+  zone of Grafana's hostname.
 - You can create applications, change and deploy them, and run commands in
   them: `apps:create`, `apps:write`, `apps:deploy` and `apps:exec`. Granting
   the stack the daemon's telemetry also needs `telemetry:grant`, an
@@ -683,9 +684,10 @@ its hostname, stay until you apply the file again.
 
 1. Choose Grafana's hostname, such as `grafana.example.com`, and point it at
    the instance. Like any
-   [private route](ingress.md#dns-for-private-routes), it needs `A` and `AAAA`
-   records to the apps node's tailnet addresses, unless piqueld
-   [manages the zone's records](ingress.md#managed-dns-records).
+   [private route](../networking/private-routes.md#dns-for-private-routes),
+   it needs `A` and `AAAA` records to the apps node's tailnet addresses,
+   unless piqueld
+   [manages the zone's records](../networking/dns-records.md).
 
 2. Save the manifest, then set your hostname in place of
    `grafana.example.com`, the manifest's placeholder:

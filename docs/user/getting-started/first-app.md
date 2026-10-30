@@ -113,7 +113,7 @@ Saving changes the application's manifest but not what's running: select
 
 ## Next steps
 
-- Put the website on an HTTPS address with a [route](../guides/ingress.md).
+- Put the website on an HTTPS address with a [route](../networking/routes.md).
 - Add a `staging` environment with
   [declared environments](../reference/manifest.md#declared-environments).
 - Build images from a Git repository with
