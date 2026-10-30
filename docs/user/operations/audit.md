@@ -11,21 +11,24 @@ The audit trail records:
   rejected browser origin, or too many attempts. Requests for an application
   the caller can't see are **Denied** with status 404;
 - every change and every sign-in;
-- every session that runs a command in a container, with `app exec` or
-  `preview exec`. The command itself isn't recorded, since it can contain
-  secrets;
+- every session that runs a command in a container, with `app exec`,
+  `preview exec` or the dashboard's **Terminal** tab. The command itself isn't
+  recorded, since it can contain secrets;
 - reads of logs, of the daemon's configuration, of downloaded manifests, and
   of the account list.
 
 Each record keeps the request and its outcome: **Allowed**, **Denied** or
 **Failed**. It names the account and credential that made it, and where it
 came from: a network address, the Unix socket, or a tailnet user and device.
-Request bodies are never recorded. Records outlive the accounts, credentials
+Request bodies are never recorded, but a change to an account names what
+changed, such as the grants it set. Records outlive the accounts, credentials
 and applications they name.
 
 Routine reads, such as the dashboard refreshing a page, aren't recorded.
 Records are written in the background: if more than 1,024 wait at once, the
-extra ones are dropped, and only the daemon's log mentions them.
+extra ones are dropped. The next record then follows a **Failed** one, with
+status 503 and no caller, that says how many are missing, so the trail shows
+the gap.
 
 ## Read it
 

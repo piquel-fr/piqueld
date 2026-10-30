@@ -73,6 +73,10 @@ The dashboard's **Daemon status** page shows:
 
 - whether the database, the Docker engine, the Swarm manager and HTTPS ingress
   are ready;
+- the **Installation checks**: whether the daemon's public URL, its tailnet
+  node, the Docker engine, ports 80 and 443, its secret key and its API socket
+  are set up, each with a next step when one needs action. They run when the
+  page opens, and again when you select **Run checks**;
 - how many previews run against their limits, what image cleanup removed, and
   where telemetry is exported;
 - the daemon's uptime, memory, CPU, database size and free disk space;
@@ -81,13 +85,34 @@ The dashboard's **Daemon status** page shows:
 
 These are current values. For their history, [export telemetry](telemetry.md).
 
-`piquelctl status` shows some of it: the daemon's version, HTTPS ingress, how
-many previews run against their limits, what image cleanup removed, and where
-telemetry is exported.
+With `piquelctl`:
+
+- `piquelctl status` shows the daemon's version, HTTPS ingress, how many
+  previews run against their limits, what image cleanup removed, and where
+  telemetry is exported.
+- `piquelctl doctor` runs the installation checks. It exits with code 6 when
+  one fails.
+- `piquelctl resources` shows the daemon's resource usage and counters.
+
+The **Host settings** page shows the daemon's
+[configuration](../reference/configuration.md) as it runs, and
+`piquelctl settings` prints it. Credentials appear only as the file they're
+read from. To change a setting, edit the configuration and restart the daemon.
+
+These pages and commands need the `system:read` permission.
 
 The **Analytics** page sums up deployments over the last 24 hours, 7, 30 or 365
 days: how many succeeded or failed, how long attempts took, how often they were
 retried, how long each kind of step takes, and the most common failure codes.
+`piquelctl analytics` prints the same summary, for the last 30 days unless you
+pass `--since`:
+
+```console
+piquelctl analytics --since 7d
+```
+
+`--app` limits it to one application's environment. Name the environment
+with `--env` when the application has several.
 
 ## How long history is kept
 

@@ -133,7 +133,7 @@ The daemon refuses to retry a delivery that hasn't failed, that its destination
 no longer receives, or whose incident has since closed or opened again. It also
 refuses a failure after its destination received the recovery that followed it.
 The command then fails with `delivery_not_retryable` and exit code 3, and its
-message says why. See [notifications](../guides/observability.md#notifications).
+message says why. See [notifications](../operations/notifications.md).
 
 `env stop APP [ENV]` confirms, then stops an environment: the gateway
 withdraws its routes at once and its services scale to zero replicas, keeping
@@ -382,7 +382,7 @@ read-only commands, both requiring `system:read`, show what the dashboard's
 Daemon status and Host settings pages do:
 
 - `piquelctl resources` shows the daemon's
-  [resource measurements](../guides/observability.md#api-and-dashboard): uptime,
+  [resource measurements](../operations/history.md#watch-the-daemon-itself): uptime,
   resident memory, CPU usage, the database and its write-ahead log, free disk
   on the data directory's filesystem, retained events, diagnostics and build
   output, running and queued operations, and notification deliveries
@@ -394,7 +394,7 @@ Daemon status and Host settings pages do:
   [configuration](configuration.md), grouped as on the Host settings page.
   Credentials appear only as the file they are read from. Change settings in
   the daemon's TOML and restart it. Each read is recorded in the
-  [audit trail](../guides/observability.md#audit-trail).
+  [audit trail](../operations/audit.md).
 
 Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), hours (`h`), or days (`d`); a
@@ -950,7 +950,7 @@ events of all its environments, including deleted ones. `--environment ID` filte
 by stable environment ID. Deleting an application removes its history. Use `--cursor CURSOR` for subsequent
 pages and `--limit N` (1–100, default 50). JSON includes the next cursor.
 
-`analytics` summarizes [deployment analytics](../guides/observability.md#api-and-dashboard),
+`analytics` summarizes [deployment analytics](../operations/history.md#watch-the-daemon-itself),
 as the dashboard's Analytics page does: deployments by the outcome of their
 latest attempt, the mean attempt duration, failed and retry attempts, action
 retries, mean durations per action phase, and the most frequent failure codes.

@@ -223,8 +223,17 @@ Transport: Unix socket /run/piqueld/piqueld.sock
 ```
 
 Run as root, `piquelctl` acts as the host operator, so it works before any
-account exists. Once you've signed in, **System status** on the dashboard's
-**Overview** also shows whether Docker and its Swarm are ready.
+account exists. Then check the installation:
+
+```console
+sudo piquelctl doctor
+```
+
+It checks what the daemon can verify about its own setup, such as Docker, its
+public URL and its secret key, and gives a next step for each check that needs
+action. Once you've signed in, **System status** on the dashboard's
+**Overview** also shows whether Docker and its Swarm are ready, and the
+**Daemon status** page runs the same checks.
 
 Next, [create your account](first-account.md).
 
