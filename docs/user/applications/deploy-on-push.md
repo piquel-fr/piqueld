@@ -13,9 +13,9 @@ deploy every push to a branch.
   [signed it in](../getting-started/first-account.md#sign-piquelctl-in).
 - The host can read the repository. For a private one, give the daemon's user
   [an SSH key](git-builds.md#build-from-a-private-repository).
-- Creating the application needs `apps:create`, and connecting it
-  `apps:write` on it. Deploying it, and turning on deploying on push, need
-  `apps:deploy` too; see
+- Creating the application needs `apps:create`. Connecting it, and
+  generating its webhook secret, need `apps:write` on it. Deploying it, and
+  turning on deploying on push, need `apps:deploy` too; see
   [permissions](../accounts/permissions.md#grants).
 - To deploy on push with a GitHub webhook, GitHub must reach the daemon. It
   needs [HTTP ingress with a webhook hostname](../guides/ingress.md#push-webhooks)

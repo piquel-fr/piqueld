@@ -50,8 +50,9 @@ piquelctl app service health http hello web 80 --path /
 piquelctl app deploy hello
 ```
 
-Each command asks you to confirm, then saves one change. `app deploy` deploys
-them to the application's `production` environment. It prints each step and
+Each command asks you to confirm. The first three each save one change, and
+`app deploy` deploys the saved configuration to the application's
+`production` environment. It prints each step and
 waits until the deployment finishes. In a script, add `--yes` to skip the
 confirmations.
 
@@ -89,8 +90,8 @@ Manifest is valid for application "hello".
 $ piquelctl app apply --file hello.toml --deploy
 ```
 
-To see what a deployment would change before you run it, select **Preview**
-on the application's page in the dashboard, or run
+To see what saving and deploying a change would do before you run it, select
+**Preview** on the application's page in the dashboard, or run
 `piquelctl app plan --file hello.toml`. The [manifest reference](../reference/manifest.md) describes every
 setting. `piquelctl app manifest hello` prints the manifest of an application
 you created in the dashboard or with `piquelctl`.

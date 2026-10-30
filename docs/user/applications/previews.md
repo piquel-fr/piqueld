@@ -1,8 +1,8 @@
 # Previews
 
 A preview is a short-lived copy of an application that runs one Git branch,
-or the uncommitted changes in your worktree. Use one to try a change before it
-reaches staging, then delete it.
+or your local worktree with its unpushed commits and uncommitted files. Use
+one to try a change before it reaches staging, then delete it.
 
 ## Before you start
 
@@ -38,7 +38,8 @@ reaches staging, then delete it.
    - `visibility` is the strictest visibility of their routes. It is
      `private` by default, which keeps every preview on your tailnet.
    - `variables` override the defaults of `[spec.variables]` for every
-     preview. Every variable without a default, such as `domain` in
+     preview. Every variable the preview uses that has no default, such as
+     `domain` in
      [the staging and production manifest](environments.md#set-up-staging-and-production),
      needs a value here, or the preview's deployment fails.
    - `${{ env.slug }}` is the preview's slug, so each preview gets its own
