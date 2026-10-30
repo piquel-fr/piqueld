@@ -471,8 +471,8 @@ as it does with the [ingress gateway](../../user/guides/ingress.md).
    Telemetry settings in the dashboard edit it too.
 
 2. Grant the environment telemetry. This needs the `telemetry:grant`
-   [permission](../../user/accounts/permissions.md#telemetry), held only by `admin`,
-   since the receiving service gets the telemetry of every application:
+   [permission](../../user/accounts/permissions.md#telemetry), which `admin` holds
+   and which can also be granted on its own, since the receiving service gets the telemetry of every application:
 
    ```console
    piquelctl env telemetry observability production on
