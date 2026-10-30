@@ -209,6 +209,9 @@ server {
   const started = page.locator('article.event', { hasText: 'Command Started' });
   await expect(page.locator('article.event')).toHaveCount(1);
   await shoot(page, 'applications/command-events', started);
+  // The terminal fits its screen to the window: size it as `shoot` will
+  // first, so the screen doesn't redraw while it is saved.
+  await page.setViewportSize({ width: 1280, height: 800 });
   await environmentTab(page, 'Terminal').click();
   await page.getByRole('combobox', { name: 'Service', exact: true }).selectOption('db');
   await page.getByLabel('Command', { exact: true }).fill('psql -U notes');
