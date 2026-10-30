@@ -1,8 +1,23 @@
 import type { Page } from '@playwright/test';
-import { expect, applicationTab, rewrite, submitRegistration, title } from '../fixtures.js';
-import { test, accountForm, application, createApplication, environment, manifest, saveChanges, shoot, Piquelctl } from './docs.js';
+import { expect, applicationTab, environmentTab, rewrite, submitRegistration, title } from '../fixtures.js';
+import { test, accountForm, application, createApplication, environment, manifest, saveChanges, service, shoot, Piquelctl } from './docs.js';
 
 const guides = 'user/applications';
+
+/** Shows every finished build or job run lasting `milliseconds`: the fake
+ * engine takes a few milliseconds, never the same number. */
+const lasting = (page: Page, milliseconds: number) => rewrite(page, '/api/v1/builds', data => {
+  for (const build of data.items) build.finished_at_ms &&= build.started_at_ms + milliseconds;
+});
+
+/** Shows the output of build or job run `id` as captured at the time
+ * `shoot` shows dates at, its text changed by `edit`. */
+const output = (page: Page, id: number, edit = (text: string) => text) => rewrite(page, `/api/v1/builds/${id}/logs`, data => {
+  for (const chunk of data.items) {
+    chunk.text = edit(chunk.text);
+    chunk.timestamp_ms = Date.UTC(2026, 9, 24, 9, 41, 7);
+  }
+});
 
 /** The card of the page headed `heading`. */
 const card = (page: Page, heading: string) =>
@@ -20,23 +35,12 @@ test('shipping applications', async ({ page, daemon, cli, passkeys, gitHost }) =
   const welcome = await gitHost.create('https://github.com/docker/welcome-to-docker.git');
   await welcome.push('main', { Dockerfile: 'FROM node:22-alpine\nWORKDIR /app\nCOPY . .\nCMD ["serve", "-s", "build"]\n' });
   await piquelctl.apply(await manifest(`${guides}/git-builds.md`));
-  await application(page, 'welcome', 'Services');
-  await page.locator('a.list-row', { hasText: 'web' }).click();
-  await expect(title(page)).toHaveText('web');
+  await service(page, 'welcome', 'web', 'Source & scaling');
   await shoot(page, 'applications/service-git-source', page.getByLabel('Dockerfile path', { exact: true }));
-  // The fake engine builds in a few milliseconds, never the same number:
-  // show the build lasting as long as a real one.
-  await rewrite(page, '/api/v1/builds', data => {
-    for (const build of data.items) build.finished_at_ms &&= build.started_at_ms + 51_300;
-  });
+  await lasting(page, 51_300);
   // Its output names the checkout's random directory: show it where a host
-  // keeps it, at the time `shoot` shows dates at.
-  await rewrite(page, '/api/v1/builds/1/logs', data => {
-    for (const chunk of data.items) {
-      chunk.text = chunk.text.replace(/\/\S+\/checkouts\/checkout-\w+/, '/var/lib/piqueld/checkouts/checkout-k3Zq8P');
-      chunk.timestamp_ms = Date.UTC(2026, 9, 24, 9, 41, 7);
-    }
-  });
+  // keeps it.
+  await output(page, 1, text => text.replace(/\/\S+\/checkouts\/checkout-\w+/, '/var/lib/piqueld/checkouts/checkout-k3Zq8P'));
   await application(page, 'welcome', 'Builds');
   await page.getByRole('button', { name: /Build #1/ }).click();
   await shoot(page, 'applications/build-output', page.getByText('Retained output', { exact: true }));
@@ -110,4 +114,106 @@ test('shipping applications', async ({ page, daemon, cli, passkeys, gitHost }) =
   await previews.getByRole('listitem').filter({ hasText: /local/i }).getByRole('link').first().click();
   await expect(title(page)).toHaveText(/blog-feat-login/);
   await shoot(page, 'applications/preview-local');
+});
+
+// docs/user/applications: the services, secrets, volumes and files of notes,
+// then the job of reader, the link from auth to notes, and a command in
+// notes, from piquelctl and the Terminal tab, each continuing from the one
+// before.
+test('configuring applications', async ({ page, daemon, cli, passkeys }) => {
+  void passkeys;
+  await accountForm(page, daemon.setup);
+  await submitRegistration(page);
+  const piquelctl = await Piquelctl.signIn(page, cli);
+
+  // Configuring services.
+  let notes = await manifest(`${guides}/services.md`);
+  await piquelctl.apply(notes);
+  await service(page, 'notes', 'web', 'Health check');
+  await shoot(page, 'applications/service-health-check', page.getByLabel('Retries', { exact: true }));
+
+  // Secrets and variables: smtp-password, stored and mounted in web.
+  await piquelctl.run(['app', 'secret', 'notes', 'set', 'smtp-password', '--file', await piquelctl.write('smtp-password', 'correct horse battery staple'), '--yes']);
+  notes = notes.replace('depends_on = ["db"]\n', `depends_on = ["db"]
+
+[spec.services.environment]
+SMTP_PASSWORD_FILE = "/run/secrets/smtp-password"
+
+[[spec.services.secrets]]
+name = "smtp-password"
+target = "/run/secrets/smtp-password"
+`);
+  await piquelctl.apply(notes);
+  await application(page, 'notes', 'Secrets');
+  await shoot(page, 'applications/application-secrets');
+  await environment(page, 'notes', 'production');
+  await environmentTab(page, 'Secrets').click();
+  await shoot(page, 'applications/environment-secrets');
+
+  // Volumes and files: db keeps its data in a volume, and web mounts its
+  // configuration.
+  notes = notes.replace('start_period_seconds = 30\n', `start_period_seconds = 30
+
+[[spec.services.mounts]]
+volume = "data"
+target = "/var/lib/postgresql/data"
+`).replace('path = "/"\n', `path = "/"
+
+[[spec.services.files]]
+target = "/etc/nginx/conf.d/default.conf"
+content = """
+server {
+    listen 80;
+    location / {
+        root /usr/share/nginx/html;
+    }
+}
+"""
+`) + '\n[[spec.volumes]]\nname = "data"\n';
+  await piquelctl.apply(notes);
+  await service(page, 'notes', 'db', 'Volume mounts');
+  await shoot(page, 'applications/volume-mounts');
+
+  // Running jobs: reader migrates its database before each rollout.
+  const jobs = `${guides}/jobs.md`;
+  let reader = await manifest(jobs, 'Set it up');
+  await piquelctl.apply(reader, false);
+  const password = 'a'.repeat(64);
+  await piquelctl.run(['app', 'secret', 'reader', 'set', 'db-password', '--file', await piquelctl.write('db-password', password), '--yes']);
+  await piquelctl.run(['app', 'secret', 'reader', 'set', 'database-url', '--file', await piquelctl.write('database-url', `postgres://reader:${password}@db:5432/reader?sslmode=disable`), '--yes']);
+  reader += `\n${await manifest(jobs, 'Set it up', 1)}`;
+  await piquelctl.apply(reader);
+  await application(page, 'reader', 'Jobs');
+  await shoot(page, 'applications/jobs-tab');
+  await lasting(page, 1_100);
+  await output(page, 1);
+  await application(page, 'reader', 'Builds');
+  await page.getByRole('button', { name: /Job migrate #1/ }).click();
+  await shoot(page, 'applications/job-run', page.getByText('Retained output', { exact: true }));
+
+  // Connecting applications: auth exports api to notes.
+  await piquelctl.apply(await manifest(`${guides}/links.md`, 'Set it up'));
+  notes += `\n${await manifest(`${guides}/links.md`, 'Set it up', 1)}`;
+  await piquelctl.apply(notes);
+  await application(page, 'auth', 'Links');
+  await shoot(page, 'applications/links-tab');
+  await environment(page, 'notes', 'production');
+  await shoot(page, 'applications/environment-links', card(page, 'Links'));
+
+  // Running commands: a database console command in db.
+  await piquelctl.run(['app', 'exec', 'notes', 'db', '--', 'psql', '-U', 'notes', '-c', "SELECT pg_size_pretty(pg_database_size('notes'))"]);
+  await environment(page, 'notes', 'production');
+  await environmentTab(page, 'Events').click();
+  await page.getByLabel('Event kind', { exact: true }).fill('command_started');
+  await page.getByLabel('Event kind', { exact: true }).blur();
+  const started = page.locator('article.event', { hasText: 'Command Started' });
+  await expect(page.locator('article.event')).toHaveCount(1);
+  await shoot(page, 'applications/command-events', started);
+  // The terminal fits its screen to the window: size it as `shoot` will
+  // first, so the screen doesn't redraw while it is saved.
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await environmentTab(page, 'Terminal').click();
+  await page.getByRole('combobox', { name: 'Service', exact: true }).selectOption('db');
+  await page.getByLabel('Command', { exact: true }).fill('psql -U notes');
+  await shoot(page, 'applications/terminal');
 });

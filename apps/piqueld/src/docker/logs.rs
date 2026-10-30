@@ -145,6 +145,20 @@ impl BollardDocker {
         i32::try_from(timestamp).unwrap_or(i32::MAX)
     }
 
+    /// The labels, with their values, of every managed service of
+    /// `instance`'s environment `environment`. [`Self::owned_services`] lists
+    /// services by them, and `FakeDocker` matches them as Docker does.
+    pub(super) fn owner_labels(
+        instance: &InstanceId,
+        environment: &EnvironmentId,
+    ) -> [(&'static str, String); 3] {
+        [
+            (INSTANCE_LABEL, instance.to_string()),
+            (APPLICATION_LABEL, environment.to_string()),
+            (MANAGED_LABEL, "true".to_owned()),
+        ]
+    }
+
     /// Maps service IDs to logical service names for the application's
     /// managed services, filtered to `service` when one is requested. Shared by
     /// log collection and exec task selection.
@@ -160,11 +174,9 @@ impl BollardDocker {
                 ListServicesOptionsBuilder::default()
                     .filters(&HashMap::from([(
                         "label",
-                        vec![
-                            format!("{INSTANCE_LABEL}={instance}"),
-                            format!("{APPLICATION_LABEL}={application}"),
-                            format!("{MANAGED_LABEL}=true"),
-                        ],
+                        Self::owner_labels(instance, application)
+                            .map(|(label, value)| format!("{label}={value}"))
+                            .to_vec(),
                     )]))
                     .build(),
             ))

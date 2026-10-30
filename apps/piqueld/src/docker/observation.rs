@@ -71,7 +71,7 @@ impl BollardDocker {
     }
 
     /// Maps Bollard's task state enum to the backend-neutral task state.
-    fn task_state(task: &bollard::models::Task) -> TaskState {
+    pub(super) fn task_state(task: &bollard::models::Task) -> TaskState {
         match task
             .status
             .as_ref()
