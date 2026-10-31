@@ -403,7 +403,7 @@ pub struct DeploymentAnalytics {
 }
 
 mod diagnostic;
-pub use diagnostic::DiagnosticCode;
+pub use diagnostic::{DeploymentFailure, DiagnosticCode};
 
 #[cfg(test)]
 mod tests {

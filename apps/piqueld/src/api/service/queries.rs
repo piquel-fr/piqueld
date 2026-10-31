@@ -13,7 +13,8 @@ use piqueld_core::{
     },
     compile_application,
     manifest::{
-        Declaration, RenderContext, RenderTarget, Rendering, RepositoryManifest, ValidatedTemplate,
+        ApplicationTemplate, Declaration, RenderContext, RenderTarget, Rendering,
+        RepositoryManifest, Rollback, ValidatedTemplate,
     },
     preview_resolution,
 };
@@ -359,9 +360,10 @@ impl ApplicationService {
             .map_err(StoreError::from)?;
         let runtime_coverage = RuntimeCoverage::of(plan.as_ref());
         let mut plan = plan.unwrap_or_default();
+        let rollback = Self::plan_rollback(&template, environment.as_ref(), &declarations);
         let (rollouts, variables) = match rendering {
             Some(rendering) => {
-                plan.warn_rollouts(&rendering.application);
+                plan.warn_rollouts(&rendering.application, rollback);
                 (
                     ServiceRolloutView::for_application(&rendering.application),
                     rendering.values,
@@ -383,6 +385,22 @@ impl ApplicationService {
             release: None,
         })
     }
+    /// What happens when a rollout of `template` fails in `environment`, or,
+    /// for a new application, in the first environment it deploys, which
+    /// `declarations` name.
+    fn plan_rollback(
+        template: &ApplicationTemplate,
+        environment: Option<&StoredEnvironment>,
+        declarations: &[Declaration],
+    ) -> Rollback {
+        match environment {
+            Some(environment) => environment.rollback_in(Some(template)),
+            None => template
+                .spec()
+                .rollback(Declaration::first_building(declarations).as_str(), false),
+        }
+    }
+
     /// The environment's latest operation and, unless it deletes, the
     /// manifest it rendered.
     async fn latest_deployment(

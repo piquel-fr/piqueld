@@ -284,7 +284,8 @@ impl EditorContext {
 
     /// Where a deployment came from: "Built", "Promoted from staging
     /// (deployment …)", "Release redeployed", "Restored from deployment …",
-    /// or "Local snapshot 0123456 on 89abcde".
+    /// "Rolled back from deployment … to deployment …", or "Local snapshot
+    /// 0123456 on 89abcde".
     fn describe_origin(self, origin: &DeploymentOrigin) -> String {
         match origin {
             DeploymentOrigin::Build => "Built".into(),
@@ -296,9 +297,14 @@ impl EditorContext {
                 self.environment_name(environment.as_str())
             ),
             DeploymentOrigin::Release => "Release redeployed".into(),
-            DeploymentOrigin::Restore { deployment } => {
-                format!("Restored from deployment {deployment}")
-            }
+            DeploymentOrigin::Restore {
+                deployment,
+                rolled_back: None,
+            } => format!("Restored from deployment {deployment}"),
+            DeploymentOrigin::Restore {
+                deployment,
+                rolled_back: Some(failed),
+            } => format!("Rolled back from deployment {failed} to deployment {deployment}"),
             DeploymentOrigin::Local(snapshot) => match &snapshot.base {
                 Some(base) => format!(
                     "Local snapshot {} on {}",

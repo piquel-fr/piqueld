@@ -3,8 +3,12 @@
 //! manifest, images and pinned secret versions. Nothing is rendered, fetched
 //! or built, and no newer input is ever substituted, so the prepared target
 //! is saved in the accepting transaction. Restores never run jobs.
+//!
+//! An automatic rollback is a restore too: of the environment's last
+//! successful deployment, accepted by the controller in the transaction that
+//! fails the deployment whose rollout failed.
 use super::{
-    ApplicationState, EnvironmentId, Operation, OperationKind, Store, StoreError,
+    ApplicationState, EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError,
     StoredEnvironment, acceptance::Accepted, now_ms,
 };
 use crate::api::Restore;
@@ -51,8 +55,112 @@ impl Store {
             Restore::Environment { id, .. } => Self::checked_environment_on(tx, id, None).await?,
             Restore::Preview { id, .. } => Self::preview_on(tx, id).await?,
         };
-        let operation = Self::accept_restore_on(tx, &current, restore.parts().1).await?;
+        let operation = Self::accept_restore_on(tx, &current, restore.parts().1, None).await?;
         Ok(Self::operation_accepted(&operation))
+    }
+
+    /// What an automatic rollback of `operation`, whose rollout failed,
+    /// restores: its environment's newest other deployment that succeeded,
+    /// with its prepared target, read before failing it so the caller can
+    /// make sure its images are present. `None` without one.
+    ///
+    /// # Errors
+    /// Storage and decoding errors.
+    pub async fn rollback_target(
+        &self,
+        operation: &Operation,
+    ) -> Result<Option<(String, ResolvedApplication)>, StoreError> {
+        let connection = &mut *self.connection().await?;
+        let environment = operation.environment_id.as_str();
+        let deployment = sqlx::query_scalar!(
+            r#"SELECT d.id AS "id!" FROM deployments d JOIN operations o ON o.id=d.id WHERE d.environment_id=?1 AND d.succeeded_at_ms IS NOT NULL AND o.target_json IS NOT NULL AND d.id!=?2 ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1"#,
+            environment,
+            operation.id
+        )
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(StoreError::database)?;
+        let Some(deployment) = deployment else {
+            return Ok(None);
+        };
+        let target =
+            Self::restorable_on(connection, &operation.environment_id, &deployment).await?;
+        Ok(Some((deployment, target)))
+    }
+
+    /// Fails the running `operation`, whose rollout failed with `error`, and
+    /// rolls it back in the same transaction: accepts restoring
+    /// `deployment`, recorded as a restore that rolled `operation` back, and
+    /// records `rollback_requested` on `operation`. Returns the rollback.
+    ///
+    /// # Errors
+    /// `IllegalTransition` once `operation` is no longer the latest or
+    /// running, the errors of restoring `deployment`, and storage errors.
+    /// Nothing is changed on error.
+    pub async fn roll_back(
+        &self,
+        operation: &Operation,
+        error: (&str, &str),
+        deployment: &str,
+    ) -> Result<Operation, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::transition_operation_on(
+            &mut tx,
+            &operation.id,
+            OperationState::Running,
+            OperationState::Failed,
+            Some(error),
+        )
+        .await?;
+        let environment = Box::pin(Self::environment_on(
+            &mut tx,
+            operation.environment_id.as_str(),
+        ))
+        .await?
+        .ok_or(StoreError::NotFound)?;
+        let rollback = Box::pin(Self::accept_restore_on(
+            &mut tx,
+            &environment,
+            deployment,
+            Some(&operation.id),
+        ))
+        .await?;
+        let message = format!(
+            "rolling back to deployment {deployment} with deployment {}",
+            rollback.id
+        );
+        Self::operation_event(
+            &mut tx,
+            &operation.id,
+            "rollback_requested",
+            Some(&message),
+            now_ms(),
+        )
+        .await?;
+        Self::commit_environment_changes(tx, [operation.environment_id.as_str()]).await?;
+        Ok(rollback)
+    }
+
+    /// Records on `operation`, whose rollout failed, that it could not be
+    /// rolled back automatically, and why.
+    ///
+    /// # Errors
+    /// Storage errors.
+    pub async fn rollback_unavailable(
+        &self,
+        operation: &Operation,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::operation_event(
+            &mut tx,
+            &operation.id,
+            "rollback_unavailable",
+            Some(reason),
+            now_ms(),
+        )
+        .await?;
+        tx.commit().await.map_err(StoreError::database)
     }
 
     /// The prepared target of `environment`'s deployment `deployment`, which
@@ -102,7 +210,8 @@ impl Store {
 
     /// Accepts restoring `deployment` into `environment` in `tx`, where
     /// nothing can change underneath: it starts a deployment recorded as a
-    /// restore of it, with its rendered manifest, values, warnings, fetched
+    /// restore of it, as an automatic rollback of `rolled_back` when set,
+    /// with its rendered manifest, values, warnings, fetched
     /// revision and release, pins the
     /// secret versions it pinned (failing, naming them, for those gone since,
     /// and with `secret_access_denied` for stored secrets the environment may
@@ -115,6 +224,7 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         environment: &StoredEnvironment,
         deployment: &str,
+        rolled_back: Option<&str>,
     ) -> Result<Operation, StoreError> {
         if environment.delete_intent() {
             return Err(StoreError::IllegalTransition);
@@ -148,6 +258,7 @@ impl Store {
         Box::pin(Self::bind_links_from_on(tx, &mut target, &bindings)).await?;
         let origin = serde_json::to_string(&DeploymentOrigin::Restore {
             deployment: deployment.to_owned(),
+            rolled_back: rolled_back.map(str::to_owned),
         })
         .map_err(StoreError::corrupt)?;
         sqlx::query!("INSERT INTO deployments(id,environment_id,manifest_json,template_json,variables_json,warnings_json,generation,created_at_ms,release_id,origin_json) SELECT o.id,o.environment_id,d.manifest_json,d.template_json,d.variables_json,d.warnings_json,o.generation,o.created_at_ms,d.release_id,?3 FROM operations o JOIN deployments d ON d.id=?2 WHERE o.id=?1",operation.id,deployment,origin)

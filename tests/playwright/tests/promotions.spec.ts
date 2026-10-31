@@ -239,6 +239,30 @@ test('a promoted environment\'s visibility keeps unsaved edits and shows what wa
   await expect(card).toContainText('applies once its source records a new release');
 });
 
+test('a promoted environment rolls back automatically by default, and saves another choice', async ({ page, account }) => {
+  void account;
+  const { app, production } = await createUndeclaredPromotion(page);
+  await page.goto(`/dashboard/applications/${app}/environments/${production}`);
+  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Rollback', exact: true }) });
+  const select = card.getByRole('combobox', { name: 'When a rollout fails', exact: true });
+  const save = card.getByRole('button', { name: 'Save rollback', exact: true });
+  await expect(select).toHaveValue('default');
+  await expect(select.locator('option[value="default"]')).toHaveText(/automatic/);
+  await expect(save).toBeDisabled();
+  await select.selectOption('manual');
+  await save.click();
+  await expect(save).toBeDisabled();
+  const saved = await call(page, 'GET', `applications/${app}`);
+  expect(saved.application.spec.environments.production.rollback).toBe('manual');
+  await page.reload();
+  await expect(select).toHaveValue('manual');
+  await select.selectOption('default');
+  await save.click();
+  await expect(save).toBeDisabled();
+  const cleared = await call(page, 'GET', `applications/${app}`);
+  expect(cleared.application.spec.environments.production.rollback).toBeUndefined();
+});
+
 test('the manifest owns the environments it declares, and reports the ones it drops', async ({ page, account }) => {
   void account;
   const { app, production } = await createPromotion(page);

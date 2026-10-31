@@ -5,9 +5,9 @@ use piqueld_core::{
         ApplicationEdit, BoolValue, CountValue, CpuValue, EditOptions, EnvironmentValue,
         ExportsValue, FilesValue, GeneratedSecretsValue, HealthValue, ImportsValue, JobsValue,
         MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
-        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
-        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
-        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
+        RepositoryValue, ResourcesValue, RollbackValue, RolloutValue, RoutesValue, SecondsValue,
+        SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue,
+        StringsValue, TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -37,6 +37,7 @@ edit_method!(set_application_generated_secrets, (id), request: GeneratedSecretsV
 edit_method!(set_application_name, (id), request: StringValue);
 edit_method!(set_application_variables, (id), request: VariablesValue);
 edit_method!(set_environment_visibility, (id, environment), request: VisibilityValue);
+edit_method!(set_environment_rollback, (id, environment), request: RollbackValue);
 edit_method!(set_manifest_repository, (id), request: RepositoryValue);
 edit_method!(disconnect_manifest_repository, (id));
 edit_method!(set_manifest_repository_url, (id), request: StringValue);
@@ -177,6 +178,18 @@ impl Client {
                     id,
                     environment,
                     &VisibilityValue { value: *visibility },
+                    options,
+                )
+                .await
+            }
+            ApplicationEdit::EnvironmentRollback {
+                environment,
+                rollback,
+            } => {
+                self.set_environment_rollback(
+                    id,
+                    environment,
+                    &RollbackValue { value: *rollback },
                     options,
                 )
                 .await

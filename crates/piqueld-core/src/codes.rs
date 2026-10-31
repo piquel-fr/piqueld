@@ -27,6 +27,10 @@ pub const SERVICE_DEPENDENCY_CYCLE: &str = "service_dependency_cycle";
 pub const ROLLOUT_MONITOR_INVALID: &str = "rollout_monitor_invalid";
 /// An explicit start-first order lets two tasks share a writable volume.
 pub const ROLLOUT_START_FIRST_WRITABLE_VOLUME: &str = "rollout_start_first_writable_volume";
+/// A routed service declares no health check in an environment that rolls
+/// back failed rollouts automatically, so unless its image defines one, a
+/// rollout that doesn't serve isn't detected as failed.
+pub const ROLLBACK_WITHOUT_HEALTH_CHECK: &str = "rollback_without_health_check";
 /// Replica count is outside its supported range.
 pub const REPLICAS_OUT_OF_RANGE: &str = "replicas_out_of_range";
 /// Image reference is not a safe registry reference.

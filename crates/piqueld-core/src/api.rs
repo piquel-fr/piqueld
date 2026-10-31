@@ -1208,6 +1208,11 @@ pub enum DeploymentOrigin {
     Restore {
         /// The deployment it restored.
         deployment: String,
+        /// The deployment whose failed rollout piqueld rolled back by
+        /// restoring, in an environment with automatic rollback. Absent when
+        /// someone asked for the restore.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rolled_back: Option<String>,
     },
     /// A snapshot of a local worktree, uploaded to a preview with
     /// `preview deploy --local`, and built like its branch would be.

@@ -3100,6 +3100,7 @@ Commands:
 - [`piquelctl env telemetry`](#piquelctl-env-telemetry): Grant an environment the daemon's telemetry, or revoke it.
 - [`piquelctl env show`](#piquelctl-env-show): Show one environment, the manifest it deploys, and its status.
 - [`piquelctl env visibility`](#piquelctl-env-visibility): Cap the visibility of an environment's routes in the saved manifest.
+- [`piquelctl env rollback`](#piquelctl-env-rollback): Choose what happens when an environment's rollout fails.
 - [`piquelctl env rename`](#piquelctl-env-rename): Rename an environment without redeploying it.
 - [`piquelctl env delete`](#piquelctl-env-delete): Delete an environment, keeping its named volumes.
 - [`piquelctl env deploy`](#piquelctl-env-deploy): Deploy an environment from its source.
@@ -3285,6 +3286,33 @@ Arguments:
 - `<APPLICATION>`: Application name or stable ID.
 - `<ENVIRONMENT>`: Environment name or stable ID.
 - `<VISIBILITY>`: The strictest visibility the environment's routes get. `private` keeps every route on the tailnet; `public`, the default, restricts nothing. Values: `public`, `private`.
+
+Options:
+
+- `--deploy`: Also deploy the saved configuration.
+- `--no-wait`: Return once the change is saved, or its deployment accepted, without waiting for the deployment to end.
+- `--expected-generation <GENERATION>`: Save only if the application's saved generation is still `GENERATION`. By default, it must still be the generation the command read, so a concurrent change fails the save instead of being overwritten.
+- `--force`: Save even if the application changed since the command read it. It still asks for confirmation.
+- `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
+
+## `piquelctl env rollback`
+
+Choose what happens when an environment's rollout fails.
+
+A rollout fails when Docker pauses a service update because a new container failed within its monitor window. With `automatic`, piqueld then restores the environment's last successful deployment, like `env restore`; with `manual`, the environment stays degraded until you deploy or restore. `default` is automatic for promoted environments and manual for the others. The setting is saved in the environment's `[spec.environments.<name>]` block. Data is never reverted.
+
+```text
+piquelctl env rollback [OPTIONS] <APPLICATION> <ENVIRONMENT> <ROLLBACK>
+```
+
+Arguments:
+
+- `<APPLICATION>`: Application name or stable ID.
+- `<ENVIRONMENT>`: Environment name or stable ID.
+- `<ROLLBACK>`: What happens when a rollout fails.
+  - `automatic`: Restore the last successful deployment.
+  - `manual`: Stay degraded until someone acts.
+  - `default`: Automatic for promoted environments, manual otherwise.
 
 Options:
 

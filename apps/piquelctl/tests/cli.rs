@@ -3381,6 +3381,54 @@ fn promotion_commands_name_environments_and_report_the_pinned_release() {
     let _ = server.finish();
 }
 
+/// `env rollback` saves the environment's rollback by name, and `default`
+/// clears it.
+#[test]
+fn env_rollback_saves_the_setting_or_returns_to_the_default() {
+    for (choice, value) in [("manual", json!("manual")), ("default", Value::Null)] {
+        assert_saves(
+            app_view("app-notes-01", "notes"),
+            &[
+                "env",
+                "rollback",
+                "app-notes-01",
+                "production",
+                choice,
+                "--yes",
+            ],
+            "PUT",
+            "environments/production/rollback",
+            &json!({ "value": value }),
+        );
+    }
+}
+
+/// `env history` names the failed deployment an automatic rollback rolled
+/// back.
+#[test]
+fn history_names_the_deployment_a_rollback_rolled_back() {
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
+        "/api/v1/environments/app-notes-01/deployments" => {
+            let mut rollback = deployment("succeeded");
+            rollback["operation"]["id"] = json!("operation-03");
+            rollback["origin"] = json!({
+                "type": "restore", "deployment": "operation-01", "rolled_back": "operation-02"
+            });
+            Reply::json(json!({"items": [rollback], "next_cursor": null}))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run_human(&server, &["env", "history", "app-notes-01", "production"]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("rolled back from deployment operation-02 to deployment operation-01"),
+        "{stdout}"
+    );
+    let _ = server.finish();
+}
+
 /// `env history` lists deployments with where each came from, and
 /// `env restore` restores the one it names, reporting the new deployment.
 #[test]
