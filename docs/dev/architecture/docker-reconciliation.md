@@ -62,28 +62,6 @@ jobs, and from then maintains it like any other: drift repair keeps the
 restored deployment, never the one it replaced. Volume contents and
 migrations stay as they are.
 
-### Automatic rollback
-
-`DiagnosticCode::deployment_failure` classifies what a failed deployment
-failed at: a job (`job_failed`, `job_timeout`), which repair handles as above
-and below, or its rollout (`service_update_failed`: Docker paused an update
-because a task failed within its monitor window). When an operation fails with
-a rollout failure, the controller's `fail` checks the environment's effective
-`rollback` (`StoredEnvironment::rollback`, read from the manifest the
-environment deploys; previews are always manual). If it is automatic, and the
-operation is no automatic rollback itself and never succeeded before (a retry
-or repair of what already ran is no new rollout), the controller picks the
-environment's newest other deployment that succeeded, makes sure
-its images are present with cleanup held off, and then, in one transaction,
-fails the operation and accepts restoring that deployment with origin
-`{"type": "restore", "deployment": …, "rolled_back": <failed>}`. Swarm's own
-service rollback is never used, since it would disagree with the maintained
-target. The restore supersedes the failed deployment as the latest operation,
-so nothing reconsiders or repairs toward it again, and it fails and notifies
-like any deployment, without a further rollback. When the restore can't be
-accepted, the operation fails as usual and records `rollback_unavailable` with
-the reason.
-
 Saving an identical normalized manifest does not schedule work. Apply with
 deployment creates a new deployment even when the manifest is unchanged.
 Explicit reconcile requests
@@ -239,6 +217,29 @@ separate ten-minute budget including its queue wait and pulls; the configured
 preparation deadline still bounds the entire checkout/build/resolve phase.
 Raw service update retries share one absolute request deadline. Cancelling a
 request aborts its connection driver, and timeout errors retain their cause.
+
+## Automatic rollback
+
+`DiagnosticCode::deployment_failure` classifies what a failed deployment
+failed at: a job (`job_failed`, `job_timeout`), which ends the deployment
+before rollout as described above, or its rollout (`service_update_failed`: Docker paused an update
+because a task failed within its monitor window). When an operation fails with
+a rollout failure, the controller's `fail` checks the environment's effective
+`rollback` (`StoredEnvironment::rollback`, read from the manifest the
+environment deploys; previews are always manual). If it is automatic, and the
+operation is no automatic rollback itself and never succeeded before (a retry
+or repair of what already ran is no new rollout), the controller picks the
+environment's newest other deployment that succeeded, makes sure its images
+are present within the preparation timeout, with cleanup held off, and then,
+in one transaction,
+fails the operation and accepts restoring that deployment with origin
+`{"type": "restore", "deployment": …, "rolled_back": <failed>}`. Swarm's own
+service rollback is never used, since it would disagree with the maintained
+target. The restore supersedes the failed deployment as the latest operation,
+so nothing reconsiders or repairs toward it again, and it fails and notifies
+like any deployment, without a further rollback. When the restore can't be
+accepted, the operation fails as usual and records `rollback_unavailable` with
+the reason.
 
 ## HTTP health probe
 
