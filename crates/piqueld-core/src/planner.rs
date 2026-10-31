@@ -1069,9 +1069,10 @@ impl Plan {
     /// Warns about rollouts of `application` that can go wrong: each service
     /// whose explicit start-first order lets the old and new task write the
     /// same volume at once and, when `rollback` is automatic, each service
-    /// routes send traffic to that has no health check. Docker only sees a
-    /// container that exits as failed, so a rollout whose containers run but
-    /// don't serve succeeds and is never rolled back.
+    /// routes send traffic to that declares no health check. Unless its image
+    /// defines one, Docker only sees a container that exits as failed, so a
+    /// rollout whose containers run but don't serve succeeds and is never
+    /// rolled back.
     pub fn warn_rollouts(&mut self, application: &NormalizedApplication, rollback: Rollback) {
         let spec = application.spec();
         let routed = |name: &ServiceName| {
@@ -1105,7 +1106,7 @@ impl Plan {
                     DiagnosticSeverity::Warning,
                     service.name.as_str(),
                     format!(
-                        "{} receives routed traffic but has no health check, so a rollout whose containers run without serving isn't detected as failed and isn't rolled back automatically",
+                        "{} receives routed traffic but declares no health check; unless its image defines one, a rollout whose containers run without serving isn't detected as failed and isn't rolled back automatically",
                         service.name
                     ),
                 )

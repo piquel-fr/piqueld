@@ -1151,8 +1151,9 @@ migrations in expand/contract steps.
 Docker only sees a container that exits, or fails its health check, as failed.
 When rollback is automatic, `app plan` and `env promote --plan` warn with
 `rollback_without_health_check` about each service that routes send traffic to
-but that has no `healthcheck`, since a rollout whose
-containers run without serving can't be detected and rolled back.
+but that declares no `healthcheck`: unless its image defines a health check, a
+rollout whose containers run without serving can't be detected and rolled
+back.
 
 ## Telemetry receivers
 

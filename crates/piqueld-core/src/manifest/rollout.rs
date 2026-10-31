@@ -165,15 +165,6 @@ impl Rollback {
     }
 }
 
-/// Parses the manifest spelling, e.g. a CLI argument.
-impl std::str::FromStr for Rollback {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value).ok_or("rollback must be \"automatic\" or \"manual\"")
-    }
-}
-
 /// Parses the manifest spelling, e.g. a CLI flag value.
 impl std::str::FromStr for RolloutOrder {
     type Err = &'static str;
@@ -228,7 +219,6 @@ mod tests {
             assert_eq!(Rollback::effective(Some(setting), true), setting);
             assert_eq!(Rollback::effective(Some(setting), false), setting);
         }
-        assert!("sometimes".parse::<Rollback>().is_err());
     }
 
     #[test]

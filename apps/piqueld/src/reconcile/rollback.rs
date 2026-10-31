@@ -4,7 +4,7 @@
 //! becomes the maintained target, so drift repair never reapplies the failed
 //! deployment, and Swarm's own service rollback, which would disagree with
 //! it, is never used. A rollback is never rolled back itself.
-use super::{Controller, DockerApi, Operation, OperationError, StoreError};
+use super::{Controller, DockerApi, DockerError, Operation, OperationError, StoreError};
 use piqueld_core::{api::DeploymentOrigin, manifest::Rollback, observability::DeploymentFailure};
 
 /// Why a failed rollout was not rolled back.
@@ -14,7 +14,7 @@ enum RollbackError {
     #[error("no earlier deployment of the environment succeeded")]
     NothingToRestore,
     /// An image of the deployment to restore is gone and can't be pulled
-    /// again.
+    /// again, or checking them timed out.
     #[error(transparent)]
     Images(OperationError),
     /// Restoring was refused, or storage failed.
@@ -86,8 +86,9 @@ impl<D: DockerApi> Controller<D> {
 
     /// Fails `operation` with `error` and accepts restoring its
     /// environment's last successful deployment, once its images are
-    /// present: missing registry images are pulled again by digest, with
-    /// image cleanup held off until the rollback is saved.
+    /// present: missing registry images are pulled again by digest, within
+    /// the preparation timeout, with image cleanup held off until the
+    /// rollback is saved.
     async fn roll_back(
         &self,
         operation: &Operation,
@@ -99,10 +100,21 @@ impl<D: DockerApi> Controller<D> {
             .await?
             .ok_or(RollbackError::NothingToRestore)?;
         let in_use = self.images_in_use().await;
-        in_use
-            .ensure(&*self.docker, target.sources())
-            .await
-            .map_err(RollbackError::Images)?;
+        // Bounded like a restore's: a hung pull would hold cleanup off, and
+        // the failed operation running.
+        tokio::time::timeout(
+            self.prepare_timeout,
+            in_use.ensure(&*self.docker, target.sources()),
+        )
+        .await
+        .map_err(|source| {
+            OperationError::from(DockerError::unavailable(
+                "checking the images of the deployment to restore",
+                source,
+            ))
+        })
+        .flatten()
+        .map_err(RollbackError::Images)?;
         let message = error.message();
         Ok(self
             .store
