@@ -20,7 +20,7 @@ use piqueld_client::sync::short_commit;
 use piqueld_client::{
     ApplicationManifest, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentChange, EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest,
-    EnvironmentView, RepositoryManifest, TrackedBranch, Visibility,
+    EnvironmentView, RepositoryManifest, Rollback, TrackedBranch, Visibility,
     access::{AppPermission, GlobalPermission, Permission},
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
@@ -953,6 +953,22 @@ impl EditorContext {
             .get(&self.selected_name())
             .map_or(Visibility::Public, |config| config.visibility)
     }
+
+    /// The rollback `[spec.environments.<name>]` sets for the shown
+    /// environment in the `saved` manifest, `None` for the default.
+    fn rollback(self, saved: &ApplicationManifest) -> Option<Rollback> {
+        saved
+            .spec
+            .environments
+            .get(&self.selected_name())
+            .and_then(|config| config.rollback)
+    }
+
+    /// Whether the shown environment receives promoted releases.
+    fn selected_promoted(self) -> bool {
+        self.selected_environment()
+            .is_some_and(|environment| environment.source.promoted_from().is_some())
+    }
 }
 
 /// The visibility ceiling of the environment page's environment, saved in
@@ -963,11 +979,7 @@ fn EnvironmentVisibility() -> impl IntoView {
     let draft = Draft::synced("environment-visibility", move |saved| {
         context.visibility(saved)
     });
-    let promoted = move || {
-        context
-            .selected_environment()
-            .is_some_and(|environment| environment.source.promoted_from().is_some())
-    };
+    let promoted = move || context.selected_promoted();
     let save = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
         context.save(
@@ -1033,7 +1045,87 @@ fn EnvironmentVisibility() -> impl IntoView {
     }
 }
 
-/// Source, visibility, rename and deletion of the environment page's
+/// What happens when the environment page's environment fails a rollout,
+/// saved in `[spec.environments.<name>]`. Read-only without `apps:write`.
+#[component]
+fn EnvironmentRollback() -> impl IntoView {
+    let context = editor();
+    let draft = Draft::synced("environment-rollback", move |saved| context.rollback(saved));
+    let promoted = move || context.selected_promoted();
+    let save = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        context.save(
+            ApplicationEdit::EnvironmentRollback {
+                environment: context.selected_name(),
+                rollback: draft.value.get_untracked(),
+            },
+            move |_| draft.discard(),
+        );
+    };
+    let default = move || {
+        if promoted() {
+            "Default: automatic, as for every promoted environment"
+        } else {
+            "Default: manual, as for every environment that isn't promoted"
+        }
+    };
+    view! {
+        <section class="card">
+            <header>
+                <div>
+                    <h3>"Rollback"</h3>
+                    <p>
+                        "A rollout fails when Docker pauses a service update because a new container failed within its monitor window. Automatic rollback then restores the last successful deployment at once; manual leaves the environment degraded until you deploy or restore. Volumes and migrations are never reverted."
+                        {move || {
+                            promoted()
+                                .then_some(
+                                    " A promoted environment uses the setting recorded in the release it receives, so a saved change applies once its source records a new release and it is promoted.",
+                                )
+                        }}
+                    </p>
+                </div>
+            </header>
+            <form class="stack-sm" on:submit={save}>
+                <fieldset
+                    class="stack-sm"
+                    disabled={move || context.blocked() || !context.can(AppPermission::Write)}
+                >
+                    <label class="field">
+                        <span>"When a rollout fails"</span>
+                        <select
+                            prop:value={move || {
+                                draft.value.get().map_or("default", Rollback::as_str)
+                            }}
+                            on:change={move |event| {
+                                draft.value.set(Rollback::parse(&event_target_value(&event)));
+                            }}
+                        >
+                            <option value="default">{default}</option>
+                            <option value="automatic">
+                                "Automatic: restore the last successful deployment"
+                            </option>
+                            <option value="manual">"Manual: stay degraded until someone acts"</option>
+                        </select>
+                    </label>
+                </fieldset>
+                <div class="form-actions">
+                    <button
+                        type="submit"
+                        class="btn"
+                        disabled={move || {
+                            context.blocked() || !context.can(AppPermission::Write)
+                                || !draft.changed()
+                        }}
+                    >
+                        "Save rollback"
+                    </button>
+                </div>
+            </form>
+        </section>
+    }
+}
+
+/// Source, visibility, rollback, rename and deletion of the environment page's
 /// environment. Deletion returns to the application's environments once
 /// accepted. Renaming needs `apps:write`, deleting `apps:delete`, and
 /// retrying a deletion, which reconciles, `apps:deploy`.
@@ -1090,6 +1182,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
     view! {
         <SourceSettings />
         <EnvironmentVisibility />
+        <EnvironmentRollback />
         <EnvironmentTelemetry />
         <section class="card">
             <header>

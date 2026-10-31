@@ -219,6 +219,33 @@ impl DiagnosticCode {
     pub const fn retryable(self) -> bool {
         self.policy().1
     }
+
+    /// What a deployment that failed with this classification failed at,
+    /// when the environment must return to its previous deployment: one of
+    /// its jobs, or its rollout. `None` for failures that a retry, or
+    /// reconsidering the deployment once its blocker clears, resolves.
+    #[must_use]
+    pub const fn deployment_failure(self) -> Option<DeploymentFailure> {
+        match self {
+            Self::JobFailed | Self::JobTimeout => Some(DeploymentFailure::Job),
+            Self::ServiceUpdateFailed => Some(DeploymentFailure::Rollout),
+            _ => None,
+        }
+    }
+}
+
+/// What a deployment failed at, so that the environment returns to its
+/// previous deployment (see [`DiagnosticCode::deployment_failure`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeploymentFailure {
+    /// A before-rollout job failed or timed out, so the deployment never
+    /// rolls out. Once its job is cleaned up, repair returns the
+    /// prerequisites it started or updated to the active target.
+    Job,
+    /// A service update failed: Docker paused it because a new task failed
+    /// within its monitor window. With automatic rollback, the environment's
+    /// last successful deployment is restored.
+    Rollout,
 }
 
 impl Diagnostic {

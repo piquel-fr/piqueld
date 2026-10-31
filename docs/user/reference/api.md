@@ -227,6 +227,7 @@ immutable deployment snapshot commit in the same transaction.
 | PUT | `/imports` | `{ "value": [{ "application": "auth", "service": "api", "environment": "staging" }] }`; replaces the services of other applications this one reaches; `environment` is optional |
 | PUT | `/variables` | `{ "value": { "defaults": { "domain": "piquel.fr" }, "environments": { "staging": { "domain": "staging.piquel.fr" } }, "previews": { "domain": "preview.piquel.fr" } } }`; replaces every variable value, clearing those it omits |
 | PUT | `/environments/{environment}/visibility` | `{ "value": "private" }`; sets the route [visibility](../guides/ingress.md#public-and-private-routes) ceiling of the environment with that name |
+| PUT | `/environments/{environment}/rollback` | `{ "value": "manual" }`; sets what happens when the rollout of the environment with that name fails: `automatic`, `manual`, or `null` for the default ([rollback](manifest.md#rollback)) |
 | PUT | `/services/{service}/name` | `{ "value": "worker" }` |
 | PUT | `/services/{service}/replicas` | `{ "value": 3 }`, or a reference such as `"${{ vars.web_replicas }}"`; typed fields accept references |
 | PUT | `/services/{service}/source` | `{ "value": Source }` |
@@ -351,7 +352,8 @@ Reconciliation and retries use deployment snapshots and their prepared digests,
 never newer saved edits. Configuration saves do not supersede operations. Deployments and
 attempt outcomes remain indefinitely until environment deletion. The deployments
 response distinguishes `current_target`, `last_successful`, and mutable operation
-progress; last successful does not imply automatic rollback after a failed rollout.
+progress. A failed rollout is rolled back only in environments with
+[automatic rollback](manifest.md#rollback), by a new restore deployment.
 History endpoints accept `cursor` for subsequent pages.
 
 ### Restoring a deployment
@@ -464,7 +466,9 @@ is an `AcceptedOperation` with the pinned `release_id` and its `origin`.
 `{ "type": "build" }`, `{ "type": "promotion", "environment": "env-...",
 "deployment": "operation-..." }`, `{ "type": "release" }` for a release
 deployed by ID, `{ "type": "restore", "deployment": "operation-..." }` for a
-[restored](#restoring-a-deployment) deployment, or `{ "type": "local",
+[restored](#restoring-a-deployment) deployment, with `"rolled_back":
+"operation-..."` naming the failed deployment when an
+[automatic rollback](manifest.md#rollback) restored it, or `{ "type": "local",
 "commit": "...", "base": "..." }` for a [local snapshot](#local-snapshots)
 deployed to a preview. `ReleaseView.promotions` lists, newest first, the deployments
 that received the release (`environment_id`, `deployment_id`, `origin`,
@@ -561,7 +565,10 @@ the application's environments: `create`, `source` and `sync` changes, and
 a non-blocking `rollout_start_first_writable_volume` warning to the plan. Each job
 appears as a `run_job` action where the deployment runs it, and a job that
 stops its own service, or an exclusive job, adds a non-blocking
-`job_stops_services` warning naming the services it stops. For an existing
+`job_stops_services` warning naming the services it stops. When the selected
+environment rolls back automatically, each routed service without a health
+check adds a non-blocking `rollback_without_health_check` warning, to plans and
+to promotion plans. For an existing
 environment, each import that would not connect adds a non-blocking
 `import_unconnected` warning, as do promotion plans. A service receiving
 telemetry in an environment not granted it adds a non-blocking

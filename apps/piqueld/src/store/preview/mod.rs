@@ -315,7 +315,7 @@ impl Store {
             return Ok(None);
         };
         // Restores name earlier deployments, kept until the preview is gone.
-        while let DeploymentOrigin::Restore { deployment } = &origin {
+        while let DeploymentOrigin::Restore { deployment, .. } = &origin {
             let json = sqlx::query_scalar!(
                 "SELECT origin_json FROM deployments WHERE id=?1",
                 deployment

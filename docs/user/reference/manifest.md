@@ -423,6 +423,7 @@ promote_from = "staging"     # only receives releases promoted from staging
 | `sync` | Whether pushes to its branch [deploy it](#deploying-on-push) while the repository syncs; `false` by default. |
 | `promote_from` | Environment it receives [promoted releases](#promoted-environments) from, instead of building. |
 | `visibility` | The strictest visibility its [routes](#routes) get; `public` by default. |
+| `rollback` | What happens when a rollout fails: [`automatic` or `manual`](#rollback); `automatic` by default for promoted environments, `manual` otherwise. |
 | `variables` | Its [variable](#variables) values, overriding the defaults. |
 
 `branch`, `commit` and `sync = true` need a [manifest repository](#repository-backed-manifests)
@@ -841,9 +842,15 @@ current deployment (including routes), the runtime plan, volumes it would create
 empty, and every missing or inaccessible secret. Plans of an earlier release
 (`--release`) work for any environment, promoted or not.
 
+**Rollback.** A promoted environment [rolls back](#rollback) a failed rollout
+to its last successful deployment automatically, unless its block sets
+`rollback = "manual"`.
+
 **History.** Each deployment records its origin: `build`, `promotion` (with the
-source environment and deployment), or `release` (an earlier release deployed by
-ID). Each release lists the deployments that received it.
+source environment and deployment), `release` (an earlier release deployed by
+ID), or `restore` (an earlier deployment restored by hand or by an
+[automatic rollback](#rollback)). Each release lists the deployments that
+received it.
 
 ## Previews
 
@@ -1099,6 +1106,53 @@ below `reconciliation.convergence_timeout_seconds`.
 that mounts a volume writable, since two tasks then write the same data
 directory. The warning does not block the deployment. Changing either setting
 updates the service once.
+
+## Rollback
+
+A rollout fails when Docker pauses it because a replacement task failed within
+its [monitor window](#rollout). Each environment chooses what happens then:
+
+```toml
+[spec.environments.production]
+rollback = "automatic"   # or "manual"
+```
+
+- `automatic` restores the environment's last successful deployment at once,
+  exactly as it ran, like [`env restore`](api.md#restoring-a-deployment).
+  The restore is a new deployment whose history names the failed deployment
+  it rolled back, and it becomes the maintained target, so drift repair never
+  applies the failed deployment again.
+- `manual` leaves the environment degraded on the failed deployment until you
+  deploy again or restore an earlier deployment.
+
+Without the setting, promoted environments roll back automatically and the
+others manually. Previews are never rolled back. Change it with
+`piquelctl env rollback notes production manual --yes` (`default` removes the
+setting), the **Rollback** card of the environment's page, or
+`PUT /api/v1/applications/{id}/environments/{environment}/rollback`. Like
+visibility, it is read from the manifest the environment deploys: a promoted
+environment uses the one recorded in the release it received.
+
+Each failed deployment is rolled back at most once, and a rollback is never
+rolled back itself: when its own rollout fails, the environment stays
+degraded and the usual failure notifications fire. Only a deployment that never
+succeeded is rolled back: one that ran, then fails when it is rolled out again
+to repair drift, stays degraded rather than returning to older code. The failed deployment keeps
+its own outcome, so `env wait` on it exits with the deployment failure code.
+When nothing can be restored, because no earlier deployment succeeded or its
+images or pinned secret versions are gone, the failed deployment records a
+`rollback_unavailable` event saying why. A failed [job](#jobs) never needs a
+rollback: it stops the deployment before its services roll out.
+
+A rollback runs no jobs and doesn't revert data. Migrations that ran stay
+applied, so the restored version must still run against them; write
+migrations in expand/contract steps.
+
+Docker only sees a container that exits, or fails its health check, as failed.
+When rollback is automatic, `app plan` and `env promote --plan` warn with
+`rollback_without_health_check` about each service that routes send traffic to
+but that has no `healthcheck`, since a rollout whose
+containers run without serving can't be detected and rolled back.
 
 ## Telemetry receivers
 

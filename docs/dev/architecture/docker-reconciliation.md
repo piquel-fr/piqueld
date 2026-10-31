@@ -34,8 +34,9 @@ and the controller continues correcting drift toward that active target. Once
 preparation, a fresh concrete plan, and before-rollout jobs succeed, promotion
 switches the maintained target before the remaining services roll out. Job
 prerequisites may roll out before promotion. Promotion and active repair share the mutation
-lock, so old-target repair cannot continue after promotion. There is no automatic
-rollback after rollout starts; restoring a deployment (below) rolls back by hand.
+lock, so old-target repair cannot continue after promotion. A failed rollout
+is rolled back by restoring a deployment (below), by hand or, in an environment
+with automatic rollback, by the controller ([automatic rollback](#automatic-rollback)).
 
 Promoting a release into a
 [promoted environment](../../user/reference/manifest.md#promoted-environments) (`env
@@ -60,6 +61,28 @@ it. The controller rolls that target out as a retry would, but never runs its
 jobs, and from then maintains it like any other: drift repair keeps the
 restored deployment, never the one it replaced. Volume contents and
 migrations stay as they are.
+
+### Automatic rollback
+
+`DiagnosticCode::deployment_failure` classifies what a failed deployment
+failed at: a job (`job_failed`, `job_timeout`), which repair handles as above
+and below, or its rollout (`service_update_failed`: Docker paused an update
+because a task failed within its monitor window). When an operation fails with
+a rollout failure, the controller's `fail` checks the environment's effective
+`rollback` (`StoredEnvironment::rollback`, read from the manifest the
+environment deploys; previews are always manual). If it is automatic, and the
+operation is no automatic rollback itself and never succeeded before (a retry
+or repair of what already ran is no new rollout), the controller picks the
+environment's newest other deployment that succeeded, makes sure
+its images are present with cleanup held off, and then, in one transaction,
+fails the operation and accepts restoring that deployment with origin
+`{"type": "restore", "deployment": …, "rolled_back": <failed>}`. Swarm's own
+service rollback is never used, since it would disagree with the maintained
+target. The restore supersedes the failed deployment as the latest operation,
+so nothing reconsiders or repairs toward it again, and it fails and notifies
+like any deployment, without a further rollback. When the restore can't be
+accepted, the operation fails as usual and records `rollback_unavailable` with
+the reason.
 
 Saving an identical normalized manifest does not schedule work. Apply with
 deployment creates a new deployment even when the manifest is unchanged.

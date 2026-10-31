@@ -137,6 +137,43 @@ impl ValidatedRollout {
     }
 }
 
+string_enum! {
+    #[serde]
+    /// What happens when an environment's rollout fails: a service update
+    /// that Docker pauses because a new task failed within its monitor
+    /// window.
+    pub enum Rollback {
+        /// Restore the environment's last successful deployment at once.
+        Automatic => "automatic",
+        /// Leave the environment degraded until someone deploys or restores.
+        Manual => "manual",
+    }
+}
+
+impl Rollback {
+    /// The rollback an environment gets with `setting`, its
+    /// `[spec.environments.<name>] rollback`: the setting, else automatic for
+    /// a promoted environment, which serves what was tested elsewhere, and
+    /// manual otherwise.
+    #[must_use]
+    pub fn effective(setting: Option<Self>, promoted: bool) -> Self {
+        setting.unwrap_or(if promoted {
+            Self::Automatic
+        } else {
+            Self::Manual
+        })
+    }
+}
+
+/// Parses the manifest spelling, e.g. a CLI argument.
+impl std::str::FromStr for Rollback {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or("rollback must be \"automatic\" or \"manual\"")
+    }
+}
+
 /// Parses the manifest spelling, e.g. a CLI flag value.
 impl std::str::FromStr for RolloutOrder {
     type Err = &'static str;
@@ -181,6 +218,17 @@ mod tests {
             monitor_seconds: None,
         };
         assert_eq!(stop_first.policy([]).order, RolloutOrder::StopFirst);
+    }
+
+    #[test]
+    fn rollback_defaults_to_automatic_only_for_promoted_environments() {
+        assert_eq!(Rollback::effective(None, true), Rollback::Automatic);
+        assert_eq!(Rollback::effective(None, false), Rollback::Manual);
+        for setting in Rollback::ALL {
+            assert_eq!(Rollback::effective(Some(setting), true), setting);
+            assert_eq!(Rollback::effective(Some(setting), false), setting);
+        }
+        assert!("sometimes".parse::<Rollback>().is_err());
     }
 
     #[test]

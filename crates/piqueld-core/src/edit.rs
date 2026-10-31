@@ -1,8 +1,8 @@
 //! Typed changes to saved application configuration. No edit performs runtime work.
 use crate::manifest::{
     ApplicationManifest, Build, Export, GitRepository, HealthCheck, Import, Job, Mount,
-    RepositoryManifest, ResourceLimits, Rollout, Route, SecretDeclaration, SecretMount, Service,
-    ServiceFile, Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
+    RepositoryManifest, ResourceLimits, Rollback, Rollout, Route, SecretDeclaration, SecretMount,
+    Service, ServiceFile, Source, SourceRepository, Template, Typed, Variable, Visibility, Volume,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -54,6 +54,7 @@ value_request! {
     RepositoryValue: Option<RepositoryManifest>;
     RepositorySyncValue: crate::sync::RepositorySync;
     VisibilityValue: Visibility;
+    RollbackValue: Option<Rollback>;
 }
 
 /// Source and scaling settings saved together by the dashboard form.
@@ -126,6 +127,14 @@ pub enum ApplicationEdit {
         environment: String,
         /// The strictest visibility its routes get; `public` restricts nothing.
         visibility: Visibility,
+    },
+    /// Set what happens when one environment's rollout fails.
+    EnvironmentRollback {
+        /// Environment name, as in `[spec.environments.<name>]`.
+        environment: String,
+        /// `automatic` or `manual`; `None` returns to the default, automatic
+        /// for promoted environments and manual otherwise.
+        rollback: Option<Rollback>,
     },
 }
 
@@ -375,7 +384,8 @@ impl ApplicationEdit {
     #[must_use]
     pub fn environment(&self) -> Option<&str> {
         match self {
-            Self::EnvironmentVisibility { environment, .. } => Some(environment),
+            Self::EnvironmentVisibility { environment, .. }
+            | Self::EnvironmentRollback { environment, .. } => Some(environment),
             _ => None,
         }
     }
@@ -427,6 +437,12 @@ impl ApplicationEdit {
             } => manifest
                 .spec
                 .set_environment_visibility(&environment, visibility),
+            Self::EnvironmentRollback {
+                environment,
+                rollback,
+            } => manifest
+                .spec
+                .set_environment_rollback(&environment, rollback),
         }
         Ok(())
     }

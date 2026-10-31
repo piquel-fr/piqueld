@@ -158,6 +158,12 @@ Type: string. Optional.
 
 Another environment whose releases this one receives with `piquelctl env promote`, instead of building. It excludes `branch`, `commit` and `sync`, and can't lead back to this environment.
 
+### `spec.environments.<environment>.rollback`
+
+Type: `"automatic"` or `"manual"`. Optional.
+
+What happens when a rollout fails: `automatic` restores the environment's last successful deployment, `manual` leaves it degraded until someone acts. By default `automatic` for promoted environments and `manual` for the others.
+
 ### `spec.environments.<environment>.sync`
 
 Type: boolean. Optional.
