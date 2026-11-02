@@ -22,8 +22,9 @@ use super::{
     access::{self, can},
     dashboard_context, environment_href,
 };
+pub(super) use crate::application::Page;
+use crate::application::{APPLICATION_TABS, ApplicationViewExt, ENVIRONMENT_TABS};
 use crate::state::ApplicationHealth;
-use piqueld_client::sync::short_commit;
 
 use deployments::{DeploymentActions, DeploymentHistory};
 use leptos::prelude::*;
@@ -38,52 +39,13 @@ use navigation::guard_navigation;
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView,
     ApplyApplicationRequest, Client, ClientError, DeploymentOrigin, EnvironmentConfig,
-    EnvironmentSource, EnvironmentView, ManifestRevision, Metadata, TrackedBranch,
+    EnvironmentSource, EnvironmentView, ManifestRevision, Metadata,
     access::{AppPermission, GlobalPermission, Grants, Permission},
     edit::{ApplicationEdit, EditOptions},
 };
 use secrets::{EnvironmentSecrets, SecretFileSettings, StoredSecrets};
 use settings::{MetadataSettings, NewService, RepositorySettings, VolumeSettings};
 use std::collections::BTreeSet;
-
-const APPLICATION_TABS: [&str; 14] = [
-    "Overview",
-    "Environments",
-    "Previews",
-    "Services",
-    "Source",
-    "Variables",
-    "Routes",
-    "Volumes",
-    "Jobs",
-    "Links",
-    "Secrets",
-    "Releases",
-    "Builds",
-    "Events",
-];
-
-const ENVIRONMENT_TABS: [&str; 6] = [
-    "Overview",
-    "Deployments",
-    "Secrets",
-    "Logs",
-    "Terminal",
-    "Events",
-];
-
-/// Which page of an application the route shows.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) enum Page {
-    /// Shared configuration, environments, and application-wide history.
-    Application,
-    /// One service's shared configuration.
-    Service(String),
-    /// One environment's runtime, deployments, secrets, logs, terminal, and history.
-    Environment(String),
-    /// One preview's branch, runtime, deployments, secrets, logs, terminal, and history.
-    Preview(String),
-}
 
 impl Page {
     /// The page an `/applications/:id[/services/:service|/environments/:environment|/previews/:preview]`
@@ -98,30 +60,6 @@ impl Page {
         } else {
             Self::Application
         }
-    }
-
-    /// Tabs of the page; service pages have their own section tabs.
-    const fn tabs(&self) -> &'static [&'static str] {
-        match self {
-            Self::Environment(_) | Self::Preview(_) => &ENVIRONMENT_TABS,
-            Self::Application | Self::Service(_) => &APPLICATION_TABS,
-        }
-    }
-
-    /// The initial tab: `?deployment=` opens deployments, `?release=`
-    /// releases, and `?tab=` names a tab.
-    fn initial_tab(&self, query: &ParamsMap) -> &'static str {
-        let requested = if query.get("deployment").is_some() {
-            Some("deployments".to_owned())
-        } else if query.get("release").is_some() {
-            Some("releases".to_owned())
-        } else {
-            query.get("tab")
-        };
-        self.tabs()
-            .iter()
-            .find(|tab| requested.as_deref() == Some(tab.to_lowercase().as_str()))
-            .unwrap_or(&"Overview")
     }
 }
 
@@ -189,12 +127,9 @@ impl EditorContext {
         let environment = self.selected_environment()?;
         self.saved
             .with(|saved| {
-                let connection = saved.application.spec().manifest.as_ref()?;
-                let follows = environment.preview().is_none()
-                    && saved.repository.is_some()
-                    && environment.source.branch()
-                        == TrackedBranch::of(&connection.repository).ok().as_ref();
-                follows.then(|| saved.application.clone())
+                saved
+                    .follows_connection(&environment)
+                    .then(|| saved.application.clone())
             })
             .or_else(|| self.environment_manifest())
     }
@@ -266,57 +201,17 @@ impl EditorContext {
     /// Name of one of the application's environments or previews; its ID
     /// once it is gone.
     fn environment_name(self, environment: &str) -> String {
-        self.saved.with(|saved| {
-            saved
-                .deployable(environment)
-                .map_or_else(|| environment.to_owned(), |env| env.name.to_string())
-        })
+        self.saved.with(|saved| saved.environment_name(environment))
     }
 
-    /// Where an environment deploys from, naming a promotion source:
-    /// "the saved manifest", "branch main", or "promoted from staging".
+    /// Where an environment deploys from (see `ApplicationViewExt::describe_source`).
     fn describe_source(self, source: &EnvironmentSource) -> String {
-        match source.promoted_from() {
-            Some(from) => format!("promoted from {}", self.environment_name(from.as_str())),
-            None => source.to_string(),
-        }
+        self.saved.with(|saved| saved.describe_source(source))
     }
 
-    /// Where a deployment came from: "Built", "Promoted from staging
-    /// (deployment …)", "Release redeployed", "Restored from deployment …",
-    /// "Rolled back from deployment … to deployment …", or "Local snapshot
-    /// 0123456 on 89abcde".
+    /// Where a deployment came from (see `ApplicationViewExt::describe_origin`).
     fn describe_origin(self, origin: &DeploymentOrigin) -> String {
-        match origin {
-            DeploymentOrigin::Build => "Built".into(),
-            DeploymentOrigin::Promotion {
-                environment,
-                deployment,
-            } => format!(
-                "Promoted from {} (deployment {deployment})",
-                self.environment_name(environment.as_str())
-            ),
-            DeploymentOrigin::Release => "Release redeployed".into(),
-            DeploymentOrigin::Restore {
-                deployment,
-                rolled_back: None,
-            } => format!("Restored from deployment {deployment}"),
-            DeploymentOrigin::Restore {
-                deployment,
-                rolled_back: Some(failed),
-            } => format!("Rolled back from deployment {failed} to deployment {deployment}"),
-            DeploymentOrigin::Local(snapshot) => match &snapshot.base {
-                Some(base) => format!(
-                    "Local snapshot {} on {}",
-                    short_commit(&snapshot.commit),
-                    short_commit(base)
-                ),
-                None => format!(
-                    "Local snapshot {}, uploaded complete",
-                    short_commit(&snapshot.commit)
-                ),
-            },
-        }
+        self.saved.with(|saved| saved.describe_origin(origin))
     }
 
     /// The application's name.
@@ -378,20 +273,8 @@ impl EditorContext {
     /// daemon stays authoritative.
     fn can_in(self, permission: AppPermission, environment: Option<&str>) -> bool {
         self.saved.with(|saved| {
-            let holds = |permission| {
-                self.grants.with(|grants| {
-                    grants
-                        .require_app(permission, saved.application.id())
-                        .is_ok()
-                })
-            };
-            let preview = environment.is_some_and(|id| {
-                saved
-                    .previews
-                    .iter()
-                    .any(|preview| preview.id.as_str() == id)
-            });
-            holds(permission) || (preview && permission.on_previews().is_some_and(holds))
+            self.grants
+                .with(|grants| saved.allows(grants, permission, environment))
         })
     }
 
@@ -477,11 +360,8 @@ impl EditorContext {
     /// last updated at `updated_at_ms`, holds a manifest fetched after the
     /// saved view's: same revision, updated later.
     fn fetched_since(self, generation: u64, updated_at_ms: i64) -> bool {
-        self.saved.with_untracked(|saved| {
-            saved.application.spec().manifest.is_some()
-                && generation == saved.generation
-                && updated_at_ms > saved.updated_at_ms
-        })
+        self.saved
+            .with_untracked(|saved| saved.fetched_since(generation, updated_at_ms))
     }
 
     /// Whether the editor is still mounted. Reading its disposed handles
@@ -1204,7 +1084,7 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
         error: RwSignal::new(None),
         diagnostic_id: RwSignal::new(None),
         notice: RwSignal::new(String::new()),
-        tab: RwSignal::new(query.with_untracked(|query| page.initial_tab(query))),
+        tab: RwSignal::new(query.with_untracked(|query| page.initial_tab(|key| query.get(key)))),
         page: StoredValue::new(page.clone()),
     };
     provide_context(context);
@@ -1390,7 +1270,7 @@ fn ApplicationOverview() -> impl IntoView {
                                     )}
                                 </dd>
                                 <dt>"Environments"</dt>
-                                <dd>{environment_names(saved).join(", ")}</dd>
+                                <dd>{saved.environment_names().join(", ")}</dd>
                                 <dt>"Created"</dt>
                                 <dd>{timestamp(saved.created_at_ms)}</dd>
                                 <dt>"Updated"</dt>
@@ -1401,15 +1281,6 @@ fn ApplicationOverview() -> impl IntoView {
             }}
         </section>
     }
-}
-
-/// Names of the application's environments.
-fn environment_names(saved: &ApplicationView) -> Vec<String> {
-    saved
-        .environments
-        .iter()
-        .map(|environment| environment.name.to_string())
-        .collect()
 }
 
 /// One environment or preview: its runtime, deployments, secrets, logs, and
@@ -1524,7 +1395,9 @@ fn DeleteApplication() -> impl IntoView {
     let context = editor();
     let navigate = use_navigate();
     let delete = move |_| {
-        let environments = context.saved.with_untracked(environment_names);
+        let environments = context
+            .saved
+            .with_untracked(ApplicationViewExt::environment_names);
         let message = format!(
             "Delete this application, all its environments ({}) and previews, their services, and all deployment history? Environments' Docker volume data will be retained; previews' volumes are removed with their data.",
             environments.join(", ")

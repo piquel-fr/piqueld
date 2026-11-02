@@ -1,4 +1,4 @@
-import { test, expect, auth, call, proof, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
+import { test, expect, auth, call, proof, webManifest, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** Save buttons exist for every settings group; only the edited group's is shown. */
@@ -291,6 +291,138 @@ test('unsaved edits block deployment and navigation until discarded', async ({ p
   await expect(page).toHaveURL(/\/dashboard\/applications\/[^/]+$/);
   await visible(page, 'Discard').click();
   await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
+});
+
+test('a save whose response was lost is retried once and applied once', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  const id = page.url().split('/').pop()!;
+  const { generation } = await call(page, 'GET', `applications/${id}`);
+  // The first attempt reaches the daemon, but its response never arrives.
+  const keys: string[] = [];
+  await page.route(url => url.pathname === `/api/v1/applications/${id}/name`, async route => {
+    keys.push(route.request().headers()['idempotency-key']);
+    if (keys.length > 1) return route.continue();
+    await route.fetch();
+    await route.abort('failed');
+  });
+  await page.getByRole('button', { name: 'Rename application', exact: true }).click();
+  await page.getByLabel('Application name', { exact: true }).fill('renamed-once');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(title(page)).toHaveText('renamed-once');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  // The replay carries the same identity, so the daemon answers it without applying it again.
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  expect(await call(page, 'GET', `applications/${id}`)).toMatchObject({ generation: generation + 1 });
+});
+
+test('unsaved edits guard back navigation, but not downloading the manifest', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  const editor = page.url();
+  await applicationTab(page, 'Volumes').click();
+  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
+  await page.getByLabel('Volume name', { exact: true }).fill('kept');
+  const dialogs: string[] = [];
+  page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+  const download = page.waitForEvent('download');
+  await page.getByRole('link', { name: 'Manifest', exact: true }).click();
+  await download;
+  expect(dialogs).toEqual([]);
+  // Cancelling Back restores the editor's address, with its edits.
+  await page.goBack();
+  await expect.poll(() => dialogs).toEqual([expect.stringContaining('discard unsaved form edits')]);
+  await expect(page).toHaveURL(editor);
+  await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('kept');
+  page.removeAllListeners('dialog');
+  page.once('dialog', dialog => dialog.accept());
+  await page.goBack();
+  await expect(page).toHaveURL(/\/dashboard\/applications$/);
+});
+
+test('creating rejects an invalid name, and deleting needs confirmation', async ({ page, account }) => {
+  void account;
+  await page.goto('/dashboard/applications');
+  await page.getByRole('button', { name: 'New application', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: 'Create application' });
+  await creator.getByLabel('Application name', { exact: true }).fill('Not Valid');
+  await creator.getByRole('button', { name: 'Create application', exact: true }).click();
+  await expect(creator.getByRole('alert')).toBeVisible();
+  await expect(page).toHaveURL(/\/dashboard\/applications$/);
+  await creator.getByLabel('Application name', { exact: true }).fill('doomed');
+  await creator.getByRole('button', { name: 'Create application', exact: true }).click();
+  await expect(title(page)).toHaveText('doomed');
+  const id = page.url().split('/').pop()!;
+
+  const remove = page.getByRole('button', { name: 'Delete application', exact: true });
+  page.once('dialog', dialog => dialog.dismiss());
+  await remove.click();
+  await expect(remove).toBeEnabled();
+  page.once('dialog', async dialog => {
+    // Its environments are named, and confirmed with the request.
+    expect(dialog.message()).toContain('all its environments (production)');
+    await dialog.accept();
+  });
+  const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().includes(`/applications/${id}?`));
+  await remove.click();
+  expect((await deleted).status()).toBe(202);
+  await expect(page).toHaveURL(/\/dashboard\/applications$/);
+  expect(await call(page, 'GET', `applications/${id}`)).toMatchObject({ delete_intent: true });
+});
+
+test('removes a service from its page, whose address then reports it gone', async ({ page, account }) => {
+  void account;
+  const image = { type: 'image', image: 'nginx:alpine' };
+  const saved = await call(page, 'POST', 'applications/apply', {
+    manifest: webManifest('services', { services: [{ name: 'web', source: image }, { name: 'worker', source: image }] }),
+    expected_generation: 0,
+  });
+  await page.goto(`/dashboard/applications/${saved.application_id}/services/web`);
+  const remove = page.getByRole('button', { name: 'Remove service', exact: true });
+  page.once('dialog', dialog => dialog.dismiss());
+  await remove.click();
+  await expect(title(page)).toHaveText('web');
+  page.once('dialog', dialog => dialog.accept());
+  await remove.click();
+  await expect(page).toHaveURL(url => url.pathname.endsWith(`/applications/${saved.application_id}`) && url.searchParams.get('tab') === 'services');
+  await expect(page.locator('a.list-row')).toHaveText([/^worker/]);
+  await page.goBack();
+  await expect(page.getByText('Service web is not part of the saved configuration.', { exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Back to services', exact: true }).click();
+  await expect(applicationTab(page, 'Services')).toHaveAttribute('aria-current', 'page');
+});
+
+test('saves exports and imports from the Links tab, each card on its own', async ({ page, account }) => {
+  void account;
+  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('links'), expected_generation: 0 });
+  const id = saved.application_id as string;
+  await page.goto(`/dashboard/applications/${id}?tab=links`);
+  const card = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
+  await page.getByRole('button', { name: 'Add export', exact: true }).click();
+  const exported = card('Exports');
+  await exported.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
+  await exported.getByLabel('Applications', { exact: true }).fill(' notes ,, billing ');
+  await exported.getByLabel('Previews too', { exact: true }).check();
+  await page.getByRole('button', { name: 'Add import', exact: true }).click();
+  const imported = card('Imports');
+  await imported.getByLabel('Application', { exact: true }).fill('auth');
+  await imported.getByLabel('Service', { exact: true }).fill('api');
+
+  // Saving the exports keeps the imports' unsaved edits.
+  await exported.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(exported.getByRole('button', { name: 'Save changes', exact: true })).toBeHidden();
+  await expect(imported.getByLabel('Application', { exact: true })).toHaveValue('auth');
+  await imported.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(imported.getByRole('button', { name: 'Save changes', exact: true })).toBeHidden();
+
+  const { application } = await call(page, 'GET', `applications/${id}`);
+  expect(application.spec.exports).toEqual([{ service: 'web', applications: ['notes', 'billing'], previews: true }]);
+  // An empty environment reaches the importing environment's namesake.
+  expect(application.spec.imports).toEqual([{ application: 'auth', service: 'api' }]);
+  await page.reload();
+  await expect(exported.getByLabel('Applications', { exact: true })).toHaveValue('notes, billing');
+  await expect(imported.getByLabel('Environment', { exact: true })).toHaveValue('');
 });
 
 test('reloading after a change made elsewhere keeps unsaved edits and shows the change', async ({ page, account }) => {

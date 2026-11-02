@@ -272,18 +272,14 @@ impl Console {
         if event.is_composing() || event.meta_key() || !self.running() {
             return;
         }
-        // AltGr reports Control and Alt on some systems, and macOS's Option
-        // types characters such as `@` on many layouts: their characters are
-        // plain text. Named keys, such as Option+arrows, keep the modifier.
         let key = event.key();
-        let alt_graph = event.get_modifier_state("AltGraph");
-        let text = alt_graph || (key.chars().count() == 1 && Self::mac());
         let key = Key {
             key: &key,
-            ctrl: event.ctrl_key() && !alt_graph,
-            alt: event.alt_key() && !text,
+            ctrl: event.ctrl_key(),
+            alt: event.alt_key(),
             shift: event.shift_key(),
-        };
+        }
+        .on_layout(event.get_modifier_state("AltGraph"), Self::mac());
         if let Some(bytes) = self
             .terminal
             .try_update_value(|terminal| terminal.key(&key))
@@ -331,25 +327,11 @@ impl Console {
     /// Scrolls through history by the wheel's vertical movement.
     fn wheel(self, event: &web_sys::WheelEvent) {
         // Horizontal scrolling is the page's.
-        let (delta, Some(probe)) = (event.delta_y(), self.probe.get_untracked()) else {
+        let Some(probe) = self.probe.get_untracked() else {
             return;
         };
-        if delta == 0.0 {
-            return;
-        }
-        let height = probe.get_bounding_client_rect().height().max(1.0);
-        // Wheel deltas scroll down; history is up. Every step moves a line or more.
-        let lines = -delta / height;
-        let lines = if lines.abs() < 1.0 {
-            lines.signum()
-        } else {
-            lines.round()
-        };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "wheel steps are a few lines"
-        )]
-        let lines = lines as isize;
+        let lines =
+            Terminal::wheel_lines(event.delta_y(), probe.get_bounding_client_rect().height());
         if self
             .terminal
             .try_update_value(|terminal| terminal.scroll(lines))
@@ -380,24 +362,12 @@ impl Console {
             return;
         };
         let cell = probe.get_bounding_client_rect();
-        let cells = |length: i32, cell: f64| {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to u16, and only whole cells fit"
-            )]
-            let count = (f64::from(length) / cell)
-                .floor()
-                .clamp(0.0, f64::from(u16::MAX)) as u16;
-            count
-        };
-        let size = TerminalSize {
-            width: cells(viewport.client_width(), cell.width()),
-            height: cells(viewport.client_height(), cell.height()),
-        };
-        if size.width == 0 || size.height == 0 {
+        let Some(size) = Terminal::fitting(
+            (viewport.client_width(), viewport.client_height()),
+            (cell.width(), cell.height()),
+        ) else {
             return;
-        }
+        };
         if self
             .terminal
             .try_update_value(|terminal| terminal.resize(size))

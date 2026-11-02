@@ -1,6 +1,7 @@
 //! The piqueld browser dashboard: applications, environments, deployments,
 //! logs, accounts, and observability.
 
+pub mod application;
 pub mod editor;
 pub mod environments;
 pub mod log_output;
