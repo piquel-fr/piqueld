@@ -15,7 +15,7 @@ one to try a change before it reaches staging, then delete it.
   and deleting them `previews:delete`. `apps:deploy` and `apps:delete`
   include them; see [preview permissions](../accounts/permissions.md#let-agents-and-ci-manage-previews).
 - Previews' routes are private by default, so their URLs work once the daemon
-  serves [private routes](../guides/ingress.md#public-and-private-routes).
+  serves [private routes](../networking/private-routes.md).
 - `piquelctl` is signed in. Run the commands on this page on the host, or on
   any machine where `piquelctl` is signed in. On another machine, keep
   `PIQUELD_URL` set, as when you
@@ -232,7 +232,7 @@ Deleting the application deletes its previews, with their volumes.
 ## Limits
 
 Previews share the host with production, so the daemon's
-[`[previews]` settings](../reference/configuration-settings.md#previews-1)
+[`[previews]` settings](../reference/configuration-settings.md#previews-table)
 limit them:
 
 - `max_per_application` and `max_total` cap how many previews there are.

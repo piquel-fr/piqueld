@@ -282,7 +282,7 @@ the services of `notes` that use `api.auth`.
   applications.
 
 The [manifest reference](../reference/manifest.md#links) describes links in
-full, [manifest settings](../reference/manifest-settings.md#specexports-1)
+full, [manifest settings](../reference/manifest-settings.md#specexports-table)
 lists their settings, and
 [permissions](../accounts/permissions.md#links-between-applications) who
 may set them up.

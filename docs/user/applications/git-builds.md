@@ -121,7 +121,7 @@ These commands only save the change. Deploy it with
    piquelctl --timeout 10m app apply --file welcome.toml --deploy
    ```
 
-[Manifest settings](../reference/manifest-settings.md#specservicessource-1)
+[Manifest settings](../reference/manifest-settings.md#specservicessource-table)
 lists every setting of a source.
 
 ### How it builds

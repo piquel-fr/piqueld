@@ -410,7 +410,7 @@ health check.
 - **Validation fails with `service_dependency_cycle`.** Two services depend on
   each other, directly or through others. Remove one of the dependencies.
 
-[Manifest settings](../reference/manifest-settings.md#specservices-1) lists
+[Manifest settings](../reference/manifest-settings.md#specservices-table) lists
 every setting of a service, and
 [`piquelctl app service`](../reference/cli-commands.md#piquelctl-app-service)
 every command that changes one.

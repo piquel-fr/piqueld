@@ -96,7 +96,7 @@ replace it.
 `generate` can also write the bytes as `base64url`, with
 `encoding = "base64url"` or `--encoding base64url`, or make an RSA private
 key, with `{ type = "rsa", bits = 3072 }`.
-[Manifest settings](../reference/manifest-settings.md#specsecretsgenerate-1)
+[Manifest settings](../reference/manifest-settings.md#specsecretsgenerate-table)
 lists every option.
 
 ## Store a secret
