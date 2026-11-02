@@ -13,7 +13,9 @@ mod poll;
 #[path = "support/repository.rs"]
 mod repository;
 
-use bollard::query_parameters::{InspectServiceOptions, UpdateServiceOptionsBuilder};
+use bollard::query_parameters::{
+    InspectServiceOptions, ListContainersOptionsBuilder, UpdateServiceOptionsBuilder,
+};
 use docker_contract::Environment;
 use git_fixture::GitBuildFixture;
 use piqueld::application::RuntimeBoundary;
@@ -638,10 +640,15 @@ impl SwarmScenario {
             .job(&self.service, operation, script, volume_access, false)
     }
 
-    /// A service named `name` that keeps running until Docker kills it: `sh`
-    /// as PID 1 ignores SIGTERM, so a removed task stops only after the grace
-    /// period.
-    fn lingering_service(&self, name: &str) -> DesiredService {
+    /// Starts a service named `name`, mounting `mounts`, that keeps running
+    /// until Docker kills it: `sh` as PID 1 ignores SIGTERM, so a removed
+    /// task stops only after the grace period. Returns once its container
+    /// runs, since Swarm drops a removed task that has none yet at once.
+    async fn start_lingering_service(
+        &self,
+        name: &str,
+        mounts: Vec<piqueld_core::DesiredMount>,
+    ) -> DesiredService {
         let mut service = self.derived_service(name);
         service.command = vec![
             "/bin/sh".into(),
@@ -651,6 +658,25 @@ impl SwarmScenario {
         service.arguments.clear();
         service.healthcheck = None;
         service.secrets.clear();
+        service.mounts = mounts;
+        self.engine.ensure_service_eventually(&service).await;
+        let raw = self.engine.raw();
+        let filters = std::collections::HashMap::from([(
+            "label",
+            vec![format!(
+                "com.docker.swarm.service.name={}",
+                service.name.as_str()
+            )],
+        )]);
+        eventually(Duration::from_mins(1), POLL, async || {
+            let options = ListContainersOptionsBuilder::default()
+                .filters(&filters)
+                .build();
+            let running = raw.list_containers(Some(options)).await.unwrap();
+            (!running.is_empty()).then_some(())
+        })
+        .await
+        .expect("the lingering service's container starts");
         service
     }
 
@@ -746,9 +772,9 @@ impl SwarmScenario {
     /// period, which starting the run doesn't wait for: callers wait first.
     async fn exclusive_jobs_hold_their_volume(&self) {
         let docker = &self.engine.docker;
-        let mut writer = self.lingering_service("writer");
-        writer.mounts = vec![self.environment.data_mount()];
-        self.engine.ensure_service_eventually(&writer).await;
+        let writer = self
+            .start_lingering_service("writer", vec![self.environment.data_mount()])
+            .await;
 
         let job = self.job_with(
             "operation-exclusive",
@@ -792,9 +818,7 @@ impl SwarmScenario {
     /// exists, nor until its removed task stopped.
     async fn jobs_wait_for_their_stopped_service(&self) {
         let docker = &self.engine.docker;
-        let mut auth = self.lingering_service("auth");
-        auth.mounts.clear();
-        self.engine.ensure_service_eventually(&auth).await;
+        let auth = self.start_lingering_service("auth", Vec::new()).await;
         let job = self.environment.job(
             &auth,
             "operation-stop-service",
