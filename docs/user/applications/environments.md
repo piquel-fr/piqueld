@@ -239,7 +239,9 @@ declares them all, as setting a variable's value for one environment does.
 Once a deployment of an environment has built or pulled its images, piqueld
 records a release: the manifest it deployed and its exact images. A promoted
 environment never builds. It receives the release another environment runs,
-so production runs exactly the images you tested on staging.
+so production runs exactly the images you tested on staging. When its rollout
+fails, it [rolls back](restore.md#roll-back-failed-rollouts-automatically) to
+its last successful deployment unless you choose otherwise.
 
 ### Set up staging and production
 
@@ -435,6 +437,9 @@ successful deployments.
 [`images.keep_deployments`](../reference/configuration-settings.md#imageskeep_deployments),
 in the daemon's configuration, changes that number.
 
+To return any environment to a deployment exactly as it ran, with the
+variables and secrets it had, [restore it](restore.md) instead.
+
 ### Keep builds the same in every environment
 
 A release's images are built once, on staging. So every setting that goes
@@ -504,8 +509,9 @@ run again. For an application with a single environment, `piquelctl app stop
 hello` and `piquelctl app start hello` do the same.
 
 A stopped environment stays stopped until you start it, deploy it, promote
-into it, reconcile it, as `piquelctl env reconcile` does, or restore one of
-its deployments that succeeded: each of those starts it again.
+into it, reconcile it, as `piquelctl env reconcile` does, or
+[restore](restore.md) one of its deployments that succeeded: each of those
+starts it again.
 Pushes don't deploy it meanwhile. Starting or reconciling it deploys the
 latest commit of its branch that it missed, if it
 [deploys on push](deploy-on-push.md#deploy-every-push). Previews can't be
