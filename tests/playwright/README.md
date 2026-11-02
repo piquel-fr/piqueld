@@ -60,14 +60,16 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
   deployment preview dialog, deployment history, and unsaved-edit gating of
   Deploy, link and Back navigation, but not of the manifest download, and
   retried saves applied once.
+- Deployment history paging that keeps older pages while polling, deployments
+  opened from their link, and their attempts, the running one first.
 - Environment pages, creation (also promoted from another environment), renaming,
   and deletion, environments declared by the manifest, unsaved or invalid source
   edits gating Deploy and surviving changes made elsewhere, saves kept over
   listings requested before them, and per-environment logs.
 - Per-environment branches, one-time branch or commit deployments, deployment
-  on push, previews created and pruned from
-  the dashboard, promotion plans, and the Secrets tabs of environments and
-  previews.
+  on push, previews created and pruned from the dashboard, the local snapshot
+  a preview runs and redeploying its branch head, promotion plans, and the
+  Secrets tabs of environments and previews.
 - Stored secret replacement that keeps an access list changed elsewhere,
   access-only saves, deletion, and refused writes that wait for a refresh;
   regenerating a deployed environment's generated secret, and a refused

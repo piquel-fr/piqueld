@@ -289,6 +289,30 @@ test('Prune gone submits the previews whose branch is gone', async ({ page, acco
   expect((await pruned).postDataJSON()).toEqual({ previews: [preview] });
 });
 
+test('a preview page shows the local snapshot it runs, and redeploys its branch head', async ({ page, account }) => {
+  void account;
+  const { app } = await createRepositoryApplication(page);
+  const preview = (await call(page, 'POST', `applications/${app}/previews`, { branch: 'feat/login', slot: 'agent-2' })).preview.id as string;
+  // It runs a snapshot uploaded with its whole history, of a branch never pushed.
+  const commit = '0123456789abcdef0123456789abcdef01234567';
+  await rewrite(page, `/api/v1/previews/${preview}`, data => {
+    data.origin = { type: 'local', commit };
+    data.branch = { state: 'local' };
+  });
+
+  await page.goto(`/dashboard/applications/${app}/previews/${preview}`);
+  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Preview', exact: true }) });
+  await expect(card).toContainText(`Local snapshot ${commit.slice(0, 12)}, uploaded with its whole history`);
+  await expect(card).toContainText(`Redeploy branch head fails until it is. Deploy a new snapshot from its worktree with \`piquelctl preview deploy ${app} --local --slot agent-2\`.`);
+  await expect(card).toContainText('never pushed');
+
+  const redeployed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(`/previews/${preview}/deploy`));
+  await page.getByRole('button', { name: 'Redeploy branch head', exact: true }).click();
+  expect((await redeployed).status()).toBe(202);
+  await expect(page.getByText('Deployment accepted. Follow its progress below.', { exact: true })).toBeVisible();
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+});
+
 test('an application deploys on push by polling or webhook, and an environment opts in', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
