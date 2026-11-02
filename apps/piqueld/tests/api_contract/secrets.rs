@@ -268,7 +268,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         ..FakeRuntime::new(&store)
     });
     runtime.set_unavailable(true);
-    let service = ApiState::new(store.clone(), runtime.clone());
+    let service = ApiState::new(store.clone(), runtime.clone()).unwrap();
     store
         .put_secret(Daemon, &environment, "token", 0, b"value".to_vec())
         .await
@@ -379,7 +379,7 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
         .await
         .unwrap();
     let runtime = Arc::new(FakeRuntime::new(&store));
-    let server = Server::tcp(router(ApiState::new(store, runtime), FakeAuth)).await;
+    let server = Server::tcp(router(ApiState::new(store, runtime).unwrap(), FakeAuth)).await;
     let client = server.client();
     assert_eq!(
         api_error(client.recover_secret_key().await.unwrap_err()).status,

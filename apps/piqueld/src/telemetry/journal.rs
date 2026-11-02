@@ -410,13 +410,21 @@ fn failure(event: &Event) -> Status {
 
 /// The first 16 bytes of the SHA-256 of `parts`.
 fn trace_id(parts: &[&str]) -> TraceId {
-    TraceId::from_bytes(digest(parts)[..16].try_into().expect("16 bytes"))
+    TraceId::from_bytes(
+        digest(parts)[..16]
+            .try_into()
+            .expect("digest returns 32 bytes; this slice contains exactly 16 bytes"),
+    )
 }
 
 /// Bytes 16..24 of the SHA-256 of `parts`, so a trace's root span never
 /// shares its trace ID's bytes.
 fn span_id(parts: &[&str]) -> SpanId {
-    SpanId::from_bytes(digest(parts)[16..24].try_into().expect("8 bytes"))
+    SpanId::from_bytes(
+        digest(parts)[16..24]
+            .try_into()
+            .expect("digest returns 32 bytes; this slice contains exactly 8 bytes"),
+    )
 }
 
 /// SHA-256 of `parts` separated by NUL bytes, which IDs never contain.

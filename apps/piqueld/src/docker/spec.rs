@@ -36,10 +36,10 @@ impl BollardDocker {
         let container = spec
             .task_template
             .as_mut()
-            .expect("task spec")
+            .expect("service_spec always constructs Some(task_template)")
             .container_spec
             .as_mut()
-            .expect("container spec");
+            .expect("task_spec always constructs Some(container_spec)");
         if !desired.secrets.is_empty() {
             container.secrets = Some(self.secret_references(desired).await?);
         }

@@ -122,7 +122,7 @@ impl PreviewSlug {
         readable.truncate(Self::MAX_LEN - Self::HASH_LEN - 1);
         let readable = readable.trim_end_matches('-');
         Self::parse(format!("{readable}-{}", &hash[..Self::HASH_LEN]))
-            .expect("derived slugs are valid")
+            .expect("sanitized application prefix starts with a letter; bounded ASCII hash suffix ends alphanumeric")
     }
 }
 

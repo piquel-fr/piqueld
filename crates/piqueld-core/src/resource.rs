@@ -997,13 +997,11 @@ impl ResolvedApplication {
         }
 
         let spec_hash = app.spec_hash();
-        let digest = Sha256Digest::parse(spec_hash.clone())
-            .expect("spec_hash is produced by the domain hasher");
         let ownership = Ownership {
             instance_id: instance_id.clone(),
             environment_id: environment.clone(),
             service: None,
-            spec_hash: digest.as_str().to_owned(),
+            spec_hash: spec_hash.clone(),
         };
         let private_network = DockerNetworkName::for_application(environment);
         let services = app

@@ -189,7 +189,8 @@ impl ExecFrame for ExecOutput {
                 4,
                 &[
                     &status.to_be_bytes()[..],
-                    &serde_json::to_vec(error).expect("error bodies always serialize"),
+                    &serde_json::to_vec(error)
+                        .expect("ErrorBody contains strings, validation errors, and JSON values"),
                 ]
                 .concat(),
             ),

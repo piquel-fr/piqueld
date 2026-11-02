@@ -1,7 +1,6 @@
 //! Interactive one-off commands in a running task of the shown environment.
 use super::super::ClientErrorExt;
 use super::super::ui::{Tone, badge, notice};
-use super::EditorContext;
 use crate::terminal::{Key, Terminal, parse_command};
 use futures_channel::{mpsc, oneshot};
 use futures_util::{
@@ -433,11 +432,11 @@ impl Console {
 /// size follows the element; without one, output is shown and input is closed.
 /// Disconnecting, or leaving the page, closes the WebSocket, which stops
 /// streaming but may leave the command running in the task. Its tab is hidden
-/// without `apps:exec` (see `EditorContext::tab_hidden`).
+/// without `apps:exec` (see `super::EditorContext::tab_hidden`).
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn ExecTerminal() -> impl IntoView {
-    let context = use_context::<EditorContext>().expect("application editor");
+    let context = super::editor();
     let form = Form {
         service: RwSignal::new(String::new()),
         command: RwSignal::new("/bin/sh".to_owned()),

@@ -378,14 +378,14 @@ impl<D: DockerApi> Controller<D> {
                 Ok(observed) => return Ok(observed),
                 Err(error) => error,
             };
-            if journal.is_none() {
-                *journal = Some(
+            let action = match journal {
+                Some(action) => action,
+                None => journal.insert(
                     self.store
                         .begin_action(Some(&operation.id), "observation", None)
                         .await?,
-                );
-            }
-            let action = journal.as_ref().expect("failed observation has an action");
+                ),
+            };
             let terminal = error.is_terminal();
             let error = OperationError::from(error);
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

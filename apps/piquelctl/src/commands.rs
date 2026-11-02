@@ -205,7 +205,7 @@ async fn build_logs(
 pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
     let client = match &cli.url {
         Some(url) => Client::tcp(url)?,
-        None => Client::unix(cli.socket_path()),
+        None => Client::unix(cli.socket_path())?,
     };
     let client = if cli.auth.allow_insecure_http {
         client.with_insecure_http()

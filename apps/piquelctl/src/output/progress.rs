@@ -83,8 +83,9 @@ impl ProgressOutput {
             Backend::Terminal(multi) => {
                 let bar = multi.add(ProgressBar::new_spinner());
                 bar.set_style(
-                    ProgressStyle::with_template("{spinner} {prefix}: {msg} [{elapsed}]")
-                        .expect("static progress template"),
+                    ProgressStyle::with_template("{spinner} {prefix}: {msg} [{elapsed}]").expect(
+                        "the literal progress template uses only supported indicatif placeholders",
+                    ),
                 );
                 bar.set_prefix(Escaped(label).to_string());
                 bar.enable_steady_tick(Duration::from_millis(100));

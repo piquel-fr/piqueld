@@ -360,7 +360,7 @@ async fn contract_state(temp: &TempDir, store: Arc<Store>) -> (Arc<FakeRuntime>,
     // which mutations re-read from the database.
     seed_account(&database(temp), "contract-admin", &[("admin", None)]).await;
     let runtime = Arc::new(FakeRuntime::new(&store));
-    (Arc::clone(&runtime), ApiState::new(store, runtime))
+    (Arc::clone(&runtime), ApiState::new(store, runtime).unwrap())
 }
 
 /// The real authenticator of the contract daemon in `temp`.
@@ -663,7 +663,7 @@ impl Server {
     fn client(&self) -> Client {
         match &self.endpoint {
             Endpoint::Tcp(address) => Client::tcp(&format!("http://{address}/")).unwrap(),
-            Endpoint::Unix(path) => Client::unix(path),
+            Endpoint::Unix(path) => Client::unix(path).unwrap(),
         }
     }
 
@@ -835,7 +835,7 @@ impl AcceptanceApi {
     /// The same daemon, routed in process.
     fn router(&self) -> axum::Router {
         router(
-            ApiState::new(Arc::clone(&self.store), self.runtime.clone()),
+            ApiState::new(Arc::clone(&self.store), self.runtime.clone()).unwrap(),
             FakeAuth,
         )
     }

@@ -204,7 +204,7 @@ impl Visibility {
 pub(crate) fn scope_json(scope: &Scope) -> Option<String> {
     scope.applications().map(|ids| {
         serde_json::to_string(&ids.iter().map(ApplicationId::as_str).collect::<Vec<_>>())
-            .expect("application IDs serialize")
+            .expect("application IDs are serialized as a list of strings")
     })
 }
 

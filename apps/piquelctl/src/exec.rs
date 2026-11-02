@@ -147,7 +147,7 @@ async fn forward(
         // Disabled branches still evaluate their expressions, so each source
         // is only touched inside a lazy `async` block that is never polled.
         let frame = tokio::select! {
-            chunk = async { stdin.as_mut().expect("enabled").recv().await }, if stdin.is_some() => {
+            chunk = async { stdin.as_mut().expect("select polls this branch only when stdin is Some").recv().await }, if stdin.is_some() => {
                 match chunk {
                     Some(Ok(data)) => ExecInput::Stdin(data),
                     Some(Err(error)) => return Err(local_error("read standard input", &error)),
@@ -157,7 +157,7 @@ async fn forward(
                     }
                 }
             }
-            Some(()) = async { resizes.as_mut().expect("enabled").recv().await }, if resizes.is_some() => match RawTerminal::size() {
+            Some(()) = async { resizes.as_mut().expect("select polls this branch only when resizes is Some").recv().await }, if resizes.is_some() => match RawTerminal::size() {
                 Ok(size) => ExecInput::Resize(size),
                 Err(_) => continue,
             },

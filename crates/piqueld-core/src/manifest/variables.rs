@@ -590,7 +590,9 @@ impl<T: Expected> TypedSlot for Typed<T> {
 
     fn literal(&self) -> Option<String> {
         Typed::literal(self).map(|value| {
-            serde_json::to_string(value).expect("manifest values serialize infallibly")
+            serde_json::to_string(value).expect(
+                "typed manifest literals are unsigned integers or RolloutOrder string values",
+            )
         })
     }
 }

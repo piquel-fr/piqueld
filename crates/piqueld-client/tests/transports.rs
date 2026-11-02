@@ -219,7 +219,7 @@ async fn typed_client_uses_unix_socket() {
     let path = temp.path().join("piqueld.sock");
     let listener = UnixListener::bind(&path).unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
-    let response = Client::unix(&path).system_status().await.unwrap();
+    let response = Client::unix(&path).unwrap().system_status().await.unwrap();
     assert_eq!(response.status, "running");
     assert_eq!(response.daemon_version, "0.1.0");
     server.abort();
@@ -278,6 +278,7 @@ async fn unix_socket_stalled_response_bodies_time_out() {
     let listener = UnixListener::bind(&path).unwrap();
     let server = tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
     let result = Client::unix(&path)
+        .unwrap()
         .with_timeout(Duration::from_millis(50))
         .system_status()
         .await;

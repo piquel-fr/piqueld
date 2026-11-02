@@ -69,7 +69,8 @@ impl Client {
     /// opt-in, even when an encrypted transport such as Tailscale is used.
     ///
     /// # Errors
-    /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin.
+    /// Returns [`ClientError::Endpoint`] when `base_url` is not an HTTP origin,
+    /// or [`ClientError::Configuration`] if the HTTP client cannot initialize.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn tcp(base_url: &str) -> Result<Self, ClientError> {
         let url = url::Url::parse(base_url)
@@ -114,14 +115,13 @@ impl Client {
     ///
     /// Account credentials are required, just as for the TCP transport.
     ///
-    /// # Panics
-    /// Panics only if reqwest rejects its fixed, library-owned configuration.
+    /// # Errors
+    /// Returns [`ClientError::Configuration`] if the HTTP client cannot initialize.
     #[cfg(all(not(target_arch = "wasm32"), unix))]
-    pub fn unix(path: impl AsRef<std::path::Path>) -> Self {
+    pub fn unix(path: impl AsRef<std::path::Path>) -> Result<Self, ClientError> {
         Self::native("http://localhost", |builder| {
             builder.unix_socket(path.as_ref().to_path_buf())
         })
-        .expect("the fixed Unix-socket client configuration is valid")
     }
 
     /// Builds a native reqwest client, which never follows redirects or uses
@@ -137,7 +137,7 @@ impl Client {
             .no_proxy();
         let client = configure(builder)
             .build()
-            .map_err(|_| ClientError::invalid_request("HTTP client configuration is invalid"))?;
+            .map_err(|source| ClientError::Configuration { source })?;
         Ok(Self::new(base_url, client))
     }
 
@@ -661,7 +661,7 @@ mod wasm_tests {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::Client;
+    use super::{Client, ClientError};
 
     #[test]
     fn authentication_transport_policy_requires_explicit_remote_http_opt_in() {
@@ -697,6 +697,7 @@ mod tests {
             }
         }
         let client = Client::unix("/tmp/piqueld-test.sock")
+            .unwrap()
             .with_bearer("secret")
             .unwrap();
         let mut request = reqwest::Request::new(
@@ -705,6 +706,23 @@ mod tests {
         );
         client.generated.inner.prepare(&mut request).unwrap();
         assert!(request.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn client_initialization_preserves_the_builder_error() {
+        use std::error::Error;
+
+        let error = Client::native("http://localhost", |builder| {
+            builder
+                .min_tls_version(reqwest::tls::Version::TLS_1_3)
+                .max_tls_version(reqwest::tls::Version::TLS_1_2)
+        })
+        .unwrap_err();
+        let ClientError::Configuration { source } = error else {
+            panic!("client initialization must retain the reqwest error");
+        };
+        assert!(source.is_builder());
+        assert!(source.source().is_some());
     }
 
     #[test]

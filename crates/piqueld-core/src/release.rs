@@ -158,7 +158,7 @@ impl Release {
             commit: self.commit(),
             sources: &self.sources,
         })
-        .expect("releases serialize infallibly");
+        .expect("release fields and string-keyed maps are JSON-compatible");
         Sha256Digest::parse(format!("sha256:{:x}", Sha256::digest(bytes)))
             .expect("a SHA-256 digest is 64 lowercase hexadecimal digits")
     }

@@ -61,8 +61,11 @@ impl SyncMode {
 
 /// Parses `public` or `private`, listing both in help and completions.
 pub(crate) fn visibility() -> impl TypedValueParser<Value = Visibility> {
-    clap::builder::PossibleValuesParser::new(["public", "private"])
-        .map(|value| value.parse().expect("every listed value parses"))
+    clap::builder::PossibleValuesParser::new(["public", "private"]).map(|value| {
+        value.parse().expect(
+            "PossibleValuesParser accepts only public and private, both valid Visibility values",
+        )
+    })
 }
 
 /// Parses `on` or `off`, listing both in help and completions.

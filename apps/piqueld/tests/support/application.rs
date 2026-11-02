@@ -25,7 +25,7 @@ impl std::ops::Deref for TestApplications {
 impl TestApplications {
     pub fn new(store: Arc<Store>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
         Self {
-            service: ApplicationService::new(Arc::clone(&store), runtime),
+            service: ApplicationService::new(Arc::clone(&store), runtime).unwrap(),
             store,
         }
     }

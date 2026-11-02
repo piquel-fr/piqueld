@@ -395,9 +395,9 @@ fn signed_in(
 fn set_cookie(response: &mut Response, auth: &Auth, cookie: AuthCookie, value: &str, age: i64) {
     response.headers_mut().append(
         header::SET_COOKIE,
-        auth.cookie(cookie, value, age)
-            .parse()
-            .expect("generated cookie is valid"),
+        auth.cookie(cookie, value, age).parse().expect(
+            "cookie names and attributes are ASCII; values are generated base64url tokens or empty",
+        ),
     );
 }
 /// The host operator making a Unix socket request without any credential

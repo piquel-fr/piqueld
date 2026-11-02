@@ -478,7 +478,10 @@ impl Ingress {
     pub(super) fn label_hash(spec: &mut Value) {
         let hash = format!(
             "{:x}",
-            Sha256::digest(serde_json::to_vec(&spec).expect("JSON serializes"))
+            Sha256::digest(
+                serde_json::to_vec(&spec)
+                    .expect("serde_json::Value is already valid JSON with string object keys")
+            )
         );
         spec["Labels"][CONFIGURATION_LABEL] = hash.into();
     }
