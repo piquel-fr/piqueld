@@ -184,7 +184,7 @@ test('an environment following a branch deploys another branch or commit once', 
   await open.click();
   await dialog.getByRole('combobox', { name: 'Deploy', exact: true }).selectOption('commit');
   const hash = dialog.getByLabel('Commit hash', { exact: true });
-  await hash.fill(commit.slice(0, 12));
+  await hash.fill(commit.slice(0, 7));
   await deploy.click();
   const refused = 'commit must be a full lowercase hexadecimal Git hash';
   await expect(dialog).toContainText(refused);

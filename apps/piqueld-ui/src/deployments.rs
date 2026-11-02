@@ -89,7 +89,7 @@ impl Attempts {
 
 /// What a promotion into an environment deploys: its source's current
 /// deployment, or an earlier `release`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Promotion {
     release: Option<String>,
 }
