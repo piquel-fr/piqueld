@@ -63,7 +63,7 @@ piquelctl app exec notes db -- sh -c 'ls /var/lib/postgresql/data | wc -l'
 When the application has several environments, name one with `--env`:
 
 ```console
-piquelctl app exec notes db --env staging -- psql -U notes
+piquelctl app exec notes db --env staging -- psql -U notes -c 'SELECT version()'
 ```
 
 ### Send input to the command
@@ -72,8 +72,11 @@ piquelctl app exec notes db --env staging -- psql -U notes
 dump to restore:
 
 ```console
-piquelctl app exec notes db -i -- psql -q -U notes notes < notes.sql
+piquelctl app exec notes db -i -- psql -q -X -v ON_ERROR_STOP=1 --single-transaction -U notes notes < notes.sql
 ```
+
+`ON_ERROR_STOP` and `--single-transaction` make `psql` stop at the first
+error and keep nothing of the dump, instead of restoring part of it.
 
 For an interactive program, such as a console or a shell, add `-t` too. It
 gives the command a terminal, so you can type and use Ctrl-C:
@@ -120,8 +123,12 @@ until it ends on its own. So does a command you disconnect from in the
 dashboard. The history then records that the command's stream
 failed, instead of its exit code.
 
-To stop such a command, run another one that stops it, such as `kill` with its
-process ID.
+To stop such a command, stop its process in the replica it runs in, which the
+history names, such as `db.1`. A new command runs in one of the service's
+running replicas, not one you choose. So with several replicas, check with
+`ps` that a new command reached the process before you `kill` it. On the
+host, you can also find that replica's container with `docker ps`, and run
+`kill` in it with `docker exec`.
 
 `--timeout` only limits how long `piquelctl` takes to start the command, not
 how long the command runs.

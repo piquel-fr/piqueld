@@ -130,11 +130,16 @@ runs:
 piquelctl app exec notes db -- pg_dump -U notes notes > notes.sql
 ```
 
-To restore it, send the dump to the database:
+To restore it, send the dump to an empty database:
 
 ```console
-piquelctl app exec notes db -i -- psql -q -U notes notes < notes.sql
+piquelctl app exec notes db -i -- psql -q -X -v ON_ERROR_STOP=1 --single-transaction -U notes notes < notes.sql
 ```
+
+`ON_ERROR_STOP` and `--single-transaction` make `psql` stop at the first
+error and keep nothing of the dump, instead of restoring part of it. The dump
+creates its tables, so restoring it into a database that already has them
+fails.
 
 For other files, archive the directory where the volume is mounted, and
 extract the archive there to restore it. For a service `api` that keeps

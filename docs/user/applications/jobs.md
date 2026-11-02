@@ -137,7 +137,8 @@ new version only ever runs on a migrated database.
    the program itself.
 
 5. Deploy: select **Deploy to production**, or run
-   `piquelctl --timeout 5m app deploy reader`.
+   `piquelctl --timeout 10m app deploy reader`. `--timeout 10m` waits longer
+   than the job may run, five minutes by default, and the rollout after it.
 
 Each deployment now runs the job before the rollout:
 
@@ -175,7 +176,7 @@ path the service mounts something at, fails validation.
   `job set`, once for each:
 
   ```console
-  piquelctl --timeout 5m app job set reader migrate web --env LOG_LEVEL=debug --deploy -- miniflux -migrate
+  piquelctl --timeout 10m app job set reader migrate web --env LOG_LEVEL=debug --deploy -- miniflux -migrate
   ```
 
   They replace the job's own variables and secrets. Without them, `job set`
@@ -228,7 +229,7 @@ With a second job, such as a `seed` job that `reader` doesn't have, run `seed`
 first: select **Move up** next to it on the **Jobs** tab, or run:
 
 ```console
-piquelctl --timeout 5m app job move reader seed 1 --deploy
+piquelctl --timeout 10m app job move reader seed 1 --deploy
 ```
 
 In the manifest, jobs run in the order the manifest lists them.
@@ -272,7 +273,7 @@ service first:
 - **With `piquelctl`,** add `--stop-service on` to `job set`:
 
   ```console
-  piquelctl --timeout 5m app job set reader migrate web --stop-service on --deploy -- miniflux -migrate
+  piquelctl --timeout 10m app job set reader migrate web --stop-service on --deploy -- miniflux -migrate
   ```
 
   `--stop-service off` turns it off again. Without either, `job set` keeps

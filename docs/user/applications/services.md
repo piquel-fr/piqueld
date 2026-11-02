@@ -24,6 +24,11 @@ database, and an nginx web server that starts once the database is ready.
 
 Each has a health check, which tells piqueld when it is ready.
 
+> **Warning:** here, `db` keeps its data in its container. A deployment that
+> changes `db` replaces its container, and the data with it. Before you store
+> anything, give it a volume, as [volumes and files](volumes-and-files.md)
+> shows.
+
 ### In the dashboard or with piquelctl
 
 Create `notes` and add `db` and `web` to it, as in
@@ -40,7 +45,10 @@ select **Save changes** below it.
 With `piquelctl`, `piquelctl app service` has a command for each setting.
 
 To give the database its generated password, declare it and mount it as
-[generating a secret](secrets-and-variables.md#generate-a-secret) shows.
+[generating a secret](secrets-and-variables.md#generate-a-secret) shows. Then
+give `db` the [environment variables](#environment-variables) that PostgreSQL
+reads: `POSTGRES_USER` and `POSTGRES_DB`, both `notes`, and
+`POSTGRES_PASSWORD_FILE`, `/run/secrets/db-password`.
 
 ### From a manifest
 

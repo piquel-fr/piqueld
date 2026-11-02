@@ -18,7 +18,8 @@ agree: one exports the service, the other imports it.
   `apps:write` on its application, and deploying it `apps:deploy`. Importing
   needs no permission on the exporting application: its export is its
   consent. Creating the previews of `notes`, as in [Previews](#previews),
-  needs `previews:deploy` on it.
+  needs `previews:deploy` on it, and checking the connection from `notes`, as
+  in [Check that it works](#check-that-it-works), `apps:exec`.
 
 ## Set it up
 
