@@ -103,9 +103,11 @@ What it does and when to use it, in a sentence or two.
 
 What the reader needs first: permissions, other features, external accounts.
 
-## Set it up
+## <Task>
 
-Numbered steps, through the dashboard, `piquelctl`, and the manifest.
+Numbered steps, through the dashboard, `piquelctl`, and the manifest. Give
+each task its own section, named after what the reader does, such as
+"Deploy every push".
 
 ## Check that it works
 
