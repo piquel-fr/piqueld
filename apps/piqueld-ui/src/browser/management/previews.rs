@@ -8,6 +8,7 @@ use super::super::ui::{
 use super::super::{UserError, confirm};
 use super::environments::{last_synced, sync_badge};
 use super::{EditorContext, editor};
+use crate::deployments::PreviewForm;
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
@@ -15,8 +16,8 @@ use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::sync::short_commit;
 use piqueld_client::{
-    BranchState, Client, CreatePreviewRequest, DeploymentOrigin, DiagnosticView, EnvironmentView,
-    PreviewView, PrunePreviewsRequest, access::AppPermission,
+    BranchState, Client, DeploymentOrigin, DiagnosticView, EnvironmentView, PreviewView,
+    PrunePreviewsRequest, access::AppPermission,
 };
 
 impl EditorContext {
@@ -277,15 +278,11 @@ pub(super) fn PreviewList() -> impl IntoView {
 fn NewPreview() -> impl IntoView {
     let context = editor();
     let opened = RwSignal::new(false);
-    let form = RwSignal::new((String::new(), String::new()));
+    let form = RwSignal::new(PreviewForm::default());
     let navigate = use_navigate();
     let submit = move |event: leptos::ev::SubmitEvent| {
         event.prevent_default();
-        let (branch, slot) = form.get_untracked();
-        let request = CreatePreviewRequest {
-            branch: branch.trim().to_owned(),
-            slot: Some(slot.trim().to_owned()).filter(|slot| !slot.is_empty()),
-        };
+        let request = form.with_untracked(PreviewForm::request);
         let application = context.id();
         let navigate = navigate.clone();
         context.mutate(
@@ -295,7 +292,7 @@ fn NewPreview() -> impl IntoView {
             },
             move |created| {
                 opened.set(false);
-                form.set(Default::default());
+                form.set(PreviewForm::default());
                 let href = context.preview_href(created.preview.id.as_str());
                 navigate(
                     &format!("{href}?tab=deployments"),
@@ -319,15 +316,25 @@ fn NewPreview() -> impl IntoView {
             title="Create preview"
             opened={opened}
             busy={context.busy}
-            on_close={Callback::new(move |()| form.set(Default::default()))}
+            on_close={Callback::new(move |()| form.set(PreviewForm::default()))}
         >
             <form class="stack-sm" on:submit={submit}>
                 <fieldset class="stack-sm" disabled={move || context.blocked()}>
                     <p class="hint">
                         "Deploys the manifest on a branch of the application's repository, with the preview variables and visibility. A slot tells apart several previews of one branch, such as one per agent working on it. A preview of that branch and slot that already exists is opened without redeploying."
                     </p>
-                    {text_input("Branch", form, |v| v.0.clone(), |v, input| v.0 = input)}
-                    {text_input("Slot (optional)", form, |v| v.1.clone(), |v, input| v.1 = input)}
+                    {text_input(
+                        "Branch",
+                        form,
+                        |form| form.branch.clone(),
+                        |form, input| form.branch = input,
+                    )}
+                    {text_input(
+                        "Slot (optional)",
+                        form,
+                        |form| form.slot.clone(),
+                        |form, input| form.slot = input,
+                    )}
                 </fieldset>
                 {move || context.error.get().map(|error| notice(Tone::Bad, error))}
                 <div class="form-actions">

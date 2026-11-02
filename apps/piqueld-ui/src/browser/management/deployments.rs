@@ -11,16 +11,16 @@ use super::super::{
 };
 use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
+use crate::deployments::{Attempts, DeploymentList, Promotion};
 use crate::editor::Choice;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    ApplyApplicationRequest, Build, Client, DeploymentOrigin, DeploymentView, EnvironmentId,
-    EnvironmentView, HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView,
-    PromoteRequest, ReleaseAvailability, RuntimeCoverage, SecretProblem, Service, Source, Template,
-    ValidatedRollout, access::AppPermission,
+    ApplyApplicationRequest, Build, Client, DeploymentView, EnvironmentId, EnvironmentView,
+    HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView, RuntimeCoverage,
+    SecretProblem, Service, Source, Template, ValidatedRollout, access::AppPermission,
 };
 use std::fmt::Display;
 
@@ -531,18 +531,11 @@ pub(super) fn PromoteAction(
 ) -> impl IntoView {
     let context = editor();
     let environment = StoredValue::new(environment);
-    let selection = StoredValue::new(PromoteRequest {
-        release,
-        ..PromoteRequest::default()
-    });
+    let promotion = StoredValue::new(Promotion::new(release));
     let plan = RwSignal::new(None::<PlanView>);
     let opened = RwSignal::new(false);
     let navigate = use_navigate();
-    let verb = if selection.with_value(|selection| selection.release.is_some()) {
-        "Deploy"
-    } else {
-        "Promote"
-    };
+    let verb = promotion.with_value(Promotion::verb);
     // A promotion names its source; deploying a release names its target.
     let label = move || {
         let target = environment.get_value();
@@ -566,9 +559,12 @@ pub(super) fn PromoteAction(
     let inspect = move |_| {
         context.busy.set(true);
         context.set_error(None);
-        let (target, selection) = (environment.get_value(), selection.get_value());
+        let (target, request) = (
+            environment.get_value(),
+            promotion.with_value(Promotion::request),
+        );
         spawn_local(async move {
-            match Client::browser().plan_promotion(&target, &selection).await {
+            match Client::browser().plan_promotion(&target, &request).await {
                 Ok(view) => {
                     plan.set(Some(view));
                     opened.set(true);
@@ -578,27 +574,9 @@ pub(super) fn PromoteAction(
             context.busy.set(false);
         });
     };
-    // The selection pinned to the reviewed source deployment and application
-    // revision, if the plan can be promoted.
+    // The request promoting exactly what was reviewed, if it can be promoted.
     let promotable = move || {
-        plan.with(|plan| {
-            let plan = plan.as_ref()?;
-            let release = plan.release.as_ref()?;
-            if !release.secrets.is_empty()
-                || matches!(
-                    release.release.availability,
-                    Some(ReleaseAvailability::Unavailable { .. })
-                )
-            {
-                return None;
-            }
-            let mut request = selection.get_value();
-            if let DeploymentOrigin::Promotion { deployment, .. } = &release.origin {
-                request.deployment = Some(deployment.clone());
-            }
-            request.expected_generation = Some(plan.generation);
-            Some(request)
-        })
+        plan.with(|plan| promotion.with_value(|promotion| promotion.confirmed(plan.as_ref()?)))
     };
     let confirm = move |_| {
         let Some(request) = promotable() else {
@@ -912,34 +890,12 @@ impl History {
     }
 
     /// Applies a freshly polled first page. Before any older page is loaded,
-    /// the page simply replaces the list and cursor. Afterwards it is merged
-    /// by operation ID (keeping the older pages), and the `current_target` and
-    /// `last_successful` flags are cleared on existing entries when the new page
-    /// carries them, so only one deployment holds each flag.
+    /// the page simply replaces the list and cursor; afterwards it is merged
+    /// into the older pages (see `DeploymentList::merge_newest`).
     fn merge(self, page: Page<DeploymentView>) {
         self.items.update(|items| {
             if self.paginated.get_untracked() {
-                let has_current = page.items.iter().any(|item| item.current_target);
-                let has_successful = page.items.iter().any(|item| item.last_successful);
-                for item in items.iter_mut() {
-                    if has_current {
-                        item.current_target = false;
-                    }
-                    if has_successful {
-                        item.last_successful = false;
-                    }
-                }
-                for item in page.items {
-                    if let Some(old) = items
-                        .iter_mut()
-                        .find(|v| v.operation.id == item.operation.id)
-                    {
-                        *old = item;
-                    } else {
-                        items.insert(0, item);
-                    }
-                }
-                items.sort_by(|a, b| b.operation.id.cmp(&a.operation.id));
+                items.merge_newest(page.items);
             } else {
                 *items = page.items;
                 self.cursor.set(page.next_cursor);
@@ -989,16 +945,7 @@ impl History {
                     self.error.set(None);
                     self.paginated.set(true);
                     self.cursor.set(page.next_cursor);
-                    self.items.update(|items| {
-                        for item in page.items {
-                            if !items
-                                .iter()
-                                .any(|old| old.operation.id == item.operation.id)
-                            {
-                                items.push(item);
-                            }
-                        }
-                    });
+                    self.items.update(|items| items.append_older(page.items));
                 }
                 Err(e) => self.error.set(Some(e.user_message())),
             }
@@ -1368,8 +1315,7 @@ fn DeploymentSnapshot(deployment: Signal<DeploymentView>) -> impl IntoView {
 #[component]
 fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     let op = deployment.get_untracked().operation;
-    let attempts = RwSignal::new(Vec::<piqueld_client::Operation>::new());
-    let cursor = RwSignal::new(None::<String>);
+    let attempts = RwSignal::new(Attempts::default());
     let failure = RwSignal::new(None::<String>);
     let loading = RwSignal::new(false);
     let active = Alive::new();
@@ -1391,12 +1337,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
             match result {
                 Ok(page) => {
                     failure.set(None);
-                    if next.is_none() {
-                        attempts.set(page.items);
-                    } else {
-                        attempts.update(|items| items.extend(page.items));
-                    }
-                    cursor.set(page.next_cursor);
+                    attempts.update(|attempts| attempts.show(page, next.is_some()));
                 }
                 Err(error) => failure.set(Some(error.user_message())),
             }
@@ -1404,14 +1345,9 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
         });
     });
     load.run(None);
-    // The API retains completed outcomes; include the live attempt while it is running.
     let visible_attempts = Signal::derive(move || {
-        let mut items = attempts.get();
-        let current = deployment.get().operation;
-        if current.attempt > 0 && !items.iter().any(|item| item.attempt == current.attempt) {
-            items.insert(0, current);
-        }
-        items
+        let live = deployment.get().operation;
+        attempts.with(|attempts| attempts.visible(&live))
     });
 
     view! {
@@ -1458,12 +1394,14 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
                     {icon(Icon::Refresh)}
                     "Refresh attempts"
                 </button>
-                <Show when={move || cursor.get().is_some()}>
+                <Show when={move || attempts.with(|attempts| attempts.cursor.is_some())}>
                     <button
                         type="button"
                         class="btn btn-sm"
                         disabled={move || loading.get()}
-                        on:click={move |_| load.run(cursor.get_untracked())}
+                        on:click={move |_| {
+                            load.run(attempts.with_untracked(|attempts| attempts.cursor.clone()));
+                        }}
                     >
                         "Older attempts"
                     </button>
