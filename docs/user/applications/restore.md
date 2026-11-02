@@ -145,11 +145,13 @@ The dashboard and `piquelctl` save the setting in the application's manifest.
 piqueld reads it from the manifest the environment deploys, though, so when a
 change applies depends on where the environment gets its manifest:
 
-- An environment that deploys the application's manifest uses it at once. In
-  an application that [reads its manifest from a
-  repository](deploy-on-push.md#edit-a-repository-backed-application), a
-  push that changes the manifest file replaces the setting: set it in the
-  file too.
+- In an application without a manifest repository, an environment uses it
+  at once.
+- In an application that [reads its manifest from a
+  repository](deploy-on-push.md#edit-a-repository-backed-application), an
+  environment that follows the repository's branch uses it from its next
+  deployment. A push that changes the manifest file replaces the setting, so
+  set it in the file too.
 - An environment that follows another branch reads the manifest file on that
   branch. Set `rollback` there, then deploy the environment.
 - A promoted environment reads the release it receives. A change applies once
@@ -214,8 +216,8 @@ It runs the release of the deployment it restored.
   again, or deploy instead.
 - **A failed rollout wasn't rolled back.** Previews and manual environments
   aren't rolled back. The **Rollback** card shows the saved setting, but an
-  environment that follows another branch, or a promoted one, uses the
-  setting of the manifest it deployed, as
+  environment of an application that reads its manifest from a repository,
+  or a promoted one, uses the setting of the manifest it last deployed, as
   [rolling back automatically](#roll-back-failed-rollouts-automatically)
   describes. When piqueld can't roll back,
   because no earlier deployment succeeded or its images or secret versions
