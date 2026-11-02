@@ -233,30 +233,27 @@ mod tests {
         ]);
         assert_eq!(ids(&list), ["operation-2", "operation-1", "operation-0"]);
 
-        // A newer deployment became the current target, but hasn't succeeded yet.
-        list.merge_newest(vec![
-            deployment("operation-3", true, false),
-            deployment("operation-2", false, true),
-        ]);
-        assert_eq!(
-            ids(&list),
-            ["operation-3", "operation-2", "operation-1", "operation-0"]
-        );
         let flags = |list: &[DeploymentView]| {
             list.iter()
                 .map(|item| (item.current_target, item.last_successful))
                 .collect::<Vec<_>>()
         };
+        // A newer deployment became the current target, but hasn't succeeded
+        // yet: deployment 2, off the polled page, stays the last successful.
+        list.merge_newest(vec![deployment("operation-3", true, false)]);
+        assert_eq!(
+            ids(&list),
+            ["operation-3", "operation-2", "operation-1", "operation-0"]
+        );
         assert_eq!(
             flags(&list),
             [(true, false), (false, true), (false, false), (false, false)]
         );
-
-        // A page that carries neither flag leaves them where they are.
-        list.merge_newest(vec![deployment("operation-4", false, false)]);
+        // Then a newer one succeeded without becoming the current target.
+        list.merge_newest(vec![deployment("operation-4", false, true)]);
         assert_eq!(
             flags(&list)[..3],
-            [(false, false), (true, false), (false, true)]
+            [(false, true), (true, false), (false, false)]
         );
     }
 

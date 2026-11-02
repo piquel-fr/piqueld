@@ -47,11 +47,12 @@ test('older deployments load once, and stay listed as the newest page is polled'
   await expect(older).toBeHidden();
 
   // A newer deployment becomes the current target: polling adds it and
-  // keeps the older page, with one current target.
-  newest = [numbered(4, true), numbered(3)];
+  // keeps the older pages, which stay exhausted, and moves the flag off #3.
+  newest = [numbered(4, true)];
   await expect(titles).toHaveText(['Deployment #4', 'Deployment #3', 'Deployment #2', 'Deployment #1']);
   await expect(history.getByText('Current target', { exact: true })).toHaveCount(1);
   await expect(history.locator('.expander', { hasText: 'Deployment #4' })).toContainText('Current target');
+  await expect(older).toBeHidden();
 });
 
 test('a linked deployment opens with its attempts, the running one first, and older ones on request', async ({ page, account }) => {
