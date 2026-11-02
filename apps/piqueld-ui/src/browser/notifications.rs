@@ -6,15 +6,15 @@ use super::ui::{
     text_field, when,
 };
 use super::{ClientErrorExt, UserError, access::can, confirm, dashboard_context};
+use crate::overview::{DestinationDraft, Receives};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use piqueld_client::{
     ApplicationId, Client, ClientError, DEFAULT_PAGE_SIZE,
     access::{GlobalPermission, Permission},
     observability::{
-        ApplicationSelection, CategoryRule, DeliveryState, DestinationKind, DestinationRequest,
-        DestinationSettings, NotificationCategory, NotificationDelivery, NotificationDestination,
-        NotificationMessage,
+        DeliveryState, DestinationKind, NotificationCategory, NotificationDelivery,
+        NotificationDestination,
     },
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -87,6 +87,7 @@ impl Outcome {
 #[component]
 fn Destinations(refresh: Refresh) -> impl IntoView {
     let manage = can(Permission::Global(GlobalPermission::NotificationsManage));
+    let applications = dashboard_context().signals.applications;
     let outcome = Outcome {
         busy: RwSignal::new(false),
         message: RwSignal::new(None),
@@ -102,11 +103,15 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
                 .user_error()
         }
     });
+    // Why the draft can't be saved, shown in the dialog: the modal hides
+    // the page's notices behind it.
+    let invalid = RwSignal::new(None::<String>);
     let edit = move |destination: Option<NotificationDestination>| {
         form.load(destination.as_ref());
+        invalid.set(None);
         opened.set(true);
     };
-    let save = move || match form.request() {
+    let save = move || match form.draft().request() {
         Ok((name, request)) => {
             opened.set(false);
             outcome.run(
@@ -119,7 +124,7 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
                 refresh,
             );
         }
-        Err(message) => outcome.message.set(Some((Tone::Bad, message))),
+        Err(message) => invalid.set(Some(message)),
     };
     let row = move |destination: NotificationDestination| {
         let name = destination.name.to_string();
@@ -131,7 +136,16 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
                     <strong>{name.clone()}</strong>
                 </td>
                 <td>{settings.kind.to_string()}</td>
-                <td>{receives(&settings)}</td>
+                <td>
+                    {applications
+                        .with_untracked(|applications| {
+                            Receives {
+                                settings: &settings,
+                                applications,
+                            }
+                                .to_string()
+                        })}
+                </td>
                 <td>
                     {if settings.enabled {
                         badge(Tone::Ok, "enabled")
@@ -266,6 +280,7 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
             </div>
             <Modal title="Notification destination" opened={opened} wide=true>
                 {form.view()}
+                {move || invalid.get().map(|message| notice(Tone::Bad, message))}
                 <div class="form-actions">
                     <button
                         type="button"
@@ -281,149 +296,51 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
     }
 }
 
-/// What a destination receives, in a few words: `5 categories · shop, notes · previews`.
-fn receives(settings: &DestinationSettings) -> String {
-    let applications = match &settings.applications {
-        ApplicationSelection::All => "every application".to_owned(),
-        ApplicationSelection::Only(ids) => {
-            let names = dashboard_context()
-                .signals
-                .applications
-                .with_untracked(|rows| {
-                    ids.iter()
-                        .map(|id| {
-                            rows.iter()
-                                .find(|row| &row.application.id == id)
-                                .map_or_else(|| id.to_string(), |row| row.application.name.clone())
-                        })
-                        .collect::<Vec<_>>()
-                });
-            if names.is_empty() {
-                "no application".to_owned()
-            } else {
-                names.join(", ")
+/// Declares `DestinationForm`, one signal per `DestinationDraft` field for
+/// the dialog's inputs to bind to, and its conversions from and to the draft.
+macro_rules! destination_form {
+    ($($field:ident: $type:ty),* $(,)?) => {
+        /// The fields of the `DestinationDraft` the dialog edits.
+        #[derive(Clone, Copy)]
+        struct DestinationForm {
+            $($field: RwSignal<$type>,)*
+        }
+
+        impl DestinationForm {
+            /// The form of a new destination.
+            fn new() -> Self {
+                let draft = DestinationDraft::new(None);
+                Self { $($field: RwSignal::new(draft.$field),)* }
+            }
+
+            /// Shows `destination`, or a new Discord destination's defaults.
+            fn load(self, destination: Option<&NotificationDestination>) {
+                let draft = DestinationDraft::new(destination);
+                $(self.$field.set(draft.$field);)*
+            }
+
+            /// The draft as currently edited.
+            fn draft(self) -> DestinationDraft {
+                DestinationDraft { $($field: self.$field.get_untracked(),)* }
             }
         }
     };
-    let previews = if settings.previews {
-        " · previews"
-    } else {
-        ""
-    };
-    format!(
-        "{} categories · {applications}{previews}",
-        settings.categories.len()
-    )
 }
 
-/// The destination the dialog edits. Messages are kept for unchecked
-/// categories too, so unchecking one by mistake loses nothing.
-#[derive(Clone, Copy)]
-struct DestinationForm {
-    name: RwSignal<String>,
-    /// Whether it edits an existing destination, whose name is fixed.
-    existing: RwSignal<bool>,
-    kind: RwSignal<DestinationKind>,
-    /// A new URL; empty keeps an existing destination's.
-    url: RwSignal<String>,
-    enabled: RwSignal<bool>,
-    categories: RwSignal<BTreeSet<NotificationCategory>>,
-    messages: RwSignal<BTreeMap<NotificationCategory, String>>,
-    all_applications: RwSignal<bool>,
-    applications: RwSignal<BTreeSet<ApplicationId>>,
-    previews: RwSignal<bool>,
+destination_form! {
+    name: String,
+    existing: bool,
+    kind: DestinationKind,
+    url: String,
+    enabled: bool,
+    categories: BTreeSet<NotificationCategory>,
+    messages: BTreeMap<NotificationCategory, String>,
+    all_applications: bool,
+    applications: BTreeSet<ApplicationId>,
+    previews: bool,
 }
 
 impl DestinationForm {
-    fn new() -> Self {
-        Self {
-            name: RwSignal::new(String::new()),
-            existing: RwSignal::new(false),
-            kind: RwSignal::new(DestinationKind::Discord),
-            url: RwSignal::new(String::new()),
-            enabled: RwSignal::new(true),
-            categories: RwSignal::new(BTreeSet::new()),
-            messages: RwSignal::new(BTreeMap::new()),
-            all_applications: RwSignal::new(true),
-            applications: RwSignal::new(BTreeSet::new()),
-            previews: RwSignal::new(false),
-        }
-    }
-
-    /// Shows `destination`, or a new Discord destination's defaults.
-    fn load(self, destination: Option<&NotificationDestination>) {
-        let settings = destination.map_or_else(
-            || DestinationSettings::new(DestinationKind::Discord),
-            |destination| destination.settings.clone(),
-        );
-        self.name
-            .set(destination.map_or_else(String::new, |d| d.name.to_string()));
-        self.existing.set(destination.is_some());
-        self.kind.set(settings.kind);
-        self.url.set(String::new());
-        self.enabled.set(settings.enabled);
-        self.categories
-            .set(settings.categories.keys().copied().collect());
-        self.messages.set(
-            settings
-                .categories
-                .iter()
-                .filter_map(|(category, rule)| {
-                    Some((*category, rule.message.as_ref()?.to_string()))
-                })
-                .collect(),
-        );
-        match settings.applications {
-            ApplicationSelection::All => {
-                self.all_applications.set(true);
-                self.applications.set(BTreeSet::new());
-            }
-            ApplicationSelection::Only(ids) => {
-                self.all_applications.set(false);
-                self.applications.set(ids);
-            }
-        }
-        self.previews.set(settings.previews);
-    }
-
-    /// The destination's name and the request saving it, or why it can't be saved.
-    fn request(self) -> Result<(String, DestinationRequest), String> {
-        let messages = self.messages.get_untracked();
-        let categories = self
-            .categories
-            .get_untracked()
-            .into_iter()
-            .map(|category| {
-                let message = messages
-                    .get(&category)
-                    .map(|message| message.trim())
-                    .filter(|message| !message.is_empty())
-                    .map(NotificationMessage::parse)
-                    .transpose()
-                    .map_err(|error| format!("{}: {error}", category.label()))?;
-                Ok((category, CategoryRule { message }))
-            })
-            .collect::<Result<_, String>>()?;
-        let url = self.url.get_untracked().trim().to_owned();
-        Ok((
-            self.name.get_untracked().trim().to_owned(),
-            DestinationRequest {
-                settings: DestinationSettings {
-                    kind: self.kind.get_untracked(),
-                    enabled: self.enabled.get_untracked(),
-                    categories,
-                    applications: if self.all_applications.get_untracked() {
-                        ApplicationSelection::All
-                    } else {
-                        ApplicationSelection::Only(self.applications.get_untracked())
-                    },
-                    previews: self.previews.get_untracked(),
-                },
-                url: (!url.is_empty()).then_some(url),
-            },
-        ))
-    }
-
     fn view(self) -> impl IntoView {
         let applications = dashboard_context().signals.applications;
         let category = move |category: NotificationCategory| {

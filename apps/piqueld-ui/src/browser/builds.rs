@@ -7,6 +7,7 @@ use super::ui::{
 };
 use super::{Alive, ClientErrorExt, dashboard_context, live_row, operation_events};
 use crate::log_output::LogLine;
+use crate::overview::{BuildList, build_arguments};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -37,7 +38,6 @@ pub(super) fn BuildsPage() -> impl IntoView {
 /// and its events link `events:read`; without it, the daemon refuses what the
 /// caller may not read.
 #[component]
-#[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn BuildHistory(
     #[prop(optional, into)] application: Option<String>,
     #[prop(optional, into)] environment: Option<String>,
@@ -72,18 +72,7 @@ pub(super) fn BuildHistory(
                 match result {
                     Ok(page) => {
                         if paginated.get_untracked() {
-                            records.update(|items| {
-                                for build in page.items {
-                                    if let Some(existing) =
-                                        items.iter_mut().find(|b| b.id == build.id)
-                                    {
-                                        *existing = build;
-                                    } else {
-                                        items.push(build);
-                                    }
-                                }
-                                items.sort_by_key(|b| std::cmp::Reverse(b.id));
-                            });
+                            records.update(|items| items.merge_newest(page.items));
                         } else {
                             records.set(page.items);
                             cursor.set(page.next_cursor);
@@ -475,15 +464,4 @@ fn source_details(source: Source) -> AnyView {
         }
         .into_any(),
     }
-}
-
-/// Renders Docker build arguments as space-separated `KEY="VALUE"` pairs.
-/// Values are quoted and escaped so spaces cannot read as extra arguments.
-pub(in crate::browser) fn build_arguments<V: std::fmt::Display>(
-    args: &std::collections::BTreeMap<String, V>,
-) -> String {
-    args.iter()
-        .map(|(key, value)| format!("{key}={:?}", value.to_string()))
-        .collect::<Vec<_>>()
-        .join(" ")
 }

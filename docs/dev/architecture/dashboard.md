@@ -32,8 +32,8 @@ presentation primitives (`browser/ui.rs` for icons, badges, notices, dialogs,
 and tabs; `browser/format.rs` for relative times, durations, and sizes).
 Logic that needs no browser, such as form drafts and the changes they save,
 lives in crate-root modules (`application`, `deployments`, `editor`,
-`environments`, `secrets`, `state`, `terminal`, and others) that compile
-natively, so their unit tests run with `cargo nextest`.
+`environments`, `overview`, `secrets`, `state`, `terminal`, and others) that
+compile natively, so their unit tests run with `cargo nextest`.
 Styles are plain CSS: a base reset adapted from Tailwind's preflight, theme
 tokens, shell layout, and component rules, in `apps/piqueld-ui/styles/`. To
 format view macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it

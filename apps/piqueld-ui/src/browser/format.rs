@@ -1,5 +1,5 @@
 //! Human-readable time formatting for browser views.
-
+use crate::overview::Age;
 use leptos::wasm_bindgen::JsValue;
 
 /// The current time in Unix milliseconds.
@@ -18,33 +18,13 @@ pub(super) fn timestamp(milliseconds: i64) -> String {
         .into()
 }
 
-/// Compact age such as "4 min ago" or "in 3 d"; older than a week shows the date.
+/// Compact age such as "4 min ago" or "in 3 d"; from a week on, the date.
 pub(super) fn relative(milliseconds: i64) -> String {
-    let delta = now_ms() - milliseconds;
-    let future = delta < 0;
-    let seconds = delta.unsigned_abs() / 1000;
-    let text = match seconds {
-        0..=44 => {
-            return if future {
-                "in a moment".into()
-            } else {
-                "just now".into()
-            };
-        }
-        45..=3_569 => format!("{} min", (seconds + 30) / 60),
-        3_570..=86_399 => format!("{} h", (seconds / 3_600).max(1)),
-        86_400..=604_799 => format!("{} d", seconds / 86_400),
-        _ => {
-            return date(milliseconds)
-                .to_locale_date_string("default", &JsValue::UNDEFINED)
-                .into();
-        }
-    };
-    if future {
-        format!("in {text}")
-    } else {
-        format!("{text} ago")
-    }
+    Age::at(milliseconds, now_ms()).label().unwrap_or_else(|| {
+        date(milliseconds)
+            .to_locale_date_string("default", &JsValue::UNDEFINED)
+            .into()
+    })
 }
 
 #[expect(
