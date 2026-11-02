@@ -98,8 +98,8 @@ tests `just test` doesn't run:
 editor and terminal. Its browser code compiles only for wasm32, which
 cargo-llvm-cov can't instrument, so the report doesn't list it.
 
-The totals leave out each crate's `tests/` directory, but count test code
-under `src/`: `#[cfg(test)]` modules and test-only files such as
+The totals leave out every directory named `tests`, `examples` or `benches`,
+but count other test code: `#[cfg(test)]` modules and test-only files such as
 `piqueld-core/src/manifest/template_tests/`. That code always runs, so it
 raises a crate's percentage. Stable Rust can't exclude it, so look at the
 lines the HTML report marks as not run rather than at the percentages alone.

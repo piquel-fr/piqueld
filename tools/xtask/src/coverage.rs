@@ -31,7 +31,7 @@ pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
         ])
         .args(args)
         .status()
-        .context("run cargo llvm-cov; `nix develop` provides it")?;
+        .context("run cargo llvm-cov")?;
     if !status.success() {
         return Ok(exit_code(status));
     }
