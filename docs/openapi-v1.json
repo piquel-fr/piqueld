@@ -2881,6 +2881,11 @@
           "verification_uri": {
             "description": "Canonical browser login page.",
             "type": "string"
+          },
+          "verification_uri_complete": {
+            "description": "Login page with `user_code` already filled in, so the user only has to\nopen it. Daemons older than this field omit it.",
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [

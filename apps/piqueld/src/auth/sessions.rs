@@ -399,10 +399,12 @@ impl Auth {
                 issuing: false,
             },
         );
+        let verification_uri = format!("{}/dashboard/auth#device", self.origin());
         Ok(DeviceStart {
             device_code,
+            verification_uri_complete: Some(format!("{verification_uri}={user_code}")),
+            verification_uri,
             user_code,
-            verification_uri: format!("{}/dashboard/auth#device", self.origin()),
             expires_in: 600,
             interval: 5,
             requester: requester.map(|address| address.to_string()),

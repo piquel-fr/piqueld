@@ -509,8 +509,8 @@ pub(super) fn AuthPage() -> impl IntoView {
 
 /// Authentication page body. Chooses between host operator sign-in,
 /// invitation registration, passkey enrollment, first-run setup instructions,
-/// passkey sign-in, CLI device approval (`#device` fragment) and a signed-in
-/// landing view.
+/// passkey sign-in, CLI device approval (`#device` fragment, or `#device=CODE`
+/// with the CLI's code filled in) and a signed-in landing view.
 #[component]
 fn SignIn(
     initialized: bool,
@@ -518,9 +518,14 @@ fn SignIn(
     invitation: Option<Invite>,
 ) -> impl IntoView {
     let feedback = Feedback::new();
+    // `Some` on the CLI approval page, holding the code from the link, if any.
+    // It stays in the address bar so it survives the reload after sign-in.
     let device = web_sys::window()
         .and_then(|w| w.location().hash().ok())
-        .is_some_and(|fragment| fragment == "#device");
+        .and_then(|fragment| match fragment.strip_prefix("#device")? {
+            "" => Some(String::new()),
+            code => code.strip_prefix('=').map(str::to_owned),
+        });
     let operator = current
         .as_ref()
         .is_some_and(|session| session.principal.user().is_none());
@@ -530,7 +535,7 @@ fn SignIn(
         (Some(Invite::Account(secret)), _) => registration(feedback, secret),
         (None, _) if !initialized => setup(),
         (None, None) => passkey_sign_in(feedback),
-        (None, Some(_)) if device && operator => view! {
+        (None, Some(_)) if device.is_some() && operator => view! {
             <h2>"Connect piquelctl"</h2>
             {notice(
                 Tone::Warn,
@@ -543,8 +548,8 @@ fn SignIn(
         .into_any(),
         (None, Some(session)) => {
             let who = session.principal.name().to_owned();
-            if device {
-                view! { <DeviceApproval who={who} /> }.into_any()
+            if let Some(code) = device {
+                view! { <DeviceApproval who={who} code={code} /> }.into_any()
             } else {
                 view! {
                     <h2>{format!("Signed in as {who}")}</h2>
@@ -738,12 +743,15 @@ fn passkey_sign_in(feedback: Feedback) -> AnyView {
 }
 
 /// Two-step CLI approval: the approver first sees where the request came from.
+/// A `code` from the CLI's link is reviewed straight away, leaving only the
+/// approval to the user.
 #[component]
-fn DeviceApproval(who: String) -> impl IntoView {
+fn DeviceApproval(who: String, code: String) -> impl IntoView {
     let feedback = Feedback::new();
-    let code = RwSignal::new(String::new());
+    let prefilled = !code.is_empty();
+    let code = RwSignal::new(code);
     let request = RwSignal::new(None::<DeviceRequest>);
-    let review = move |_| {
+    let review = move || {
         feedback.run(async move {
             let found = Client::browser()
                 .auth_device_inspect(&code.get_untracked())
@@ -753,6 +761,9 @@ fn DeviceApproval(who: String) -> impl IntoView {
             Ok(Shown::default())
         });
     };
+    if prefilled {
+        review();
+    }
     let approve = move |_| {
         let Some(pending) = request.get_untracked() else {
             return;
@@ -774,7 +785,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
         <h2>"Connect piquelctl"</h2>
         <p class="hint">
             "Signed in as " <strong>{who}</strong>
-            ". Enter the code shown by the CLI you are connecting."
+            ". Check or enter the code shown by the CLI you are connecting."
         </p>
         {notice(
             Tone::Warn,
@@ -782,7 +793,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                 <strong>
                     "Only approve a code shown in a terminal you started yourself in the last ten minutes."
                 </strong>
-                "Approval lets that terminal act as your account with the access shown below. Never enter a code someone else sent you."
+                "Approval lets that terminal act as your account with the access shown below. Never approve a code or link someone else sent you."
             },
         )}
         {feedback.view()}
@@ -804,7 +815,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                             </label>
                         </div>
                         <div class="form-actions">
-                            <button type="button" class="btn btn-primary" on:click={review}>
+                            <button type="button" class="btn btn-primary" on:click={move |_| review()}>
                                 "Review request"
                             </button>
                         </div>
@@ -832,7 +843,7 @@ fn DeviceApproval(who: String) -> impl IntoView {
                             </dd>
                         </dl>
                         <p class="hint" style="margin-top:12px">
-                            "piquelctl printed the address it connected from. Approve only if it matches this request."
+                            "piquelctl printed this code and the address it connected from. Approve only if both match this request."
                         </p>
                         <div class="form-actions">
                             <button type="button" class="btn btn-primary" on:click={approve}>

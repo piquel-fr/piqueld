@@ -191,10 +191,11 @@ test('a transferable invitation can be redeemed successfully only once under a r
 test('CLI device approval, private credentials, API tokens, revocation and expired logout', async ({ page, account, cli }) => {
   const login = cli.start(['login']);
   try {
-    const code = await login.waitForOutput(/Enter code: ([A-Z2-9-]+)/, 'stderr');
-    await page.goto('/dashboard/auth#device');
-    await page.getByLabel('CLI code', { exact: true }).fill(code);
-    await page.getByRole('button', { name: 'Review request', exact: true }).click();
+    // The printed link carries the code, so opening it goes straight to the review.
+    const link = await login.waitForOutput(/Open (\S+)/, 'stderr');
+    const code = await login.waitForOutput(/Check the page shows code: ([A-Z2-9-]+)/, 'stderr');
+    expect(link).toMatch(new RegExp(`/dashboard/auth#device=${code}$`));
+    await page.goto(link);
     await expect(page.locator('.device-request')).toContainText(code);
     await expect(page.locator('.device-request')).toContainText("the daemon's local Unix socket");
     await page.getByRole('button', { name: 'Approve CLI login', exact: true }).click();

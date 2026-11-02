@@ -72,11 +72,11 @@ use `http://localhost:7845`. To keep the address for good, save it as a
    from: your machine's network address, or the daemon's local Unix socket on
    the host.
 
-2. Open the link, sign in, enter the code under **CLI code**, and select
-   **Review request**.
+2. Open the link and sign in. The link carries the code, so the page shows
+   the login request straight away.
 
-3. Check that **Requested from** matches what your terminal printed, then
-   select **Approve CLI login**.
+3. Check that the code and **Requested from** match what your terminal
+   printed, then select **Approve CLI login**.
 
 Check who you're signed in as:
 

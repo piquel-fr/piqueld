@@ -363,7 +363,8 @@ fn operator_link(console: &mut Console, link: &OperatorLink, warning: &str) -> R
 }
 /// Runs the browser device-code login:
 /// 1. Refuses when the daemon has no first account yet (that needs the setup link).
-/// 2. Starts a device login and prints the verification URL, code, and requester address.
+/// 2. Starts a device login and prints the verification URL (with the code filled in
+///    when the daemon supports it), the code, and the requester address.
 /// 3. Polls at the daemon's interval (backing off on `slow_down`) until complete.
 /// 4. Saves the token as the endpoint's selected account and emits it.
 ///
@@ -392,9 +393,14 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
             "the daemon ignored the requested access; it predates limited logins",
         ));
     }
+    // A link with the code filled in only needs the code checked, not typed.
+    let (link, code) = match &start.verification_uri_complete {
+        Some(link) => (link, "Check the page shows code"),
+        None => (&start.verification_uri, "Enter code"),
+    };
     console.prompt_lines(&[
-        format!("Open {}", start.verification_uri),
-        format!("Enter code: {}", start.user_code),
+        format!("Open {link}"),
+        format!("{code}: {}", start.user_code),
         // The approval page shows the same address, so the approver can match them.
         format!(
             "The daemon sees this login coming from: {}",
