@@ -12,16 +12,16 @@ when changing behavior. To see which code they run, use
 | Read-only service files and repository file capture | `piqueld-core/tests/service_files.rs` |
 | Git source validation and immutable resolution | `piqueld-core/tests/git_sources.rs` |
 | Ownership, drift fields, cleanup gating, volume retention | `piqueld-core/tests/resource_planning.rs` |
-| Links: validation, resolution, network projection, revocation | `piqueld-core/src/links.rs` unit tests, `tests/manifests.rs`, `tests/resource_planning.rs`, `piqueld/tests/fake_docker.rs`, and `docker_integration.rs` |
-| Operation transitions and failure classification | Core lifecycle tests and `piqueld/tests/fake_docker.rs` |
-| HTTP lifecycle, preconditions, force, receipts, pagination | `piqueld/tests/api_contract.rs` |
+| Links: validation, resolution, network projection, revocation | `piqueld-core/src/links.rs` unit tests, `tests/manifests.rs`, `tests/resource_planning.rs`, `piqueld/tests/fake_docker/environments.rs`, and `docker_integration.rs` |
+| Operation transitions and failure classification | Core lifecycle tests and `piqueld/tests/fake_docker/`, by area: `controller.rs`, `rollouts.rs`, `jobs.rs` and others |
+| HTTP lifecycle, preconditions, force, receipts, pagination | `piqueld/tests/api_contract/`, mainly `acceptance.rs`, `applications.rs` and `transport.rs` |
 | Persistence, restart recovery, transaction rollback | `piqueld/tests/persistence.rs` and `sqlx_stack.rs` |
 | Transport errors, cancellation, redirects, decoding | `piqueld-client/tests/transports.rs`, `generated_contract.rs`, and browser transport tests |
 | Data and runtime directory privacy, daemon exclusivity | `piqueld/tests/data_dir.rs`, `runtime_dir.rs`, and `daemon_exclusivity.rs` |
 | CLI commands, output, exit codes, connection profiles | `piquelctl/tests/cli.rs` and `profiles.rs` |
 | Docker policy and complete observations | Docker adapter unit tests |
 | Real Swarm health, drift repair, deletion, builds | `piqueld/tests/docker_integration.rs` through `just docker-test` |
-| The fake Docker engine behaving like the real one | `piqueld/tests/support/docker_contract.rs`, run by `fake_docker.rs` and `docker_integration.rs` |
+| The fake Docker engine behaving like the real one | `piqueld/tests/support/docker_contract.rs`, run by `fake_docker/main.rs` and `docker_integration.rs` |
 | Dashboard and passkey flows in a real browser | `tests/playwright` through `just test-playwright` |
 
 The additional audit cases check complete cleanup plans against reordered Engine
