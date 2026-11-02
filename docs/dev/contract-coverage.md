@@ -2,7 +2,8 @@
 
 The maintenance audit found substantial existing coverage. The following suites
 are the starting point for changes to each contract; add focused cases there
-when changing behavior.
+when changing behavior. To see which code they run, use
+[`just coverage`](validation.md#test-coverage).
 
 | Contract | Existing coverage |
 | --- | --- |

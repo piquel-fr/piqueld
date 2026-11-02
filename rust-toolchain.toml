@@ -1,7 +1,8 @@
 [toolchain]
 # Pinned, so rustup, CI, and the Nix packages build with the same Rust.
 channel = "stable"
-components = [ "rustfmt", "clippy" ]
+# llvm-tools: the llvm-cov and llvm-profdata `just coverage` reads profiles with.
+components = [ "rustfmt", "clippy", "llvm-tools" ]
 targets = [
     "wasm32-unknown-unknown",
     # The static health probe the daemon embeds.

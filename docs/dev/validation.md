@@ -37,7 +37,9 @@ skips `check` and `build`: the stronger all-target Clippy and the Nix package
 build cover them. `fmt` and `generate` are editing commands whose results are
 checked above, and `setup-playwright` installs the browser test dependencies.
 `run`, `ctl`, `daemon`, `daemon-embedded`, `dev`, and `docs-serve` launch
-interactive processes and are not finite validation commands.
+interactive processes and are not finite validation commands. `coverage`
+measures the tests without checking a minimum; see
+[test coverage](#test-coverage).
 
 ## Docker test suites
 
@@ -56,3 +58,48 @@ for it.
 When a scenario passes against the fake but fails against the engine, check
 what Docker actually does. Then fix whichever is wrong: the fake, the adapter,
 or the scenario.
+
+## Test coverage
+
+See which code the native workspace tests run:
+
+```console
+just coverage
+```
+
+The recipe runs the tests `just test` runs under
+[cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov). It writes an HTML
+report to `target/llvm-cov/html/index.html`, which marks every line of each
+source file as run or not. Then it prints each crate's covered lines and
+functions.
+
+Arguments go on to nextest. On a busy machine, timing-sensitive tests can
+fail, so run fewer at once and retry the ones that fail:
+
+```console
+just coverage --test-threads 8 --retries 2
+```
+
+`nix develop` provides cargo-llvm-cov, and `rust-toolchain.toml` adds the
+`llvm-tools` it reads the results with. Without Nix, install it with
+`cargo install --locked cargo-llvm-cov`. The instrumented build goes to
+`target/llvm-cov-target`, so it doesn't replace your ordinary one.
+
+CI doesn't run the recipe and enforces no minimum. The numbers leave out the
+tests `just test` doesn't run:
+
+- the Docker integration tests, which need an isolated engine
+  (`just docker-test`).
+- documentation tests (`just doc-test`).
+- the browser transport tests (`just test-wasm`) and the Playwright browser
+  tests (`just test-playwright`).
+
+`piqueld-ui` counts only the modules that also compile natively, such as its
+editor and terminal. Its browser code compiles only for wasm32, which
+cargo-llvm-cov can't instrument, so the report doesn't list it.
+
+The totals leave out each crate's `tests/` directory, but count test code
+under `src/`: `#[cfg(test)]` modules and test-only files such as
+`piqueld-core/src/manifest/template_tests/`. That code always runs, so it
+raises a crate's percentage. Stable Rust can't exclude it, so look at the
+lines the HTML report marks as not run rather than at the percentages alone.
