@@ -45,7 +45,8 @@ pub async fn run() -> ExitCode {
         Ok(matches) => matches,
         Err(error) => return usage_error(&error),
     };
-    let mut cli = Cli::from_arg_matches(&matches).expect("validated command arguments");
+    let mut cli = Cli::from_arg_matches(&matches)
+        .expect("matches were validated by the same Cli command definition");
     let mut console = Console::new(&cli);
     let result = async {
         // Validation is purely local, so it needs neither profiles nor a daemon.

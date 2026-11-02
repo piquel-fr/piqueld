@@ -360,7 +360,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     use piqueld::api::{ApplicationService, Mutation, MutationResponse};
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
-    let service = ApplicationService::new(api.store.clone(), api.runtime.clone());
+    let service = ApplicationService::new(api.store.clone(), api.runtime.clone()).unwrap();
     let apply = new_application();
     // The same account as the HTTP client, since receipts replay only for theirs.
     let caller = piqueld::api::Actor::Account(piqueld::store::Caller {

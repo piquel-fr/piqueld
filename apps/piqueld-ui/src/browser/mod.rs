@@ -704,6 +704,9 @@ trait ClientErrorExt {
 impl ClientErrorExt for ClientError {
     fn user_message(&self) -> String {
         match self {
+            Self::Configuration { source } => {
+                format!("Could not initialize the API client: {source}")
+            }
             Self::Endpoint { message } => format!("The dashboard endpoint is invalid: {message}"),
             Self::Transport { message, .. } => format!("Could not reach piqueld: {message}"),
             Self::Api { error, .. } => error.message.clone(),

@@ -49,7 +49,7 @@ impl ApplicationService {
     ///    directly, so it reports ready up to `MAX_SWARM_RETRY_DELAY` before
     ///    the next attempt starts them.
     /// # Errors
-    /// Returns contextual storage or Docker client configuration errors.
+    /// Returns contextual storage, authentication, or client initialization errors.
     pub async fn start(
         config: &DaemonConfig,
         telemetry: crate::telemetry::Telemetry,
@@ -79,7 +79,7 @@ impl ApplicationService {
             .with_images(&config.images)
             .with_ingress(Arc::clone(&ingress))
             .with_telemetry(telemetry.sockets().cloned());
-        let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))
+        let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))?
             .with_image_status(reconciler.image_status())
             .with_configuration(config)
             .with_ingress(Arc::clone(&ingress))

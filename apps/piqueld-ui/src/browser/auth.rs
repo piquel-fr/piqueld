@@ -262,7 +262,7 @@ struct AuthState {
 impl AuthState {
     /// The state `Gate` provides.
     fn get() -> Self {
-        use_context().expect("authentication gate")
+        use_context().expect("Gate provides AuthState before rendering its children")
     }
 
     /// Whether a session is established, so the dashboard may show.

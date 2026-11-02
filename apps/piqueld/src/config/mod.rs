@@ -611,8 +611,10 @@ pub struct SnapshotsConfig {
 impl Default for SnapshotsConfig {
     fn default() -> Self {
         Self {
-            max_upload_bytes: std::num::NonZeroU64::new(256 * 1024 * 1024)
-                .expect("the default upload limit is not zero"),
+            max_upload_bytes: const {
+                std::num::NonZeroU64::new(256 * 1024 * 1024)
+                    .expect("the default upload limit is not zero")
+            },
         }
     }
 }
@@ -632,8 +634,10 @@ pub struct CheckoutsConfig {
 impl Default for CheckoutsConfig {
     fn default() -> Self {
         Self {
-            max_bytes: std::num::NonZeroU64::new(4 * 1024 * 1024 * 1024)
-                .expect("the default checkout budget is not zero"),
+            max_bytes: const {
+                std::num::NonZeroU64::new(4 * 1024 * 1024 * 1024)
+                    .expect("the default checkout budget is not zero")
+            },
         }
     }
 }

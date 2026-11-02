@@ -630,9 +630,13 @@ pub(crate) const AUDIT_BACKLOG: usize = 1024;
 impl ApplicationService {
     /// Creates a service over supplied storage and runtime adapters.
     /// No background work is started; use [`Self::start`] for daemon startup.
-    #[must_use]
-    pub fn new(store: Arc<Store>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns the webhook HTTP client's initialization error with context.
+    pub fn new(store: Arc<Store>, runtime: Arc<dyn RuntimeBoundary>) -> anyhow::Result<Self> {
+        use anyhow::Context;
+
+        Ok(Self {
             store,
             runtime,
             configuration: None,
@@ -649,9 +653,10 @@ impl ApplicationService {
             shutdown: tokio_util::sync::CancellationToken::new(),
             listings: Arc::default(),
             admission: Arc::default(),
-            notifier: notification_worker::Notifier::default(),
+            notifier: notification_worker::Notifier::new()
+                .context("initialize the notification webhook client")?,
             public_url: String::new(),
-        }
+        })
     }
 
     /// Links notifications to the dashboard at `public_url`, the website's origin.
@@ -1001,6 +1006,6 @@ impl ApplicationService {
             Arc::new(crate::docker::BollardDocker::connect(&dir.join("docker.sock")).unwrap());
         let runtime = crate::reconcile::Controller::new(docker, Arc::clone(&store))
             .runtime(Arc::new(tokio::sync::Notify::new()));
-        Self::new(store, runtime)
+        Self::new(store, runtime).unwrap()
     }
 }

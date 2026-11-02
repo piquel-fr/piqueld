@@ -330,6 +330,10 @@ impl From<std::io::Error> for CliError {
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
+            ClientError::Configuration { source } => Self::new(
+                ErrorKind::General,
+                format!("could not initialize the HTTP client: {source:#?}"),
+            ),
             ClientError::Endpoint { message } => {
                 Self::new(ErrorKind::Input, message).diagnostic(Diagnostic::Endpoint)
             }

@@ -35,7 +35,7 @@ macro_rules! one_of {
                 $(let possible = possible.help(($help)(value));)?
                 possible
             })),
-            |value: String| $parse(&value).expect("every listed value parses"),
+            |value: String| $parse(&value).expect("possible values come from the same type's as_str and parse implementations"),
         )
     };
 }

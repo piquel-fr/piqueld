@@ -23,7 +23,7 @@ async fn every_documented_operation_requires_authentication() {
     let store = Arc::new(Store::open(database(&temp)).await.unwrap());
     let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
     let runtime = Arc::new(FakeRuntime::new(&store));
-    let state = ApiState::new(store, runtime);
+    let state = ApiState::new(store, runtime).unwrap();
     let document = piqueld::api::http::openapi_document();
     let paths = document["paths"].as_object().unwrap();
     let mut checked = 0;

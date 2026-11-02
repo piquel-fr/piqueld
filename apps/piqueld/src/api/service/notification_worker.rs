@@ -19,17 +19,16 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) struct Notifier(reqwest::Client);
 
-impl Default for Notifier {
-    fn default() -> Self {
-        Self(
+impl Notifier {
+    /// Builds the HTTP client without hiding TLS initialization failures.
+    pub(super) fn new() -> reqwest::Result<Self> {
+        Ok(Self(
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()
-                .build()
-                // As for `reqwest::Client::new`, only a missing TLS backend fails.
-                .expect("webhook client initializes"),
-        )
+                .build()?,
+        ))
     }
 }
 

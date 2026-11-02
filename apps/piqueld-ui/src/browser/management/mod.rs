@@ -781,7 +781,7 @@ impl EditorContext {
 
 /// Returns the enclosing `EditorContext`.
 fn editor() -> EditorContext {
-    use_context().expect("application editor context")
+    use_context().expect("ApplicationEditor provides EditorContext before rendering its children")
 }
 
 /// A client tagged with a fresh random request ID, used for mutations so a

@@ -864,7 +864,8 @@ mod tests {
         let service = crate::api::ApplicationService::new(
             Arc::clone(store),
             controller.runtime(Arc::default()),
-        );
+        )
+        .unwrap();
         let deleting = async || store.secrets(environment).await.unwrap()[0].deleting;
         let guard = controller.mutations.lock().await;
         let deletion = service.delete_secret(daemon, environment, "token", 1);

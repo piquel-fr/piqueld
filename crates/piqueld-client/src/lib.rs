@@ -132,6 +132,13 @@ pub enum TransportFailure {
 /// Errors produced while making an API request.
 #[derive(Debug, Error)]
 pub enum ClientError {
+    /// The HTTP client could not initialize its transport or TLS backend.
+    #[error("could not initialize the HTTP client: {source}")]
+    Configuration {
+        /// Underlying initialization failure, including its source chain.
+        #[source]
+        source: reqwest::Error,
+    },
     /// The endpoint URL or request could not be constructed.
     #[error("invalid request: {message}")]
     Endpoint {

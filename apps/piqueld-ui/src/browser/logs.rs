@@ -126,7 +126,8 @@ pub(super) fn LogViewer(
     #[prop(default = LogKind::Application)] kind: LogKind,
     #[prop(default = Signal::derive(|| 0), into)] prepend_revision: Signal<u64>,
 ) -> impl IntoView {
-    let preferences = use_context::<LogPreferences>().expect("log preferences");
+    let preferences = use_context::<LogPreferences>()
+        .expect("App provides LogPreferences before rendering log panels");
     let timestamps = match kind {
         LogKind::Build => preferences.build_timestamps,
         LogKind::Application | LogKind::Service => preferences.timestamps,

@@ -311,7 +311,7 @@ fn hash_spec(spec: &impl Serialize, files: &RepositoryFiles) -> String {
         spec,
         files,
     })
-    .expect("manifest serialization is infallible");
+    .expect("manifest fields and string-keyed maps are JSON-compatible");
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 

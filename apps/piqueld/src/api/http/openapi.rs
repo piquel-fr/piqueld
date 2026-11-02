@@ -124,12 +124,13 @@ pub fn openapi_document() -> Value {
 /// `nullable` from optional parameters, and documents the TCP 403 and body
 /// timeout 408 responses.
 fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
-    let mut document = serde_json::to_value(document).expect("OpenAPI serialization cannot fail");
+    let mut document = serde_json::to_value(document)
+        .expect("Utoipa OpenAPI fields and string-keyed maps are JSON-compatible");
     convert_to_openapi_30(&mut document);
     document["openapi"] = Value::String("3.0.3".into());
     document["info"]["license"]
         .as_object_mut()
-        .expect("license is an object")
+        .expect("ApiDoc declares an MIT license, which Utoipa serializes as an object")
         .remove("identifier");
     document["components"]["securitySchemes"] = serde_json::json!({
         "bearerAuth": {"type":"http", "scheme":"bearer"},

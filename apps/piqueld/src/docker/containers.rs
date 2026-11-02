@@ -371,14 +371,17 @@ impl BollardDocker {
 fn unix_nanos(timestamp: &str) -> Option<i64> {
     let (date, time) = timestamp.strip_suffix('Z')?.split_once('T')?;
     let (clock, fraction) = time.split_once('.').unwrap_or((time, ""));
-    let numbers = |text: &str, separator| -> Option<Vec<i64>> {
+    // Widen parsed i64 fields before calendar arithmetic, so malformed Docker
+    // output cannot overflow before the final nanosecond range check.
+    let numbers = |text: &str, separator| -> Option<[i128; 3]> {
         text.split(separator)
-            .map(|part| part.parse().ok())
-            .collect::<Option<Vec<_>>>()
-            .filter(|parts| parts.len() == 3)
+            .map(|part| part.parse::<i64>().ok().map(i128::from))
+            .collect::<Option<Vec<_>>>()?
+            .try_into()
+            .ok()
     };
-    let (date, clock) = (numbers(date, '-')?, numbers(clock, ':')?);
-    let (year, month, day) = (date[0], date[1], date[2]);
+    let [year, month, day] = numbers(date, '-')?;
+    let [hour, minute, second] = numbers(clock, ':')?;
     if !(1..=12).contains(&month)
         || !(1..=31).contains(&day)
         || fraction.len() > 9
@@ -386,7 +389,7 @@ fn unix_nanos(timestamp: &str) -> Option<i64> {
     {
         return None;
     }
-    let nanos: i64 = format!("{fraction:0<9}").parse().ok()?;
+    let nanos: i128 = format!("{fraction:0<9}").parse().ok()?;
     // Days since 1970-01-01 in the proleptic Gregorian calendar, after
     // Howard Hinnant's `days_from_civil`.
     let year = if month <= 2 { year - 1 } else { year };
@@ -395,8 +398,8 @@ fn unix_nanos(timestamp: &str) -> Option<i64> {
     let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146_097 + day_of_era - 719_468;
-    let seconds = days * 86_400 + clock[0] * 3_600 + clock[1] * 60 + clock[2];
-    seconds.checked_mul(1_000_000_000)?.checked_add(nanos)
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    i64::try_from(seconds * 1_000_000_000 + nanos).ok()
 }
 
 #[cfg(test)]
@@ -432,6 +435,9 @@ mod tests {
             ("2024-02-29T23:59:59.5Z", Some(1_709_251_199_500_000_000)),
             ("2026-01-01T00:00:00+01:00", None),
             ("2026-13-01T00:00:00Z", None),
+            ("9223372036854775807-01-01T00:00:00Z", None),
+            ("1970-01-01T9223372036854775807:00:00Z", None),
+            ("1970-01-01T00:-9223372036854775808:00Z", None),
             ("not a timestamp", None),
         ] {
             assert_eq!(unix_nanos(timestamp), nanos, "{timestamp}");

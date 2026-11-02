@@ -530,8 +530,13 @@ auto_initialize_swarm = true
     /// The daemon's public URL, once it serves the API. The authentication
     /// status is served before initial setup, unlike the socket's /health.
     async fn public_url(&self) -> Option<String> {
-        let client =
-            piqueld_client::Client::unix(self.socket()).with_timeout(Duration::from_secs(2));
+        let client = match piqueld_client::Client::unix(self.socket()) {
+            Ok(client) => client.with_timeout(Duration::from_secs(2)),
+            Err(error) => {
+                eprintln!("could not query the development instance: {error:?}");
+                return None;
+            }
+        };
         Some(client.auth_status().await.ok()?.public_url)
     }
 
