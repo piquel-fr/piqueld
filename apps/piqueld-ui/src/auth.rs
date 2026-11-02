@@ -6,7 +6,7 @@ use piqueld_client::{
     auth::{DeviceRequest, Manage, Session},
     tailnet::TailnetBinding,
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, num::NonZeroU32};
 
 /// A secret link being redeemed on the sign-in page.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,8 +223,9 @@ impl TokenForm {
         } else {
             Some(
                 self.days
-                    .parse::<u32>()
-                    .map_err(|_| "Enter a positive number of days, or leave blank")?,
+                    .parse::<NonZeroU32>()
+                    .map_err(|_| "Enter a positive number of days, or leave blank")?
+                    .get(),
             )
         };
         let tailnet = self.tailnet.trim();
@@ -444,6 +445,7 @@ mod tests {
         let days_error = "Enter a positive number of days, or leave blank";
         assert_eq!(form("-1", "not a binding").unwrap_err(), days_error);
         assert_eq!(form("1.5", "").unwrap_err(), days_error);
+        assert_eq!(form("0", "").unwrap_err(), days_error);
         assert!(form("30", "not a binding").is_err());
     }
 }
