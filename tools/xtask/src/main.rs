@@ -1,9 +1,10 @@
 //! Development tasks for the piqueld workspace, run with `cargo xtask`: this
 //! worktree's development instance (`just dev`, see docs/dev/development.md), the
-//! isolated Docker integration tests, the Playwright browser suite, and the
-//! `piqueld-core` dependency boundary.
+//! isolated Docker integration tests, the Playwright browser suite, the
+//! `piqueld-core` dependency boundary, and test coverage.
 
 mod boundary;
+mod coverage;
 mod dev;
 mod docker;
 mod docker_test;
@@ -44,6 +45,14 @@ enum Task {
     /// Check that `piqueld-core` depends on no server, Docker, or browser
     /// framework.
     Boundary,
+    /// Measure which code the native workspace tests run, as an HTML report
+    /// and a summary per crate.
+    #[command(disable_help_flag = true)]
+    Coverage {
+        /// Arguments for `cargo nextest run`, such as `--test-threads 4`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -54,6 +63,7 @@ async fn main() -> Result<ExitCode> {
         Task::DockerTest => docker_test::run(&workspace).await,
         Task::Playwright { args } => playwright::run(&workspace, &args).await,
         Task::Boundary => boundary::check(&workspace),
+        Task::Coverage { args } => coverage::run(&workspace, &args),
     }
 }
 

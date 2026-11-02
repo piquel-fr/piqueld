@@ -260,6 +260,8 @@
               docsTools
               ++ [
                 (toolchainFor pkgs)
+                # `just coverage`, with the toolchain's llvm-tools.
+                cargo-llvm-cov
                 cargo-nextest
                 curl
                 pkg-config

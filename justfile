@@ -57,6 +57,13 @@ test:
 doc-test:
     @cargo test --locked --doc --workspace --all-features
 
+# Runs `test` under coverage instrumentation, writes an HTML report to
+# target/llvm-cov/html, and prints each crate's totals. ARGS go on to nextest.
+# Not part of `validate`; see docs/dev/validation.md for what it leaves out.
+[positional-arguments]
+coverage *ARGS:
+    @cargo xtask coverage "$@"
+
 deny:
     @cargo deny check
 
