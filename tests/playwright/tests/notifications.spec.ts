@@ -1,4 +1,5 @@
-import { test, expect } from '../fixtures.js';
+import { test, expect, auth, register, type Managed } from '../fixtures.js';
+import type { Route } from '@playwright/test';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -73,4 +74,40 @@ test('a destination that cannot be saved says why in its dialog and keeps the dr
   await page.getByRole('row', { name: /ops/ }).getByRole('button', { name: 'Edit', exact: true }).click();
   await expect(dialog.getByRole('checkbox', { name: 'Build failures', exact: true })).not.toBeChecked();
   await expect(dialog.getByRole('alert')).toHaveCount(0);
+});
+
+test('failed deliveries offer a retry to accounts that operate the daemon', async ({ page, account }) => {
+  void account;
+  // The fixture delivers nothing on its own: list one failed and one delivered.
+  const delivery = (id: string, state: string, last_error: string | null) => ({
+    id, event_id: 1, destination: 'ops', subject: { application: 'shop', environment: 'production' },
+    category: 'deployment_failures', state, attempts: 3, created_at_ms: Date.now(),
+    next_attempt_ms: Date.now(), updated_at_ms: Date.now(), last_error,
+  });
+  let retriedState = 'failed';
+  await page.route(url => url.pathname === '/api/v1/notifications/deliveries', (route: Route) => route.fulfill({
+    json: { data: { items: [delivery('delivery-failed', retriedState, 'HTTP 500'), delivery('delivery-sent', 'delivered', null)], next_cursor: null } },
+  }));
+  await page.route(url => url.pathname === '/api/v1/notifications/deliveries/delivery-failed/retry', (route: Route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    retriedState = 'pending';
+    return route.fulfill({ json: { data: true } });
+  });
+
+  await page.goto('/dashboard/notifications');
+  const deliveries = page.locator('section', { has: page.getByRole('heading', { name: 'Deliveries', exact: true }) });
+  await expect(deliveries.getByRole('row', { name: /HTTP 500/ })).toContainText('failed');
+  await expect(deliveries.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(1);
+  await deliveries.getByRole('row', { name: /HTTP 500/ }).getByRole('button', { name: 'Retry', exact: true }).click();
+  // The list refreshes at once: the delivery is pending again.
+  await expect(deliveries.getByRole('row', { name: /HTTP 500/ })).toContainText('pending');
+  await expect(deliveries.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+
+  // Reading the daemon shows a failure, without the retry.
+  retriedState = 'failed';
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'system:read' }] })).invitation_url;
+  await register(page, link, 'bob');
+  await page.goto('/dashboard/notifications');
+  await expect(deliveries.getByRole('row', { name: /HTTP 500/ })).toBeVisible();
+  await expect(deliveries.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
 });

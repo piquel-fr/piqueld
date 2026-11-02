@@ -62,6 +62,14 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
 - Account deletion confirmation, cancellation, and last-account protection.
 - Sidebar navigation to every page, the not-found page, and the signed-in account
   and daemon connection shown in the shell.
+- Overview metrics and directory health summarized by each application's least
+  healthy environment, recent deployments despite one application's unreadable
+  history, and failed refreshes keeping the last view, marked stale.
+- Event history filtered by kind and by operation, and an event's requester
+  leading to their audit trail, filtered by outcome.
+- Notification destinations: adding, testing, editing, deleting, validation
+  errors shown in their dialog, and retrying failed deliveries only with
+  `system:operate`.
 - Application creation, invalid names, renaming, and confirmed deletion, the
   application directory, service creation, editing, and removal on the service
   page, read-only files, volumes, routes, jobs, exports and imports, the
