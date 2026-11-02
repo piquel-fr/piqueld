@@ -2,87 +2,9 @@
 //! services of other applications it reaches.
 use super::super::ui::{add_button, empty, remove_button};
 use super::{Draft, Rows, editor};
+use crate::application::{ExportDraft, ImportDraft};
 use leptos::prelude::*;
-use piqueld_client::{ApplicationManifest, Export, Import, edit::ApplicationEdit};
-
-/// One editable export. Applications are typed as one comma-separated list.
-#[derive(Clone, Default, PartialEq)]
-struct ExportDraft {
-    service: String,
-    applications: String,
-    previews: bool,
-}
-
-impl ExportDraft {
-    /// The manifest's exports as editable rows.
-    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
-        manifest
-            .spec
-            .exports
-            .iter()
-            .map(|export| Self {
-                service: export.service.clone(),
-                applications: export.applications.join(", "),
-                previews: export.previews,
-            })
-            .collect()
-    }
-
-    /// The export input; validation reports empty or invalid names.
-    fn export(self) -> Export {
-        Export {
-            service: self.service,
-            applications: self
-                .applications
-                .split(',')
-                .map(str::trim)
-                .filter(|application| !application.is_empty())
-                .map(str::to_owned)
-                .collect(),
-            previews: self.previews,
-        }
-    }
-}
-
-/// One editable import. An empty environment reaches the one named like the
-/// importing environment.
-#[derive(Clone, Default, PartialEq)]
-struct ImportDraft {
-    application: String,
-    service: String,
-    environment: String,
-}
-
-impl ImportDraft {
-    /// The manifest's imports as editable rows.
-    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
-        manifest
-            .spec
-            .imports
-            .iter()
-            .map(|import| Self {
-                application: import.application.clone(),
-                service: import.service.clone(),
-                environment: import
-                    .environment
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-            })
-            .collect()
-    }
-
-    /// The import input.
-    fn import(self) -> Import {
-        Import {
-            application: self.application,
-            service: self.service,
-            environment: Some(self.environment)
-                .filter(|environment| !environment.is_empty())
-                .map(Into::into),
-        }
-    }
-}
+use piqueld_client::edit::ApplicationEdit;
 
 /// A text input bound to one field of row `index`.
 fn row_field<D: Send + Sync + 'static>(

@@ -42,6 +42,20 @@ pub struct Key<'a> {
 }
 
 impl Key<'_> {
+    /// This key as typed with `AltGr` held (`alt_graph`), which reports
+    /// Control and Alt on some systems, or Option on macOS (`mac`), which
+    /// types characters such as `@` on many layouts: their characters are
+    /// plain text. Named keys, such as Option+arrows, keep the modifier.
+    #[must_use]
+    pub fn on_layout(self, alt_graph: bool, mac: bool) -> Self {
+        let text = alt_graph || (mac && self.key.chars().count() == 1);
+        Self {
+            ctrl: self.ctrl && !alt_graph,
+            alt: self.alt && !text,
+            ..self
+        }
+    }
+
     /// The bytes a terminal sends for this key, or `None` for keys left to the
     /// browser: Ctrl+Shift+V, which pastes, Ctrl+Shift+C, which terminals use
     /// to copy and which must not interrupt the command as Ctrl+C would, and
@@ -216,6 +230,51 @@ impl Terminal {
             self.parser.screen_mut().set_size(size.height, size.width);
         }
         changed
+    }
+
+    /// The size fitting whole cells of `cell` pixels (width, height) in a
+    /// viewport of `viewport` pixels; `None` while either is hidden, as hidden
+    /// elements measure as empty.
+    #[must_use]
+    pub fn fitting(viewport: (i32, i32), cell: (f64, f64)) -> Option<TerminalSize> {
+        let cells = |length: i32, cell: f64| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to u16, and only whole cells fit"
+            )]
+            let count = (f64::from(length) / cell)
+                .floor()
+                .clamp(0.0, f64::from(u16::MAX)) as u16;
+            count
+        };
+        let size = TerminalSize {
+            width: cells(viewport.0, cell.0),
+            height: cells(viewport.1, cell.1),
+        };
+        (size.width > 0 && size.height > 0).then_some(size)
+    }
+
+    /// Lines of history a vertical wheel movement of `delta` pixels scrolls
+    /// through, for lines `line_height` pixels high: wheel deltas scroll down,
+    /// history is up, and every movement moves a line or more.
+    #[must_use]
+    pub fn wheel_lines(delta: f64, line_height: f64) -> isize {
+        if delta == 0.0 {
+            return 0;
+        }
+        let lines = -delta / line_height.max(1.0);
+        let lines = if lines.abs() < 1.0 {
+            lines.signum()
+        } else {
+            lines.round()
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "wheel steps are a few lines"
+        )]
+        let lines = lines as isize;
+        lines
     }
 
     /// Scrolls the view `lines` lines back into history (negative: forward).
@@ -467,6 +526,60 @@ mod tests {
             ..key("C", true, false)
         };
         assert_eq!(copy.encode(false), None);
+    }
+
+    #[test]
+    fn characters_typed_with_altgr_or_option_are_plain_text() {
+        let key = |key, ctrl, alt| Key {
+            key,
+            ctrl,
+            alt,
+            ..Key::default()
+        };
+        // AltGr+q types `@` on a German layout, reported with Control and Alt.
+        assert_eq!(
+            key("@", true, true).on_layout(true, false).encode(false),
+            Some(b"@".to_vec())
+        );
+        // Option+2 types `@` on a macOS German layout.
+        assert_eq!(
+            key("@", false, true).on_layout(false, true).encode(false),
+            Some(b"@".to_vec())
+        );
+        // Option+Left still moves by word, and Alt+b elsewhere still sends Escape.
+        assert_eq!(
+            key("ArrowLeft", false, true)
+                .on_layout(false, true)
+                .encode(false),
+            Some(b"\x1b[1;3D".to_vec())
+        );
+        assert_eq!(
+            key("b", false, true).on_layout(false, false).encode(false),
+            Some(b"\x1bb".to_vec())
+        );
+    }
+
+    #[test]
+    fn the_screen_fits_whole_cells_and_ignores_hidden_viewports() {
+        assert_eq!(
+            Terminal::fitting((805, 399), (10.0, 20.0)),
+            Some(TerminalSize {
+                width: 80,
+                height: 19
+            })
+        );
+        assert_eq!(Terminal::fitting((0, 0), (0.0, 0.0)), None);
+        assert_eq!(Terminal::fitting((805, 0), (10.0, 20.0)), None);
+    }
+
+    #[test]
+    fn every_wheel_movement_scrolls_at_least_a_line_towards_history_when_up() {
+        // A trackpad's few pixels still scroll one line, up into history.
+        assert_eq!(Terminal::wheel_lines(-3.0, 16.0), 1);
+        assert_eq!(Terminal::wheel_lines(3.0, 16.0), -1);
+        assert_eq!(Terminal::wheel_lines(-100.0, 16.0), 6);
+        // No vertical movement, such as horizontal scrolling, scrolls nothing.
+        assert_eq!(Terminal::wheel_lines(0.0, 16.0), 0);
     }
 
     #[test]

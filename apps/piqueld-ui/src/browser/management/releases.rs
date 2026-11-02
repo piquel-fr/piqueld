@@ -6,6 +6,7 @@ use super::super::ui::{
 use super::super::{Alive, ClientErrorExt};
 use super::deployments::PromoteAction;
 use super::editor;
+use crate::application::ApplicationViewExt;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
@@ -123,16 +124,7 @@ pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool)
     let opened = RwSignal::new(selected || planned);
     let id = release.id.to_string();
     // Promoted environments it can be deployed into.
-    let targets = move || {
-        context.saved.with(|saved| {
-            saved
-                .environments
-                .iter()
-                .filter(|env| env.source.promoted_from().is_some() && !env.delete_intent)
-                .map(|env| env.id.to_string())
-                .collect::<Vec<_>>()
-        })
-    };
+    let targets = move || context.saved.with(ApplicationViewExt::release_targets);
     let manifest_commit = release.release.commit().map(str::to_owned);
     let availability = release.availability.as_ref().map(availability);
     let services = release_services(&release);
