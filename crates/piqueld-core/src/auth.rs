@@ -47,7 +47,7 @@ redacted_debug!(OperatorLink { expires_at } secret { url });
 redacted_debug!(OperatorSignIn {} secret { secret });
 redacted_debug!(RegistrationStart { user_id, username, display_name, passkey_name } secret { invitation });
 redacted_debug!(Managed {} secret { token, invitation_url });
-redacted_debug!(DeviceStart { user_code, verification_uri, expires_in, interval, requester, grants } secret { device_code });
+redacted_debug!(DeviceStart { user_code, verification_uri, verification_uri_complete, expires_in, interval, requester, grants } secret { device_code });
 redacted_debug!(DevicePoll {} secret { device_code });
 redacted_debug!(DeviceToken { status, user } secret { token });
 
@@ -422,6 +422,10 @@ pub struct DeviceStart {
     pub user_code: String,
     /// Canonical browser login page.
     pub verification_uri: String,
+    /// Login page with `user_code` already filled in, so the user only has to
+    /// open it. Daemons older than this field omit it.
+    #[serde(default)]
+    pub verification_uri_complete: Option<String>,
     /// Lifetime in seconds.
     pub expires_in: u32,
     /// Minimum polling interval, in seconds.

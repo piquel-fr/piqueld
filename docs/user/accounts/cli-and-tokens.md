@@ -20,14 +20,15 @@ jobs and agents an API token that can only do what they need.
 
 ```console
 $ piquelctl login
-Open https://piqueld.<tailnet>.ts.net/dashboard/auth#device
-Enter code: KQ7M-3XHT
+Open https://piqueld.<tailnet>.ts.net/dashboard/auth#device=KQ7M-3XHT
+Check the page shows code: KQ7M-3XHT
 The daemon sees this login coming from: 100.101.102.103
 Waiting for passkey login…
 alice (01a16b4b-ef93-7971-b6f6-e8359d3c4d52)
 ```
 
-Open the link, sign in with your passkey, and approve the code:
+Open the link, sign in with your passkey, and approve the login. The link
+already carries the code, so you never have to type or copy the code:
 [creating your account](../getting-started/first-account.md#sign-piquelctl-in)
 walks through it. `piquelctl` then prints the account it signed in as. This
 works over SSH too, since the browser can run on another machine than the
