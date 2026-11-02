@@ -12,156 +12,19 @@ use super::super::ui::{
 };
 use super::deployments::EnvironmentAction;
 use super::{Draft, EditorContext, editor};
+use crate::environments::{BranchDraft, EnvironmentEdit, NAME_FORM, SOURCE_FORM, SourceDraft};
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::sync::short_commit;
 use piqueld_client::{
-    ApplicationManifest, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
-    EnvironmentChange, EnvironmentName, EnvironmentRequest, EnvironmentSourceRequest,
-    EnvironmentView, RepositoryManifest, Rollback, TrackedBranch, Visibility,
+    ApplicationManifest, Client, EnvironmentChange, EnvironmentName, EnvironmentView,
+    RepositoryManifest, Rollback, Visibility,
     access::{AppPermission, GlobalPermission, Permission},
     edit::ApplicationEdit,
     sync::{SyncState, SyncedHead},
 };
-
-/// A change to one of the application's environments. All but `Sync` are
-/// guarded by the saved generation.
-#[derive(Clone)]
-enum EnvironmentEdit {
-    /// `promote_from` excludes `branch`.
-    Create {
-        name: String,
-        branch: Option<TrackedBranch>,
-        promote_from: Option<String>,
-    },
-    Rename {
-        id: String,
-        name: String,
-    },
-    Branch {
-        id: String,
-        branch: TrackedBranch,
-    },
-    /// Opts in or out of the application's sync, without a revision.
-    Sync {
-        id: String,
-        enabled: bool,
-    },
-    /// Grants or revokes the daemon's telemetry, without a revision.
-    Telemetry {
-        id: String,
-        granted: bool,
-    },
-    /// Promoted from the given environment, or `None` to track its own source.
-    Source {
-        id: String,
-        promote_from: Option<String>,
-    },
-    /// Deletes the environment, retaining its volumes.
-    Delete(String),
-    /// Retries a deletion that did not finish.
-    RetryDeletion(String),
-}
-
-/// Dirty group of the environment page's source form.
-const SOURCE_FORM: &str = "environment-source";
-/// Dirty group of the environment page's rename form.
-const NAME_FORM: &str = "environment-name";
-
-impl EnvironmentEdit {
-    /// Whether a replay after a transport failure is safe. Deletions are not
-    /// retried, as they could fail once the first attempt completed.
-    const fn replayable(&self) -> bool {
-        !matches!(self, Self::Delete(_) | Self::RetryDeletion(_))
-    }
-
-    /// The form whose unsaved edits the change saves, if any.
-    const fn form(&self) -> Option<&'static str> {
-        match self {
-            Self::Rename { .. } => Some(NAME_FORM),
-            Self::Branch { .. } | Self::Source { .. } => Some(SOURCE_FORM),
-            _ => None,
-        }
-    }
-
-    /// Sends the change, returning the changed environment unless it is
-    /// being deleted.
-    async fn send(
-        &self,
-        client: &Client,
-        application: &str,
-        generation: u64,
-    ) -> Result<Option<EnvironmentView>, ClientError> {
-        let expected_generation = Some(generation);
-        match self {
-            Self::Create {
-                name,
-                branch,
-                promote_from,
-            } => {
-                let request = CreateEnvironmentRequest {
-                    name: name.clone(),
-                    branch: branch.as_ref().map(|branch| branch.branch().to_owned()),
-                    commit: branch
-                        .as_ref()
-                        .and_then(|branch| branch.commit().map(str::to_owned)),
-                    promote_from: promote_from.clone(),
-                    expected_generation,
-                };
-                client
-                    .create_environment(application, &request, false)
-                    .await
-                    .map(Some)
-            }
-            Self::Rename { id, name } => {
-                let request = EnvironmentRequest {
-                    name: name.clone(),
-                    expected_generation,
-                };
-                client
-                    .rename_environment(id, &request, false)
-                    .await
-                    .map(Some)
-            }
-            Self::Branch { id, branch } => {
-                let request = EnvironmentBranchRequest {
-                    branch: branch.branch().to_owned(),
-                    commit: branch.commit().map(str::to_owned),
-                    expected_generation,
-                };
-                client
-                    .set_environment_branch(id, &request, false)
-                    .await
-                    .map(Some)
-            }
-            Self::Sync { id, enabled } => client.set_environment_sync(id, *enabled).await.map(Some),
-            Self::Telemetry { id, granted } => client
-                .set_environment_telemetry(id, *granted)
-                .await
-                .map(Some),
-            Self::Source { id, promote_from } => {
-                let request = EnvironmentSourceRequest {
-                    promote_from: promote_from.clone(),
-                    expected_generation,
-                };
-                client
-                    .set_environment_source(id, &request, false)
-                    .await
-                    .map(Some)
-            }
-            Self::Delete(id) => client
-                .delete_environment(id, Some(generation), false)
-                .await
-                .map(|_| None),
-            Self::RetryDeletion(id) => client
-                .reconcile_environment(id, Some(generation))
-                .await
-                .map(|_| None),
-        }
-    }
-}
 
 impl EditorContext {
     /// Sends `change` (see `mutate`, or `mutate_once` unless it is
@@ -178,40 +41,15 @@ impl EditorContext {
         let (application, generation) = self
             .saved
             .with_untracked(|saved| (saved.application.id().to_string(), saved.generation));
-        // Environment lifecycle changes advance the application revision, so
-        // later edits stay guarded by it.
-        let advances = !matches!(
-            change,
-            EnvironmentEdit::RetryDeletion(_)
-                | EnvironmentEdit::Sync { .. }
-                | EnvironmentEdit::Telemetry { .. }
-        );
-        let deleted = match &change {
-            EnvironmentEdit::Delete(id) => Some(id.clone()),
-            _ => None,
-        };
         let replayable = change.replayable();
+        let applied_change = change.clone();
         let send = move |client: Client| {
             let (change, application) = (change.clone(), application.clone());
             async move { change.send(&client, &application, generation).await }
         };
         let applied = move |environment: Option<EnvironmentView>| {
-            self.saved.update(|saved| {
-                if advances {
-                    saved.generation += 1;
-                }
-                if let Some(environment) = &environment {
-                    saved.environments.retain(|env| env.id != environment.id);
-                    saved.environments.push(environment.clone());
-                    saved.environments.sort_by(|a, b| a.name.cmp(&b.name));
-                } else if let Some(env) = saved
-                    .environments
-                    .iter_mut()
-                    .find(|env| deleted.as_deref() == Some(env.id.as_str()))
-                {
-                    env.delete_intent = true;
-                }
-            });
+            self.saved
+                .update(|saved| applied_change.apply(saved, environment.clone()));
             self.notice.set(if environment.is_some() {
                 "Environment saved.".into()
             } else {
@@ -428,34 +266,20 @@ pub(super) fn last_synced(synced: Option<SyncedHead>) -> AnyView {
 }
 
 /// Branch and optional commit inputs of `branch`.
-fn branch_fields(branch: RwSignal<(String, String)>) -> impl IntoView {
+fn branch_fields(branch: RwSignal<BranchDraft>) -> impl IntoView {
     view! {
-        {text_input("Branch", branch, |v| v.0.clone(), |v, input| v.0 = input)}
-        {text_input("Commit (optional)", branch, |v| v.1.clone(), |v, input| v.1 = input)}
+        {text_input("Branch", branch, |v| v.branch.clone(), |v, input| v.branch = input)}
+        {text_input("Commit (optional)", branch, |v| v.commit.clone(), |v, input| v.commit = input)}
     }
 }
 
-/// Validates a branch and optional commit typed into a form; a blank commit
-/// follows the branch head.
-fn tracked_branch((branch, commit): (String, String)) -> Result<TrackedBranch, String> {
-    let commit = (!commit.trim().is_empty()).then(|| commit.trim().to_owned());
-    TrackedBranch::new(branch.trim().to_owned(), commit).map_err(|error| error.to_string())
-}
-
-/// The branch and commit a repository-backed application's new environments
-/// follow by default, from its `spec.manifest`.
-fn default_branch(context: EditorContext) -> (String, String) {
-    context
-        .manifest()
-        .spec
-        .manifest
-        .map(|manifest| {
-            (
-                manifest.repository.branch,
-                manifest.repository.commit.unwrap_or_default(),
-            )
-        })
-        .unwrap_or_default()
+impl EditorContext {
+    /// The branch and commit the application's new environments follow by
+    /// default (see `BranchDraft::default_for`).
+    fn default_branch(self) -> BranchDraft {
+        self.saved
+            .with(|saved| BranchDraft::default_for(saved.application.spec()))
+    }
 }
 
 impl EditorContext {
@@ -522,7 +346,7 @@ fn NewEnvironment() -> impl IntoView {
     let context = editor();
     let opened = RwSignal::new(false);
     let name = RwSignal::new(String::new());
-    let branch = RwSignal::new(default_branch(context));
+    let branch = RwSignal::new(context.default_branch());
     // The environment to promote from; empty to build its own source.
     let promote_from = RwSignal::new(String::new());
     let builds = move || promote_from.with(String::is_empty);
@@ -536,7 +360,7 @@ fn NewEnvironment() -> impl IntoView {
             return;
         }
         let tracked = if context.repository_backed() && builds() {
-            match tracked_branch(branch.get_untracked()) {
+            match branch.with_untracked(BranchDraft::tracked) {
                 Ok(tracked) => Some(tracked),
                 Err(error) => {
                     context.set_error(Some(error));
@@ -570,7 +394,7 @@ fn NewEnvironment() -> impl IntoView {
             disabled={move || context.action_blocked()}
             on:click={move |_| {
                 name.set(String::new());
-                branch.set(default_branch(context));
+                branch.set(context.default_branch());
                 promote_from.set(String::new());
                 opened.set(true);
             }}
@@ -656,30 +480,21 @@ fn SourceSettings() -> impl IntoView {
                 .map(ToString::to_string)
         })
     };
-    let repository = move || {
-        context
-            .saved
-            .with(|saved| saved.application.spec().manifest.is_some())
-    };
-    // The choice as currently saved: the branch it follows (by default the
-    // one `spec.manifest` names) and the environment it is promoted from.
-    // Memoized so unrelated saved changes keep unsaved edits.
-    let drafts = Memo::new(move |_| {
-        let branch = current().map_or_else(
-            || default_branch(context),
-            |branch| {
-                (
-                    branch.branch().to_owned(),
-                    branch.commit().unwrap_or_default().to_owned(),
-                )
-            },
-        );
-        (branch, promoted().unwrap_or_default())
+    let repository = move || context.repository_backed();
+    // The form as currently saved (see `SourceDraft::saved`), by default
+    // building the branch `spec.manifest` names. Memoized so unrelated saved
+    // changes keep unsaved edits.
+    let saved = Memo::new(move |_| {
+        source.with(|source| SourceDraft::saved(source.as_ref(), context.default_branch()))
     });
-    let (initial_branch, initial_source) = drafts.get_untracked();
-    let branch = RwSignal::new(initial_branch);
+    let initial = saved.get_untracked();
+    let branch = RwSignal::new(initial.branch);
     // The environment to promote from; empty to build its own source.
-    let promote_from = RwSignal::new(initial_source);
+    let promote_from = RwSignal::new(initial.promote_from);
+    let shown = move || SourceDraft {
+        branch: branch.get(),
+        promote_from: promote_from.get(),
+    };
     let builds = move || promote_from.with(String::is_empty);
     let sources = Signal::derive(move || context.promotion_sources(&id.get_value()));
     let name = move || context.selected_name();
@@ -694,41 +509,16 @@ fn SourceSettings() -> impl IntoView {
     let sync_blocked =
         move || context.action_blocked() || context.selected_deleting() || declared();
     // The change saving would make, if any.
-    let change = move || -> Option<Result<EnvironmentEdit, String>> {
-        let id = id.get_value();
-        if !builds() {
-            let from = promote_from.get();
-            return (Some(&from) != promoted().as_ref()).then_some(Ok(EnvironmentEdit::Source {
-                id,
-                promote_from: Some(from),
-            }));
-        }
-        if repository() {
-            return match tracked_branch(branch.get()) {
-                Ok(tracked) if promoted().is_none() && Some(&tracked) == current().as_ref() => None,
-                Ok(tracked) => Some(Ok(EnvironmentEdit::Branch {
-                    id,
-                    branch: tracked,
-                })),
-                Err(error) => Some(Err(error)),
-            };
-        }
-        promoted().map(|_| {
-            Ok(EnvironmentEdit::Source {
-                id,
-                promote_from: None,
-            })
-        })
-    };
+    let change =
+        move || source.with(|source| shown().change(id.get_value(), source.as_ref(), repository()));
     // A change not yet saved blocks deploys and guards navigation. The form
     // follows the saved source while it still shows the previous one.
     context.guard(SOURCE_FORM.into(), move || change().is_some());
-    Effect::new(move |previous: Option<((String, String), String)>| {
-        let saved = drafts.get();
-        let shown = untrack(|| (branch.get(), promote_from.get()));
-        if previous.is_none_or(|previous| previous == shown) {
-            branch.set(saved.0.clone());
-            promote_from.set(saved.1.clone());
+    Effect::new(move |previous: Option<SourceDraft>| {
+        let saved = saved.get();
+        if previous.is_none_or(|previous| previous == untrack(shown)) {
+            branch.set(saved.branch.clone());
+            promote_from.set(saved.promote_from.clone());
         }
         saved
     });

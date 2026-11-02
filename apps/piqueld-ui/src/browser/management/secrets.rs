@@ -5,13 +5,13 @@ use super::super::ui::{
 };
 use super::super::{ClientErrorExt, confirm};
 use super::{Draft, EditorContext, Rows, editor};
+use crate::secrets::DeclarationDraft;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     ApplicationManifest, Client, ClientError, EnvironmentAccess, EnvironmentId, MountedSecret,
-    SecretAccess, SecretDeclaration, SecretEncoding, SecretGenerator, SecretMetadata, SecretMount,
-    StoredSecret, Template,
+    SecretAccess, SecretEncoding, SecretMetadata, SecretMount, StoredSecret, Template,
     access::AppPermission,
     edit::{ApplicationEdit, ServiceEdit},
 };
@@ -875,77 +875,6 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
     }
 }
 
-/// One editable generated-secret declaration. `size` is the number of random
-/// bytes, or the RSA key's bits, as typed.
-#[derive(Clone, PartialEq)]
-struct DeclarationDraft {
-    name: String,
-    rsa: bool,
-    size: String,
-    encoding: SecretEncoding,
-}
-
-impl Default for DeclarationDraft {
-    fn default() -> Self {
-        Self::of_kind(false)
-    }
-}
-
-impl DeclarationDraft {
-    /// A new random (or RSA) declaration with that generator's usual size.
-    fn of_kind(rsa: bool) -> Self {
-        Self {
-            name: String::new(),
-            rsa,
-            size: if rsa { "3072" } else { "32" }.into(),
-            encoding: SecretEncoding::default(),
-        }
-    }
-
-    /// The manifest's declarations as editable rows.
-    fn rows(manifest: &ApplicationManifest) -> Vec<Self> {
-        manifest
-            .spec
-            .secrets
-            .iter()
-            .map(|secret| match secret.generate {
-                SecretGenerator::Random { bytes, encoding } => Self {
-                    name: secret.name.clone(),
-                    rsa: false,
-                    size: bytes.to_string(),
-                    encoding,
-                },
-                SecretGenerator::Rsa { bits } => Self {
-                    name: secret.name.clone(),
-                    rsa: true,
-                    size: bits.to_string(),
-                    encoding: SecretEncoding::default(),
-                },
-            })
-            .collect()
-    }
-
-    /// The declaration, or a message when the size does not parse; manifest
-    /// validation checks its range.
-    fn declaration(self) -> Result<SecretDeclaration, String> {
-        let size = self
-            .size
-            .parse()
-            .map_err(|_| format!("The size of {} must be a whole number", self.name))?;
-        Ok(SecretDeclaration {
-            name: self.name,
-            generate: if self.rsa {
-                SecretGenerator::Rsa { bits: size }
-            } else {
-                SecretGenerator::Random {
-                    bytes: size,
-                    encoding: self.encoding,
-                }
-            },
-        })
-    }
-}
-
 /// Editor for the secrets piqueld generates, `spec.secrets`. Saving replaces
 /// every declaration; values already generated are kept.
 #[component]
@@ -1004,12 +933,7 @@ fn GeneratedSecretSettings() -> impl IntoView {
                                         }}
                                         on:change={move |event| {
                                             let rsa = event_target_value(&event) == "rsa";
-                                            secrets.edit(index, |s| {
-                                                if s.rsa != rsa {
-                                                    let name = std::mem::take(&mut s.name);
-                                                    *s = DeclarationDraft { name, ..DeclarationDraft::of_kind(rsa) };
-                                                }
-                                            });
+                                            secrets.edit(index, |s| s.set_kind(rsa));
                                         }}
                                     >
                                         <option value="random">"Random bytes"</option>

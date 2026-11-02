@@ -249,15 +249,22 @@ test('a promoted environment rolls back automatically by default, and saves anot
   await expect(select).toHaveValue('default');
   await expect(select.locator('option[value="default"]')).toHaveText(/automatic/);
   await expect(save).toBeDisabled();
+  // Saving disables the button at once, so wait for the save itself.
+  const rollbackSaved = () => page.waitForResponse(response => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === `/api/v1/applications/${app}/environments/production/rollback`);
   await select.selectOption('manual');
+  let request = rollbackSaved();
   await save.click();
+  expect((await request).status()).toBe(200);
   await expect(save).toBeDisabled();
   const saved = await call(page, 'GET', `applications/${app}`);
   expect(saved.application.spec.environments.production.rollback).toBe('manual');
   await page.reload();
   await expect(select).toHaveValue('manual');
   await select.selectOption('default');
+  request = rollbackSaved();
   await save.click();
+  expect((await request).status()).toBe(200);
   await expect(save).toBeDisabled();
   const cleared = await call(page, 'GET', `applications/${app}`);
   expect(cleared.application.spec.environments.production.rollback).toBeUndefined();
