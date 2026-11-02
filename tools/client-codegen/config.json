@@ -421,6 +421,16 @@
       "rustType": "piqueld_core::edit::RolloutValue"
     },
     {
+      "schema": "Rollback",
+      "name": "Rollback",
+      "rustType": "piqueld_core::manifest::Rollback"
+    },
+    {
+      "schema": "RollbackValue",
+      "name": "RollbackValue",
+      "rustType": "piqueld_core::edit::RollbackValue"
+    },
+    {
       "schema": "BoolValue",
       "name": "BoolValue",
       "rustType": "piqueld_core::edit::BoolValue"

@@ -147,6 +147,7 @@ impl ManifestChange {
     /// variables.domain                      -> "example.com"
     /// environments.staging.variables.domain -> "staging.example.com"
     /// environments.staging.visibility       -> "private"
+    /// environments.production.rollback     -> "manual"
     /// previews.visibility                   -> "public"
     /// exports.api                           -> {"applications":["notes"]}
     /// imports.api.auth                      -> "staging"
@@ -227,11 +228,10 @@ impl ManifestChange {
         }
         if let Value::Object(environments) = take("environments") {
             for (environment, config) in environments {
-                if let Some(visibility) = config.get("visibility") {
-                    fields.insert(
-                        format!("environments.{environment}.visibility"),
-                        visibility.clone(),
-                    );
+                for key in ["visibility", "rollback"] {
+                    if let Some(value) = config.get(key) {
+                        fields.insert(format!("environments.{environment}.{key}"), value.clone());
+                    }
                 }
                 if let Some(Value::Object(variables)) = config.get("variables") {
                     for (name, value) in variables {
@@ -370,6 +370,15 @@ TOKEN="old-secret"
         let planned = ManifestChange::between(Some(&read), &saved);
         assert_eq!(planned[0].field, "secrets.token");
         assert_eq!(planned.len(), 1);
+        let rollback = spec("[spec.environments.production]\nrollback='manual'\n");
+        let changes = ManifestChange::edits(&read, &rollback);
+        assert_eq!(
+            changes
+                .iter()
+                .map(|change| (change.field.as_str(), change.after.as_deref()))
+                .collect::<Vec<_>>(),
+            [("environments.production.rollback", Some("manual"))]
+        );
     }
 
     #[test]

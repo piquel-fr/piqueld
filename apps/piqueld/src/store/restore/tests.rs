@@ -166,7 +166,8 @@ async fn restores_exactly_what_the_deployment_ran() {
     assert_eq!(
         restored_view.origin,
         DeploymentOrigin::Restore {
-            deployment: first.id.clone()
+            deployment: first.id.clone(),
+            rolled_back: None,
         }
     );
     assert_eq!(restored_view.application, first_view.application);
@@ -289,4 +290,47 @@ async fn restored_links_stay_bound_to_their_applications() {
     let restored = restore(&store, &environment, &first.id).await.unwrap();
     let target = store.prepared_target(&restored.id).await.unwrap().unwrap();
     assert_eq!(target.bindings.into_values().collect::<Vec<_>>(), [shop]);
+}
+
+/// A rollback restores the newest other deployment that succeeded, and
+/// fails the failed one in the same transaction; once it is no longer
+/// running, nothing changes.
+#[tokio::test]
+async fn rolls_back_to_the_newest_successful_deployment() {
+    let (_temp, store) = Store::temporary().await;
+    let app = notes();
+    let environment = save(&store, &app).await;
+    deploy(&store, &app, 'a', true).await;
+    let newest = deploy(&store, &app, 'b', true).await;
+    let failing = deploy(&store, &app, 'c', false).await;
+    let (deployment, target) = store.rollback_target(&failing).await.unwrap().unwrap();
+    assert_eq!(deployment, newest.id);
+    assert_eq!(
+        target,
+        store.prepared_target(&newest.id).await.unwrap().unwrap()
+    );
+    let error = ("service_update_failed", "service update paused");
+    let rollback = store.roll_back(&failing, error, &deployment).await.unwrap();
+    let failed = store.operation(&failing.id).await.unwrap();
+    assert_eq!(
+        (failed.state, failed.error_code.as_deref()),
+        (OperationState::Failed, Some("service_update_failed"))
+    );
+    assert_eq!(
+        store.deployment_origin(&rollback.id).await.unwrap(),
+        DeploymentOrigin::Restore {
+            deployment: newest.id.clone(),
+            rolled_back: Some(failing.id.clone()),
+        }
+    );
+    assert!(matches!(
+        store.roll_back(&failing, error, &deployment).await,
+        Err(StoreError::IllegalTransition)
+    ));
+    let latest = store
+        .latest_operation_for_environment(&environment)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.id, rollback.id);
 }

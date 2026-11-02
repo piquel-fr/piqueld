@@ -13,9 +13,9 @@ use piqueld_core::{
         ApplicationEdit, BoolValue, CountValue, CpuValue, EditOptions, EnvironmentValue,
         ExportsValue, FilesValue, GeneratedSecretsValue, HealthValue, ImportsValue, JobsValue,
         MemoryValue, MountsValue, OptionalStringValue, ReplicasValue, RepositorySyncValue,
-        RepositoryValue, ResourcesValue, RolloutValue, RoutesValue, SecondsValue, SecretsValue,
-        ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue, StringsValue,
-        TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
+        RepositoryValue, ResourcesValue, RollbackValue, RolloutValue, RoutesValue, SecondsValue,
+        SecretsValue, ServiceEdit, ServiceGeneral, ServiceProcess, SourceValue, StringValue,
+        StringsValue, TemplateValue, TemplatesValue, VariablesValue, VisibilityValue, VolumesValue,
     },
     manifest::{Mount, Service, ServiceFile, Volume},
 };
@@ -107,6 +107,17 @@ edit_endpoint!(
     /// options, idempotency, and 200/202 responses as the other editing
     /// endpoints.
     set_environment_visibility, put, "/api/v1/applications/{id}/environments/{environment}/visibility", (id: String = "id", environment: String = "environment"), VisibilityValue, |(_, environment), body: VisibilityValue| ApplicationEdit::EnvironmentVisibility { environment, visibility: body.value });
+edit_endpoint!(
+    /// Sets what happens when an environment's rollout fails.
+    ///
+    /// `{environment}` is the environment's name, as in
+    /// `[spec.environments.<name>]`, not its ID. `automatic` restores the
+    /// environment's last successful deployment when a service update fails
+    /// within its monitor window; `manual` leaves it degraded. `null` returns
+    /// to the default: automatic for promoted environments, manual otherwise.
+    /// Same query options, idempotency, and 200/202 responses as the other
+    /// editing endpoints.
+    set_environment_rollback, put, "/api/v1/applications/{id}/environments/{environment}/rollback", (id: String = "id", environment: String = "environment"), RollbackValue, |(_, environment), body: RollbackValue| ApplicationEdit::EnvironmentRollback { environment, rollback: body.value });
 edit_endpoint!(set_manifest_repository, put, "/api/v1/applications/{id}/repository", (id: String = "id"), RepositoryValue, |_, body: RepositoryValue| ApplicationEdit::Repository(body.value));
 edit_endpoint!(
     /// Disconnects the manifest repository.
@@ -233,6 +244,7 @@ pub(super) fn router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Write) => set_application_name))
         .routes(granted!(App(Write) => set_application_variables))
         .routes(granted!(App(Write) => set_environment_visibility))
+        .routes(granted!(App(Write) => set_environment_rollback))
         .routes(granted!(App(Write) => set_manifest_repository))
         .routes(granted!(App(Write) => disconnect_manifest_repository))
         .routes(granted!(App(Write) => set_manifest_repository_url))

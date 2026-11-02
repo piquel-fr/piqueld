@@ -1,12 +1,14 @@
 //! Pure, deterministic desired/observed planning for the supported Swarm model.
 
 use crate::manifest::dependencies::StartupOrder;
-use crate::manifest::{JobVolumeAccess, NormalizedApplication, ValidatedHealthCheck};
+use crate::manifest::{
+    JobVolumeAccess, NormalizedApplication, Rollback, RouteTarget, ValidatedHealthCheck,
+};
 use crate::resource::{
     Convergence, DesiredJob, DesiredNetwork, DesiredService, DesiredVolume, ObservedApplication,
     ResolutionRequirement, ResolvedApplication,
 };
-use crate::{DockerServiceName, EnvironmentId, InstanceId, codes};
+use crate::{DockerServiceName, EnvironmentId, InstanceId, ServiceName, codes};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1064,24 +1066,52 @@ impl Plan {
         self.sort_diagnostics();
     }
 
-    /// Warns about each service of `application` whose explicit start-first
-    /// order lets the old and new task write the same volume at once.
-    pub fn warn_rollouts(&mut self, application: &NormalizedApplication) {
-        self.warn(
-            application
-                .spec()
-                .services
-                .iter()
-                .filter(|service| service.rollout_overlaps_writable_volume())
-                .map(|service| {
-                    PlanDiagnostic::new(
-                        codes::ROLLOUT_START_FIRST_WRITABLE_VOLUME,
-                        DiagnosticSeverity::Warning,
-                        service.name.as_str(),
-                        "start-first rollouts briefly run two tasks on the same writable volume; single-writer stores such as PostgreSQL or SQLite can corrupt their data",
-                    )
-                }),
-        );
+    /// Warns about rollouts of `application` that can go wrong: each service
+    /// whose explicit start-first order lets the old and new task write the
+    /// same volume at once and, when `rollback` is automatic, each service
+    /// routes send traffic to that declares no health check. Unless its image
+    /// defines one, Docker only sees a container that exits as failed, so a
+    /// rollout whose containers run but don't serve succeeds and is never
+    /// rolled back.
+    pub fn warn_rollouts(&mut self, application: &NormalizedApplication, rollback: Rollback) {
+        let spec = application.spec();
+        let routed = |name: &ServiceName| {
+            spec.routes.iter().any(|route| {
+                matches!(&route.target, RouteTarget::Service { service, .. } if service == name)
+            })
+        };
+        let overlapping = spec
+            .services
+            .iter()
+            .filter(|service| service.rollout_overlaps_writable_volume())
+            .map(|service| {
+                PlanDiagnostic::new(
+                    codes::ROLLOUT_START_FIRST_WRITABLE_VOLUME,
+                    DiagnosticSeverity::Warning,
+                    service.name.as_str(),
+                    "start-first rollouts briefly run two tasks on the same writable volume; single-writer stores such as PostgreSQL or SQLite can corrupt their data",
+                )
+            });
+        let undetected = spec
+            .services
+            .iter()
+            .filter(|service| {
+                rollback == Rollback::Automatic
+                    && service.healthcheck.is_none()
+                    && routed(&service.name)
+            })
+            .map(|service| {
+                PlanDiagnostic::new(
+                    codes::ROLLBACK_WITHOUT_HEALTH_CHECK,
+                    DiagnosticSeverity::Warning,
+                    service.name.as_str(),
+                    format!(
+                        "{} receives routed traffic but declares no health check; unless its image defines one, a rollout whose containers run without serving isn't detected as failed and isn't rolled back automatically",
+                        service.name
+                    ),
+                )
+            });
+        self.warn(overlapping.chain(undetected));
     }
 
     /// Warns when `application` has a service receiving telemetry but its

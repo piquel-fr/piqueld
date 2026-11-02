@@ -837,7 +837,8 @@ impl Store {
             ApplicationEdit::Imports(_) => "imports",
             ApplicationEdit::GeneratedSecrets(_) => "secrets",
             ApplicationEdit::Variables(_) => "variables",
-            ApplicationEdit::EnvironmentVisibility { .. } => "environments",
+            ApplicationEdit::EnvironmentVisibility { .. }
+            | ApplicationEdit::EnvironmentRollback { .. } => "environments",
         };
         let resource = match &edit {
             ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {

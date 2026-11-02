@@ -177,7 +177,7 @@ fn plan_shows_effective_rollouts_and_warns_about_overlapping_writers() {
     use piqueld_core::manifest::RolloutOrderSource;
     let rollout = |app: &piqueld_core::NormalizedApplication| {
         let mut plan = Plan::default();
-        plan.warn_rollouts(app);
+        plan.warn_rollouts(app, piqueld_core::manifest::Rollback::Manual);
         let [view] = ServiceRolloutView::for_application(app).try_into().unwrap();
         (view, plan)
     };
@@ -217,6 +217,43 @@ fn plan_shows_effective_rollouts_and_warns_about_overlapping_writers() {
     );
     assert_eq!(warning.severity, piqueld_core::DiagnosticSeverity::Warning);
     assert!(!plan.is_blocked());
+}
+
+/// Automatic rollback warns about routed services without a health check,
+/// whose failed rollouts it can't see.
+#[test]
+fn automatic_rollback_warns_about_routed_services_without_health_checks() {
+    use piqueld_core::manifest::Rollback;
+    let fixture = include_str!("fixtures/manifests/prebuilt.toml");
+    let app = |extra: &str| {
+        parse_toml(&format!("{fixture}{extra}"))
+            .unwrap()
+            .normalize(ApplicationId::parse("app-notes-01").unwrap())
+    };
+    let warnings = |app: &piqueld_core::NormalizedApplication, rollback| {
+        let mut plan = Plan::default();
+        plan.warn_rollouts(app, rollback);
+        plan.diagnostics
+            .iter()
+            .map(|warning| (warning.code.clone(), warning.resource.clone()))
+            .collect::<Vec<_>>()
+    };
+    let route =
+        "\n[[spec.routes]]\nhostname = \"notes.example.com\"\nservice = \"web\"\nport = 80\n";
+    let routed = app(route);
+    assert_eq!(
+        warnings(&routed, Rollback::Automatic),
+        [(
+            piqueld_core::codes::ROLLBACK_WITHOUT_HEALTH_CHECK.to_owned(),
+            "web".to_owned()
+        )]
+    );
+    assert_eq!(warnings(&routed, Rollback::Manual), []);
+    assert_eq!(warnings(&application(), Rollback::Automatic), []);
+    let checked = app(&format!(
+        "\n[spec.services.healthcheck]\ntype = \"http\"\nport = 80\n{route}"
+    ));
+    assert_eq!(warnings(&checked, Rollback::Automatic), []);
 }
 
 #[test]

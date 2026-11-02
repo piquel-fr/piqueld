@@ -163,7 +163,7 @@ impl ApplicationService {
             &observed,
         );
         plan.redact_configuration();
-        plan.warn_rollouts(app);
+        plan.warn_rollouts(app, target.rollback_in(Some(candidate.release.template())));
         plan.add_jobs(app, target.id());
         plan.warn_telemetry(app, granted);
         let spec = app.spec();

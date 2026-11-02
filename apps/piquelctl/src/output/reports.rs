@@ -614,9 +614,14 @@ impl Names<'_> {
                 self.environment(environment.as_str())
             ),
             DeploymentOrigin::Release => "deployed again by release ID".into(),
-            DeploymentOrigin::Restore { deployment } => {
-                format!("restored from deployment {deployment}")
-            }
+            DeploymentOrigin::Restore {
+                deployment,
+                rolled_back: None,
+            } => format!("restored from deployment {deployment}"),
+            DeploymentOrigin::Restore {
+                deployment,
+                rolled_back: Some(failed),
+            } => format!("rolled back from deployment {failed} to deployment {deployment}"),
             DeploymentOrigin::Local(snapshot) => snapshot_origin(snapshot),
         }
     }

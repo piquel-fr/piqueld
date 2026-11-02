@@ -93,7 +93,7 @@ impl Deployed {
         let id = &deployment.operation.id;
         let mut origin = deployment.origin.clone();
         // Restores run what they restored, which may be a restore too.
-        while let DeploymentOrigin::Restore { deployment } = &origin {
+        while let DeploymentOrigin::Restore { deployment, .. } = &origin {
             origin = find_deployment(client, environment, deployment)
                 .await?
                 .origin;

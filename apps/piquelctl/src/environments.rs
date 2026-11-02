@@ -13,11 +13,11 @@ use crate::{
     },
     support::{POLL_INTERVAL, join_or, retry_transport},
 };
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use piqueld_client::{
     ApplicationView, Client, ClientError, CreateEnvironmentRequest, EnvironmentBranchRequest,
     EnvironmentRequest, EnvironmentSourceRequest, EnvironmentStatusView, EnvironmentView,
-    Operation, PromoteRequest, Visibility, edit::ApplicationEdit,
+    Operation, PromoteRequest, Rollback, Visibility, edit::ApplicationEdit,
 };
 
 // `env` subcommands; `///` on variants and fields is user-facing help.
@@ -91,6 +91,16 @@ pub(crate) enum EnvCommand {
     /// `private` adds the block when the manifest has none for the
     /// environment; `public`, which is no cap, only changes an existing one.
     Visibility(VisibilityArgs),
+    /// Choose what happens when an environment's rollout fails.
+    ///
+    /// A rollout fails when Docker pauses a service update because a new
+    /// container failed within its monitor window. With `automatic`, piqueld
+    /// then restores the environment's last successful deployment, like `env
+    /// restore`; with `manual`, the environment stays degraded until you
+    /// deploy or restore. `default` is automatic for promoted environments and
+    /// manual for the others. The setting is saved in the environment's
+    /// `[spec.environments.<name>]` block. Data is never reverted.
+    Rollback(RollbackArgs),
     /// Rename an environment without redeploying it.
     ///
     /// The command fails while the manifest the environment deploys, or the
@@ -250,6 +260,7 @@ impl EnvCommand {
             Self::Telemetry(args) => args.run(client, console).await,
             Self::Show(target) => show(client, console, target).await,
             Self::Visibility(args) => args.run(client, console).await,
+            Self::Rollback(args) => args.run(client, console).await,
             Self::Secret {
                 application,
                 environment,
@@ -357,6 +368,48 @@ impl VisibilityArgs {
         let edit = ApplicationEdit::EnvironmentVisibility {
             environment: environment.name.to_string(),
             visibility: self.visibility,
+        };
+        self.flags
+            .save_loaded(client, console, &application, &edit)
+            .await
+    }
+}
+
+// `env rollback` arguments.
+#[derive(Debug, Args)]
+pub(crate) struct RollbackArgs {
+    #[command(flatten)]
+    target: NamedEnvironment,
+    /// What happens when a rollout fails.
+    #[arg(value_enum)]
+    rollback: RollbackChoice,
+    #[command(flatten)]
+    flags: EditFlags,
+}
+
+// `env rollback` values; `///` on variants is help.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RollbackChoice {
+    /// Restore the last successful deployment.
+    Automatic,
+    /// Stay degraded until someone acts.
+    Manual,
+    /// Automatic for promoted environments, manual otherwise.
+    Default,
+}
+
+impl RollbackArgs {
+    /// Saves the environment's rollback in `[spec.environments.<name>]`,
+    /// addressing it by name or ID.
+    async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = self.target.resolve(client).await?;
+        let edit = ApplicationEdit::EnvironmentRollback {
+            environment: environment.name.to_string(),
+            rollback: match self.rollback {
+                RollbackChoice::Automatic => Some(Rollback::Automatic),
+                RollbackChoice::Manual => Some(Rollback::Manual),
+                RollbackChoice::Default => None,
+            },
         };
         self.flags
             .save_loaded(client, console, &application, &edit)

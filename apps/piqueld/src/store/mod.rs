@@ -49,6 +49,7 @@ use piqueld_core::{
     api::EnvironmentView,
     manifest::{
         ApplicationTemplate, ManifestRevision, RenderContext, Rendering, RepositoryManifest,
+        Rollback,
     },
     resource::ResolvedApplication,
 };
@@ -408,6 +409,29 @@ impl StoredEnvironment {
         match self.environment.source {
             EnvironmentSource::Saved => Some(&self.application.application),
             EnvironmentSource::Branch(_) | EnvironmentSource::Promoted(_) => self.own.as_ref(),
+        }
+    }
+
+    /// What happens when this environment's rollout fails, as the manifest
+    /// it deploys says (see [`Self::rollback_in`]).
+    #[must_use]
+    pub fn rollback(&self) -> Rollback {
+        self.rollback_in(self.manifest())
+    }
+
+    /// What happens when this environment's rollout fails, as `manifest`
+    /// says: the rollback its block sets, by default automatic when the
+    /// environment is promoted. Previews have no block, and are never
+    /// rolled back.
+    #[must_use]
+    pub fn rollback_in(&self, manifest: Option<&ApplicationTemplate>) -> Rollback {
+        let promoted = matches!(self.environment.source, EnvironmentSource::Promoted(_));
+        match (&self.environment.kind, manifest) {
+            (EnvironmentKind::Preview(_), _) => Rollback::Manual,
+            (EnvironmentKind::Environment, Some(manifest)) => manifest
+                .spec()
+                .rollback(self.environment.name.as_str(), promoted),
+            (EnvironmentKind::Environment, None) => Rollback::effective(None, promoted),
         }
     }
 

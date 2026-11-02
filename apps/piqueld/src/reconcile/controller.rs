@@ -50,7 +50,8 @@ impl<D: DockerApi> Controller<D> {
     ///    Otherwise success completes the operation (or finalizes deletion), a
     ///    `Cancelled`/`Superseded` error defers to newer durable state, failed
     ///    deletions keep running with the error recorded for retry, and other
-    ///    failures mark the environment degraded and the operation failed.
+    ///    failures mark the environment degraded and the operation failed,
+    ///    or roll a failed rollout back (see `rollback`).
     ///
     /// Returns a short outcome label for logging.
     async fn run_operation_inner(
@@ -149,7 +150,7 @@ impl<D: DockerApi> Controller<D> {
             }
             Err(error) => {
                 tracing::error!(code = error.code(), error = ?error, "operation failed");
-                self.fail_operation(operation, &error).await
+                self.fail(operation, &error).await
             }
         };
         persisted.map(|()| outcome)

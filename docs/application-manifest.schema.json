@@ -194,6 +194,18 @@
             "null"
           ]
         },
+        "rollback": {
+          "default": null,
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/Rollback",
+              "description": "What happens when a rollout fails: `automatic` restores the\nenvironment's last successful deployment, `manual` leaves it degraded\nuntil someone acts. By default `automatic` for promoted environments\nand `manual` for the others."
+            }
+          ]
+        },
         "sync": {
           "default": null,
           "description": "Whether pushes to the environment's branch deploy it while\n`spec.manifest.sync` is on. Off when unset. `true` needs\n`spec.manifest`.",
@@ -786,6 +798,14 @@
         }
       },
       "type": "object"
+    },
+    "Rollback": {
+      "description": "What happens when an environment's rollout fails: a service update\nthat Docker pauses because a new task failed within its monitor\nwindow.",
+      "enum": [
+        "automatic",
+        "manual"
+      ],
+      "type": "string"
     },
     "Rollout": {
       "additionalProperties": false,

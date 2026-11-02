@@ -4,6 +4,7 @@ use super::{
     ApplicationState, EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError,
     decode_name, new_id, now_ms,
 };
+use piqueld_core::observability::{DeploymentFailure, DiagnosticCode};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 /// Raw `operations` columns as stored; `decode` validates them into an `Operation`.
@@ -118,26 +119,42 @@ impl Store {
         to: OperationState,
         error: Option<(&str, &str)>,
     ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::transition_operation_on(&mut tx, id, from, to, error).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// [`Self::transition_operation`] in `tx`.
+    pub(super) async fn transition_operation_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &str,
+        from: OperationState,
+        to: OperationState,
+        error: Option<(&str, &str)>,
+    ) -> Result<(), StoreError> {
         if !from.can_transition_to(to) || error.is_some() != (to == OperationState::Failed) {
             return Err(StoreError::IllegalTransition);
         }
         let now = now_ms();
-        let (_writer, mut tx) = self.begin_immediate().await?;
         let finished = to.terminal().then_some(now);
         let (code, message) = error.unzip();
         let (from_state, to_state) = (from.as_str(), to.as_str());
         let changed = sqlx::query!(
             "UPDATE operations SET consecutive_failures=CASE WHEN ?1='failed' THEN consecutive_failures+1 WHEN ?1='succeeded' THEN 0 ELSE consecutive_failures END,attempt=attempt+CASE WHEN ?1='running' AND state!='running' THEN 1 ELSE 0 END,state=?1,error_code=?2,error_message=?3,updated_at_ms=?4,started_at_ms=CASE WHEN ?1='requested' THEN NULL WHEN ?1='running' THEN COALESCE(started_at_ms,?4) ELSE started_at_ms END,finished_at_ms=?5 WHERE id=?6 AND state=?7 AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",
             to_state,code,message,now,finished,id,from_state)
-            .execute(&mut *tx).await.map_err(StoreError::database)?.rows_affected();
+            .execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        if matches!(code, Some("job_failed" | "job_timeout")) {
-            Self::request_job_cleanup_on(&mut tx, id).await?;
+        if code
+            .and_then(DiagnosticCode::parse)
+            .and_then(DiagnosticCode::deployment_failure)
+            == Some(DeploymentFailure::Job)
+        {
+            Self::request_job_cleanup_on(tx, id).await?;
         }
         if to.terminal() {
-            Self::record_deployment_attempt(&mut tx, id).await?;
+            Self::record_deployment_attempt(tx, id).await?;
         }
         if from != to {
             let kind = match to {
@@ -148,9 +165,9 @@ impl Store {
                 OperationState::Cancelled => "operation_cancelled",
                 OperationState::Superseded => "operation_superseded",
             };
-            Self::operation_event(&mut tx, id, kind, message, now).await?;
+            Self::operation_event(tx, id, kind, message, now).await?;
         }
-        tx.commit().await.map_err(StoreError::database)
+        Ok(())
     }
 
     /// Stores the latest error while a deletion remains running.

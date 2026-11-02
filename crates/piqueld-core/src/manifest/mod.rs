@@ -60,7 +60,9 @@ pub use input::{
 };
 pub use limits::{PreviewLimits, PreviewLimitsError};
 pub use links::{Export, Import, ValidatedExport, ValidatedImport};
-pub use rollout::{Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout};
+pub use rollout::{
+    Rollback, Rollout, RolloutOrder, RolloutOrderSource, RolloutPolicy, ValidatedRollout,
+};
 pub use routes::{
     Hostname, RedirectStatus, RedirectUrl, RouteHostname, RouteTarget, ValidatedRedirect,
     ValidatedRoute, Visibility, VisibilityError,

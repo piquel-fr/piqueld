@@ -4,7 +4,10 @@ use super::{
     StoredEnvironment,
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use piqueld_core::{EnvironmentId, observability::DiagnosticCode};
+use piqueld_core::{
+    EnvironmentId,
+    observability::{DeploymentFailure, DiagnosticCode},
+};
 use std::collections::{HashMap, HashSet};
 use tracing::Instrument;
 
@@ -364,10 +367,8 @@ impl<D: DockerApi> Controller<D> {
 
     /// Whether a failed job ended the operation's deployment before promotion.
     fn job_failed(operation: &Operation) -> bool {
-        matches!(
-            Self::failure(operation),
-            Some(DiagnosticCode::JobFailed | DiagnosticCode::JobTimeout)
-        )
+        Self::failure(operation).and_then(DiagnosticCode::deployment_failure)
+            == Some(DeploymentFailure::Job)
     }
 
     /// Whether a failure persists even when services match the target: ingress

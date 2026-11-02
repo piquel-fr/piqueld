@@ -223,6 +223,20 @@ impl Store {
         serde_json::from_str(&origin).map_err(StoreError::corrupt)
     }
 
+    /// Whether deployment `id` ever succeeded.
+    /// # Errors
+    /// Returns storage or absence errors.
+    pub(crate) async fn deployment_succeeded(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(
+            sqlx::query_scalar!("SELECT succeeded_at_ms FROM deployments WHERE id=?1", id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::database)?
+                .ok_or(StoreError::NotFound)?
+                .is_some(),
+        )
+    }
+
     /// Reads the inputs captured for an execution, never the editable application.
     /// # Errors
     /// Returns storage, decoding, or absence errors.

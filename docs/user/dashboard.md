@@ -165,7 +165,9 @@ ran, like `piquelctl env restore`: its manifest, images and secret versions, wit
 and without reverting volume contents or migrations. The restore is a new
 deployment whose origin reads "Restored from deployment \<id>", and becomes the
 current target. A deployment whose images or secret versions are gone is
-refused with the reason.
+refused with the reason. An [automatic rollback](reference/manifest.md#rollback)
+is listed the same way, its origin reading "Rolled back from deployment
+\<failed> to deployment \<restored>".
 
 Values that differ between environments come from manifest variables. The
 Variables tab edits them: one row per variable, with its default, one column
@@ -212,7 +214,11 @@ private visibility, and shows each deployed route's name, effective visibility, 
 records its hostname needs, whether piqueld
 [manages them](guides/ingress.md#managed-dns-records) (`manual`, `managed`, `pending` or
 `dns_conflict`), HTTPS readiness and diagnostics in every environment and preview.
-Each environment's Overview sets its visibility ceiling. System status shows a
+Each environment's Overview sets its visibility ceiling, and its **Rollback**
+card chooses what happens when a rollout fails: **Automatic** restores the last
+successful deployment, **Manual** leaves the environment degraded, and
+**Default** is automatic for promoted environments and manual for the others
+(see [rollback](reference/manifest.md#rollback)). System status shows a
 Previews card with the previews against their limits, installation-wide and for
 each readable application, flagged at or over a limit, and the CPU and memory
 limits of their deployed replicas. It also shows which DNS providers manage
@@ -382,12 +388,13 @@ releases promoted from it. The card says what the environment does now and what 
 selected choice would do; **Save source** applies it, redeploying nothing. A promoted
 environment's card links to its source.
 **New environment** can create a promoted environment directly. Its Variables
-card reads the manifest of the release last promoted into it. Its Visibility card
-edits the saved manifest, like every environment's; since a promoted environment
-uses the visibility and variables recorded in the release it receives, a saved
-change applies once its source records a new release and it is promoted. Unsaved
-changes in the Source, Visibility, and rename forms block deployment and warn
-before navigation, like other forms.
+card reads the manifest of the release last promoted into it. Its Visibility and
+Rollback cards edit the saved manifest, like every environment's; since a
+promoted environment uses the visibility, rollback and variables recorded in the
+release it receives, a saved change applies once its source records a new
+release and it is promoted. Unsaved changes in the Source, Visibility,
+Rollback, and rename forms block deployment and warn before navigation, like
+other forms.
 
 When the manifest [declares environments](reference/manifest.md#declared-environments),
 it owns their existence, so **Rename environment** and **Delete environment** are disabled for them, and,

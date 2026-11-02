@@ -232,7 +232,8 @@ earlier release for any environment.
 `env history APP [ENV]` lists an environment's deployments, newest first, three
 per page (`--cursor` for older ones): each one's ID, outcome, where it came
 from, its release, and which is the current target and the last successful
-one.
+one. An [automatic rollback](manifest.md#rollback) shows as "rolled back from
+deployment \<failed> to deployment \<restored>".
 
 `env restore APP ENV DEPLOYMENT` deploys an earlier deployment again exactly as
 it ran: its rendered manifest, its images and the secret versions it pinned,
@@ -247,6 +248,11 @@ deployment's migrations against newer data is exactly what it must avoid. It
 does not revert data either. Volume contents and migrations that ran since
 stay as they are, so the restored code must cope with them; expand/contract
 migrations keep old code compatible.
+
+`env rollback APP ENV automatic|manual|default` chooses whether a failed
+rollout restores the environment's last successful deployment on its own (see
+[rollback](manifest.md#rollback)). `default` removes the setting: promoted
+environments then roll back automatically, the others manually.
 
 Before deploying anything, a restore fails with:
 

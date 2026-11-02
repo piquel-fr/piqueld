@@ -2255,6 +2255,11 @@
                 "description": "The deployment it restored.",
                 "type": "string"
               },
+              "rolled_back": {
+                "description": "The deployment whose failed rollout piqueld rolled back by\nrestoring, in an environment with automatic rollback. Absent when\nsomeone asked for the restore.",
+                "nullable": true,
+                "type": "string"
+              },
               "type": {
                 "enum": [
                   "restore"
@@ -6509,6 +6514,26 @@
             "nullable": true,
             "type": "string"
           },
+          "rollback": {
+            "default": null,
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Rollback"
+                  }
+                ],
+                "description": "What happens when a rollout fails: `automatic` restores the\nenvironment's last successful deployment, `manual` leaves it degraded\nuntil someone acts. By default `automatic` for promoted environments\nand `manual` for the others."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "sync": {
             "default": null,
             "description": "Whether pushes to the environment's branch deploy it while\n`spec.manifest.sync` is on. Off when unset. `true` needs\n`spec.manifest`.",
@@ -10387,6 +10412,42 @@
         ],
         "type": "object"
       },
+      "Rollback": {
+        "description": "What happens when an environment's rollout fails: a service update\nthat Docker pauses because a new task failed within its monitor\nwindow.",
+        "enum": [
+          "automatic",
+          "manual"
+        ],
+        "type": "string"
+      },
+      "RollbackValue": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Rollback"
+                  }
+                ],
+                "description": "New value; null explicitly clears an optional setting."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "type": "object"
+      },
       "Rollout": {
         "additionalProperties": false,
         "description": "How Docker replaces a service's containers during a deployment, one at a\ntime. An empty block keeps the defaults.",
@@ -14190,6 +14251,201 @@
           }
         },
         "summary": "Adds an environment to an application.",
+        "x-piqueld-access": "apps:write"
+      }
+    },
+    "/api/v1/applications/{id}/environments/{environment}/rollback": {
+      "put": {
+        "description": "`{environment}` is the environment's name, as in\n`[spec.environments.<name>]`, not its ID. `automatic` restores the\nenvironment's last successful deployment when a service update fails\nwithin its monitor window; `manual` leaves it degraded. `null` returns\nto the default: automatic for promoted environments, manual otherwise.\nSame query options, idempotency, and 200/202 responses as the other\nediting endpoints.",
+        "operationId": "set_environment_rollback",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "environment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required inspected generation unless force is set.",
+            "in": "query",
+            "name": "expected_generation",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Explicitly bypass the revision check.",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Deploy the changed configuration to the application's only environment\nor, when its manifest declares environments, every declared one not\npromoted from another; omitted/false saves only.",
+            "in": "query",
+            "name": "deploy",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_SavedApplication"
+                }
+              }
+            },
+            "description": "Configuration saved and deployment accepted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The request body stopped arriving"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Sets what happens when an environment's rollout fails.",
         "x-piqueld-access": "apps:write"
       }
     },

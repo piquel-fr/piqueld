@@ -1,7 +1,7 @@
 //! Public manifest input and export shapes, before semantic validation.
 
 use super::variables::{RenderTarget, Template, Typed};
-use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Visibility};
+use super::{APPLICATION_API_VERSION, APPLICATION_KIND, Rollback, Visibility};
 use crate::names::string_enum;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -189,6 +189,36 @@ impl ApplicationSpec {
         }
     }
 
+    /// Sets `environment`'s rollback, or returns it to the default with
+    /// `None`. Like visibility, only a setting adds a block.
+    pub fn set_environment_rollback(&mut self, environment: &str, rollback: Option<Rollback>) {
+        match self.environments.get_mut(environment) {
+            Some(config) => config.rollback = rollback,
+            None if rollback.is_none() => {}
+            None => {
+                self.environments.insert(
+                    environment.to_owned(),
+                    EnvironmentConfig {
+                        rollback,
+                        ..EnvironmentConfig::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// The rollback `environment` gets, `promoted` or not (see
+    /// [`Rollback::effective`]).
+    #[must_use]
+    pub fn rollback(&self, environment: &str, promoted: bool) -> Rollback {
+        Rollback::effective(
+            self.environments
+                .get(environment)
+                .and_then(|config| config.rollback),
+            promoted,
+        )
+    }
+
     /// Caps every route at `target`'s visibility ceiling, as rendering for it
     /// does. Unconfigured environments restrict nothing; previews are private
     /// unless `[spec.previews] visibility` says otherwise.
@@ -259,6 +289,12 @@ pub struct EnvironmentConfig {
     /// restricts nothing; `private` keeps every route on the tailnet.
     #[serde(skip_serializing_if = "Visibility::is_public")]
     pub visibility: Visibility,
+    /// What happens when a rollout fails: `automatic` restores the
+    /// environment's last successful deployment, `manual` leaves it degraded
+    /// until someone acts. By default `automatic` for promoted environments
+    /// and `manual` for the others.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollback: Option<Rollback>,
     /// The environment's value of the variable `<variable>`. It replaces the
     /// `[spec.variables]` default, or declares a variable without one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -286,6 +322,7 @@ impl Default for EnvironmentConfig {
             promote_from: None,
             sync: None,
             visibility: Visibility::Public,
+            rollback: None,
             variables: BTreeMap::new(),
         }
     }
@@ -1077,8 +1114,29 @@ fn default_preserve_path() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationSpec, EnvironmentConfig, GitRepository, RepositoryManifest};
+    use super::{ApplicationSpec, EnvironmentConfig, GitRepository, RepositoryManifest, Rollback};
     use crate::sync::RepositorySync;
+
+    #[test]
+    fn rollback_is_automatic_by_default_only_for_promoted_environments() {
+        let mut spec = ApplicationSpec::default();
+        assert_eq!(spec.rollback("production", true), Rollback::Automatic);
+        assert_eq!(spec.rollback("production", false), Rollback::Manual);
+        // Returning to the default adds no block.
+        spec.set_environment_rollback("production", None);
+        assert!(spec.environments.is_empty());
+        spec.set_environment_rollback("production", Some(Rollback::Manual));
+        assert_eq!(spec.rollback("production", true), Rollback::Manual);
+        spec.set_environment_rollback("staging", Some(Rollback::Automatic));
+        assert_eq!(spec.rollback("staging", false), Rollback::Automatic);
+        // An existing block is kept, back on the default.
+        spec.set_environment_rollback("production", None);
+        assert_eq!(
+            spec.environments["production"],
+            EnvironmentConfig::default()
+        );
+        assert_eq!(spec.rollback("production", true), Rollback::Automatic);
+    }
 
     #[test]
     fn a_save_deploys_on_push_only_by_turning_sync_on_or_opting_environments_in() {
