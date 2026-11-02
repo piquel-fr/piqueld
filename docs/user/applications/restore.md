@@ -141,9 +141,19 @@ never rolled back. To have `production` roll back on its own:
   rollback = "automatic"
   ```
 
-piqueld reads the setting from the manifest the environment deploys. A
-promoted environment applies a change once its source records a new release
-and you promote it.
+The dashboard and `piquelctl` save the setting in the application's manifest.
+piqueld reads it from the manifest the environment deploys, though, so when a
+change applies depends on where the environment gets its manifest:
+
+- An environment that deploys the application's manifest uses it at once. In
+  an application that [reads its manifest from a
+  repository](deploy-on-push.md#edit-a-repository-backed-application), a
+  push that changes the manifest file replaces the setting: set it in the
+  file too.
+- An environment that follows another branch reads the manifest file on that
+  branch. Set `rollback` there, then deploy the environment.
+- A promoted environment reads the release it receives. A change applies once
+  its source deploys a release with it, and you promote that release.
 
 A rollback is a restore: a new deployment that runs no jobs and doesn't
 revert data, as [the warning above](#what-a-restore-deploys) describes. Its
@@ -159,13 +169,16 @@ piqueld rolls back each failed deployment once at most. It doesn't roll back:
 - a deployment whose [job](jobs.md) fails: the job stops it before its
   services roll out, so they keep running the previous version.
 
-Docker only notices a container that exits or fails its health check. A
-container that runs without serving requests looks healthy, so its rollout
-never fails. When an environment rolls back automatically, its plans warn
-with `rollback_without_health_check` about each service that routes send
-traffic to but that has no health check, as the dashboard's **Preview**,
-`piquelctl app plan` and `piquelctl env promote --plan` show them. Give those
-services one.
+Docker only notices a container that exits or fails its health check.
+Without a health check, in the manifest or in its image, a container that
+runs but doesn't serve requests looks healthy, so its rollout doesn't fail.
+When an environment rolls back automatically, its plans warn about each
+service that routes send traffic to but whose manifest declares no health
+check. [Declare one](services.md#health-checks), unless the service's image
+already defines one. The dashboard shows the warning in **Preview**, and, for
+a promoted environment, in the plan that its **Promote from** button opens.
+`piquelctl app plan` and `piquelctl env promote --plan` print it as
+`rollback_without_health_check`.
 
 ## Check that it works
 
@@ -199,9 +212,12 @@ It runs the release of the deployment it restored.
   stored secret that the environment may no longer mount.
   [Allow it](secrets-and-variables.md#choose-who-may-mount-a-stored-secret)
   again, or deploy instead.
-- **A failed rollout wasn't rolled back.** Check that the environment's
-  **Rollback** card says automatic: previews and manual environments aren't
-  rolled back. When piqueld can't roll back,
+- **A failed rollout wasn't rolled back.** Previews and manual environments
+  aren't rolled back. The **Rollback** card shows the saved setting, but an
+  environment that follows another branch, or a promoted one, uses the
+  setting of the manifest it deployed, as
+  [rolling back automatically](#roll-back-failed-rollouts-automatically)
+  describes. When piqueld can't roll back,
   because no earlier deployment succeeded or its images or secret versions
   are gone, the failed deployment records a `rollback_unavailable` event
   saying why. To see it, expand the deployment on the **Deployments** tab,
