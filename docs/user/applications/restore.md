@@ -199,8 +199,9 @@ It runs the release of the deployment it restored.
   stored secret that the environment may no longer mount.
   [Allow it](secrets-and-variables.md#choose-who-may-mount-a-stored-secret)
   again, or deploy instead.
-- **A failed rollout wasn't rolled back.** Check the environment's
-  **Rollback** card, or `piquelctl env show`. When piqueld can't roll back,
+- **A failed rollout wasn't rolled back.** Check that the environment's
+  **Rollback** card says automatic: previews and manual environments aren't
+  rolled back. When piqueld can't roll back,
   because no earlier deployment succeeded or its images or secret versions
   are gone, the failed deployment records a `rollback_unavailable` event
   saying why. To see it, expand the deployment on the **Deployments** tab,
