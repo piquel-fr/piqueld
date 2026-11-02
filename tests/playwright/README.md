@@ -4,7 +4,10 @@ Playwright Test drives Chromium against piqueld's real embedded dashboard and
 HTTP/Unix API. A small Rust example starts a fresh database and daemon fixture for
 each test. Its Docker runtime boundary is stubbed: these tests cover UI/API
 behavior, not actual deployments. Docker reconciliation retains its existing
-Rust integration suite.
+Rust integration suite. The CLI reaches the fixture's Unix socket as another
+user would, anonymously, unless a test sets `PIQUELD_PLAYWRIGHT_HOST_OPERATOR=1`
+in the `processEnv` fixture option, which makes token-less calls act as the
+host operator.
 
 `screenshots/` holds the documentation screenshots instead, run by
 `just docs-screenshots` with `screenshots.config.ts`. That configuration sets
@@ -50,7 +53,12 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
 - Assertion replay, substituted user handles, and user-verification downgrade.
 - Invitation grants, enrollment links, transferable invitations, concurrent
   redemption, and cross-account management.
-- CLI device approval, private credential files, automation tokens, and revocation.
+- CLI device approval from its link or a typed code, before or after signing in,
+  private credential files, automation tokens, and revocation.
+- Host operator sign-in links, the operator's limits, and revoking its sessions.
+- API tokens created and revoked on the Accounts page, within the token form's
+  validation and the account's own access, and grant editing across mixed
+  application scopes.
 - Account deletion confirmation, cancellation, and last-account protection.
 - Sidebar navigation to every page, the not-found page, and the signed-in account
   and daemon connection shown in the shell.

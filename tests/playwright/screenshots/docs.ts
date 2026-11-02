@@ -1,7 +1,7 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
-import type { Browser, Locator, Page } from '@playwright/test';
-import { test as base, expect, adminToken, fillRegistration, submitRegistration, applicationTab, rewrite, title, Passkeys, Process, type Cli } from '../fixtures.js';
+import type { Locator, Page } from '@playwright/test';
+import { test as base, expect, adminToken, fillRegistration, applicationTab, rewrite, title, chooseGrants, done, Process, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -359,20 +359,6 @@ export async function accounts(page: Page) {
   await expect(page.locator('.auth-account').first()).toBeVisible();
 }
 
-/** The card of account `username` on the Accounts page. */
-export const accountCard = (page: Page, username: string) =>
-  page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: username, exact: true }) });
-
-/** Chooses grants in the grant editor within `scope`, as the guides do: the
- * applications first, if any, then the preset. */
-export async function chooseGrants(scope: Locator, preset: string, applications: string[] = []) {
-  if (applications.length) {
-    await scope.getByLabel('Application permissions apply to every application, including future ones').setChecked(false);
-    for (const application of applications) await scope.getByLabel(application, { exact: true }).setChecked(true);
-  }
-  await scope.getByLabel('Preset').selectOption(preset);
-}
-
 /** Creates an invitation link on the Accounts page, as
  * docs/user/accounts/accounts.md does, and returns it. */
 export async function invite(page: Page, preset: string, applications: string[] = []): Promise<string> {
@@ -381,28 +367,4 @@ export async function invite(page: Page, preset: string, applications: string[] 
   await chooseGrants(dialog, preset, applications);
   await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
   return done(page);
-}
-
-/** The invitation link, enrollment link or API token the Accounts page shows
- * once, read before selecting **Done**. */
-export async function done(page: Page): Promise<string> {
-  const secret = page.locator('.secret-box');
-  await expect(secret).toContainText(/#(invite|enroll)=|pqd_/);
-  const link = (await secret.innerText()).trim();
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await expect(secret).toHaveCount(0);
-  return link;
-}
-
-/** Creates account `username` through invitation `link`, in a browser of its own. */
-export async function signUp(browser: Browser, link: string, username: string, display: string) {
-  const context = await browser.newContext();
-  try {
-    const page = await context.newPage();
-    const passkeys = await Passkeys.create(page);
-    try {
-      await fillRegistration(page, link, username, { display, passkey: 'Laptop' });
-      await submitRegistration(page);
-    } finally { await passkeys.close(); }
-  } finally { await context.close(); }
 }

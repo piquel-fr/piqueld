@@ -2,6 +2,7 @@
 //! logs, accounts, and observability.
 
 pub mod application;
+pub mod auth;
 pub mod deployments;
 pub mod editor;
 pub mod environments;

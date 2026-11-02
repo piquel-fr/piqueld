@@ -1,5 +1,5 @@
-import { adminToken, expect, submitRegistration } from '../fixtures.js';
-import { test, accountCard, accountForm, accounts, chooseGrants, done, invite, shoot, signUp } from './docs.js';
+import { adminToken, accountCard, chooseGrants, done, expect, signUp, submitRegistration } from '../fixtures.js';
+import { test, accountForm, accounts, invite, shoot } from './docs.js';
 
 // docs/user/accounts: alice's account and passkeys, a new API token and her
 // sessions and tokens, carol's invitation and grants, and pending links.

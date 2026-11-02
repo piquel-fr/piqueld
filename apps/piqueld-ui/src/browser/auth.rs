@@ -5,6 +5,7 @@ use super::ui::{
     Icon, Modal, PageHeader, Tone, badge, empty, icon, notice, one_time_secret, text_field, when,
 };
 use super::{ClientErrorExt, confirm, reload};
+use crate::auth::{DeviceRequestLabels, Invite, SignInPage, TokenForm};
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -15,7 +16,6 @@ use piqueld_client::{
         Account, Ceremony, CeremonyFinish, CredentialView, DeviceRequest, Directory, Manage,
         PasskeyView, Principal, RegistrationStart, Session,
     },
-    tailnet::TailnetBinding,
 };
 use wasm_bindgen::prelude::*;
 
@@ -108,31 +108,13 @@ fn navigate(path: &str) {
     }
 }
 
-/// A secret link being redeemed on the sign-in page.
-#[derive(Clone)]
-enum Invite {
-    /// `#invite=`: creates an account, or the first one during setup.
-    Account(String),
-    /// `#enroll=`: adds a passkey to an existing account.
-    Enrollment(String),
-    /// `#operator=`: signs the browser in as the host operator.
-    Operator(String),
-}
-
 impl Invite {
     /// Reads an invitation, enrollment, or host operator sign-in secret once and
     /// removes it from the address bar and session history, so it is not left
     /// behind if the page is abandoned.
     fn take() -> Option<Self> {
         let window = web_sys::window()?;
-        let fragment = window.location().hash().ok()?;
-        let invite = if let Some(secret) = fragment.strip_prefix("#invite=") {
-            Self::Account(secret.to_owned())
-        } else if let Some(secret) = fragment.strip_prefix("#operator=") {
-            Self::Operator(secret.to_owned())
-        } else {
-            Self::Enrollment(fragment.strip_prefix("#enroll=")?.to_owned())
-        };
+        let invite = Self::parse(&window.location().hash().ok()?)?;
         if let (Ok(history), Ok(path)) = (window.history(), window.location().pathname()) {
             let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
         }
@@ -518,24 +500,16 @@ fn SignIn(
     invitation: Option<Invite>,
 ) -> impl IntoView {
     let feedback = Feedback::new();
-    // `Some` on the CLI approval page, holding the code from the link, if any.
-    // It stays in the address bar so it survives the reload after sign-in.
-    let device = web_sys::window()
+    let fragment = web_sys::window()
         .and_then(|w| w.location().hash().ok())
-        .and_then(|fragment| match fragment.strip_prefix("#device")? {
-            "" => Some(String::new()),
-            code => code.strip_prefix('=').map(str::to_owned),
-        });
-    let operator = current
-        .as_ref()
-        .is_some_and(|session| session.principal.user().is_none());
-    let content = match (invitation, current) {
-        (Some(Invite::Operator(secret)), _) => operator_sign_in(feedback, secret),
-        (Some(Invite::Enrollment(secret)), _) => enrollment(feedback, secret),
-        (Some(Invite::Account(secret)), _) => registration(feedback, secret),
-        (None, _) if !initialized => setup(),
-        (None, None) => passkey_sign_in(feedback),
-        (None, Some(_)) if device.is_some() && operator => view! {
+        .unwrap_or_default();
+    let content = match SignInPage::new(invitation, initialized, current.as_ref(), &fragment) {
+        SignInPage::Redeem(Invite::Operator(secret)) => operator_sign_in(feedback, secret),
+        SignInPage::Redeem(Invite::Enrollment(secret)) => enrollment(feedback, secret),
+        SignInPage::Redeem(Invite::Account(secret)) => registration(feedback, secret),
+        SignInPage::Setup => setup(),
+        SignInPage::SignIn => passkey_sign_in(feedback),
+        SignInPage::OperatorCannotApprove => view! {
             <h2>"Connect piquelctl"</h2>
             {notice(
                 Tone::Warn,
@@ -546,23 +520,19 @@ fn SignIn(
             </div>
         }
         .into_any(),
-        (None, Some(session)) => {
-            let who = session.principal.name().to_owned();
-            if let Some(code) = device {
-                view! { <DeviceApproval who={who} code={code} /> }.into_any()
-            } else {
-                view! {
-                    <h2>{format!("Signed in as {who}")}</h2>
-                    <div class="form-actions">
-                        <a class="btn btn-primary" href="/dashboard/">
-                            "Open dashboard"
-                        </a>
-                        <Logout />
-                    </div>
-                }
-                .into_any()
-            }
+        SignInPage::DeviceApproval { who, code } => {
+            view! { <DeviceApproval who={who} code={code} /> }.into_any()
         }
+        SignInPage::SignedIn { who } => view! {
+            <h2>{format!("Signed in as {who}")}</h2>
+            <div class="form-actions">
+                <a class="btn btn-primary" href="/dashboard/">
+                    "Open dashboard"
+                </a>
+                <Logout />
+            </div>
+        }
+        .into_any(),
     };
     view! {
         <main class="auth-page">
@@ -828,9 +798,9 @@ fn DeviceApproval(who: String, code: String) -> impl IntoView {
                             <dt>"Code"</dt>
                             <dd class="device-code">{pending.user_code.clone()}</dd>
                             <dt>"Requested from"</dt>
-                            <dd>{requester_label(pending.requester.as_deref())}</dd>
+                            <dd>{pending.requester_label()}</dd>
                             <dt>"Started"</dt>
-                            <dd>{age_label(pending.age)}</dd>
+                            <dd>{pending.age_label()}</dd>
                             <dt>"Access"</dt>
                             <dd>
                                 {pending
@@ -861,28 +831,6 @@ fn DeviceApproval(who: String, code: String) -> impl IntoView {
         <div class="form-actions">
             <Logout />
         </div>
-    }
-}
-
-/// Describes where a device request originated; `None` means the local socket.
-fn requester_label(requester: Option<&str>) -> String {
-    requester.map_or_else(
-        || "the daemon's local Unix socket".into(),
-        |address| format!("network address {address}"),
-    )
-}
-
-/// Coarse relative age of a device request.
-///
-/// ```text
-/// 30 -> "less than a minute ago"
-/// 150 -> "2 minutes ago"
-/// ```
-fn age_label(seconds: u32) -> String {
-    match seconds / 60 {
-        0 => "less than a minute ago".into(),
-        1 => "1 minute ago".into(),
-        minutes => format!("{minutes} minutes ago"),
     }
 }
 
@@ -1545,28 +1493,14 @@ fn NewToken(grants: Grants, feedback: Feedback) -> impl IntoView {
     let token_grants = RwSignal::new(Grants::default());
     let initial = Preset::ReadOnly.grants(&Scope::All).intersection(&grants);
     let create = move |_| {
-        let days = days.get_untracked();
-        let days = if days.is_empty() {
-            Ok(None)
-        } else {
-            days.parse::<u32>()
-                .map(Some)
-                .map_err(|_| "Enter a positive number of days, or leave blank")
+        let form = TokenForm {
+            name: token_name.get_untracked(),
+            days: days.get_untracked(),
+            tailnet: tailnet.get_untracked(),
         };
-        let tailnet = tailnet.get_untracked();
-        let tailnet = if tailnet.trim().is_empty() {
-            Ok(None)
-        } else {
-            TailnetBinding::parse(tailnet.trim()).map(Some)
-        };
-        match (days, tailnet) {
-            (Ok(days), Ok(tailnet)) => feedback.manage(Manage::CreateToken {
-                grants: token_grants.get_untracked(),
-                name: token_name.get_untracked(),
-                days,
-                tailnet,
-            }),
-            (Err(problem), _) | (_, Err(problem)) => feedback.error.set(problem.into()),
+        match form.command(token_grants.get_untracked()) {
+            Ok(command) => feedback.manage(command),
+            Err(problem) => feedback.error.set(problem.into()),
         }
     };
     view! {
