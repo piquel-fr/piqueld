@@ -3157,6 +3157,39 @@ fn account_changes_resolve_usernames_to_typed_requests() {
     );
 }
 
+/// Passkey IDs are base64url credential IDs, so some start with `-`
+/// and must still parse as the ID rather than as a flag.
+#[test]
+fn passkey_ids_may_start_with_a_hyphen() {
+    let server = start_server(false, 2, |request| match request.path.as_str() {
+        "/api/v1/auth/manage" => Reply::bare(&json!({})),
+        path => panic!("unexpected path {path}"),
+    });
+    for arguments in [
+        &["account", "passkey", "rename", "-_key", "laptop"][..],
+        &["account", "passkey", "remove", "-_key", "--yes"],
+    ] {
+        let output = run(&server, arguments);
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let sent: Vec<Value> = server
+        .finish()
+        .into_iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            json!({"action": "rename_passkey", "id": "-_key", "name": "laptop"}),
+            json!({"action": "remove_passkey", "id": "-_key"}),
+        ]
+    );
+}
+
 #[test]
 fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
     let mut view = app_view("app-notes-01", "notes");

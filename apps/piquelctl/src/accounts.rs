@@ -137,6 +137,8 @@ pub(crate) enum PasskeyCommand {
     /// own account's.
     Rename {
         /// Passkey ID, from `account passkey list`.
+        // Base64url credential IDs may start with `-`.
+        #[arg(allow_hyphen_values = true)]
         id: String,
         /// New name.
         name: String,
@@ -150,6 +152,8 @@ pub(crate) enum PasskeyCommand {
     /// passkey would remain.
     Remove {
         /// Passkey ID, from `account passkey list`.
+        // Base64url credential IDs may start with `-`.
+        #[arg(allow_hyphen_values = true)]
         id: String,
         /// Skip the confirmation prompt.
         #[arg(long, short)]
