@@ -1,5 +1,5 @@
-import { test, expect, call, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
-import type { Page } from '@playwright/test';
+import { test, expect, call, card, head, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import type { Page, Request } from '@playwright/test';
 
 /** `environments` with a second environment, `staging` or, to `collide`,
  * one named after the first environment's ID. */
@@ -10,6 +10,17 @@ async function createEnvironments(page: Page, collide = false) {
     expected_generation: saved.generation,
   });
   return { app: saved.application_id as string, sibling: sibling.id as string };
+}
+
+/** A repository-backed application following `main`. */
+async function createRepositoryApplication(page: Page) {
+  const saved = await call(page, 'POST', 'applications/apply', {
+    manifest: webManifest('notes', {
+      manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } },
+    }),
+    expected_generation: 0,
+  });
+  return { app: saved.application_id as string, generation: saved.generation as number };
 }
 
 test('the application page stays whole and each environment has its own page', async ({ page, account }) => {
@@ -220,4 +231,69 @@ test('a deployed environment stops and starts from its page', async ({ page, acc
   expect((await started).status()).toBe(202);
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
   expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('running');
+});
+
+test('a new environment is promoted from a live environment chosen in the dialog', async ({ page, account }) => {
+  void account;
+  const { app, generation } = await createRepositoryApplication(page);
+  // Staging, being deleted, can no longer be promoted from.
+  const staging = await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', expected_generation: generation });
+  await call(page, 'DELETE', `environments/${staging.id}?expected_generation=${generation + 1}`);
+  await page.goto(`/dashboard/applications/${app}?tab=environments`);
+  await page.getByRole('button', { name: 'New environment', exact: true }).click();
+  const creator = page.getByRole('dialog', { name: 'Create environment' });
+  const from = creator.getByRole('combobox', { name: 'Promote from', exact: true });
+  await expect(from.locator('option')).toHaveText(['None: build its own source', 'production']);
+  await expect(creator.getByLabel('Branch', { exact: true })).toBeVisible();
+  await from.selectOption({ label: 'production' });
+  // A promoted environment never builds, so it follows no branch.
+  await expect(creator.getByLabel('Branch', { exact: true })).toHaveCount(0);
+  await expect(creator).toContainText('only deploys releases promoted from the chosen environment');
+
+  await creator.getByLabel('Environment name', { exact: true }).fill('canary');
+  const created = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === `/api/v1/applications/${app}/environments`);
+  await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
+  const body = (await created).postDataJSON();
+  expect(body).toMatchObject({ name: 'canary', promote_from: app });
+  expect(body.branch ?? null).toBeNull();
+  await expect(title(page)).toHaveText('canary');
+  await expect(card(page, 'Source')).toContainText('Receives releases promoted from production');
+});
+
+test('an unsaved source blocks deploying, and an invalid commit is refused before it is sent', async ({ page, account }) => {
+  void account;
+  const { app } = await createRepositoryApplication(page);
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  const source = card(page, 'Source');
+  const deploy = head(page).getByRole('button', { name: 'Deploy', exact: true });
+  const save = source.getByRole('button', { name: 'Save source', exact: true });
+  const commit = source.getByLabel('Commit (optional)', { exact: true });
+  await expect(deploy).toBeEnabled();
+  const changes: string[] = [];
+  const record = (request: Request) => {
+    if (request.method() === 'PUT' && request.url().includes(`/environments/${app}/branch`)) changes.push(request.url());
+  };
+  page.on('request', record);
+
+  await commit.fill('abc1234');
+  await expect(deploy).toBeDisabled();
+  await save.click();
+  await expect(page.getByRole('alert').getByText(/git_commit_invalid/)).toBeVisible();
+  await expect(deploy).toBeDisabled();
+  page.off('request', record);
+  expect(changes).toEqual([]);
+
+  // A source changed elsewhere keeps the typed draft.
+  const { generation } = await call(page, 'GET', `applications/${app}`);
+  await call(page, 'PUT', `environments/${app}/branch`, { branch: 'next', expected_generation: generation });
+  await expect(source).toContainText('on branch next', { timeout: 20_000 });
+  await expect(source.getByLabel('Branch', { exact: true })).toHaveValue('main');
+  await expect(commit).toHaveValue('abc1234');
+  await expect(deploy).toBeDisabled();
+
+  // Showing the saved source again leaves nothing to save.
+  await source.getByLabel('Branch', { exact: true }).fill('next');
+  await commit.fill(' ');
+  await expect(save).toBeDisabled();
+  await expect(deploy).toBeEnabled();
 });
