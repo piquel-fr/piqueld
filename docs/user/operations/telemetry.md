@@ -96,9 +96,9 @@ telemetry over a Unix socket that piqueld mounts into it, without publishing
 any port.
 
 > **Warning:** the receiving application sees the telemetry of every
-> application, including names, failures and the daemon's own logs. Grant it
-> only to an application whose deployers you trust as much as someone with
-> `system:read`.
+> application, including every line their containers print, their failures,
+> and the daemon's own logs. Grant it only to an application whose deployers
+> you would trust to read every application's logs.
 
 1. Mark the collector's service as the one that
    [receives telemetry](../reference/manifest-settings.md#specservicesreceives_telemetry).
@@ -168,7 +168,7 @@ any port.
 5. Deploy it: select **Deploy** on the environment's page, or run:
 
    ```console
-   piquelctl app deploy <app> --yes
+   piquelctl env deploy <app> production --yes
    ```
 
 piqueld mounts the socket's directory into the service and starts exporting.

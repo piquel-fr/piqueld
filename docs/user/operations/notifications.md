@@ -21,6 +21,9 @@ fails, a service degrades, or someone gains administrator access.
 The webhook URL is a credential: anyone who has it can post to your channel.
 piqueld stores it encrypted, and never shows it again.
 
+Destinations belong to the whole installation, not to an application, so the
+manifest can't set them: use the dashboard or `piquelctl`.
+
 In the dashboard:
 
 1. On the **Notifications** page, select **Add destination**.

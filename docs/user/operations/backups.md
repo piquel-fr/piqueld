@@ -3,11 +3,15 @@
 Back up piqueld's state, so you can recover from a lost disk or roll back an
 upgrade.
 
-Run these steps on the piqueld host, as root: the data directory is readable
-only by the daemon's user. The commands use `/var/lib/piqueld`, its default
-location. If you set
-[`server.data_dir`](../reference/configuration-settings.md#serverdata_dir),
-use its value instead. Some steps need `sqlite3`, from the `sqlite` package.
+## Before you start
+
+- Run these steps on the piqueld host, as root: the data directory is
+  readable only by the daemon's user.
+- The commands use `/var/lib/piqueld`, its default location. If you set
+  [`server.data_dir`](../reference/configuration-settings.md#serverdata_dir),
+  use its value instead.
+- The commands need `sqlite3`, from the `sqlite` package. Backing up a running
+  daemon also needs `rsync`.
 
 ## What to back up
 
@@ -63,6 +67,8 @@ With the daemon stopped:
    sudo systemctl start piqueld
    ```
 
+5. [Check the backup](#check-that-it-works).
+
 While the daemon runs, the database must be copied with SQLite's backup
 command, which includes changes still in its write-ahead log. Copy the
 database before the other files: the daemon may create `secrets.key` while you
@@ -72,6 +78,11 @@ copy, and the backup then includes it.
 > `secrets.key` until the backup is done. The backup could otherwise hold a key
 > that can't decrypt its database. If you can't rule that out, stop the daemon
 > and back up as above.
+
+The ingress gateway and the tailnet nodes keep writing their state while the
+daemon runs, so `rsync` may copy one of their files as it changes, or a newer
+one than the database knows of. For a backup that's consistent throughout,
+stop the daemon and back up as above.
 
 1. Create the backup directory:
 
@@ -99,13 +110,17 @@ copy, and the backup then includes it.
    sudo rsync -a --exclude 'piqueld.db*' /var/lib/piqueld/ /safe/location/piqueld-backup/
    ```
 
-5. Check the copy:
+5. [Check the backup](#check-that-it-works).
 
-   ```console
-   sudo sqlite3 /safe/location/piqueld-backup/piqueld.db 'PRAGMA integrity_check; PRAGMA user_version;'
-   ```
+## Check that it works
 
-   It prints `ok`, then the database's version.
+Check the backup's database, however you took it:
+
+```console
+sudo sqlite3 /safe/location/piqueld-backup/piqueld.db 'PRAGMA integrity_check; PRAGMA user_version;'
+```
+
+It prints `ok`, then the database's version.
 
 ## Upgrade
 
@@ -184,3 +199,13 @@ going back to the previous binary alone isn't a rollback.
 
 piqueld then compares what Docker runs with the deployments in the restored
 database, and repairs the difference, as it repairs any drift.
+
+## Troubleshooting
+
+- **The integrity check doesn't print `ok`.** The copy is damaged: take the
+  backup again.
+- **The previous version refuses to start after an upgrade.** The new version
+  updated the database, which older versions refuse. [Roll back](#roll-back)
+  to the backup you took before upgrading.
+- **The daemon can't write to a restored database.** Its files must belong to
+  the daemon's user: run `sudo chown -R piqueld:piqueld /var/lib/piqueld`.

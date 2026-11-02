@@ -3,6 +3,15 @@
 See who did what through piqueld's API, and check that nobody rewrote that
 record.
 
+## Before you start
+
+- Every account can read its own requests, and API tokens and limited CLI
+  logins only their own. Reading anyone else's, and checking the chain, needs
+  the `audit:read` [permission](../accounts/permissions.md), which an account
+  with `admin` on every application has.
+- Run the `piquelctl` commands on the host, or on any machine where
+  `piquelctl` is [signed in](../getting-started/first-account.md#sign-piquelctl-in).
+
 ## What it records
 
 The audit trail records:
@@ -25,10 +34,10 @@ changed, such as the grants it set. Records outlive the accounts, credentials
 and applications they name.
 
 Routine reads, such as the dashboard refreshing a page, aren't recorded.
-Records are written in the background: if more than 1,024 wait at once, the
-extra ones are dropped. The next record then follows a **Failed** one, with
-status 503 and no caller, that says how many are missing, so the trail shows
-the gap.
+Records are written in the background. If too many wait at once, or one can't
+be written, it's lost: the next record written then follows a **Failed** one,
+with status 503 and no caller, that says how many are missing, so the trail
+shows the gap.
 
 ## Read it
 
@@ -38,7 +47,7 @@ link shows its requests.
 
 ![The Audit page: a green banner reports the chain intact with 5 records, above the requests that created an account and deployed an application, with their outcome, account, credential and source](../../images/operations/audit.png)
 
-With `piquelctl`, on the host, or on any machine where it's signed in:
+With `piquelctl`:
 
 ```console
 $ piquelctl audit --limit 3
@@ -59,9 +68,8 @@ piquelctl audit --credential <credential-id>
 environment shares the application's ID, so a request about `production` names
 `app-…`.
 
-Accounts read their own requests, and API tokens and limited CLI logins only
-their own. Reading anyone else's needs the `audit:read` permission, which an
-account with `admin` on every application has.
+The audit trail belongs to the whole installation, not to an application, so
+the manifest has no part in it.
 
 ## Check that nobody changed it
 
@@ -77,7 +85,7 @@ Pruned through: none
 Newest: 7 7a625b7a247a086b8e1f4724ff7595dffdfa117145f79e52b881f30a667bc402
 ```
 
-Both need `audit:read`. If the chain is broken, the command fails and names
+If the chain is broken, the command fails and names
 the first record that doesn't match; the change may also be just before it.
 
 The chain can't tell who wrote the database. Someone who controls the host
