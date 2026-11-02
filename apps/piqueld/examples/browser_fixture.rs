@@ -3,7 +3,9 @@
 //! scripted terminal instead. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER=1`, the real
 //! controller deploys to the in-memory engine of [`piqueld::docker::fake`]
 //! instead, so deployments succeed and services report healthy, as the
-//! documentation screenshots show them.
+//! documentation screenshots show them. Webhook URLs show on
+//! `hooks.example.com`, as the guides configure it, though nothing listens
+//! there.
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
@@ -17,6 +19,7 @@ use piqueld::{
 use piqueld_core::{
     EnvironmentId, NormalizedApplication, ObservedApplication, ResolutionSet,
     exec::{ExecInput, ExecOutput, ExecRequest},
+    manifest::Hostname,
     resource::ResolvedApplication,
 };
 use std::sync::Arc;
@@ -132,7 +135,8 @@ impl RuntimeBoundary for Runtime {
 enum Backend {
     /// The stubbed [`Runtime`]: nothing ever deploys.
     Stub,
-    /// The real controller, deploying to [`FakeDocker`].
+    /// The real controller, deploying to [`FakeDocker`], showing webhook URLs
+    /// on `hooks.example.com`.
     FakeDocker,
 }
 
@@ -156,7 +160,8 @@ impl Backend {
             .with_config(&config.reconciliation);
         let wake = Arc::new(tokio::sync::Notify::new());
         let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)))
-            .with_image_status(controller.image_status());
+            .with_image_status(controller.image_status())
+            .with_webhook_hostname(Hostname::parse("hooks.example.com").ok());
         let run = tokio::spawn(async move {
             let cancellation = tokio_util::sync::CancellationToken::new();
             // Image cleanup runs until cancelled: stop it once the

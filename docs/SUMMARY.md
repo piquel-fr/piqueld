@@ -11,6 +11,11 @@
 
 # User guide
 
+- [Applications](user/applications/README.md)
+  - [Building images from Git](user/applications/git-builds.md)
+  - [Deploying on push](user/applications/deploy-on-push.md)
+  - [Environments and promotion](user/applications/environments.md)
+  - [Previews](user/applications/previews.md)
 - [Managing accounts](user/accounts/accounts.md)
 - [Permissions](user/accounts/permissions.md)
 - [Signing in from the CLI and automation](user/accounts/cli-and-tokens.md)

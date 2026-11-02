@@ -22,8 +22,8 @@ export class Process {
   stdout = '';
   stderr = '';
   readonly exited: Promise<number | null>;
-  constructor(command: string, args: string[], env: NodeJS.ProcessEnv = process.env) {
-    this.child = spawn(command, args, { env, stdio: 'pipe' });
+  constructor(command: string, args: string[], env: NodeJS.ProcessEnv = process.env, cwd?: string) {
+    this.child = spawn(command, args, { env, cwd, stdio: 'pipe' });
     this.child.stdout.on('data', chunk => { this.stdout += chunk; });
     this.child.stderr.on('data', chunk => { this.stderr += chunk; });
     this.exited = new Promise((done, reject) => {
@@ -51,17 +51,18 @@ export class Process {
 
 export class Cli {
   readonly env: NodeJS.ProcessEnv;
-  constructor(readonly daemon: Daemon) {
-    this.env = { ...process.env, PIQUELD_CREDENTIALS_FILE: join(daemon.directory, 'credentials.json') };
+  constructor(readonly daemon: Daemon, env: NodeJS.ProcessEnv = {}) {
+    this.env = { ...process.env, ...env, PIQUELD_CREDENTIALS_FILE: join(daemon.directory, 'credentials.json') };
     delete this.env.PIQUELD_TOKEN;
   }
-  start(args: string[], token?: string): Process {
+  /** Starts `piquelctl` with `args`, in directory `cwd` when given. */
+  start(args: string[], token?: string, cwd?: string): Process {
     const env = { ...this.env };
     if (token) env.PIQUELD_TOKEN = token;
-    return new Process(join(bin, 'piquelctl'), ['--socket', this.daemon.socket, ...args], env);
+    return new Process(join(bin, 'piquelctl'), ['--socket', this.daemon.socket, ...args], env, cwd);
   }
-  async run(args: string[], token?: string) {
-    const child = this.start(args, token);
+  async run(args: string[], token?: string, cwd?: string) {
+    const child = this.start(args, token, cwd);
     const timer = setTimeout(() => child.child.kill('SIGKILL'), 15_000);
     try {
       const code = await child.exited;
@@ -210,13 +211,16 @@ export type Options = {
   /** Deploy to the fixture's in-memory Docker engine, so deployments succeed,
    * instead of never deploying. */
   fakeDocker: boolean;
+  /** Variables added to the environment of the daemon and of `piquelctl`. */
+  processEnv: NodeJS.ProcessEnv;
 };
 
 export const test = base.extend<Options & { daemon: Daemon; passkeys: Passkeys; account: User; cli: Cli; browserErrors: void }>({
   fakeDocker: [false, { option: true }],
-  daemon: async ({ fakeDocker }, use, testInfo) => {
+  processEnv: [{}, { option: true }],
+  daemon: async ({ fakeDocker, processEnv }, use, testInfo) => {
     const directory = await mkdtemp(join(tmpdir(), 'piqueld-playwright-'));
-    const env: NodeJS.ProcessEnv = { ...process.env, PIQUELD_PLAYWRIGHT_DATA_DIR: directory };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...processEnv, PIQUELD_PLAYWRIGHT_DATA_DIR: directory };
     if (fakeDocker) env.PIQUELD_PLAYWRIGHT_FAKE_DOCKER = '1';
     const child = new Process(join(bin, 'examples/browser_fixture'), [], env);
     try {
@@ -245,7 +249,7 @@ export const test = base.extend<Options & { daemon: Daemon; passkeys: Passkeys; 
     void passkeys;
     await use(await register(page, daemon.setup, 'alice'));
   },
-  cli: async ({ daemon }, use) => { await use(new Cli(daemon)); },
+  cli: async ({ daemon, processEnv }, use) => { await use(new Cli(daemon, processEnv)); },
   browserErrors: [async ({ page }, use) => {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));

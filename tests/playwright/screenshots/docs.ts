@@ -1,17 +1,93 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
 import type { Browser, Locator, Page } from '@playwright/test';
-import { test as base, expect, adminToken, fillRegistration, submitRegistration, applicationTab, rewrite, Passkeys, type Cli } from '../fixtures.js';
+import { test as base, expect, adminToken, fillRegistration, submitRegistration, applicationTab, rewrite, title, Passkeys, Process, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { crc32 } from 'node:zlib';
 
 const docs = new URL('../../../docs/', import.meta.url);
 
+/** Git repositories on this machine that the daemon and `piquelctl` reach
+ * at the URLs the guides use, such as https://github.com/example/blog.git.
+ * Commits have a fixed author and date, so they get the same IDs on every
+ * run. */
+export class GitHost {
+  constructor(readonly root: string) {}
+
+  /** The environment that sends every `https://` URL to the host, without
+   * the machine's own Git configuration. */
+  get env(): NodeJS.ProcessEnv {
+    const author = { NAME: 'Alice', EMAIL: 'alice@example.com', DATE: '2026-10-24T09:41:07Z' };
+    return {
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: `url.file://${this.root}/.insteadOf`,
+      GIT_CONFIG_VALUE_0: 'https://',
+      ...Object.fromEntries(Object.entries(author).flatMap(([key, value]) => [[`GIT_AUTHOR_${key}`, value], [`GIT_COMMITTER_${key}`, value]])),
+    };
+  }
+
+  /** A clone of a new, empty repository at `url`, on branch `branch`. */
+  async create(url: string, branch = 'main'): Promise<Worktree> {
+    const path = url.replace(/^https:\/\//, '');
+    await this.git(this.root, 'init', '--bare', '--initial-branch', branch, path);
+    const worktree = new Worktree(this, join(this.root, 'worktrees', path));
+    await this.git(this.root, 'clone', url, worktree.directory);
+    await worktree.git('symbolic-ref', 'HEAD', `refs/heads/${branch}`);
+    return worktree;
+  }
+
+  /** Runs `git` with `args` in `directory`, and returns its output. */
+  async git(directory: string, ...args: string[]): Promise<string> {
+    const child = new Process('git', args, { ...process.env, ...this.env }, directory);
+    const code = await child.exited;
+    expect(code, `git ${args.join(' ')}: ${child.stderr}`).toBe(0);
+    return child.stdout;
+  }
+}
+
+/** A clone of a repository of a `GitHost`, where a guide's commands run. */
+export class Worktree {
+  constructor(readonly host: GitHost, readonly directory: string) {}
+
+  /** Runs `git` with `args` in the worktree, and returns its output. */
+  git(...args: string[]): Promise<string> {
+    return this.host.git(this.directory, ...args);
+  }
+
+  /** Writes `files`, by path in the worktree. */
+  async write(files: Record<string, string>) {
+    for (const [path, content] of Object.entries(files)) {
+      await mkdir(dirname(join(this.directory, path)), { recursive: true });
+      await writeFile(join(this.directory, path), content);
+    }
+  }
+
+  /** Commits `files` to `branch` and pushes it. A new branch starts from
+   * branch `from`. */
+  async push(branch: string, files: Record<string, string>, from?: string) {
+    if (from) await this.git('switch', '--create', branch, from);
+    else if ((await this.git('symbolic-ref', '--short', 'HEAD')).trim() !== branch) await this.git('switch', branch);
+    await this.write(files);
+    await this.git('add', '--all');
+    await this.git('commit', '--message', `Update ${Object.keys(files).join(', ')}`);
+    await this.git('push', 'origin', branch);
+  }
+}
+
 /** The fixtures of the browser tests, with the page's clock under the
- * test's control, which `shoot` needs, and the page drawn as on a host. */
-export const test = base.extend({
+ * test's control, which `shoot` needs, and the page drawn as on a host. The
+ * daemon reaches the repositories of `gitHost` at their URLs. */
+export const test = base.extend<{ gitHost: GitHost }>({
+  gitHost: async ({}, use) => {
+    const root = await mkdtemp(join(tmpdir(), 'piqueld-git-'));
+    try { await use(new GitHost(root)); } finally { await rm(root, { recursive: true, force: true }); }
+  },
+  processEnv: async ({ gitHost }, use) => { await use(gitHost.env); },
   page: async ({ page }, use) => {
     await page.clock.install();
     // The browser image has no system UI font: its fallback has no bold
@@ -75,7 +151,6 @@ export async function shoot(page: Page, name: string, through?: Locator, from?: 
 const identifier = String.raw`\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,64})\b`;
 const date = String.raw`\b\d{1,2}\/\d{1,2}\/\d{4}\b(?:, \d{1,2}:\d{2}:\d{2} [AP]M\b)?`;
 const fixedDate = '10/24/2026, 9:41:07 AM';
-const fixedDay = '10/24/2026';
 const isoDate = String.raw`\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b`;
 
 /** Each distinct ID, digest and date the page shows. */
@@ -133,7 +208,8 @@ const Png = {
 };
 
 /** Replaces the text that differs on every run: each random ID or digest by
- * one derived from its order on the page, and each date by a fixed one.
+ * one derived from its order on the page, and moves every date by the same
+ * amount, the earliest to a fixed one, so the time between them still shows.
  * Returns the replacements. */
 async function freeze(page: Page): Promise<string[]> {
   const identifiers = (await varying(page)).filter(value => new RegExp(`^${identifier}$`).test(value));
@@ -142,13 +218,23 @@ async function freeze(page: Page): Promise<string[]> {
     let at = 0;
     return [value, value.replace(/[0-9a-f]/g, () => digest[at++])];
   }));
-  await page.evaluate(({ pattern, stable, fixedDate, fixedDay }) => {
+  // Dates are parsed and formatted in the page, in its time zone and locale,
+  // as the dashboard formats them: with their time or, as for dates more than
+  // a week away, without.
+  const dates = await page.evaluate(({ pattern, stable, date, fixedDate }) => {
+    const dates = document.body.innerText.match(new RegExp(date, 'g')) ?? [];
+    const shift = Date.parse(fixedDate) - Math.min(...dates.map(value => Date.parse(value)));
+    const moved = (value: string) => {
+      const at = new Date(Date.parse(value) + shift);
+      return value.includes(',') ? at.toLocaleString() : at.toLocaleDateString();
+    };
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string) => id ? stable[id] ?? id : value.includes(',') ? fixedDate : fixedDay);
+      node.nodeValue = node.nodeValue!.replace(new RegExp(pattern, 'g'), (value, id?: string) => id ? stable[id] ?? id : moved(value));
     }
-  }, { pattern: `(${identifier})|${date}`, stable, fixedDate, fixedDay });
-  return [...Object.values(stable), fixedDate, fixedDay];
+    return dates.map(moved);
+  }, { pattern: `(${identifier})|${date}`, stable, date, fixedDate });
+  return [...Object.values(stable), ...dates];
 }
 
 /** The "Create your account" page of setup `link`, filled in for alice. */
@@ -156,17 +242,45 @@ export async function accountForm(page: Page, link: string) {
   await fillRegistration(page, link, 'alice', { display: 'Alice', passkey: 'Laptop' });
 }
 
-/** Deploys the first manifest of `guide`, a page under docs/, with
- * `piquelctl app apply`, as the guide does, authenticated by a token of the
- * signed-in account. */
-export async function deployFrom(page: Page, cli: Cli, guide: string) {
-  const markdown = await readFile(new URL(guide, docs), 'utf8');
-  const manifest = markdown.match(/```toml\n([\s\S]*?)```/)?.[1];
-  if (!manifest) throw new Error(`${guide} shows no TOML manifest`);
-  const file = join(cli.daemon.directory, 'manifest.toml');
-  await writeFile(file, manifest);
-  const applied = await cli.run(['app', 'apply', '--file', file, '--deploy', '--yes'], await adminToken(page, 'Screenshots'));
-  expect(applied.code, applied.stderr).toBe(0);
+/** The `index`th TOML block of `guide`, a page under docs/, after its
+ * heading `section` when given. */
+export async function manifest(guide: string, section?: string, index = 0): Promise<string> {
+  let markdown = await readFile(new URL(guide, docs), 'utf8');
+  if (section) {
+    const heading = markdown.search(new RegExp(`^#+ ${section}$`, 'm'));
+    if (heading < 0) throw new Error(`${guide} has no section ${section}`);
+    markdown = markdown.slice(heading);
+  }
+  const block = [...markdown.matchAll(/^( *)```toml\n([\s\S]*?)^\1```/gm)][index];
+  if (!block) throw new Error(`${guide} shows no TOML block ${index} after ${section ?? 'its start'}`);
+  const [, indent, toml] = block;
+  return toml.replace(new RegExp(`^${indent}`, 'gm'), '');
+}
+
+/** `piquelctl`, signed in with a token of the page's account, running the
+ * commands of a guide. */
+export class Piquelctl {
+  private constructor(readonly cli: Cli, readonly token: string) {}
+
+  static async signIn(page: Page, cli: Cli): Promise<Piquelctl> {
+    return new Piquelctl(cli, await adminToken(page, 'Screenshots'));
+  }
+
+  /** Runs `piquelctl` with `args`, in directory `cwd` when given, and
+   * returns its output. */
+  async run(args: string[], cwd?: string): Promise<string> {
+    const result = await this.cli.run(args, this.token, cwd);
+    expect(result.code, `piquelctl ${args.join(' ')}: ${result.stderr}`).toBe(0);
+    return result.stdout;
+  }
+
+  /** Saves TOML `manifest` with `piquelctl app apply`, deploying it unless
+   * `deploy` is false. */
+  async apply(manifest: string, deploy = true) {
+    const file = join(this.cli.daemon.directory, 'manifest.toml');
+    await writeFile(file, manifest);
+    await this.run(['app', 'apply', '--file', file, '--yes', ...deploy ? ['--deploy'] : []]);
+  }
 }
 
 /** The Overview, once every application is healthy and the latest deployment succeeded. */
@@ -177,14 +291,47 @@ export async function overview(page: Page) {
   await expect(page.getByRole('region', { name: 'Recent deployments' }).getByRole('row').nth(1)).toContainText(/succeeded/i);
 }
 
+/** Application `name`'s page, reached as a reader would from a dashboard
+ * loaded afresh, so its list of applications is current, on its tab `tab`
+ * when given. */
+export async function application(page: Page, name: string, tab?: string) {
+  await page.goto('/dashboard/');
+  await page.getByRole('navigation', { name: 'Dashboard navigation' }).getByRole('link', { name: 'Applications', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Applications');
+  await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link').filter({ hasText: name }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
+  if (tab) await applicationTab(page, tab).click();
+}
+
+/** The "Create application" dialog, opened from Applications as a reader
+ * would, with the application name `name` filled in. */
+export async function newApplication(page: Page, name: string): Promise<Locator> {
+  await page.goto('/dashboard/');
+  await page.getByRole('navigation', { name: 'Dashboard navigation' }).getByRole('link', { name: 'Applications', exact: true }).click();
+  await page.getByRole('button', { name: 'New application', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Create application' });
+  await dialog.getByLabel('Application name', { exact: true }).fill(name);
+  return dialog;
+}
+
+/** Creates application `name` in the dashboard, and opens it. */
+export async function createApplication(page: Page, name: string) {
+  await (await newApplication(page, name)).getByRole('button', { name: 'Create application', exact: true }).click();
+  await expect(title(page)).toHaveText(name);
+}
+
+/** Selects the only visible "Save changes" button, of the settings group
+ * being edited, and waits until it saved. */
+export async function saveChanges(page: Page) {
+  const save = page.getByRole('button', { name: 'Save changes', exact: true }).locator('visible=true');
+  await save.click();
+  await expect(save).toHaveCount(0);
+}
+
 /** Environment `name` of application `app`, reached as a reader would, once
  * its services converged. */
 export async function environment(page: Page, app: string, name: string) {
-  await page.getByRole('link', { name: 'Applications', exact: true }).click();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Applications');
-  await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link').filter({ hasText: app }).click();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText(app);
-  await applicationTab(page, 'Environments').click();
+  await application(page, app, 'Environments');
   await page.getByRole('main').getByRole('link').filter({ hasText: name }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
   await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
