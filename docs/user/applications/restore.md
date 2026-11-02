@@ -2,7 +2,8 @@
 
 Return an environment to a deployment it ran before, exactly as it ran, such
 as when a new version misbehaves. piqueld deploys it again with the same
-manifest, images and secrets, without building anything.
+manifest, images and secrets, without building anything. It can also do this
+on its own when a rollout fails.
 
 ## Before you start
 
@@ -11,7 +12,8 @@ manifest, images and secrets, without building anything.
   [deploying your first application](../getting-started/first-app.md), once
   you deployed it again after [changing it](../getting-started/first-app.md#change-it).
 - Restoring an environment's deployment needs `apps:deploy` on the
-  application, and a preview's `previews:deploy`; see
+  application, and a preview's `previews:deploy`. Choosing whether an
+  environment rolls back on its own needs `apps:write`; see
   [permissions](../accounts/permissions.md#grants).
 - `piquelctl` is signed in. Run the commands on this page on the host, or on
   any machine where `piquelctl` is
@@ -102,6 +104,69 @@ A promoted environment can also
 [deploy an earlier release](environments.md#deploy-an-earlier-release),
 rendered with its current variables and secrets instead.
 
+## Roll back failed rollouts automatically
+
+A rollout fails when Docker pauses it because a new container exited, or
+failed its [health check](services.md#health-checks), soon after it started.
+Each environment chooses what happens then:
+
+- **Automatic** restores the environment's last successful deployment at once,
+  as a restore by hand would.
+- **Manual** leaves the environment on the failed deployment until you deploy
+  it again or restore a deployment.
+
+[Promoted environments](environments.md#promote-releases) roll back
+automatically unless you choose otherwise. The others don't, and previews are
+never rolled back. To have `production` roll back on its own:
+
+- **In the dashboard**, open the environment's **Overview**. In its
+  **Rollback** card, set **When a rollout fails** to **Automatic: restore the
+  last successful deployment**, then select **Save rollback**. **Default**
+  removes the setting.
+
+  ![The Rollback card of hello's production environment, with When a rollout fails set to Automatic: restore the last successful deployment, above the Save rollback button](../../images/applications/rollback.png)
+
+- **With `piquelctl`**, use
+  [`env rollback`](../reference/cli-commands.md#piquelctl-env-rollback), with
+  `automatic`, `manual`, or `default` to remove the setting:
+
+  ```console
+  piquelctl env rollback hello production automatic
+  ```
+
+- **In the manifest**:
+
+  ```toml
+  [spec.environments.production]
+  rollback = "automatic"
+  ```
+
+piqueld reads the setting from the manifest the environment deploys. A
+promoted environment applies a change once its source records a new release
+and you promote it.
+
+A rollback is a restore: a new deployment that runs no jobs and doesn't
+revert data, as [the warning above](#what-a-restore-deploys) describes. Its
+**Origin** reads "Rolled back from deployment" with the failed deployment's
+ID, then the ID of the one it restored. The failed deployment keeps its own
+outcome, so its history still shows what went wrong.
+
+piqueld rolls back each failed deployment once at most. It doesn't roll back:
+
+- a rollback whose own rollout fails: the environment stays on it;
+- a deployment that succeeded before, then fails when piqueld rolls it out
+  again, such as to repair a service someone changed by hand;
+- a deployment whose [job](jobs.md) fails: the job stops it before its
+  services roll out, so they keep running the previous version.
+
+Docker only notices a container that exits or fails its health check. A
+container that runs without serving requests looks healthy, so its rollout
+never fails. When an environment rolls back automatically, its plans warn
+with `rollback_without_health_check` about each service that routes send
+traffic to but that has no health check, as the dashboard's **Preview**,
+`piquelctl app plan` and `piquelctl env promote --plan` show them. Give those
+services one.
+
 ## Check that it works
 
 The restore appears at the top of the environment's **Deployments** tab, and
@@ -134,6 +199,12 @@ It runs the release of the deployment it restored.
   stored secret that the environment may no longer mount.
   [Allow it](secrets-and-variables.md#choose-who-may-mount-a-stored-secret)
   again, or deploy instead.
+- **A failed rollout wasn't rolled back.** Check the environment's
+  **Rollback** card, or `piquelctl env show`. When piqueld can't roll back,
+  because no earlier deployment succeeded or its images or secret versions
+  are gone, the failed deployment records a `rollback_unavailable` event
+  saying why. To see it, expand the deployment on the **Deployments** tab,
+  select **Attempts**, then **Events**. Fix the cause, then deploy again.
 - **There is no Restore button.** The deployment didn't succeed, or it is
   the newest one and the environment runs it. Without `apps:deploy`, or
   `previews:deploy` for a preview, the dashboard doesn't offer it either.

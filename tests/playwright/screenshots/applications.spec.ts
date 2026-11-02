@@ -223,7 +223,8 @@ server {
 });
 
 // docs/user/applications/restore.md: hello, deployed again after its change,
-// offers to restore its first deployment.
+// offers to restore its first deployment, and production chooses to roll back
+// failed rollouts automatically.
 test('restoring a deployment', async ({ page, daemon, cli, passkeys }) => {
   void passkeys;
   await accountForm(page, daemon.setup);
@@ -239,4 +240,8 @@ test('restoring a deployment', async ({ page, daemon, cli, passkeys }) => {
   // Let its chevron finish turning.
   await deployments.nth(1).evaluate(card => Promise.all(card.getAnimations({ subtree: true }).map(animation => animation.finished)));
   await shoot(page, 'applications/restore', deployments.nth(1));
+  await environmentTab(page, 'Overview').click();
+  const rollback = page.locator('section.card', { has: page.getByRole('heading', { name: 'Rollback' }) });
+  await rollback.getByLabel('When a rollout fails').selectOption('automatic');
+  await shoot(page, 'applications/rollback', rollback, rollback);
 });

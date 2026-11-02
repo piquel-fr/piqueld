@@ -239,7 +239,9 @@ declares them all, as setting a variable's value for one environment does.
 Once a deployment of an environment has built or pulled its images, piqueld
 records a release: the manifest it deployed and its exact images. A promoted
 environment never builds. It receives the release another environment runs,
-so production runs exactly the images you tested on staging.
+so production runs exactly the images you tested on staging. When its rollout
+fails, it [rolls back](restore.md#roll-back-failed-rollouts-automatically) to
+its last successful deployment unless you choose otherwise.
 
 ### Set up staging and production
 

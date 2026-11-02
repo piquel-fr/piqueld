@@ -23,6 +23,6 @@ configuration, then building and shipping it.
 - [Environments and promotion](environments.md): run staging and production,
   and promote what staging runs to production.
 - [Restoring a deployment](restore.md): return an environment to a
-  deployment it ran before.
+  deployment it ran before, by hand or when a rollout fails.
 - [Previews](previews.md): try a branch, or your uncommitted changes, in a
   short-lived copy of the application.
