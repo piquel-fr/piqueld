@@ -210,11 +210,18 @@ test('CLI device approval, private credentials, API tokens, revocation and expir
     const token = await adminToken(page, 'Test');
     expect(token).toMatch(/^pqd_/);
     expect((await cli.run(['whoami'], token)).code).toBe(0);
+    // The dashboard's background refresh runs only when the test advances
+    // the clock, once the session is revoked.
+    await page.clock.install();
     await page.goto('/dashboard/accounts');
+    // Revoke only once the reloaded dashboard has signed in again: revoked
+    // before that, it never had a session to expire and shows the sign-in page.
+    await expect(page.getByRole('heading', { name: 'alice', exact: true })).toBeVisible();
     await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
     expect((await cli.run(['whoami'], token)).code).not.toBe(0);
+    await page.clock.runFor(16_000);
     const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Sign out', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Sign in with a passkey', exact: true })).toBeVisible();
     await expect(dialog).toHaveCount(0);
