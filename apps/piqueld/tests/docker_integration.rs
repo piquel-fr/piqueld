@@ -4,12 +4,12 @@
 // from Git but never fails a build, clones, or bundles, as fake_docker does.
 #[path = "support/docker_contract.rs"]
 mod docker_contract;
-#[allow(dead_code, reason = "only GitBuildFixture's build is used here")]
+#[expect(dead_code, reason = "this binary never calls failing_source")]
 #[path = "support/git.rs"]
 mod git_fixture;
 #[path = "support/poll.rs"]
 mod poll;
-#[allow(dead_code, reason = "only GitBuildFixture's commits are used here")]
+#[expect(dead_code, reason = "this binary never clones or bundles a repository")]
 #[path = "support/repository.rs"]
 mod repository;
 
