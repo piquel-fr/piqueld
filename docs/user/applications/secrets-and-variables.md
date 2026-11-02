@@ -430,7 +430,7 @@ Removing a declaration from `spec.secrets` keeps the values already generated.
 ## If the secret key is lost
 
 piqueld encrypts every value with the key in its data directory,
-`secrets.key`. [Back it up](../guides/backups-and-upgrades.md) with the rest of
+`secrets.key`. [Back it up](../operations/backups.md) with the rest of
 the data directory. A restored key must belong to the daemon's user, with mode
 `0600`. Without it, piqueld can't read any secret value, and deployments that
 need one fail with `secret_storage_unavailable`. Running services keep their
