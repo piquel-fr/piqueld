@@ -1,6 +1,5 @@
 //! Deployment and promotion actions, plan dialogs, history, and snapshot
 //! inspection.
-use super::super::builds::build_arguments;
 use super::super::format::timestamp;
 use super::super::ui::{
     Icon, Modal, Tabs, Tone, badge, empty, expander_summary, icon, key_values, load_older, notice,
@@ -13,6 +12,7 @@ use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
 use crate::deployments::{Attempts, DeploymentList, Promotion};
 use crate::editor::Choice;
+use crate::overview::build_arguments;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;

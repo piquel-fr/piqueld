@@ -7,8 +7,7 @@ use super::ui::{
 };
 use super::{Alive, ClientErrorExt, dashboard_context, live_row, operation_events};
 use crate::log_output::LogLine;
-use crate::overview::BuildList;
-pub(in crate::browser) use crate::overview::build_arguments;
+use crate::overview::{BuildList, build_arguments};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
