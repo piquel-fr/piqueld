@@ -130,7 +130,7 @@ fn openapi_30_document(document: &utoipa::openapi::OpenApi) -> Value {
     document["openapi"] = Value::String("3.0.3".into());
     document["info"]["license"]
         .as_object_mut()
-        .expect("ApiDoc declares an MIT license, which Utoipa serializes as an object")
+        .expect("ApiDoc declares a license, which Utoipa serializes as an object")
         .remove("identifier");
     document["components"]["securitySchemes"] = serde_json::json!({
         "bearerAuth": {"type":"http", "scheme":"bearer"},

@@ -330,10 +330,19 @@ impl From<std::io::Error> for CliError {
 impl From<ClientError> for CliError {
     fn from(error: ClientError) -> Self {
         match error {
-            ClientError::Configuration { source } => Self::new(
-                ErrorKind::General,
-                format!("could not initialize the HTTP client: {source:#?}"),
-            ),
+            // Join the source chain so the reqwest cause stays on one line.
+            ClientError::Configuration { source } => {
+                let chain: Vec<String> =
+                    std::iter::successors(Some(&source as &dyn std::error::Error), |error| {
+                        error.source()
+                    })
+                    .map(ToString::to_string)
+                    .collect();
+                Self::new(
+                    ErrorKind::General,
+                    format!("could not initialize the HTTP client: {}", chain.join(": ")),
+                )
+            }
             ClientError::Endpoint { message } => {
                 Self::new(ErrorKind::Input, message).diagnostic(Diagnostic::Endpoint)
             }

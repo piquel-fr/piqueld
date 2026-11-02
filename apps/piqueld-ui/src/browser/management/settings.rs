@@ -566,7 +566,7 @@ pub(super) fn ServiceGroup(name: String, section: Section) -> impl IntoView {
         .find(|s| s.name == name)
         .map(ServiceForm::from)
         .expect(
-            "ServicePage checks this service exists before synchronously mounting its sections",
+            "ServiceEditor checks this service exists before synchronously mounting its sections",
         );
     let read = name.clone();
     let draft = Draft::synced(format!("{name}:{}", section.title()), move |manifest| {

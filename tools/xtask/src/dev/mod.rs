@@ -533,7 +533,10 @@ auto_initialize_swarm = true
         let client = match piqueld_client::Client::unix(self.socket()) {
             Ok(client) => client.with_timeout(Duration::from_secs(2)),
             Err(error) => {
-                eprintln!("could not query the development instance: {error:?}");
+                eprintln!(
+                    "could not query the development instance: {:#}",
+                    anyhow::Error::from(error)
+                );
                 return None;
             }
         };
