@@ -145,8 +145,8 @@ The dashboard and `piquelctl` save the setting in the application's manifest.
 piqueld reads it from the manifest the environment deploys, though, so when a
 change applies depends on where the environment gets its manifest:
 
-- In an application without a manifest repository, an environment uses it
-  at once.
+- In an application without a manifest repository, an environment that
+  isn't promoted uses it at once.
 - In an application that [reads its manifest from a
   repository](deploy-on-push.md#edit-a-repository-backed-application), an
   environment that follows the repository's branch uses it from its next
