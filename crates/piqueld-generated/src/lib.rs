@@ -78,7 +78,9 @@ impl Artifacts {
     }
 
     /// Writes each `(path, contents)` artifact, `path` relative to the root,
-    /// or in check mode compares them all with the checked-in files.
+    /// or in check mode compares them all with the checked-in files. A new
+    /// artifact's path also belongs in the repository's `.gitattributes`, so
+    /// GitHub collapses its diffs.
     ///
     /// # Errors
     /// If a file cannot be read or written, or in check mode if any is stale
