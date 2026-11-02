@@ -25,9 +25,13 @@ test('shipping applications', async ({ page, daemon, cli, passkeys, gitHost }) =
   await expect(title(page)).toHaveText('web');
   await shoot(page, 'applications/service-git-source', page.getByLabel('Dockerfile path', { exact: true }));
   // The fake engine builds in a few milliseconds, never the same number:
-  // show the build lasting as long as a real one.
+  // show the build lasting as long as a real one. Its output's size counts
+  // the checkout's directory, below the temporary one: fix it too.
   await rewrite(page, '/api/v1/builds', data => {
-    for (const build of data.items) build.finished_at_ms &&= build.started_at_ms + 51_300;
+    for (const build of data.items) {
+      build.finished_at_ms &&= build.started_at_ms + 51_300;
+      build.log_bytes = 144;
+    }
   });
   // Its output names the checkout's random directory: show it where a host
   // keeps it, at the time `shoot` shows dates at.
