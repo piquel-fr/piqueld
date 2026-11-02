@@ -130,7 +130,7 @@ DNS provider: cloudflare (healthy, manages route records): example.com
 ```
 
 Each change appears in the daemon's
-[events](../guides/observability.md#history-and-diagnostics). A failed write
+[events](../operations/history.md). A failed write
 also records a `dns_records_failed` diagnostic.
 
 ## Turn it off

@@ -122,7 +122,7 @@ so you can give it its own tags and access rules.
      ```
 
 The apps node's identity lives in piqueld's data directory, under
-`ingress/tailscale`, so [back it up](../guides/backups-and-upgrades.md#backing-up)
+`ingress/tailscale`, so [back it up](../operations/backups.md#back-up)
 whole. Without it, the node joins the tailnet as a new device, with new
 addresses.
 
@@ -320,7 +320,7 @@ and the **Tailnet node** [installation check](../reference/cli.md#installation-c
 warns the same. Both are expected. Otherwise, run `sudo piquelctl` on the host, over the
 daemon's Unix socket.
 
-The [audit trail](../guides/observability.md#audit-trail) records the tailnet
+The [audit trail](../operations/audit.md) records the tailnet
 user of each request, and
 [tailnet-bound tokens](../accounts/cli-and-tokens.md#bind-a-token-to-tailnet-devices) work
 on this hostname. For both, piqueld needs the `tailscale` command on its

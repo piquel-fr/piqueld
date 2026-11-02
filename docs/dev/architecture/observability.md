@@ -542,8 +542,9 @@ old service.
 granted, which service receives it, and whether the daemon is connected.
 
 The receiving application sees the telemetry of **every** application: their
-names, environments, operations, failures, and the daemon's own logs, which can
-include error details. Grant it only to an application whose writers and
-deployers you trust with that, as you would with `system:read`. Its receiving
+names, environments, operations, failures, every line their containers print,
+and the daemon's own logs, which can include error details. Grant it only to an
+application whose writers and deployers you would trust to read every
+application's logs. Its receiving
 service also runs as the daemon's user, which matters only if it escapes its
 container: nothing of the daemon's beyond the socket directory is mounted.

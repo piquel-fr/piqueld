@@ -191,7 +191,7 @@ shows, for readers who can't see it:
 ## Links
 
 - Link to another page with its path relative to the current page. From a
-  page in `docs/user/guides/`, for example, the manifest's routes are
+  page in `docs/user/operations/`, for example, the manifest's routes are
   `[routes](../reference/manifest.md#routes)`. These links work both on GitHub
   and in the book.
 - Link to a repository file outside `docs/` with its GitHub URL on `main`, such

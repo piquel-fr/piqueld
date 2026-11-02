@@ -18,8 +18,8 @@ its hostname, stay until you apply the file again.
 ## Before you start
 
 - Your instance serves
-  [private routes](../guides/ingress.md#public-and-private-routes) on its
-  tailnet, with a [DNS-01 provider](../guides/ingress.md#dns-01-certificates)
+  [private routes](../networking/private-routes.md) on its
+  tailnet, with a [DNS-01 provider](../networking/wildcards.md#dns-01-certificates)
   for the zone of Grafana's hostname.
 - You can create applications, change and deploy them, and run commands in
   them: `apps:create`, `apps:write`, `apps:deploy` and `apps:exec`. Reading
@@ -37,9 +37,9 @@ its hostname, stay until you apply the file again.
 
 1. Choose Grafana's hostname, such as `grafana.example.com`, and point it at
    the instance. Like any
-   [private route](../guides/ingress.md#dns-for-private-routes), it needs `A`
+   [private route](../networking/private-routes.md#dns-for-private-routes), it needs `A`
    and `AAAA` records to the apps node's tailnet addresses, unless piqueld
-   [manages the zone's records](../guides/ingress.md#managed-dns-records).
+   [manages the zone's records](../networking/dns-records.md).
 
 2. Save the manifest:
 

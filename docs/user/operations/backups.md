@@ -42,7 +42,7 @@ With the daemon stopped:
    sudo systemctl stop piqueld
    ```
 
-2. If [ingress](../guides/ingress.md) is enabled, stop the containers piqueld
+2. If [ingress](../networking/routes.md#enable-the-gateway) is enabled, stop the containers piqueld
    runs for it, which keep writing to the data directory. Your applications'
    routes stay unreachable until the daemon starts again.
 
@@ -144,7 +144,7 @@ going back to the previous binary alone isn't a rollback.
    sudo systemctl stop piqueld
    ```
 
-2. If [ingress](../guides/ingress.md) is enabled, stop the containers piqueld
+2. If [ingress](../networking/routes.md#enable-the-gateway) is enabled, stop the containers piqueld
    runs for it, which keep using the data directory you're about to move.
    Your applications' routes stay unreachable until the daemon starts again.
    The filter on this installation's ID leaves any other piqueld on the same
