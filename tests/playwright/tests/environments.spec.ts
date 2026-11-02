@@ -297,3 +297,35 @@ test('an unsaved source blocks deploying, and an invalid commit is refused befor
   await expect(save).toBeDisabled();
   await expect(deploy).toBeEnabled();
 });
+
+test('a dashboard listing requested before a save does not undo it', async ({ page, account }) => {
+  void account;
+  const { app } = await createEnvironments(page);
+  await page.clock.install();
+  // Every listing is the one from before the rename, as a poll in flight
+  // during the save would return.
+  let before: unknown;
+  let captured!: () => void;
+  const capture = new Promise<void>(done => { captured = done; });
+  await page.route(url => url.pathname === '/api/v1/applications', async route => {
+    before ??= await (await route.fetch()).json();
+    captured();
+    await route.fulfill({ json: before });
+  });
+  const listed = () => page.waitForRequest(request => new URL(request.url()).pathname === '/api/v1/applications');
+  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await expect(title(page)).toHaveText('production');
+  await capture;
+  const renamed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/v1/environments/${app}/rename`);
+  await page.getByLabel('Environment name', { exact: true }).fill('live');
+  await page.getByRole('button', { name: 'Rename environment', exact: true }).click();
+  expect((await renamed).status()).toBe(200);
+  // Polls never overlap, so the second listing after the rename starts once
+  // the first was shown.
+  for (let poll = 0; poll < 2; poll += 1) {
+    const request = listed();
+    await page.clock.runFor(16_000);
+    await request;
+  }
+  await expect(title(page)).toHaveText('live');
+});
