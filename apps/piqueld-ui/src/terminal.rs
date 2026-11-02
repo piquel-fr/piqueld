@@ -233,8 +233,9 @@ impl Terminal {
     }
 
     /// The size fitting whole cells of `cell` pixels (width, height) in a
-    /// viewport of `viewport` pixels; `None` while either is hidden, as hidden
-    /// elements measure as empty.
+    /// viewport of `viewport` pixels; `None` while the viewport is hidden, as
+    /// hidden elements measure as empty. `cell` must be measured inside the
+    /// viewport, so it is never empty while the viewport is shown.
     #[must_use]
     pub fn fitting(viewport: (i32, i32), cell: (f64, f64)) -> Option<TerminalSize> {
         let cells = |length: i32, cell: f64| {

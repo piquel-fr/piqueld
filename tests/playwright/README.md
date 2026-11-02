@@ -58,7 +58,8 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
   application directory, service creation, editing, and removal on the service
   page, read-only files, volumes, routes, jobs, exports and imports, the
   deployment preview dialog, deployment history, and unsaved-edit gating of
-  Deploy, link and Back navigation, but not of the manifest download.
+  Deploy, link and Back navigation, but not of the manifest download, and
+  retried saves applied once.
 - Environment pages, creation (also promoted from another environment), renaming,
   and deletion, environments declared by the manifest, unsaved or invalid source
   edits gating Deploy and surviving changes made elsewhere, saves kept over

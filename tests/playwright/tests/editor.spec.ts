@@ -293,6 +293,30 @@ test('unsaved edits block deployment and navigation until discarded', async ({ p
   await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
 });
 
+test('a save whose response was lost is retried once and applied once', async ({ page, account }) => {
+  void account;
+  await createApplication(page);
+  const id = page.url().split('/').pop()!;
+  const { generation } = await call(page, 'GET', `applications/${id}`);
+  // The first attempt reaches the daemon, but its response never arrives.
+  const keys: string[] = [];
+  await page.route(url => url.pathname === `/api/v1/applications/${id}/name`, async route => {
+    keys.push(route.request().headers()['idempotency-key']);
+    if (keys.length > 1) return route.continue();
+    await route.fetch();
+    await route.abort('failed');
+  });
+  await page.getByRole('button', { name: 'Rename application', exact: true }).click();
+  await page.getByLabel('Application name', { exact: true }).fill('renamed-once');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(title(page)).toHaveText('renamed-once');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  // The replay carries the same identity, so the daemon answers it without applying it again.
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+  expect(await call(page, 'GET', `applications/${id}`)).toMatchObject({ generation: generation + 1 });
+});
+
 test('unsaved edits guard back navigation, but not downloading the manifest', async ({ page, account }) => {
   void account;
   await createApplication(page);
