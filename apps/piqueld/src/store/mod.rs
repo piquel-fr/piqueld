@@ -56,7 +56,7 @@ use piqueld_core::{
 pub use piqueld_core::{ApplicationState, Operation, OperationKind, OperationState};
 use serde::de::{DeserializeOwned, value::StrDeserializer};
 use sqlx::{
-    Sqlite, SqlitePool, Transaction,
+    Connection as _, Sqlite, SqlitePool, Transaction,
     pool::PoolConnection,
     query::Query,
     sqlite::{
@@ -645,6 +645,21 @@ impl Store {
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .acquire_timeout(Duration::from_secs(5))
+            .after_release(|connection, _| {
+                Box::pin(async move {
+                    // A write dropped after SQLite ran its `BEGIN IMMEDIATE`
+                    // but before SQLx built the `Transaction`, while it checks
+                    // the custom statement began one (on shutdown, or by a
+                    // timeout or `select!` around it), leaves the transaction
+                    // to no one: returned to the pool, the connection would
+                    // hold the write lock until every other writer times out.
+                    // The ping lets the rollback of a dropped `Transaction`
+                    // finish first; a connection still in a transaction after
+                    // it is closed, rolling it back.
+                    connection.ping().await?;
+                    Ok(!connection.is_in_transaction())
+                })
+            })
             .connect_with(options)
             .await
             .map_err(StoreError::database)?;
@@ -1162,6 +1177,20 @@ mod testing;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connection released inside a transaction no `Transaction` owns, as
+    /// when a write is dropped right after `BEGIN` succeeded, gives up the
+    /// write lock instead of failing every later writer as busy.
+    #[tokio::test]
+    async fn released_connections_never_keep_a_transaction_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let mut connection = store.pool.acquire().await.unwrap();
+        std::mem::forget(connection.begin_with("BEGIN IMMEDIATE").await.unwrap());
+        drop(connection);
+        let (_writer, tx) = store.begin_immediate().await.unwrap();
+        tx.commit().await.unwrap();
+    }
 
     #[tokio::test]
     async fn every_committed_migration_reopens_after_a_later_migration_fails() {
