@@ -23,7 +23,10 @@ pub struct Receives<'a> {
 
 impl fmt::Display for Receives<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} categories · ", self.settings.categories.len())?;
+        match self.settings.categories.len() {
+            1 => f.write_str("1 category · ")?,
+            count => write!(f, "{count} categories · ")?,
+        }
         match &self.settings.applications {
             ApplicationSelection::All => f.write_str("every application")?,
             ApplicationSelection::Only(ids) if ids.is_empty() => f.write_str("no application")?,
@@ -277,5 +280,7 @@ mod tests {
         assert_eq!(text(&settings), "2 categories · no application");
         settings.applications = ApplicationSelection::All;
         assert_eq!(text(&settings), "2 categories · every application");
+        settings.categories.pop_first();
+        assert_eq!(text(&settings), "1 category · every application");
     }
 }
