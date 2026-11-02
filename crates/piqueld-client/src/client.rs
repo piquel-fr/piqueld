@@ -395,8 +395,13 @@ where
 
 /// Decodes a JSON response for generated operations, which call this instead of
 /// Progenitor's default decoder so every body is subject to `MAX_RESPONSE_BODY_BYTES`.
-// Progenitor fixes this public error type; boxing it would not match generated calls.
-#[allow(clippy::result_large_err)]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::result_large_err,
+        reason = "Progenitor fixes the native response error type; boxing it would not match generated calls"
+    )
+)]
 pub(crate) async fn decode_response<T, E>(
     response: reqwest::Response,
 ) -> Result<ResponseValue<T>, Error<E>>
@@ -524,8 +529,10 @@ impl ClientError {
     /// ```text
     /// <reqwest error>: <hyper cause>: Connection refused (os error 111)
     /// ```
-    // `map_err` passes ownership; retaining reqwest's error beyond this conversion is unnecessary.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "map_err passes ownership; retaining reqwest's error beyond this conversion is unnecessary"
+    )]
     fn transport(error: reqwest::Error) -> Self {
         use std::error::Error as _;
 

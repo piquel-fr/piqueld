@@ -56,21 +56,20 @@ const PUBLISHED: [(&str, &str); 6] = [
 
 /// An engine with its socket, and the daemon's data, in `runtime`, publishing
 /// [`PUBLISHED`].
-#[allow(
-    clippy::zero_sized_map_values,
-    reason = "bollard's type for Docker's exposed ports"
-)]
 fn dind(image: String, runtime: &Path) -> ContainerCreateBody {
     let runtime = runtime.display();
     let mut body = Engine::dind_container(image, &runtime, [format!("{runtime}:{runtime}")]);
     body.cmd
         .get_or_insert_default()
         .push("--storage-driver=vfs".to_owned());
-    body.exposed_ports = Some(
-        PUBLISHED
-            .map(|(port, _)| (port.to_owned(), HashMap::new()))
-            .into(),
-    );
+    #[expect(
+        clippy::zero_sized_map_values,
+        reason = "bollard requires HashMap<(), ()> for each exposed port"
+    )]
+    let exposed_ports = PUBLISHED
+        .map(|(port, _)| (port.to_owned(), HashMap::new()))
+        .into();
+    body.exposed_ports = Some(exposed_ports);
     let host = body.host_config.get_or_insert_default();
     // Pre-mount /tmp so the entrypoint does not hide the data bind.
     host.tmpfs = Some(HashMap::from([(
