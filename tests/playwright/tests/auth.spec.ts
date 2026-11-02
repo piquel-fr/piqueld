@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import {
   test, expect, api, auth, adminToken, call, register, proof, resolveEnvironment, webManifest, applicationTab, environmentTab, title, head,
-  Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
+  accountCard, done, signUp, Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
 } from '../fixtures.js';
 
 test('setup gates anonymous access, closes permanently, and supports username-less login', async ({ page, daemon, passkeys }) => {
@@ -145,7 +145,7 @@ test('enrollment links add a passkey only to their account', async ({ page, acco
         invitation: null, user_id: bob.id, username: '', display_name: '', passkey_name: 'Takeover',
       })).status).toBe(400);
       await page.goto('/dashboard/accounts');
-      const card = page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: 'bob', exact: true }) });
+      const card = accountCard(page, 'bob');
       await card.getByRole('button', { name: 'Create enrollment link', exact: true }).click();
       const secret = page.locator('.secret-box');
       await expect(secret).toContainText('#enroll=');
@@ -274,7 +274,7 @@ test('account deletion can be cancelled and the last administrator is protected'
   const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'admin' }] })).invitation_url;
   const bob = await register(page, link, 'bob');
   await page.goto('/dashboard/accounts');
-  const alice = page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: 'alice', exact: true }) });
+  const alice = accountCard(page, 'alice');
   page.once('dialog', dialog => dialog.dismiss());
   await alice.getByRole('button', { name: 'Delete account', exact: true }).click();
   expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).toContain(account.id);
@@ -283,4 +283,151 @@ test('account deletion can be cancelled and the last administrator is protected'
   await expect(alice).toHaveCount(0);
   expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).not.toContain(account.id);
   expect((await api(page, 'manage', { action: 'delete_user', user_id: bob.id })).status).toBe(409);
+});
+
+test('CLI approval survives signing in first, and a typed code is reviewed before approval', async ({ page, account, cli }) => {
+  void account;
+  const login = cli.start(['login']);
+  try {
+    const link = await login.waitForOutput(/Open (\S+)/, 'stderr');
+    const code = await login.waitForOutput(/Check the page shows code: ([A-Z2-9-]+)/, 'stderr');
+    // Signed out, the link asks for a passkey and keeps its code for after.
+    await page.context().clearCookies();
+    await page.goto(link);
+    await page.getByRole('button', { name: 'Sign in with a passkey', exact: true }).click();
+    const request = page.locator('.device-request');
+    await expect(request).toContainText(code);
+    // Cancelling returns to the code entry, which refuses an unknown code.
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    const input = page.getByLabel('CLI code', { exact: true });
+    await expect(input).toHaveValue(code);
+    const review = page.getByRole('button', { name: 'Review request', exact: true });
+    await input.fill('ZZZZ-ZZZZ');
+    await review.click();
+    await expect(page.getByRole('alert')).toContainText('device code is invalid or expired');
+    await expect(request).toHaveCount(0);
+    await input.fill(code);
+    await review.click();
+    await page.getByRole('button', { name: 'Approve CLI login', exact: true }).click();
+    await expect(page.getByText('CLI approved. You can return to your terminal.', { exact: true })).toBeVisible();
+    await expect.poll(() => login.child.exitCode).toBe(0);
+  } finally { await login.stop(); }
+});
+
+test.describe('as the host operator', () => {
+  test.use({ processEnv: { PIQUELD_PLAYWRIGHT_HOST_OPERATOR: '1' } });
+
+  test('signs in with a one-time link, cannot approve CLI logins, and is revoked by an administrator', async ({ page, account, browser, cli, daemon }) => {
+    void account;
+    const issued = await cli.run(['--json', 'sign-in-link']);
+    expect(issued.code, issued.stderr).toBe(0);
+    const context = await browser.newContext();
+    try {
+      const operator = await context.newPage();
+      await operator.goto(JSON.parse(issued.stdout).url);
+      await expect(operator.getByRole('heading', { name: 'Sign in as the host operator', exact: true })).toBeVisible();
+      // The secret leaves the address bar as soon as the page reads it.
+      await expect(operator).toHaveURL(`${daemon.origin}/dashboard/auth`);
+      await operator.getByRole('button', { name: 'Sign in as host operator', exact: true }).click();
+      await expect(operator).toHaveURL(`${daemon.origin}/dashboard/`);
+      await operator.goto(`${daemon.origin}/dashboard/auth#device`);
+      await expect(operator.getByText(/^The host operator cannot approve CLI logins/)).toBeVisible();
+      await expect(operator.getByLabel('CLI code', { exact: true })).toHaveCount(0);
+
+      // Not being an account, it manages accounts but issues no links or tokens.
+      await operator.goto(`${daemon.origin}/dashboard/accounts`);
+      const alice = accountCard(operator, 'alice');
+      await expect(alice.getByText(/An account with accounts:manage can send them a single-use enrollment link/)).toBeVisible();
+      await expect(alice.getByRole('button', { name: 'Create enrollment link', exact: true })).toHaveCount(0);
+      await expect(alice.getByRole('heading', { name: 'New API token', exact: true })).toHaveCount(0);
+      await expect(operator.getByRole('button', { name: 'Create invitation', exact: true })).toHaveCount(0);
+
+      await page.goto('/dashboard/accounts');
+      const sessions = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Host operator sessions', exact: true }) });
+      await sessions.getByRole('button', { name: 'Revoke', exact: true }).click();
+      await expect(sessions).toHaveCount(0);
+      expect((await api(operator, 'me')).status).toBe(401);
+    } finally { await context.close(); }
+  });
+});
+
+test('the dashboard creates an API token within its form and its account\'s limits, and revokes it', async ({ page, account, cli }) => {
+  void account;
+  const blog = (await call(page, 'POST', 'applications/apply', { manifest: webManifest('blog'), expected_generation: 0 })).application_id;
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
+    { permission: 'apps:read', applications: [blog] }, { permission: 'apps:deploy', applications: [blog] },
+  ] })).invitation_url;
+  await register(page, link, 'bob');
+  await page.goto('/dashboard/accounts');
+  const bob = accountCard(page, 'bob');
+  const effective = bob.locator('.field', { hasText: 'Effective access' }).locator('.grant-list li');
+  // New tokens start read-only, and every choice stays within Bob's access.
+  await expect(effective).toHaveText(['apps:read on blog']);
+  await bob.getByLabel('Preset').selectOption('developer');
+  await expect(effective).toHaveText(['apps:read on blog', 'apps:deploy on blog']);
+
+  const days = bob.getByLabel('Expires in days (blank: never)', { exact: true });
+  const tailnet = bob.getByLabel('Tailnet user or tag (optional, e.g. tag:ci)', { exact: true });
+  const create = bob.getByRole('button', { name: 'Create token', exact: true });
+  await bob.getByLabel('New token name', { exact: true }).fill('ci');
+  await days.fill('0');
+  await create.click();
+  await expect(page.getByRole('alert')).toHaveText('Enter a positive number of days, or leave blank');
+  await days.fill('');
+  await tailnet.fill('ci');
+  await create.click();
+  await expect(page.getByRole('alert')).toHaveText('a tailnet binding is a login name like alice@example.com or a tag like tag:ci');
+  await tailnet.fill('');
+  await days.fill('30');
+  await create.click();
+  const token = await done(page);
+
+  const row = bob.getByRole('row').filter({ has: page.getByRole('cell', { name: 'ci', exact: true }) });
+  await expect(row.locator('.grant-list li')).toHaveText(['apps:read on blog', 'apps:deploy on blog']);
+  await expect(row).not.toContainText('Never');
+  const who = await cli.run(['--json', 'whoami'], token);
+  expect(who.code, who.stderr).toBe(0);
+  expect(JSON.parse(who.stdout)).toMatchObject({ scoped: true, grants: [
+    { permission: 'apps:read', applications: [blog] }, { permission: 'apps:deploy', applications: [blog] },
+  ] });
+  await row.getByRole('button', { name: 'Revoke', exact: true }).click();
+  await expect(row).toHaveCount(0);
+  expect((await cli.run(['whoami'], token)).code).not.toBe(0);
+});
+
+test('editing grants that mix scopes warns, then applies the chosen applications to every permission', async ({ page, account, browser }) => {
+  void account;
+  const apply = async (name: string): Promise<string> =>
+    (await call(page, 'POST', 'applications/apply', { manifest: webManifest(name), expected_generation: 0 })).application_id;
+  const blog = await apply('blog');
+  const shop = await apply('shop');
+  const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
+    { permission: 'apps:read' }, { permission: 'apps:deploy', applications: [blog] },
+  ] })).invitation_url;
+  await signUp(browser, link, 'bob');
+  await page.goto('/dashboard/accounts');
+  const bob = accountCard(page, 'bob');
+  const original = ['apps:read on every application', 'apps:deploy on blog'];
+  await expect(bob.locator('.grant-list li')).toHaveText(original);
+  const edit = bob.getByRole('button', { name: 'Edit grants', exact: true });
+  const save = bob.getByRole('button', { name: 'Save grants', exact: true });
+  // Saving without changing the selection keeps grants it cannot show.
+  await edit.click();
+  await save.click();
+  await expect(save).toHaveCount(0);
+  await expect(bob.locator('.grant-list li')).toHaveText(original);
+  await edit.click();
+  await expect(bob.getByText(/^These grants cover different applications per permission/)).toBeVisible();
+  await expect(bob.getByLabel('Application permissions apply to every application, including future ones')).not.toBeChecked();
+  await expect(bob.getByLabel('blog', { exact: true })).toBeChecked();
+  await bob.getByLabel('blog', { exact: true }).setChecked(false);
+  await expect(bob.getByText('Select at least one application, or application permissions grant nothing.', { exact: true })).toBeVisible();
+  await bob.getByLabel('shop', { exact: true }).setChecked(true);
+  await save.click();
+  await expect(bob.locator('.grant-list li')).toHaveText(['apps:read on shop', 'apps:deploy on shop']);
+  const saved = (await auth<Directory>(page, 'directory')).users.find(entry => entry.user.username === 'bob')!.grants;
+  expect(saved).toEqual([
+    { permission: 'apps:read', applications: [shop] },
+    { permission: 'apps:deploy', applications: [shop] },
+  ]);
 });

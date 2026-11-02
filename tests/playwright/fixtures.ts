@@ -1,4 +1,4 @@
-import { test as base, expect, type Page, type CDPSession, type Route } from '@playwright/test';
+import { test as base, expect, type Browser, type CDPSession, type Locator, type Page, type Route } from '@playwright/test';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -208,6 +208,45 @@ export const card = (page: Page, heading: string) =>
 export const title = (page: Page) => page.locator('.detail-title h1');
 /** The header of an application, environment, or service page, with its actions. */
 export const head = (page: Page) => page.locator('.detail-head');
+
+/** The card of account `username` on the Accounts page. */
+export const accountCard = (page: Page, username: string) =>
+  page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: username, exact: true }) });
+
+/** Chooses grants in the grant editor within `scope`, as the guides do: the
+ * applications first, if any, then the preset. */
+export async function chooseGrants(scope: Locator, preset: string, applications: string[] = []) {
+  if (applications.length) {
+    await scope.getByLabel('Application permissions apply to every application, including future ones').setChecked(false);
+    for (const application of applications) await scope.getByLabel(application, { exact: true }).setChecked(true);
+  }
+  await scope.getByLabel('Preset').selectOption(preset);
+}
+
+/** The invitation link, enrollment link or API token the Accounts page shows
+ * once, read before selecting **Done**. */
+export async function done(page: Page): Promise<string> {
+  const secret = page.locator('.secret-box');
+  await expect(secret).toContainText(/#(invite|enroll)=|pqd_/);
+  const link = (await secret.innerText()).trim();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(secret).toHaveCount(0);
+  return link;
+}
+
+/** Creates account `username` through invitation `link`, in a browser of its own,
+ * with display name `display` when given. */
+export async function signUp(browser: Browser, link: string, username: string, display?: string) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const passkeys = await Passkeys.create(page);
+    try {
+      await fillRegistration(page, link, username, { display, passkey: 'Laptop' });
+      await submitRegistration(page);
+    } finally { await passkeys.close(); }
+  } finally { await context.close(); }
+}
 
 /** Fixture options a configuration can set under `use`. */
 export type Options = {

@@ -5,12 +5,14 @@
 //! instead, so deployments succeed and services report healthy, as the
 //! documentation screenshots show them. Webhook URLs show on
 //! `hooks.example.com`, as the guides configure it, though nothing listens
-//! there.
+//! there. With `PIQUELD_PLAYWRIGHT_HOST_OPERATOR=1`, token-less callers of the
+//! Unix socket act as the host operator, as the daemon's own user does;
+//! otherwise they are anonymous, as another user would be.
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use piqueld::{
-    api::http::{ApiState, UiAssets},
+    api::http::{ApiState, UiAssets, UnixPeer},
     application::{BoundaryError, RuntimeBoundary},
     docker::{DockerError, Exec, ExecIo, fake::FakeDocker},
     reconcile::Controller,
@@ -221,7 +223,21 @@ async fn main() -> anyhow::Result<()> {
     let socket = dir.join("api.sock");
     let unix = tokio::net::UnixListener::bind(&socket)?;
     let router = piqueld::api::http::api_router(state, auth);
-    let mut unix_server = tokio::spawn(async move { axum::serve(unix, router).await });
+    let operator = matches!(
+        std::env::var("PIQUELD_PLAYWRIGHT_HOST_OPERATOR").as_deref(),
+        Ok("1" | "true")
+    );
+    let mut unix_server = tokio::spawn(async move {
+        if operator {
+            axum::serve(
+                unix,
+                router.into_make_service_with_connect_info::<UnixPeer>(),
+            )
+            .await
+        } else {
+            axum::serve(unix, router).await
+        }
+    });
     println!(
         "{}",
         serde_json::json!({"origin": origin, "setup": std::fs::read_to_string(setup)?.trim(), "socket": socket})

@@ -447,5 +447,9 @@ mod tests {
         assert_eq!(form("1.5", "").unwrap_err(), days_error);
         assert_eq!(form("0", "").unwrap_err(), days_error);
         assert!(form("30", "not a binding").is_err());
+        let Ok(Manage::CreateToken { days, .. }) = form("30", "") else {
+            panic!("a positive lifetime is valid");
+        };
+        assert_eq!(days, Some(30));
     }
 }
