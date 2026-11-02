@@ -54,10 +54,11 @@ is supported; `PIQUELD_PLAYWRIGHT_BIN_DIR` can override the directory containing
 - Account deletion confirmation, cancellation, and last-account protection.
 - Sidebar navigation to every page, the not-found page, and the signed-in account
   and daemon connection shown in the shell.
-- Application creation, renaming, the application directory, service creation and
-  editing on the service page, read-only files, volumes, routes, jobs, the
+- Application creation, invalid names, renaming, and confirmed deletion, the
+  application directory, service creation, editing, and removal on the service
+  page, read-only files, volumes, routes, jobs, exports and imports, the
   deployment preview dialog, deployment history, and unsaved-edit gating of
-  Deploy and navigation.
+  Deploy, link and Back navigation, but not of the manifest download.
 - Environment pages, creation (also promoted from another environment), renaming,
   and deletion, environments declared by the manifest, unsaved or invalid source
   edits gating Deploy and surviving changes made elsewhere, saves kept over
