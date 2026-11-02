@@ -7,6 +7,7 @@ pub mod deployments;
 pub mod editor;
 pub mod environments;
 pub mod log_output;
+pub mod overview;
 pub mod secrets;
 pub mod state;
 pub mod terminal;

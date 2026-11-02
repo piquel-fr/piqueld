@@ -4,6 +4,7 @@ use super::ui::{
     Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
 };
 use super::{ApplicationRow, ClientErrorExt, access::can, dashboard_context, management};
+use crate::overview::PreviewLoad;
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -18,6 +19,17 @@ use piqueld_client::{
     },
 };
 use std::fmt::Write as _;
+
+impl PreviewLoad {
+    /// Tone of the previews card.
+    const fn tone(self) -> Tone {
+        match self {
+            Self::Within => Tone::Ok,
+            Self::AtLimit => Tone::Warn,
+            Self::OverLimit => Tone::Bad,
+        }
+    }
+}
 
 impl ConnectionState {
     /// Label of the connection state.
@@ -420,21 +432,7 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
         );
     };
     let limits = &usage.limits;
-    let counts = std::iter::once((usage.total, limits.max_total))
-        .chain(
-            usage
-                .applications
-                .iter()
-                .map(|application| (application.previews, limits.max_per_application)),
-        )
-        .collect::<Vec<_>>();
-    let (tone, label) = if counts.iter().any(|(count, max)| count > max) {
-        (Tone::Bad, "Over limit")
-    } else if counts.iter().any(|(count, max)| count == max) {
-        (Tone::Warn, "At limit")
-    } else {
-        (Tone::Ok, "Within limits")
-    };
+    let load = PreviewLoad::of(usage);
     let applications = usage
         .applications
         .iter()
@@ -456,8 +454,8 @@ fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
     };
     status_card(
         "Previews",
-        tone,
-        label,
+        load.tone(),
+        load.label(),
         &format!(
             "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total.{unlimited} Services without limits get {} millicores and {}, and replicas are capped at {}.",
             usage.total,
@@ -659,17 +657,8 @@ impl ApplicationRow {
     /// deployment and health.
     fn list_row(self) -> AnyView {
         let health = self.health();
-        let subtitle = if self.application.delete_intent {
-            "Deletion requested".to_owned()
-        } else {
-            self.message()
-                .unwrap_or_else(|| format!("Generation {}", self.application.generation))
-        };
-        let latest = self
-            .deployments
-            .iter()
-            .max_by_key(|deployment| deployment.operation.created_at_ms)
-            .map(|deployment| deployment.operation.created_at_ms);
+        let subtitle = self.subtitle();
+        let latest = self.last_deployed_ms();
         view! {
             <A
                 attr:class="list-row"
@@ -739,77 +728,62 @@ fn RecentDeployments() -> impl IntoView {
                 }}
                 <div class="table-wrap">
                     {move || {
-                        let mut deployments = signals
+                        signals
                             .applications
-                            .get()
-                            .into_iter()
-                            .flat_map(|row| {
-                                row.deployments
-                                    .into_iter()
-                                    .map(move |deployment| (
-                                        row.application.name.clone(),
-                                        row.application.id.to_string(),
-                                        deployment,
-                                    ))
+                            .with(|rows| {
+                                let deployments = ApplicationRow::recent_deployments(rows, 5);
+                                if deployments.is_empty() {
+                                    return empty(
+                                        if signals.data_state.get() == DataState::Loading {
+                                            "Loading deployments…"
+                                        } else {
+                                            "No deployments yet."
+                                        },
+                                    );
+                                }
+                                view! {
+                                    <table class="table">
+                                        <thead>
+                                            <tr>
+                                                <th>"Application"</th>
+                                                <th>"Status"</th>
+                                                <th class="num">"Revision"</th>
+                                                <th>"Phase"</th>
+                                                <th>"Started"</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {deployments
+                                                .into_iter()
+                                                .map(|(application, deployment)| {
+                                                    let op = &deployment.operation;
+                                                    let href = format!(
+                                                        "/dashboard/applications/{}/environments/{}?deployment={}",
+                                                        application.id,
+                                                        op.environment_id,
+                                                        op.id,
+                                                    );
+                                                    let name = application.name.clone();
+                                                    view! {
+                                                        <tr>
+                                                            <td>
+                                                                <A href={href}>{name}</A>
+                                                            </td>
+                                                            <td>{operation_badge(op.state)}</td>
+                                                            <td class="num">{format!("#{}", op.generation)}</td>
+                                                            <td class="muted">
+                                                                {op.phase.clone().unwrap_or_else(|| "—".into())}
+                                                            </td>
+                                                            <td class="muted">{when(op.created_at_ms)}</td>
+                                                        </tr>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </tbody>
+                                    </table>
+                                }
+                                    .into_any()
                             })
-                            .collect::<Vec<_>>();
-                        deployments
-                            .sort_by(|a, b| {
-                                b.2
-                                    .operation
-                                    .created_at_ms
-                                    .cmp(&a.2.operation.created_at_ms)
-                                    .then_with(|| b.2.operation.id.cmp(&a.2.operation.id))
-                            });
-                        if deployments.is_empty() {
-                            return empty(
-                                if signals.data_state.get() == DataState::Loading {
-                                    "Loading deployments…"
-                                } else {
-                                    "No deployments yet."
-                                },
-                            );
-                        }
-                        view! {
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>"Application"</th>
-                                        <th>"Status"</th>
-                                        <th class="num">"Revision"</th>
-                                        <th>"Phase"</th>
-                                        <th>"Started"</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {deployments
-                                        .into_iter()
-                                        .take(5)
-                                        .map(|(name, application, deployment)| {
-                                            let op = deployment.operation;
-                                            view! {
-                                                <tr>
-                                                    <td>
-                                                        <A href={format!(
-                                                            "/dashboard/applications/{application}/environments/{}?deployment={}",
-                                                            op.environment_id,
-                                                            op.id,
-                                                        )}>{name}</A>
-                                                    </td>
-                                                    <td>{operation_badge(op.state)}</td>
-                                                    <td class="num">{format!("#{}", op.generation)}</td>
-                                                    <td class="muted">
-                                                        {op.phase.unwrap_or_else(|| "—".into())}
-                                                    </td>
-                                                    <td class="muted">{when(op.created_at_ms)}</td>
-                                                </tr>
-                                            }
-                                        })
-                                        .collect_view()}
-                                </tbody>
-                            </table>
-                        }
-                            .into_any()
                     }}
                 </div>
             </div>

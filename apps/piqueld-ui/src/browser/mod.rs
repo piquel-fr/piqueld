@@ -15,9 +15,9 @@ mod ui;
 use dashboard::{ApplicationsPage, OverviewPage, Sidebar};
 use ui::{Icon, Tone, icon, notice};
 
+use crate::overview::{ApplicationRow, EnvironmentRow};
 use crate::state::{
-    ApplicationHealth, ConnectionState, DataState, MAX_PAGES, PAGE_LIMIT, PaginationState,
-    PollController,
+    ConnectionState, DataState, MAX_PAGES, PAGE_LIMIT, PaginationState, PollController,
 };
 use futures_util::StreamExt;
 use gloo_timers::future::TimeoutFuture;
@@ -29,69 +29,14 @@ use leptos_router::hooks::use_params_map;
 use leptos_router::path;
 use piqueld_client::system::ReadinessStatus;
 use piqueld_client::{
-    ApplicationSummary, Client, ClientError, EnvironmentDetailView, EnvironmentStatusView,
-    EnvironmentView, ListApplicationsOptions, SystemStatus,
+    ApplicationSummary, Client, ClientError, EnvironmentDetailView, ListApplicationsOptions,
+    SystemStatus,
 };
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use web_sys::window as browser_window;
-
-/// One application in the dashboard list, with its environments' statuses and
-/// deployment history fetched alongside; per-application failures are kept as
-/// messages so one broken application does not fail the whole refresh.
-#[derive(Clone, Debug)]
-struct ApplicationRow {
-    application: ApplicationSummary,
-    environments: Vec<EnvironmentRow>,
-    /// Deployments of every environment.
-    deployments: Vec<piqueld_client::DeploymentView>,
-    deployment_error: Option<String>,
-}
-
-/// One environment of a listed application with its status, or the reason it
-/// could not be read.
-#[derive(Clone, Debug)]
-struct EnvironmentRow {
-    environment: EnvironmentView,
-    status: Option<EnvironmentStatusView>,
-    status_error: Option<String>,
-}
-
-impl EnvironmentRow {
-    /// Health from the environment's status, `Stopped` while it is; missing
-    /// or failed reads show as pending.
-    fn health(&self) -> ApplicationHealth {
-        match (&self.status, &self.status_error) {
-            (Some(status), None) => ApplicationHealth::from_server_state(status.state),
-            _ => ApplicationHealth::Pending,
-        }
-        .unless_stopped(self.environment.stopped())
-    }
-}
-
-impl ApplicationRow {
-    /// Health badge for a row: the least healthy of its environments, or not
-    /// deployed without any.
-    fn health(&self) -> ApplicationHealth {
-        self.environments
-            .iter()
-            .map(EnvironmentRow::health)
-            .max_by_key(|health| health.severity())
-            .unwrap_or(ApplicationHealth::NotDeployed)
-    }
-
-    /// The first status message among the application's environments.
-    fn message(&self) -> Option<String> {
-        self.environments.iter().find_map(|row| {
-            row.status
-                .as_ref()
-                .and_then(|status| status.message.clone())
-                .map(|message| format!("{}: {message}", row.environment.name))
-        })
-    }
-}
 
 /// Everything one successful refresh loaded, applied to `DashboardSignals` at once.
 #[derive(Clone, Debug)]
