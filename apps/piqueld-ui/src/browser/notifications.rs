@@ -103,8 +103,12 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
                 .user_error()
         }
     });
+    // Why the draft can't be saved, shown in the dialog: the modal hides
+    // the page's notices behind it.
+    let invalid = RwSignal::new(None::<String>);
     let edit = move |destination: Option<NotificationDestination>| {
         form.load(destination.as_ref());
+        invalid.set(None);
         opened.set(true);
     };
     let save = move || match form.draft().request() {
@@ -120,7 +124,7 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
                 refresh,
             );
         }
-        Err(message) => outcome.message.set(Some((Tone::Bad, message))),
+        Err(message) => invalid.set(Some(message)),
     };
     let row = move |destination: NotificationDestination| {
         let name = destination.name.to_string();
@@ -276,6 +280,7 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
             </div>
             <Modal title="Notification destination" opened={opened} wide=true>
                 {form.view()}
+                {move || invalid.get().map(|message| notice(Tone::Bad, message))}
                 <div class="form-actions">
                     <button
                         type="button"

@@ -49,3 +49,28 @@ test('destinations are added, tested, edited and deleted from the dashboard', as
     receiver.close();
   }
 });
+
+test('a destination that cannot be saved says why in its dialog and keeps the draft', async ({ page, account }) => {
+  void account;
+  await page.goto('/dashboard/notifications');
+  await page.getByRole('button', { name: 'Add destination', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Notification destination' });
+  await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('ops');
+  await dialog.getByLabel('Webhook URL').fill('http://127.0.0.1:9/hook');
+  await dialog.getByRole('textbox', { name: 'Build failures message', exact: true }).fill('x'.repeat(1001));
+  await dialog.getByRole('button', { name: 'Save destination', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Build failures:');
+  await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('ops');
+
+  // An unchecked category's message is kept but not sent, so it saves.
+  await dialog.getByRole('checkbox', { name: 'Build failures', exact: true }).uncheck();
+  await expect(dialog.getByRole('textbox', { name: 'Build failures message', exact: true })).toHaveValue('x'.repeat(1001));
+  await dialog.getByRole('button', { name: 'Save destination', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('Saved ops.')).toBeVisible();
+  await expect(page.getByRole('row', { name: /ops/ })).toContainText('6 categories · every application');
+  // Reopening shows the saved destination, without the earlier error.
+  await page.getByRole('row', { name: /ops/ }).getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(dialog.getByRole('checkbox', { name: 'Build failures', exact: true })).not.toBeChecked();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+});
