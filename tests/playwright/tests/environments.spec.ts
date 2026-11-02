@@ -263,6 +263,7 @@ test('a new environment is promoted from a live environment chosen in the dialog
 test('an unsaved source blocks deploying, and an invalid commit is refused before it is sent', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
+  await page.clock.install();
   await page.goto(`/dashboard/applications/${app}/environments/${app}`);
   const source = card(page, 'Source');
   const deploy = head(page).getByRole('button', { name: 'Deploy', exact: true });
@@ -286,7 +287,9 @@ test('an unsaved source blocks deploying, and an invalid commit is refused befor
   // A source changed elsewhere keeps the typed draft.
   const { generation } = await call(page, 'GET', `applications/${app}`);
   await call(page, 'PUT', `environments/${app}/branch`, { branch: 'next', expected_generation: generation });
-  await expect(source).toContainText('on branch next', { timeout: 20_000 });
+  // The next dashboard refresh shows it.
+  await page.clock.runFor(16_000);
+  await expect(source).toContainText('on branch next');
   await expect(source.getByLabel('Branch', { exact: true })).toHaveValue('main');
   await expect(commit).toHaveValue('abc1234');
   await expect(deploy).toBeDisabled();

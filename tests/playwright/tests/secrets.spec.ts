@@ -35,9 +35,14 @@ test('replacing a stored value keeps an access list changed elsewhere, and acces
   const value = store.getByLabel('Value', { exact: true });
   const save = store.getByRole('button', { name: 'Save secret', exact: true });
   await value.fill('second');
+  const writes: string[] = [];
+  const record = (request: Request) => { if (sent(request, 'PUT', path)) writes.push(request.url()); };
+  page.on('request', record);
   page.once('dialog', dialog => dialog.dismiss());
   await save.click();
   await expect(value).toHaveValue('second');
+  page.off('request', record);
+  expect(writes).toEqual([]);
 
   // Every environment may mount it since the list was loaded; the form
   // didn't change access, so the replacement keeps that.
