@@ -72,7 +72,7 @@ piquelctl app exec notes db --env staging -- psql -U notes -c 'SELECT version()'
 dump to restore:
 
 ```console
-piquelctl app exec notes db -i -- psql -q -X -v ON_ERROR_STOP=1 --single-transaction -U notes notes < notes.sql
+piquelctl app exec notes db -i -- psql -q -X -v ON_ERROR_STOP=1 --single-transaction -U notes -f - notes < notes.sql
 ```
 
 `ON_ERROR_STOP` and `--single-transaction` make `psql` stop at the first

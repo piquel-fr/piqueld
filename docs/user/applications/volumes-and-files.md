@@ -133,7 +133,7 @@ piquelctl app exec notes db -- pg_dump -U notes notes > notes.sql
 To restore it, send the dump to an empty database:
 
 ```console
-piquelctl app exec notes db -i -- psql -q -X -v ON_ERROR_STOP=1 --single-transaction -U notes notes < notes.sql
+piquelctl app exec notes db -i -- psql -q -X -v ON_ERROR_STOP=1 --single-transaction -U notes -f - notes < notes.sql
 ```
 
 `ON_ERROR_STOP` and `--single-transaction` make `psql` stop at the first
