@@ -1,7 +1,7 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
 import type { Locator, Page } from '@playwright/test';
-import { test as base, expect, adminToken, fillRegistration, applicationTab, rewrite, title, chooseGrants, done, Process, type Cli } from '../fixtures.js';
+import { test as base, expect, adminToken, fillRegistration, applicationTab, card, rewrite, title, chooseGrants, done, Process, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -274,6 +274,15 @@ export class Piquelctl {
     return result.stdout;
   }
 
+  /** Runs the first `piquelctl <command> …` line of `guide`, a page under
+   * docs/, as the guide does, without its confirmation prompt. */
+  async runFrom(guide: string, command: string) {
+    const line = (await readFile(new URL(guide, docs), 'utf8')).split('\n').map(line => line.trim())
+      .find(line => line.startsWith(`piquelctl ${command} `));
+    if (!line) throw new Error(`${guide} shows no piquelctl ${command} command`);
+    await this.run([...line.split(/\s+/).slice(1), '--yes']);
+  }
+
   /** Writes `content` to file `name` for a command to read, and returns
    * its path. */
   async write(name: string, content: string): Promise<string> {
@@ -368,3 +377,19 @@ export async function invite(page: Page, preset: string, applications: string[] 
   await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
   return done(page);
 }
+
+/** The Routes tab of application `app`, once its saved routes and the
+ * ingress status are loaded. */
+export async function routes(page: Page, app: string) {
+  await application(page, app, 'Routes');
+  await expect(card(page, 'Routes').getByRole('textbox', { name: 'Hostname' }).first()).not.toHaveValue('');
+  await expect(card(page, 'Deployed routes')).not.toContainText('Waiting for the ingress status');
+}
+
+/** The Source tab of application `app`, once its GitHub webhook card is
+ * loaded. */
+export async function source(page: Page, app: string) {
+  await application(page, app, 'Source');
+  await expect(card(page, 'GitHub webhook').getByText('Payload URL', { exact: true })).toBeVisible();
+}
+

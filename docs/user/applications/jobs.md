@@ -368,6 +368,6 @@ level=INFO msg="Running database migrations" current_version=0 latest_version=13
 - **The job can't reach another application.** A job can't use a
   [link](links.md) on the deployment that adds it. Deploy the import first.
 
-[Manifest settings](../reference/manifest-settings.md#specjobs-1) lists every
+[Manifest settings](../reference/manifest-settings.md#specjobs-table) lists every
 job setting, and the [manifest reference](../reference/manifest.md#jobs)
 describes how jobs run.

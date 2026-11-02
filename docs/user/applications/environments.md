@@ -23,7 +23,7 @@ runs to production without building it again.
   application in [Set up staging and production](#set-up-staging-and-production)
   needs `apps:create`; see [permissions](../accounts/permissions.md#grants).
 - In that section, staging is private: it needs piqueld to serve
-  [private routes](../guides/ingress.md#public-and-private-routes), and you
+  [private routes](../networking/private-routes.md), and you
   test it from a device on your tailnet.
 
 ## Add an environment
@@ -102,7 +102,7 @@ A block also sets where its environment deploys from:
 | `visibility` | `private` [keeps all its routes on your tailnet](#keep-an-environment-on-your-tailnet) |
 | `variables` | Its [own values](#give-each-environment-its-own-values) |
 
-[Manifest settings](../reference/manifest-settings.md#specenvironmentsenvironment-1)
+[Manifest settings](../reference/manifest-settings.md#specenvironmentsenvironment-table)
 describes each one. When a block sets where its environment deploys from,
 the environment's **Source** card in the dashboard says so, and can't change
 it:

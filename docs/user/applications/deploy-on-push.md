@@ -18,7 +18,7 @@ deploy every push to a branch.
   turning on deploying on push, need `apps:deploy` too; see
   [permissions](../accounts/permissions.md#grants).
 - To deploy on push with a GitHub webhook, GitHub must reach the daemon. It
-  needs [HTTP ingress with a webhook hostname](../guides/ingress.md#push-webhooks)
+  needs [HTTP ingress with a webhook hostname](../networking/webhooks.md)
   whose DNS is public, and you need to be able to change the GitHub
   repository's settings.
 
