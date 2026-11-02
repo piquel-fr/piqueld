@@ -4,10 +4,11 @@
 //! ones) shared by all application permissions; installation-wide permissions
 //! always apply everywhere. Presets only fill in the selection.
 use super::ui::{Tone, checkbox, member_checkbox, notice};
+use crate::auth::{DescribeGrants, GrantSelection};
 use leptos::prelude::*;
 use piqueld_client::{
     ApplicationId,
-    access::{Grant, Grants, Permission, Preset, Scope},
+    access::{Grants, Permission, Preset},
 };
 use std::collections::BTreeSet;
 
@@ -43,34 +44,12 @@ fn application_name(id: &ApplicationId) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-/// One line per grant, e.g. `apps:deploy on blog, shop`.
-pub(super) fn describe(grants: &Grants) -> Vec<String> {
-    grants
-        .to_list()
-        .iter()
-        .map(|grant: &Grant| match &grant.applications {
-            None if grant.permission.scopable() => {
-                format!("{} on every application", grant.permission)
-            }
-            None => grant.permission.to_string(),
-            Some(ids) => format!(
-                "{} on {}",
-                grant.permission,
-                ids.iter()
-                    .map(application_name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        })
-        .collect()
-}
-
 /// A compact list of grants, or "No access", naming applications once the
 /// dashboard's application list loads.
 pub(super) fn summary(grants: &Grants) -> AnyView {
     let grants = grants.clone();
     (move || {
-        let lines = describe(&grants);
+        let lines = grants.describe(application_name);
         if lines.is_empty() {
             return view! { <span class="muted">"No access"</span> }.into_any();
         }
@@ -84,16 +63,6 @@ pub(super) fn summary(grants: &Grants) -> AnyView {
     .into_any()
 }
 
-/// Builds grants from a selection: application permissions on `scope`,
-/// installation-wide ones everywhere.
-fn build(permissions: &BTreeSet<Permission>, scope: &Scope) -> Grants {
-    let mut grants = Grants::default();
-    for permission in permissions {
-        grants.grant_within(*permission, scope);
-    }
-    grants
-}
-
 /// Edits grants into `value`, starting from `initial`. `value` keeps
 /// `initial` until the selection changes. With `limit`, the result is
 /// clamped to it, e.g. a token to its owner's access, and the effective
@@ -105,30 +74,15 @@ pub(super) fn GrantEditor(
     value: RwSignal<Grants>,
     #[prop(optional)] limit: Option<Grants>,
 ) -> impl IntoView {
-    let list = initial.to_list();
-    let scopes: BTreeSet<_> = list
-        .iter()
-        .filter(|grant| grant.permission.scopable())
-        .map(|grant| grant.applications.clone())
-        .collect();
-    // Grants limited to different applications per permission cannot be shown
-    // with one scope; changing the selection replaces them with it.
-    let mixed = scopes.len() > 1;
-    let permissions = RwSignal::new(
-        list.iter()
-            .map(|grant| grant.permission)
-            .collect::<BTreeSet<_>>(),
-    );
-    let chosen: BTreeSet<ApplicationId> = scopes.iter().flatten().flatten().cloned().collect();
-    let everywhere = RwSignal::new(scopes.iter().all(Option::is_none));
-    let applications = RwSignal::new(chosen);
-    let scope = move || {
-        if everywhere.get() {
-            Scope::All
-        } else {
-            Scope::Only(applications.get())
-        }
-    };
+    let GrantSelection {
+        permissions,
+        everywhere,
+        applications,
+        mixed,
+    } = GrantSelection::from(&initial);
+    let permissions = RwSignal::new(permissions);
+    let everywhere = RwSignal::new(everywhere);
+    let applications = RwSignal::new(applications);
     let clamped = limit.is_some();
     let clamp = move |grants: Grants| match &limit {
         Some(limit) => grants.intersection(limit),
@@ -136,7 +90,13 @@ pub(super) fn GrantEditor(
     };
     value.set(clamp(initial));
     Effect::new(move |previous: Option<()>| {
-        let selected = build(&permissions.get(), &scope());
+        let selected = GrantSelection {
+            permissions: permissions.get(),
+            everywhere: everywhere.get(),
+            applications: applications.get(),
+            mixed,
+        }
+        .grants();
         if previous.is_some() {
             value.set(clamp(selected));
         }
