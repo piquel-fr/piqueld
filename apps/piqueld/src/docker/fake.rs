@@ -1,6 +1,7 @@
 //! An in-memory Docker engine for tests and the browser fixture, built with
 //! the `fake-docker` feature. It runs every service as declared, healthy and
-//! converged, unless a test arms one of its failure knobs.
+//! converged, unless a test arms one of its failure knobs. Commands run in a
+//! service print nothing and exit with 0.
 
 use super::{
     BollardDocker, DockerApi, DockerError, ImageBuild, ImageSource, JobOutput, JobRuns, JobStatus,
@@ -574,18 +575,44 @@ impl DockerApi for FakeDocker {
         }
         Ok(id)
     }
-    /// The reconciler never runs commands.
+    /// Creates `request` in a task of its service, picked as the adapter
+    /// picks one: the managed service of `instance`'s `environment` with
+    /// that name, then its running task before a starting one. Returns
+    /// `None` when there is no such service, or it has no such task.
     async fn create_exec(
         &self,
-        _instance: &InstanceId,
-        _environment: &EnvironmentId,
-        _request: &piqueld_core::exec::ExecRequest,
+        instance: &InstanceId,
+        environment: &EnvironmentId,
+        request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<super::Exec>, DockerError> {
-        Err(DockerError::Unavailable("create exec"))
+        let owner = BollardDocker::owner_labels(instance, environment);
+        let observed = self.observed.lock().await;
+        let Some(service) = observed.services.iter().find(|service| {
+            owner
+                .iter()
+                .all(|(label, value)| service.labels.get(*label) == Some(value))
+                && service.labels.get(SERVICE_LABEL).map(String::as_str)
+                    == Some(request.service.as_str())
+        }) else {
+            return Ok(None);
+        };
+        Ok(service
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| task.desired_running)
+            .filter_map(|(slot, task)| Some((BollardDocker::exec_rank(&task.state)?, slot)))
+            .min()
+            .map(|(_, slot)| super::Exec {
+                id: format!("exec-{}", service.name),
+                task: format!("{}.{}", request.service, slot + 1),
+                tty: request.tty.is_some(),
+            }))
     }
 
+    /// Runs nothing: every command prints nothing and exits with 0.
     async fn run_exec(&self, _exec: &super::Exec, _io: super::ExecIo) -> Result<i64, DockerError> {
-        Err(DockerError::Unavailable("run exec"))
+        Ok(0)
     }
 
     async fn resolve_image(&self, reference: &str) -> Result<String, DockerError> {

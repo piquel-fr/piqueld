@@ -5,9 +5,10 @@
 //! per scenario through [`scenarios`].
 
 use crate::poll::eventually;
-use piqueld::docker::{DockerApi, DockerError, JobOutput, JobRuns, JobStatus};
+use piqueld::docker::{DockerApi, DockerError, Exec, ExecIo, JobOutput, JobRuns, JobStatus};
 use piqueld::operations::OperationError;
 use piqueld_core::api::LogStream;
+use piqueld_core::exec::{ExecCommand, ExecRequest};
 use piqueld_core::manifest::{JobVolumeAccess, ValidatedHealthCheck};
 use piqueld_core::observability::DiagnosticCode;
 use piqueld_core::resource::{
@@ -48,6 +49,8 @@ macro_rules! scenarios {
         $test!(observations_report_only_their_environment);
         $test!(observations_report_volumes_named_like_their_environment);
         $test!(removing_job_runs_removes_only_the_selected_runs_of_their_environment);
+        $test!(commands_run_in_a_running_task_of_their_own_service);
+        $test!(commands_need_a_running_task);
     };
 }
 pub(crate) use scenarios;
@@ -535,6 +538,63 @@ impl<D: DockerApi> Contract<D> {
             Self::names(&self.observe().await),
             [look_alike.volume().name.to_string()]
         );
+    }
+
+    /// A command runs in its service's running task: `true` prints nothing
+    /// and exits with 0. A service the environment doesn't have, or that
+    /// another installation owns, has no task to run one in.
+    pub async fn commands_run_in_a_running_task_of_their_own_service(&self) {
+        let service = self.ensure_web(&self.environment).await;
+        self.converged(&service).await;
+        let instance = self.environment.instance();
+        let exec = self
+            .create_exec(&instance, "web")
+            .await
+            .expect("web runs a task");
+        let (_, input) = tokio::sync::mpsc::channel(1);
+        let (output, mut printed) = tokio::sync::mpsc::channel(16);
+        let io = ExecIo {
+            input,
+            output,
+            stop: tokio_util::sync::CancellationToken::new(),
+        };
+        assert_eq!(self.docker.run_exec(&exec, io).await.unwrap(), 0);
+        assert!(printed.recv().await.is_none(), "true prints nothing");
+        assert!(self.create_exec(&instance, "missing").await.is_none());
+        let other = InstanceId::parse("another-instance").unwrap();
+        assert!(self.create_exec(&other, "web").await.is_none());
+    }
+
+    /// A service with no running task, once scaled to zero replicas, has no
+    /// task to run a command in.
+    pub async fn commands_need_a_running_task(&self) {
+        let mut service = self.ensure_web(&self.environment).await;
+        self.converged(&service).await;
+        service.replicas = 0;
+        self.docker.ensure_service(&service).await.unwrap();
+        let instance = self.environment.instance();
+        self.until("web has no running task", async || {
+            self.create_exec(&instance, "web")
+                .await
+                .is_none()
+                .then_some(())
+        })
+        .await;
+    }
+
+    /// The command `true`, created in the environment's service `service` as
+    /// installation `instance` runs it.
+    async fn create_exec(&self, instance: &InstanceId, service: &str) -> Option<Exec> {
+        let request = ExecRequest {
+            service: piqueld_core::ServiceName::parse(service).unwrap(),
+            command: ExecCommand::parse(vec!["true".into()]).unwrap(),
+            stdin: false,
+            tty: None,
+        };
+        self.docker
+            .create_exec(instance, &self.environment.app, &request)
+            .await
+            .unwrap()
     }
 
     /// Ensures the network and volume of `environment`.
