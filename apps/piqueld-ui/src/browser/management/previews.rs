@@ -434,7 +434,7 @@ pub(super) fn PreviewActions() -> impl IntoView {
                 context
                     .notice
                     .set("Deployment accepted. Follow its progress below.".into());
-                context.tab.set("Deployments");
+                context.tabs.selected.set("Deployments");
                 context.refresh_dashboard();
             },
         );

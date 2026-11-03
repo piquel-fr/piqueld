@@ -113,7 +113,7 @@ test('an application shows only the controls the account may use on it', async (
   // the deployed environment offers no Stop.
   await resolveEnvironment(page, environment.id, saved.generation);
   await page.goto(`/dashboard/applications/${app}/environments/${environment.id}?tab=logs`);
-  await expect(environmentTab(page, 'Overview')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Overview')).toHaveAttribute('aria-selected', 'true');
   await expect(environmentTab(page, 'Logs')).toHaveCount(0);
   await expect(environmentTab(page, 'Events')).toHaveCount(0);
   await expect(head(page).getByRole('button')).toHaveCount(0);

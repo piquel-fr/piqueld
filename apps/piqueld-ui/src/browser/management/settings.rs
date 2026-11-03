@@ -332,7 +332,7 @@ fn WebhookSettings() -> impl IntoView {
     // The secret just generated: never retrievable again.
     let generated = RwSignal::new(None::<String>);
     Effect::new(move |_| {
-        if context.tab.get() != "Source" {
+        if context.tabs.selected.get() != "Source" {
             generated.set(None);
         }
     });
@@ -442,7 +442,7 @@ fn WebhookSettings() -> impl IntoView {
                     }
                 }}
                 // A secret arriving after the tab was left waits for it.
-                <Show when={move || context.tab.get() == "Source"}>
+                <Show when={move || context.tabs.selected.get() == "Source"}>
                     <Show when={move || generated.with(Option::is_some)}>
                         {notice(
                             Tone::Ok,
@@ -672,13 +672,13 @@ fn service_fields(section: Section, service: String, form: RwSignal<ServiceForm>
         Section::Process => view! {
             <div class="stack-sm">
                 <div>
-                    <h4 class="hint" style="margin-bottom:8px">
+                    <h4 class="hint mb-sm">
                         "Command"
                     </h4>
                     {string_rows("Command element", form, |v| &v.command, |v| &mut v.command)}
                 </div>
                 <div>
-                    <h4 class="hint" style="margin-bottom:8px">
+                    <h4 class="hint mb-sm">
                         "Arguments"
                     </h4>
                     {string_rows("Argument", form, |v| &v.arguments, |v| &mut v.arguments)}
@@ -775,8 +775,8 @@ fn general_fields(form: RwSignal<ServiceForm>) -> AnyView {
                             |v| v.target.clone(),
                             |v, s| v.target = s,
                         )}
-                        <div style="grid-column:1/-1">
-                            <h4 class="hint" style="margin-bottom:8px">
+                        <div class="span-all">
+                            <h4 class="hint mb-sm">
                                 "Build arguments (not secret)"
                             </h4>
                             {pair_rows(
@@ -1166,7 +1166,7 @@ fn health_fields(form: RwSignal<ServiceForm>) -> AnyView {
             </Show>
         </div>
         <Show when={move || kind.get() == HealthKind::Command}>
-            <div style="margin-top:14px">
+            <div class="mt-md">
                 {string_rows(
                     "Health command element",
                     form,

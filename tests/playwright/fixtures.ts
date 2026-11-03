@@ -200,10 +200,10 @@ export const webManifest = (name: string, spec: Record<string, unknown> = {}) =>
 
 /** One of the application page's section tabs. */
 export const applicationTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Application sections' }).getByRole('button', { name, exact: true });
+  page.getByRole('tablist', { name: 'Application sections' }).getByRole('tab', { name, exact: true });
 /** One of an environment or preview page's section tabs. */
 export const environmentTab = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name, exact: true });
+  page.getByRole('tablist', { name: 'Environment sections' }).getByRole('tab', { name, exact: true });
 /** The card of a page section, by its heading. */
 export const card = (page: Page, heading: string) =>
   page.locator('section.card', { has: page.getByRole('heading', { name: heading, exact: true }) });

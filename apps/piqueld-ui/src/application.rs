@@ -59,9 +59,18 @@ impl Page {
         }
     }
 
+    /// The accessible name of the page's tab list.
+    #[must_use]
+    pub const fn tabs_label(&self) -> &'static str {
+        match self {
+            Self::Environment(_) | Self::Preview(_) => "Environment sections",
+            Self::Application | Self::Service(_) => "Application sections",
+        }
+    }
+
     /// The initial tab, reading query parameters with `query`: `?deployment=`
-    /// opens deployments, `?release=` releases, and `?tab=` names a tab in
-    /// lowercase. Tabs the page lacks open the overview.
+    /// opens deployments, `?release=` releases, and `?tab=` names a tab by
+    /// its `slug`. Tabs the page lacks open the overview.
     #[must_use]
     pub fn initial_tab(&self, query: impl Fn(&str) -> Option<String>) -> &'static str {
         let requested = if query("deployment").is_some() {
@@ -73,9 +82,25 @@ impl Page {
         };
         self.tabs()
             .iter()
-            .find(|tab| requested.as_deref() == Some(tab.to_lowercase().as_str()))
+            .find(|tab| requested.as_deref() == Some(slug(tab).as_str()))
             .unwrap_or(&"Overview")
     }
+}
+
+/// `text` as an address or element ID fragment: lowercase, with runs of
+/// other characters as one hyphen, so "Command & arguments" is
+/// `command-arguments`.
+#[must_use]
+pub fn slug(text: &str) -> String {
+    let mut slug = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_owned()
 }
 
 /// What the application editor derives from the saved application.
@@ -428,6 +453,7 @@ mod tests {
             "Deployments"
         );
         assert_eq!(environment.initial_tab(query(&[("tab", "logs")])), "Logs");
+        assert_eq!(slug("Command & arguments"), "command-arguments");
         // Environment pages have no releases; application pages no deployments or logs.
         assert_eq!(
             environment.initial_tab(query(&[("release", "r1")])),

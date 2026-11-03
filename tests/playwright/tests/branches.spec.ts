@@ -93,7 +93,7 @@ test('an environment page reads the manifest last fetched from its branch', asyn
   await environmentTab(page, 'Deployments').click();
   const deployment = page.locator('.expander', { hasText: 'Deployment #' });
   await deployment.getByRole('button', { name: /Deployment #/ }).click();
-  await deployment.getByRole('button', { name: 'Snapshot', exact: true }).click();
+  await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
   await expect(deployment).toContainText('manifest_connection_ignored: The fetched manifest names another repository.');
 });
 
@@ -177,7 +177,7 @@ test('an environment following a branch deploys another branch or commit once', 
   expect((await query).get('branch')).toBe('feat/login');
   expect((await query).has('commit')).toBe(false);
   await expect(dialog).toBeHidden();
-  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
 
   // A short commit hash is refused before it is sent.
   const commit = '0123456789abcdef0123456789abcdef01234567';
@@ -252,7 +252,7 @@ test('a preview created from the dashboard opens on its own page, also from its 
   await creator.getByRole('button', { name: 'Create preview', exact: true }).click();
   // The page is named by the slug and opens on the deployment it started.
   await expect(title(page)).toHaveText('notes-feat-login-agent-2-503aa8');
-  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
   const preview = new URL(page.url()).pathname.split('/').pop()!;
   expect(preview).toMatch(/^preview-/);
   // Its whole row in the list opens it too.
@@ -310,7 +310,7 @@ test('a preview page shows the local snapshot it runs, and redeploys its branch 
   await page.getByRole('button', { name: 'Redeploy branch head', exact: true }).click();
   expect((await redeployed).status()).toBe(202);
   await expect(page.getByText('Deployment accepted. Follow its progress below.', { exact: true })).toBeVisible();
-  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
 });
 
 test('an application deploys on push by polling or webhook, and an environment opts in', async ({ page, account }) => {

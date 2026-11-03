@@ -1,10 +1,12 @@
 //! Unsaved edit guards for browser navigation.
 use super::super::confirm;
+use crate::application::slug;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
 use leptos::wasm_bindgen::closure::Closure;
-use leptos_router::hooks::use_location;
+use leptos_router::NavigateOptions;
+use leptos_router::hooks::{use_location, use_navigate};
 use std::collections::BTreeSet;
 
 /// The editor location to restore if the user cancels a back/forward navigation.
@@ -41,6 +43,31 @@ impl HistoryGuard {
         });
         on_cleanup(move || listener.remove());
     }
+}
+
+/// Keeps the shown `tab` in the address as `?tab=<slug>`, so reloading, or
+/// sharing the link, opens the same tab. The address is replaced, never
+/// pushed, so Back still leaves the page, and only once the tab changes:
+/// the initial one came from the address, which may name a record to open
+/// on it, such as `?deployment=`.
+pub(super) fn remember_tab(tab: RwSignal<&'static str>) {
+    let navigate = use_navigate();
+    let location = use_location();
+    Effect::new(move |previous: Option<&'static str>| {
+        let shown = tab.get();
+        if previous.is_some_and(|previous| previous != shown) {
+            let path = location.pathname.get_untracked();
+            navigate(
+                &format!("{path}?tab={}", slug(shown)),
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..NavigateOptions::default()
+                },
+            );
+        }
+        shown
+    });
 }
 
 /// Asks for confirmation before leaving an editor with unsaved edits, covering

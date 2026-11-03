@@ -16,7 +16,9 @@ mod variables;
 
 use super::format::timestamp;
 use super::runtime::RuntimeOverview;
-use super::ui::{Icon, Modal, Tabs, Tone, badge, health_badge, icon, notice, text_field};
+use super::ui::{
+    Icon, Modal, TabSet, Tone, badge, health_badge, icon, loading, notice, text_field,
+};
 use super::{
     Alive, ClientErrorExt, DashboardContext, DashboardSignals,
     access::{self, can},
@@ -35,7 +37,7 @@ use leptos_router::hooks::use_navigate;
 use leptos_router::params::ParamsMap;
 use logs::ApplicationLogs;
 pub(super) use navigation::HistoryGuard;
-use navigation::guard_navigation;
+use navigation::{guard_navigation, remember_tab};
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView,
     ApplyApplicationRequest, Client, ClientError, DeploymentOrigin, EnvironmentConfig,
@@ -80,7 +82,8 @@ struct EditorContext {
     error: RwSignal<Option<String>>,
     diagnostic_id: RwSignal<Option<String>>,
     notice: RwSignal<String>,
-    tab: RwSignal<&'static str>,
+    /// The page's tabs; `tabs.selected` is the shown one.
+    tabs: TabSet,
 }
 
 impl EditorContext {
@@ -495,7 +498,7 @@ impl EditorContext {
         if self.environment_page()
             && self.environment.get_untracked().as_deref() == Some(environment)
         {
-            self.tab.set("Deployments");
+            self.tabs.selected.set("Deployments");
         } else {
             let href = format!("{}?tab=deployments", self.environment_href(environment));
             navigate(&href, NavigateOptions::default());
@@ -658,6 +661,9 @@ impl EditorContext {
         );
     }
 }
+
+/// How long the editor's notice of a completed action stays.
+const NOTICE_SHOWN: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Returns the enclosing `EditorContext`.
 fn editor() -> EditorContext {
@@ -843,7 +849,11 @@ impl Draft<String> {
             >
                 <fieldset class="form-row" disabled={disabled}>
                     {text_field(label, self.value)}
-                    <button type="submit" class="btn btn-primary" disabled={move || !self.changed()}>
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                        disabled={move || !self.changed()}
+                    >
                         "Save"
                     </button>
                     <button
@@ -1016,24 +1026,20 @@ pub(super) fn ApplicationPage(id: String, page: Page) -> impl IntoView {
         }
     });
     view! {
-        {move || {
-            error
-                .get()
-                .map(|e| {
-                    view! {
-                        <div class="stack-sm">
-                            {notice(Tone::Bad, e)}
-                            {back_link("/dashboard/applications", "Back to applications")}
-                        </div>
-                    }
-                })
-        }}
-        {move || {
-            initial
-                .get()
-                .map(|initial| {
-                    view! { <ApplicationEditor initial={initial} page={page.clone()} /> }
-                })
+        {move || match (initial.get(), error.get()) {
+            (Some(initial), _) => {
+                view! { <ApplicationEditor initial={initial} page={page.clone()} /> }.into_any()
+            }
+            (None, Some(e)) => {
+                view! {
+                    <div class="stack-sm">
+                        {notice(Tone::Bad, e)}
+                        {back_link("/dashboard/applications", "Back to applications")}
+                    </div>
+                }
+                    .into_any()
+            }
+            (None, None) => loading("Loading the application…"),
         }}
     }
 }
@@ -1084,10 +1090,14 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
         error: RwSignal::new(None),
         diagnostic_id: RwSignal::new(None),
         notice: RwSignal::new(String::new()),
-        tab: RwSignal::new(query.with_untracked(|query| page.initial_tab(|key| query.get(key)))),
+        tabs: TabSet::new(
+            page.tabs_label(),
+            RwSignal::new(query.with_untracked(|query| page.initial_tab(|key| query.get(key)))),
+        ),
         page: StoredValue::new(page.clone()),
     };
     provide_context(context);
+    remember_tab(context.tabs.selected);
     // Refresh environment metadata without replacing shared configuration drafts.
     Effect::new(move |_| {
         if let Some(application) = signals.applications.with(|rows| {
@@ -1161,6 +1171,7 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
 fn ApplicationSections() -> impl IntoView {
     let context = editor();
     let signals = context.signals();
+    let tabs = context.tabs;
     let id = context.id();
     let health = move || {
         let id = context.id();
@@ -1195,39 +1206,60 @@ fn ApplicationSections() -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs
-            label="Application sections"
-            options={&APPLICATION_TABS}
-            selected={context.tab}
-            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
-        />
-        <div hidden={move || context.tab.get() != "Overview"}>
-            <div class="stack">
-                <ApplicationOverview />
-                <DeleteApplication />
-            </div>
-        </div>
-        <div hidden={move || context.tab.get() != "Environments"}>
-            <environments::EnvironmentList />
-        </div>
-        <Show when={move || context.tab.get() == "Previews"}>
-            <previews::PreviewList />
-        </Show>
+        {tabs.bar(&APPLICATION_TABS, Some(Callback::new(move |tab| context.tab_hidden(tab))))}
+        {tabs
+            .panel(
+                "Overview",
+                view! {
+                    <div class="stack">
+                        <ApplicationOverview />
+                        <DeleteApplication />
+                    </div>
+                },
+            )}
+        {tabs.panel("Environments", view! { <environments::EnvironmentList /> })}
+        {tabs
+            .panel(
+                "Previews",
+                view! {
+                    <Show when={move || tabs.selected.get() == "Previews"}>
+                        <previews::PreviewList />
+                    </Show>
+                },
+            )}
         <ApplicationSettings />
-        <Show when={move || context.tab.get() == "Releases"}>
-            <releases::ReleaseHistory application={context.id()} />
-        </Show>
-        <Show when={move || context.tab.get() == "Builds"}>
-            <super::builds::BuildHistory
-                application={context.id()}
-                allowed={Callback::new(move |(permission, environment): (AppPermission, String)| {
-                    context.can_in(permission, Some(&environment))
-                })}
-            />
-        </Show>
-        <Show when={move || context.tab.get() == "Events"}>
-            <super::observability::EventHistory application={context.id()} />
-        </Show>
+        {tabs
+            .panel(
+                "Releases",
+                view! {
+                    <Show when={move || tabs.selected.get() == "Releases"}>
+                        <releases::ReleaseHistory application={context.id()} />
+                    </Show>
+                },
+            )}
+        {tabs
+            .panel(
+                "Builds",
+                view! {
+                    <Show when={move || tabs.selected.get() == "Builds"}>
+                        <super::builds::BuildHistory
+                            application={context.id()}
+                            allowed={Callback::new(move |
+                                (permission, environment): (AppPermission, String)|
+                            { context.can_in(permission, Some(&environment)) })}
+                        />
+                    </Show>
+                },
+            )}
+        {tabs
+            .panel(
+                "Events",
+                view! {
+                    <Show when={move || tabs.selected.get() == "Events"}>
+                        <super::observability::EventHistory application={context.id()} />
+                    </Show>
+                },
+            )}
     }
 }
 
@@ -1290,6 +1322,7 @@ fn ApplicationOverview() -> impl IntoView {
 fn EnvironmentPage() -> impl IntoView {
     let context = editor();
     let signals = context.signals();
+    let tabs = context.tabs;
     let id = context.environment_id();
     let preview = context
         .page
@@ -1353,36 +1386,41 @@ fn EnvironmentPage() -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs
-            label="Environment sections"
-            options={&ENVIRONMENT_TABS}
-            selected={context.tab}
-            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
-        />
-        <div hidden={move || context.tab.get() != "Overview"}>
-            <div class="stack">
-                {preview.then(|| view! { <previews::PreviewSettings /> })} <RuntimeOverview />
-                <variables::EnvironmentVariables />
-                {(!preview).then(|| view! { <environments::EnvironmentSettings /> })}
-                {preview.then(|| view! { <previews::DeletePreview /> })}
-            </div>
-        </div>
-        <div hidden={move || context.tab.get() != "Deployments"}>
-            <DeploymentHistory />
-        </div>
-        <div hidden={move || context.tab.get() != "Secrets"}>
-            <EnvironmentSecrets />
-        </div>
-        <Show when={move || context.tab.get() == "Logs"}>
-            <ApplicationLogs />
-        </Show>
-        // Hidden rather than unmounted, so a session survives switching tabs.
-        <div hidden={move || context.tab.get() != "Terminal"}>
-            <terminal::ExecTerminal />
-        </div>
-        <Show when={move || context.tab.get() == "Events"}>
-            <super::observability::EventHistory environment={id.clone()} />
-        </Show>
+        {tabs.bar(&ENVIRONMENT_TABS, Some(Callback::new(move |tab| context.tab_hidden(tab))))}
+        {tabs
+            .panel(
+                "Overview",
+                view! {
+                    <div class="stack">
+                        {preview.then(|| view! { <previews::PreviewSettings /> })}
+                        <RuntimeOverview /> <variables::EnvironmentVariables />
+                        {(!preview).then(|| view! { <environments::EnvironmentSettings /> })}
+                        {preview.then(|| view! { <previews::DeletePreview /> })}
+                    </div>
+                },
+            )}
+        {tabs.panel("Deployments", view! { <DeploymentHistory /> })}
+        {tabs.panel("Secrets", view! { <EnvironmentSecrets /> })}
+        {tabs
+            .panel(
+                "Logs",
+                view! {
+                    <Show when={move || tabs.selected.get() == "Logs"}>
+                        <ApplicationLogs />
+                    </Show>
+                },
+            )}
+        // Kept mounted rather than unmounted, so a session survives switching tabs.
+        {tabs.panel("Terminal", view! { <terminal::ExecTerminal /> })}
+        {tabs
+            .panel(
+                "Events",
+                view! {
+                    <Show when={move || tabs.selected.get() == "Events"}>
+                        <super::observability::EventHistory environment={id.clone()} />
+                    </Show>
+                },
+            )}
     }
     .into_any()
 }
@@ -1454,6 +1492,22 @@ fn DeleteApplication() -> impl IntoView {
 fn EditorFeedback() -> impl IntoView {
     let context = editor();
     let signals = context.signals();
+    // A notice tells of one action; it leaves on its own, like the action
+    // it confirms, rather than lingering on every later tab.
+    Effect::new(move |_| {
+        let shown = context.notice.get();
+        if shown.is_empty() {
+            return;
+        }
+        set_timeout(
+            move || {
+                if context.notice.try_get_untracked().as_ref() == Some(&shown) {
+                    context.notice.set(String::new());
+                }
+            },
+            NOTICE_SHOWN,
+        );
+    });
     let show_status = move || {
         context.busy.get() || (context.dirty.get().is_empty() && !context.notice.get().is_empty())
     };
@@ -1478,7 +1532,7 @@ fn EditorFeedback() -> impl IntoView {
         })
     };
     view! {
-        <div class="stack-sm" style="margin-bottom:16px">
+        <div class="stack-sm mb-md">
             <p class="hint" role="status" hidden={move || !show_status()}>
                 {move || {
                     if context.busy.get() { "Saving…".into() } else { context.notice.get() }
@@ -1590,51 +1644,43 @@ fn RepositoryEdits() -> impl IntoView {
 #[component]
 fn ApplicationSettings() -> impl IntoView {
     let context = editor();
+    let tabs = context.tabs;
     let forms = view! {
-        <div hidden={move || context.tab.get() != "Services"}>
-            <div class="section-header">
-                <div>
-                    <h2>"Services"</h2>
-                    <p>
-                        "Each service runs one image as a replicated Swarm service on the application network."
-                    </p>
-                </div>
-                <NewService />
-            </div>
-            <services::ServiceList />
-        </div>
-        <div hidden={move || context.tab.get() != "Variables"}>
-            <variables::VariableSettings />
-        </div>
-        <div hidden={move || context.tab.get() != "Routes"}>
-            <routes::RouteSettings />
-        </div>
-        <div hidden={move || context.tab.get() != "Volumes"}>
-            <VolumeSettings />
-        </div>
-        <div hidden={move || context.tab.get() != "Jobs"}>
-            <jobs::JobSettings />
-        </div>
-        <div hidden={move || context.tab.get() != "Links"}>
-            <links::LinkSettings />
-        </div>
-        <div hidden={move || context.tab.get() != "Secrets"}>
-            <SecretFileSettings />
-        </div>
+        {tabs
+            .panel(
+                "Services",
+                view! {
+                    <div class="section-header">
+                        <div>
+                            <h2>"Services"</h2>
+                            <p>
+                                "Each service runs one image as a replicated Swarm service on the application network."
+                            </p>
+                        </div>
+                        <NewService />
+                    </div>
+                    <services::ServiceList />
+                },
+            )}
+        {tabs.panel("Variables", view! { <variables::VariableSettings /> })}
+        {tabs.panel("Routes", view! { <routes::RouteSettings /> })}
+        {tabs.panel("Volumes", view! { <VolumeSettings /> })}
+        {tabs.panel("Jobs", view! { <jobs::JobSettings /> })}
+        {tabs.panel("Links", view! { <links::LinkSettings /> })}
+        {tabs.panel("Secrets", view! { <SecretFileSettings /> })}
     };
     view! {
         <div hidden={move || {
             !matches!(
-                context.tab.get(),
+                tabs.selected.get(),
                 "Source" | "Services" | "Variables" | "Routes" | "Volumes" | "Jobs" | "Links"
                 | "Secrets"
             )
         }}>
             <div class="stack">
                 {move || context.read_only_notice()} <RepositoryEdits />
-                <div hidden={move || context.tab.get() != "Source"}>
-                    <RepositorySettings />
-                </div> <div hidden={move || context.tab.get() != "Secrets"}>
+                {tabs.panel("Source", view! { <RepositorySettings /> })}
+                <div hidden={move || tabs.selected.get() != "Secrets"}>
                     <StoredSecrets />
                 </div>
                 <fieldset disabled={move || !context.can(AppPermission::Write)}>{forms}</fieldset>

@@ -276,8 +276,7 @@ impl DashboardSignals {
     fn refresh_notices(self) -> impl IntoView {
         view! {
             <div
-                class="stack-sm"
-                style="margin-bottom:16px"
+                class="stack-sm mb-md"
                 hidden={move || self.refresh_error.get().is_none()}
             >
                 {move || {
@@ -300,8 +299,7 @@ impl DashboardSignals {
                 }}
             </div>
             <div
-                class="stack-sm"
-                style="margin-bottom:16px"
+                class="stack-sm mb-md"
                 hidden={move || self.data_state.get() != DataState::Stale}
             >
                 {notice(Tone::Warn, "Showing the last successful view; the latest refresh failed.")}
@@ -654,7 +652,37 @@ impl ClientErrorExt for ClientError {
             }
             Self::Endpoint { message } => format!("The dashboard endpoint is invalid: {message}"),
             Self::Transport { message, .. } => format!("Could not reach piqueld: {message}"),
-            Self::Api { error, .. } => error.message.clone(),
+            // Validation refusals name each failing field in their details;
+            // the message alone would only say the manifest is invalid.
+            Self::Api { error, .. } => {
+                let problems = error
+                    .details
+                    .get("errors")
+                    .and_then(|errors| errors.as_array())
+                    .map(|errors| {
+                        errors
+                            .iter()
+                            .filter_map(|problem| {
+                                let message = problem.get("message")?.as_str()?;
+                                Some(
+                                    match problem
+                                        .get("path")
+                                        .and_then(|path| path.as_str())
+                                        .filter(|path| !path.is_empty())
+                                    {
+                                        Some(path) => format!("{path}: {message}"),
+                                        None => message.to_owned(),
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|problems| !problems.is_empty());
+                match problems {
+                    Some(problems) => format!("{}: {}", error.message, problems.join("; ")),
+                    None => error.message.clone(),
+                }
+            }
             Self::Decode { .. } | Self::TextDecode { .. } => {
                 "The daemon returned an invalid public API response.".into()
             }

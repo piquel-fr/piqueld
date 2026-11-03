@@ -2,7 +2,7 @@
 //! and the audit trail.
 use super::format::{now_ms, timestamp};
 use super::ui::{
-    Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, metric, notice, when,
+    Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, loading, metric, notice, when,
 };
 use super::{ClientErrorExt, UserError, access::can, dashboard_context, operation_events};
 use leptos::prelude::*;
@@ -104,11 +104,10 @@ pub(super) fn older_page(
     cursor: RwSignal<Option<String>>,
     next: Option<String>,
     label: &'static str,
-    style: Option<&'static str>,
 ) -> Option<AnyView> {
     next.map(|next| {
         view! {
-            <div class="btn-group" style={style}>
+            <div class="btn-group mt-sm">
                 <button
                     type="button"
                     class="btn"
@@ -229,7 +228,7 @@ pub(super) fn EventHistory(
                 <span>"Error code"</span>
                 <input placeholder="All codes" on:change={filter(code)} />
             </label> <Show when={move || !errors_only}>
-                <label class="checkbox" style="padding-bottom:8px">
+                <label class="checkbox toolbar-check">
                     <input
                         type="checkbox"
                         prop:checked={move || failures.get()}
@@ -282,12 +281,12 @@ pub(super) fn EventHistory(
                                 .into_any()
                         }}
                     </div>
-                    {older_page(cursor, page.next_cursor, "Older events", Some("margin-top:12px"))}
+                    {older_page(cursor, page.next_cursor, "Older events")}
                 }
                     .into_any()
             },
         )}
-        <p class="hint" style="margin-top:12px">
+        <p class="hint mt-sm">
             "Application deletion removes its history; daemon diagnostics may retain application context."
         </p>
     }
@@ -430,7 +429,7 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                                         view! {
                                             <div>
                                                 <h3>"Causes"</h3>
-                                                <ul style="padding-left:1.2em;list-style:disc">
+                                                <ul class="bullets">
                                                     {d
                                                         .causes
                                                         .into_iter()
@@ -657,26 +656,26 @@ pub(super) fn HostPage() -> impl IntoView {
             description="Effective daemon configuration. Edit the TOML file and restart the daemon to change these values."
         />
         <div class="stack">
-            {move || error.get().map(|e| notice(Tone::Bad, e))}
-            {move || {
-                settings
-                    .get()
-                    .map(|config| {
-                        config
-                            .groups
-                            .into_iter()
-                            .map(|(group, values)| {
-                                view! {
-                                    <section class="card">
-                                        <header>
-                                            <h3>{group}</h3>
-                                        </header>
-                                        {key_values(values)}
-                                    </section>
-                                }
-                            })
-                            .collect_view()
-                    })
+            {move || match (settings.get(), error.get()) {
+                (Some(config), _) => {
+                    config
+                        .groups
+                        .into_iter()
+                        .map(|(group, values)| {
+                            view! {
+                                <section class="card">
+                                    <header>
+                                        <h3>{group}</h3>
+                                    </header>
+                                    {key_values(values)}
+                                </section>
+                            }
+                        })
+                        .collect_view()
+                        .into_any()
+                }
+                (None, Some(e)) => notice(Tone::Bad, e),
+                (None, None) => loading("Loading the configuration…"),
             }}
         </div>
     }
@@ -730,7 +729,10 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                     "Mean attempt",
                     a
                         .mean_duration_ms
-                        .map_or_else(|| "—".into(), |ms| Elapsed::from_millis_f64(ms).to_string()),
+                        .map_or_else(
+                            || "—".into(),
+                            |ms| Elapsed::from_millis_f64(ms).to_string(),
+                        ),
                     Some("completed deployment attempts"),
                 )}
             </div>
@@ -775,7 +777,9 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                                             <tr>
                                                 <td>{r.phase}</td>
                                                 <td class="num">{r.count}</td>
-                                                <td class="num">{Elapsed::from_millis_f64(r.mean_ms).to_string()}</td>
+                                                <td class="num">
+                                                    {Elapsed::from_millis_f64(r.mean_ms).to_string()}
+                                                </td>
                                             </tr>
                                         }
                                     })
@@ -899,7 +903,7 @@ pub(super) fn AuditPage() -> impl IntoView {
                                     .into_any()
                             }}
                         </div>
-                        {older_page(cursor, page.next_cursor, "Older requests", None)}
+                        {older_page(cursor, page.next_cursor, "Older requests")}
                     }
                         .into_any()
                 },

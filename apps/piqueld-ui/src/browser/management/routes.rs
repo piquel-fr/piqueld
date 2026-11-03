@@ -1,5 +1,7 @@
 //! Application-owned route editing and independent HTTPS readiness.
-use super::super::ui::{Tone, badge, empty, limited_add_button, notice, remove_button, route_name};
+use super::super::ui::{
+    Tone, badge, empty, limited_add_button, loading, notice, remove_button, route_name,
+};
 use super::{Draft, Rows, editor};
 use leptos::prelude::*;
 use piqueld_client::{
@@ -216,7 +218,7 @@ fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
                         }}
                     />
                 </label>
-                <label class="field" style="max-width:180px">
+                <label class="field field-short">
                     <span>"Status"</span>
                     <select
                         prop:value={move || routes.field(index, |r| r.status.clone())}
@@ -256,7 +258,7 @@ fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
                         {context.service_options()}
                     </select>
                 </label>
-                <label class="field" style="max-width:120px">
+                <label class="field field-tiny">
                     <span>"HTTP port"</span>
                     <input
                         type="number"
@@ -285,7 +287,7 @@ fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
                     }}
                 />
             </label>
-            <label class="field" style="max-width:130px">
+            <label class="field field-tiny">
                 <span>"Name"</span>
                 <input
                     type="text"
@@ -297,7 +299,7 @@ fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
                     }}
                 />
             </label>
-            <label class="field" style="max-width:130px">
+            <label class="field field-tiny">
                 <span>"Visibility"</span>
                 <select
                     prop:value={move || routes.field(index, |r| r.visibility).to_string()}
@@ -311,7 +313,7 @@ fn route_row(routes: RwSignal<Vec<RouteDraft>>, index: usize) -> AnyView {
                     <option value="public">"Public"</option>
                 </select>
             </label>
-            <label class="field" style="max-width:140px">
+            <label class="field field-tiny">
                 <span>"Destination"</span>
                 <select
                     prop:value={move || {
@@ -366,7 +368,7 @@ fn DeployedRoutes() -> impl IntoView {
             </header>
             {move || {
                 match deployed() {
-                    None => empty("Waiting for the ingress status…"),
+                    None => loading("Waiting for the ingress status…"),
                     Some(routes) if routes.is_empty() => {
                         empty("No routes are deployed for this application.")
                     }

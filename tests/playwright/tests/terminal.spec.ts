@@ -62,6 +62,6 @@ test('the terminal runs a command, relays input and resizes, and reports failure
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect(page.getByText('Disconnected. The command may still be running in the task.')).toBeVisible();
 
-  await page.getByRole('navigation', { name: 'Environment sections' }).getByRole('button', { name: 'Events', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Environment sections' }).getByRole('tab', { name: 'Events', exact: true }).click();
   await expect(page.locator('.event', { hasText: 'started a command in task fixture-task' }).first()).toBeVisible();
 });

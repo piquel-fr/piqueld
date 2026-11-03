@@ -60,20 +60,20 @@ test('adds a service and edits it on the service page', async ({ page, account }
   await expect(page.getByRole('button', { name: 'Remove service', exact: true })).toBeEnabled();
   await page.reload();
   await expect(page.getByLabel('Replicas', { exact: true })).toHaveValue('3');
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Environment', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Environment', exact: true }).click();
   await page.getByRole('button', { name: 'Add variable', exact: true }).click();
   await page.getByLabel('Key', { exact: true }).fill('PORT');
   await page.getByLabel('Value', { exact: true }).fill('8080');
   await save(page);
   // A section's draft compares only its own fields, also after another section saved.
-  const sections = page.getByRole('navigation', { name: 'Service sections' });
-  await sections.getByRole('button', { name: 'Source & scaling', exact: true }).click();
+  const sections = page.getByRole('tablist', { name: 'Service sections' });
+  await sections.getByRole('tab', { name: 'Source & scaling', exact: true }).click();
   await page.getByLabel('Replicas', { exact: true }).fill('4');
-  await sections.getByRole('button', { name: 'Environment', exact: true }).click();
+  await sections.getByRole('tab', { name: 'Environment', exact: true }).click();
   await page.getByLabel('Value', { exact: true }).fill('9090');
   await visible(page, 'Save changes').click();
   await expect(visible(page, 'Save changes')).toHaveCount(0);
-  await sections.getByRole('button', { name: 'Source & scaling', exact: true }).click();
+  await sections.getByRole('tab', { name: 'Source & scaling', exact: true }).click();
   await page.getByLabel('Replicas', { exact: true }).fill('3');
   await expect(visible(page, 'Save changes')).toHaveCount(0);
   await page.locator('.breadcrumb').getByRole('link', { name: 'browser-test', exact: true }).click();
@@ -104,14 +104,14 @@ test('mounts an inline file whose content is kept verbatim', async ({ page, acco
   await createApplication(page);
   await addService(page, 'web', 'nginx:1.27');
   await page.locator('a.list-row', { hasText: 'web' }).click();
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Files', exact: true }).click();
   await page.getByRole('button', { name: 'Add file', exact: true }).click();
   await page.getByLabel('Container path', { exact: true }).fill('/etc/prometheus/prometheus.yml');
   await page.getByLabel('Mode', { exact: true }).fill('0640');
   await page.getByLabel('Content', { exact: true }).fill('target: ${{ vars.missing }} {{ .x }}');
   await save(page);
   await page.reload();
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Files', exact: true }).click();
   await expect(page.getByLabel('Mode', { exact: true })).toHaveValue('0640');
   await expect(page.getByLabel('Content', { exact: true })).toHaveValue('target: ${{ vars.missing }} {{ .x }}');
 });
@@ -172,12 +172,12 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await expect(preview).toBeHidden();
 
   await page.locator('.detail-head').getByRole('button', { name: 'Deploy to production', exact: true }).click();
-  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
   const deployment = page.locator('.expander', { hasText: 'Deployment #' });
   await expect(deployment).toBeVisible();
   await deployment.getByRole('button', { name: /Deployment #/ }).click();
   await expect(deployment.getByText('Operation ID', { exact: true })).toBeVisible();
-  await deployment.getByRole('button', { name: 'Snapshot', exact: true }).click();
+  await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
   await expect(deployment).toContainText('nginx:1.27');
   await page.goto('/dashboard/');
   await expect(page.getByRole('heading', { name: 'Recent deployments' })).toBeVisible();
@@ -235,7 +235,7 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await page.getByRole('button', { name: 'Deploy to production', exact: true }).click();
   const deployment = page.locator('.expander', { hasText: 'Deployment #' });
   await deployment.getByRole('button', { name: /Deployment #/ }).click();
-  await deployment.getByRole('button', { name: 'Snapshot', exact: true }).click();
+  await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
   await expect(deployment).toContainText('migrate on web, up to 60s: migrate --all');
 });
 
@@ -330,10 +330,10 @@ test('unsaved edits guard back navigation, but not downloading the manifest', as
   await page.getByRole('link', { name: 'Manifest', exact: true }).click();
   await download;
   expect(dialogs).toEqual([]);
-  // Cancelling Back restores the editor's address, with its edits.
+  // Cancelling Back restores the editor's address, with its tab and edits.
   await page.goBack();
   await expect.poll(() => dialogs).toEqual([expect.stringContaining('discard unsaved form edits')]);
-  await expect(page).toHaveURL(editor);
+  await expect(page).toHaveURL(`${editor}?tab=volumes`);
   await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('kept');
   page.removeAllListeners('dialog');
   page.once('dialog', dialog => dialog.accept());
@@ -390,7 +390,7 @@ test('removes a service from its page, whose address then reports it gone', asyn
   await page.goBack();
   await expect(page.getByText('Service web is not part of the saved configuration.', { exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Back to services', exact: true }).click();
-  await expect(applicationTab(page, 'Services')).toHaveAttribute('aria-current', 'page');
+  await expect(applicationTab(page, 'Services')).toHaveAttribute('aria-selected', 'true');
 });
 
 test('saves exports and imports from the Links tab, each card on its own', async ({ page, account }) => {

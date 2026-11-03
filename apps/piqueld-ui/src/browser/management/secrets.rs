@@ -1,7 +1,7 @@
 //! Write-only secret values, their access lists, and saved file references.
 use super::super::ui::{
-    Icon, Tone, add_button, badge, checkbox, empty, icon, member_checkbox, notice, remove_button,
-    text_field, when,
+    Icon, Tone, add_button, badge, checkbox, empty, icon, loading, member_checkbox, notice,
+    remove_button, text_field, when,
 };
 use super::super::{ClientErrorExt, confirm};
 use super::{Draft, EditorContext, Rows, editor};
@@ -435,8 +435,7 @@ pub(super) fn StoredSecrets(
                         <td>{status_badge(&metadata, "stored")}</td>
                         <td class="actions">
                             <span
-                                class="btn-group"
-                                style="justify-content:flex-end"
+                                class="btn-group btn-group-end"
                                 hidden={move || !writable()}
                             >
                                 <button
@@ -518,8 +517,11 @@ pub(super) fn StoredSecrets(
                                         "No secrets stored for this application."
                                     },
                                 )
+                            } else if feedback.error.get().is_none() {
+                                loading("Loading secrets…")
                             } else {
-                                empty("Loading secrets…")
+                                // The failed load's error is shown above.
+                                ().into_any()
                             }
                         } else {
                             view! {
@@ -848,8 +850,11 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                         if generated.with(Vec::is_empty) {
                             if ready.get() {
                                 empty("No secrets generated for this environment.")
+                            } else if feedback.error.get().is_none() {
+                                loading("Loading secrets…")
                             } else {
-                                empty("Loading secrets…")
+                                // The failed load's error is shown above.
+                                ().into_any()
                             }
                         } else {
                             view! {
@@ -905,9 +910,9 @@ fn GeneratedSecretSettings() -> impl IntoView {
                 </div>
             </header>
             <fieldset class="stack-sm" disabled={move || context.blocked()}>
-                <Show when={move || secrets.with(Vec::is_empty)}>
-                    {empty("No generated secrets declared.")}
-                </Show>
+                <Show when={move || {
+                    secrets.with(Vec::is_empty)
+                }}>{empty("No generated secrets declared.")}</Show>
                 <For
                     each={move || secrets.indices()}
                     key={|index| *index}
@@ -919,17 +924,24 @@ fn GeneratedSecretSettings() -> impl IntoView {
                                     <input
                                         type="text"
                                         placeholder="database-password"
-                                        prop:value={move || secrets.field(index, |s| s.name.clone())}
+                                        prop:value={move || {
+                                            secrets.field(index, |s| s.name.clone())
+                                        }}
                                         on:input={move |event| {
-                                            secrets.edit(index, |s| s.name = event_target_value(&event));
+                                            secrets
+                                                .edit(index, |s| s.name = event_target_value(&event));
                                         }}
                                     />
                                 </label>
-                                <label class="field" style="max-width:200px">
+                                <label class="field field-short">
                                     <span>"Generates"</span>
                                     <select
                                         prop:value={move || {
-                                            if secrets.field(index, |s| s.rsa) { "rsa" } else { "random" }
+                                            if secrets.field(index, |s| s.rsa) {
+                                                "rsa"
+                                            } else {
+                                                "random"
+                                            }
                                         }}
                                         on:change={move |event| {
                                             let rsa = event_target_value(&event) == "rsa";
@@ -940,22 +952,29 @@ fn GeneratedSecretSettings() -> impl IntoView {
                                         <option value="rsa">"RSA key"</option>
                                     </select>
                                 </label>
-                                <label class="field" style="max-width:160px">
+                                <label class="field field-short">
                                     <span>
                                         {move || {
-                                            if secrets.field(index, |s| s.rsa) { "Bits" } else { "Bytes" }
+                                            if secrets.field(index, |s| s.rsa) {
+                                                "Bits"
+                                            } else {
+                                                "Bytes"
+                                            }
                                         }}
                                     </span>
                                     <input
                                         type="number"
-                                        prop:value={move || secrets.field(index, |s| s.size.clone())}
+                                        prop:value={move || {
+                                            secrets.field(index, |s| s.size.clone())
+                                        }}
                                         on:input={move |event| {
-                                            secrets.edit(index, |s| s.size = event_target_value(&event));
+                                            secrets
+                                                .edit(index, |s| s.size = event_target_value(&event));
                                         }}
                                     />
                                 </label>
                                 <Show when={move || !secrets.field(index, |s| s.rsa)}>
-                                    <label class="field" style="max-width:160px">
+                                    <label class="field field-short">
                                         <span>"Encoding"</span>
                                         <select
                                             prop:value={move || {

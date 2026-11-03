@@ -1,7 +1,8 @@
 //! Sidebar navigation, overview metrics, application directory, and recent deployments.
 use super::format::timestamp;
 use super::ui::{
-    Icon, PageHeader, Tone, badge, empty, health_badge, icon, metric, notice, operation_badge, when,
+    Icon, PageHeader, Tone, badge, empty, health_badge, icon, loading, metric, notice,
+    operation_badge, when,
 };
 use super::{ApplicationRow, ClientErrorExt, access::can, dashboard_context, management};
 use crate::overview::PreviewLoad;
@@ -9,6 +10,7 @@ use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
+use leptos_router::hooks::use_location;
 use piqueld_client::{
     Client, PreviewUsage,
     access::{GlobalPermission, Permission},
@@ -53,11 +55,18 @@ impl ConnectionState {
 }
 
 /// Navigation, the daemon connection, and the signed-in principal with a
-/// sign-out button.
+/// sign-out button. On narrow screens it is a bar whose menu button opens
+/// them, closing again on navigation.
 #[component]
 pub(super) fn Sidebar() -> impl IntoView {
     let signals = dashboard_context().signals;
     let who = super::auth::signed_in();
+    let opened = RwSignal::new(false);
+    let location = use_location();
+    Effect::new(move |_| {
+        location.pathname.track();
+        opened.set(false);
+    });
     // Pages the caller could not load anything on are hidden; the daemon
     // enforces every permission regardless.
     let system = can(Permission::Global(GlobalPermission::SystemRead));
@@ -68,63 +77,80 @@ pub(super) fn Sidebar() -> impl IntoView {
             .map_or_else(|| "?".to_owned(), |first| first.to_string())
     };
     view! {
-        <aside class="sidebar">
+        <aside class="sidebar" data-open={move || opened.get().then_some("")}>
             <A attr:class="brand" href="/dashboard/">
                 <span class="brand-mark" aria-hidden="true">
                     "p"
                 </span>
                 "piqueld"
             </A>
-            <nav class="nav" aria-label="Dashboard navigation">
-                <div class="nav-group">
-                    {nav_link("/dashboard/", Icon::Home, "Overview", true)}
-                    {nav_link("/dashboard/applications", Icon::Apps, "Applications", false)}
-                    {nav_link("/dashboard/builds", Icon::Builds, "Builds", false)}
-                </div>
-                <div class="nav-group">
-                    <span class="nav-group-label">"Observe"</span>
-                    {nav_link("/dashboard/events", Icon::Events, "Events", false)}
-                    {nav_link("/dashboard/errors", Icon::Errors, "Errors", false)}
-                    {nav_link("/dashboard/analytics", Icon::Analytics, "Analytics", false)}
-                    <Show when={move || {
-                        system.get()
-                    }}>
-                        {nav_link(
-                            "/dashboard/notifications",
-                            Icon::Notifications,
-                            "Notifications",
-                            false,
-                        )}
-                    </Show>
-                </div>
-                <div class="nav-group">
-                    <span class="nav-group-label">"System"</span>
-                    <Show when={move || {
-                        system.get()
-                    }}>
-                        {nav_link("/dashboard/system", Icon::Daemon, "Daemon status", false)}
-                        {nav_link("/dashboard/settings", Icon::Settings, "Host settings", false)}
-                    </Show>
-                    {nav_link("/dashboard/accounts", Icon::Accounts, "Accounts", false)}
-                    {nav_link("/dashboard/audit", Icon::Events, "Audit", false)}
-                </div>
-            </nav>
-            <div class="sidebar-footer">
-                <span class="connection">
-                    <span
-                        class="dot"
-                        data-tone={move || signals.connection.get().tone().attr()}
-                    ></span>
-                    {move || signals.connection.get().label()}
-                </span>
-                <div class="user-row">
-                    <span class="avatar" aria-hidden="true">
-                        {initial}
+            <button
+                type="button"
+                class="btn btn-sm nav-toggle"
+                aria-expanded={move || opened.get().to_string()}
+                aria-controls="sidebar-drawer"
+                on:click={move |_| opened.update(|opened| *opened = !*opened)}
+            >
+                {icon(Icon::Menu)}
+                "Menu"
+            </button>
+            <div class="sidebar-drawer" id="sidebar-drawer">
+                <nav class="nav" aria-label="Dashboard navigation">
+                    <div class="nav-group">
+                        {nav_link("/dashboard/", Icon::Home, "Overview", true)}
+                        {nav_link("/dashboard/applications", Icon::Apps, "Applications", false)}
+                        {nav_link("/dashboard/builds", Icon::Builds, "Builds", false)}
+                    </div>
+                    <div class="nav-group">
+                        <span class="nav-group-label">"Observe"</span>
+                        {nav_link("/dashboard/events", Icon::Events, "Events", false)}
+                        {nav_link("/dashboard/errors", Icon::Errors, "Errors", false)}
+                        {nav_link("/dashboard/analytics", Icon::Analytics, "Analytics", false)}
+                        <Show when={move || {
+                            system.get()
+                        }}>
+                            {nav_link(
+                                "/dashboard/notifications",
+                                Icon::Notifications,
+                                "Notifications",
+                                false,
+                            )}
+                        </Show>
+                    </div>
+                    <div class="nav-group">
+                        <span class="nav-group-label">"System"</span>
+                        <Show when={move || {
+                            system.get()
+                        }}>
+                            {nav_link("/dashboard/system", Icon::Daemon, "Daemon status", false)}
+                            {nav_link(
+                                "/dashboard/settings",
+                                Icon::Settings,
+                                "Host settings",
+                                false,
+                            )}
+                        </Show>
+                        {nav_link("/dashboard/accounts", Icon::Accounts, "Accounts", false)}
+                        {nav_link("/dashboard/audit", Icon::Events, "Audit", false)}
+                    </div>
+                </nav>
+                <div class="sidebar-footer">
+                    <span class="connection">
+                        <span
+                            class="dot"
+                            data-tone={move || signals.connection.get().tone().attr()}
+                        ></span>
+                        {move || signals.connection.get().label()}
                     </span>
-                    <span class="user-name" title={display_name}>
-                        {display_name}
-                    </span>
-                    <super::auth::Logout compact=true />
+                    <div class="user-row">
+                        <span class="avatar" aria-hidden="true">
+                            {initial}
+                        </span>
+                        <span class="user-name" title={display_name}>
+                            {display_name}
+                        </span>
+                        <super::auth::Logout compact=true />
+                    </div>
                 </div>
             </div>
         </aside>
@@ -642,7 +668,7 @@ pub(super) fn ApplicationsPage() -> impl IntoView {
                         .collect_view()
                 }}
                 {move || match signals.data_state.get() {
-                    DataState::Loading => empty("Loading applications…"),
+                    DataState::Loading => loading("Loading applications…"),
                     DataState::Empty => empty("No applications yet. Create one to get started."),
                     _ => ().into_any(),
                 }}
@@ -733,13 +759,11 @@ fn RecentDeployments() -> impl IntoView {
                             .with(|rows| {
                                 let deployments = ApplicationRow::recent_deployments(rows, 5);
                                 if deployments.is_empty() {
-                                    return empty(
-                                        if signals.data_state.get() == DataState::Loading {
-                                            "Loading deployments…"
-                                        } else {
-                                            "No deployments yet."
-                                        },
-                                    );
+                                    return if signals.data_state.get() == DataState::Loading {
+                                        loading("Loading deployments…")
+                                    } else {
+                                        empty("No deployments yet.")
+                                    };
                                 }
                                 view! {
                                     <table class="table">
