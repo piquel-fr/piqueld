@@ -178,7 +178,7 @@ expires.
   once it expires.
 - piqueld renews these certificates only while the daemon runs. Its
   certificates live in the data directory, under `ingress/`, so
-  [back it up](../guides/backups-and-upgrades.md#backing-up) whole.
+  [back it up](../operations/backups.md#back-up) whole.
 
 On the host, `piquelctl status` lists each certificate, the hostnames using it,
 and its expiry, in milliseconds since 1970:
@@ -193,8 +193,8 @@ dashboard, **System status** shows a **Certificate** card for each, marked
 attempt to renew a stored certificate failed.
 
 Each issue, renewal and deletion appears in the daemon's
-[events](../guides/observability.md#history-and-diagnostics). A destination
-that receives [`daemon_failures` notifications](../guides/observability.md#notifications)
+[events](../operations/history.md). A destination
+that receives [`daemon_failures` notifications](../operations/notifications.md)
 is notified when a certificate that keeps failing to renew is less than 14
 days from expiry. If it also receives `recovery` notifications, it is notified
 again once the certificate recovers.

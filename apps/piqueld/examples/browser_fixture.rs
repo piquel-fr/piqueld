@@ -3,11 +3,12 @@
 //! scripted terminal instead. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER=1`, the real
 //! controller deploys to the in-memory engine of [`piqueld::docker::fake`]
 //! instead, so deployments succeed and services report healthy, as the
-//! documentation screenshots show them. Webhook URLs show on
-//! `hooks.example.com`, as the guides configure it, though nothing listens
-//! there. With `PIQUELD_PLAYWRIGHT_HOST_OPERATOR=1`, token-less callers of the
-//! Unix socket act as the host operator, as the daemon's own user does;
-//! otherwise they are anonymous, as another user would be.
+//! documentation screenshots show them. Its registry lacks [`MISSING_IMAGE`],
+//! so deploying that image fails, and notifications are delivered. Webhook
+//! URLs show on `hooks.example.com`, as the guides configure it, though
+//! nothing listens there. With `PIQUELD_PLAYWRIGHT_HOST_OPERATOR=1`, token-less
+//! callers of the Unix socket act as the host operator, as the daemon's own
+//! user does; otherwise they are anonymous, as another user would be.
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
@@ -132,6 +133,9 @@ impl RuntimeBoundary for Runtime {
     fn trigger_reconciliation(&self) {}
 }
 
+/// The image the fake registry doesn't have, as for a mistyped tag.
+const MISSING_IMAGE: &str = "nginx:missing";
+
 /// What the fixture's API deploys to: the fake Docker engine when
 /// `PIQUELD_PLAYWRIGHT_FAKE_DOCKER` is `1` or `true`, nothing otherwise.
 enum Backend {
@@ -161,16 +165,25 @@ impl Backend {
             return Ok((state, tokio::spawn(std::future::pending())));
         };
         let config = piqueld::config::DaemonConfig::default();
-        let controller = Controller::new(Arc::new(FakeDocker::default()), Arc::clone(&store))
+        let docker = FakeDocker::default();
+        docker
+            .registry
+            .try_lock()
+            .expect("the new registry is unshared")
+            .missing
+            .insert(MISSING_IMAGE.to_owned());
+        let controller = Controller::new(Arc::new(docker), Arc::clone(&store))
             .with_config(&config.reconciliation);
         let wake = Arc::new(tokio::sync::Notify::new());
         let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)))?
             .with_image_status(controller.image_status())
             .with_webhook_hostname(Hostname::parse("hooks.example.com").ok());
+        let notifications = state.clone();
         let run = tokio::spawn(async move {
             let cancellation = tokio_util::sync::CancellationToken::new();
-            // Image cleanup runs until cancelled: stop it once the
-            // reconciler stops, so its error ends the fixture.
+            // Image cleanup and notification delivery run until cancelled:
+            // stop them once the reconciler stops, so its error ends the
+            // fixture.
             let reconcile = async {
                 let result = controller
                     .run(
@@ -184,9 +197,10 @@ impl Backend {
                 cancellation.cancel();
                 result
             };
-            let (result, ()) = tokio::join!(
+            let (result, (), ()) = tokio::join!(
                 reconcile,
                 controller.run_image_cleanup(cancellation.child_token()),
+                notifications.deliver_notifications(cancellation.child_token()),
             );
             result.context("reconciling against the fake Docker engine")
         });

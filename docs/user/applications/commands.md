@@ -112,7 +112,7 @@ see only commands, enter `command_started` or `command_finished` under
 
 ![The Events tab of notes' production environment, with command_started under Event kind: alice started a command in task db.1](../../images/applications/command-events.png)
 
-The [audit trail](../guides/observability.md#audit-trail) also records the
+The [audit trail](../operations/audit.md) also records the
 request.
 
 ## If the connection drops

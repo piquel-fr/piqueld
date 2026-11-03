@@ -203,7 +203,7 @@ If you saved a `piquelctl` login for the account, its name changes with it, so
 `--account robert` selects it.
 
 Renaming an account doesn't change its ID, which the
-[audit trail](../guides/observability.md#audit-trail) and saved CLI logins
+[audit trail](../operations/audit.md) and saved CLI logins
 use. To change someone's access instead, see
 [give an account access](permissions.md#give-an-account-access).
 

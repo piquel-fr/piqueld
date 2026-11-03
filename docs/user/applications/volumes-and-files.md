@@ -153,7 +153,7 @@ piquelctl app exec notes api -i -- tar -xz -C /srv/uploads < uploads.tar.gz
 Don't archive a running database's files this way: the copy may be
 inconsistent. To restore, the volume must be mounted writable.
 
-piqueld's own [backup](../guides/backups-and-upgrades.md) doesn't include
+piqueld's own [backup](../operations/backups.md) doesn't include
 volumes, so back them up separately.
 
 ## Mount a read-only file

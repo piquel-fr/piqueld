@@ -25,7 +25,7 @@ deployment, with the files its services build and mount, from the same commit:
   logs.
 
 The user guide's
-[observability stack](../user/guides/observability.md#observability-stack) is
+[observability stack](../user/operations/observability-stack.md) is
 a smaller version of this stack, for any instance.
 
 To add a site, such as a marketing page, add its service and route to the
