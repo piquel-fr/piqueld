@@ -131,9 +131,12 @@ export async function shoot(page: Page, name: string, through?: Locator, from?: 
   await page.clock.pauseAt(now);
   const frozen = await freeze(page);
   const file = new URL(`images/${name}.png`, docs);
-  const current = await fingerprint(page);
+  const drawn = await fingerprint(page);
+  const current = createHash('sha256').update(drawn).digest('hex');
   if (await readFile(file).then(Png.fingerprint, () => undefined) !== current) {
     if (test.info().config.updateSnapshots === 'none') {
+      // What the page drew, to compare with a run that regenerates the image.
+      await test.info().attach(`${name} fingerprint`, { body: drawn, contentType: 'text/plain' });
       throw new Error(`docs/images/${name}.png shows an older version of its page: run just docs-screenshots`);
     }
     await writeFile(file, Png.withFingerprint(await page.screenshot(), current));
@@ -158,11 +161,11 @@ async function varying(page: Page): Promise<string[]> {
   return page.evaluate(pattern => [...new Set(document.body.innerText.match(new RegExp(pattern, 'g')))], `${identifier}|${date}`);
 }
 
-/** A hash of what the frozen page draws: the window's size and, when
- * scrolled, where, its styles, and its content, with form values and without
- * scripts. IDs and dates left in attributes, such as links, are replaced like
- * `freeze` replaces text: each ID by its order on the page, keeping its
- * format and length. */
+/** What the frozen page draws, for `shoot` to hash: the window's size and,
+ * when scrolled, where, its styles, and its content, with form values and
+ * without scripts. IDs and dates left in attributes, such as links, are
+ * replaced like `freeze` replaces text: each ID by its order on the page,
+ * keeping its format and length. */
 async function fingerprint(page: Page): Promise<string> {
   const drawn = await page.evaluate(() => {
     const body = document.body.cloneNode(true) as HTMLElement;
@@ -181,8 +184,11 @@ async function fingerprint(page: Page): Promise<string> {
     .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date')
     // Ages such as "just now" or "2 min ago" grow with how long the spec
     // took to reach the page, which varies between machines.
-    .replace(/\b(?:just now|in a moment|in \d+ (?:min|h|d)|\d+ (?:min|h|d) ago)\b/g, 'age');
-  return createHash('sha256').update(stable).digest('hex');
+    .replace(/\b(?:just now|in a moment|in \d+ (?:min|h|d)|\d+ (?:min|h|d) ago)\b/g, 'age')
+    // Tab and dialog element IDs carry a counter that every redraw of a
+    // component advances, so it depends on how often the page refreshed.
+    .replace(/\b(dialog|tab|panel)-\d+-/g, '$1-n-');
+  return stable;
 }
 
 /** The fingerprint `shoot` records in a PNG, as a `tEXt` chunk. */
