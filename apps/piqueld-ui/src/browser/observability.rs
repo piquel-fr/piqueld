@@ -698,7 +698,7 @@ fn ChecksPanel() -> impl IntoView {
         async move { Client::browser().system_checks().await.user_error() }
     });
     view! {
-        <section class="card" aria-labelledby="installation-checks-heading">
+        <section class="card card-flush" aria-labelledby="installation-checks-heading">
             <header>
                 <div>
                     <h3 id="installation-checks-heading">"Installation checks"</h3>
@@ -720,9 +720,9 @@ fn ChecksPanel() -> impl IntoView {
                 "Running checks…",
                 |checks| {
                     view! {
-                        <div class="status-grid">
-                            {checks.checks.into_iter().map(check_card).collect_view()}
-                        </div>
+                        <ul class="status-list">
+                            {checks.checks.into_iter().map(check_row).collect_view()}
+                        </ul>
                     }
                         .into_any()
                 },
@@ -732,22 +732,20 @@ fn ChecksPanel() -> impl IntoView {
 }
 
 /// One installation check, with its next step when action is needed.
-fn check_card(check: SystemCheck) -> AnyView {
+fn check_row(check: SystemCheck) -> AnyView {
     let (tone, label) = match check.status {
         CheckStatus::Pass => (Tone::Ok, "Pass"),
         CheckStatus::Warn => (Tone::Warn, "Warning"),
         CheckStatus::Fail => (Tone::Bad, "Failed"),
         CheckStatus::Skip => (Tone::Neutral, "Skipped"),
     };
+    let next = check.next_step.map(|step| format!(" Next step: {step}"));
     view! {
-        <article class="status-card" data-tone={tone.attr()}>
-            <header>
-                <strong>{check.id.label()}</strong>
-                {badge(tone, label)}
-            </header>
-            <p>{check.message}</p>
-            {check.next_step.map(|step| view! { <p>"Next step: " {step}</p> })}
-        </article>
+        <li class="status-row" data-tone={tone.attr()}>
+            <strong>{check.id.label()}</strong>
+            {badge(tone, label)}
+            <span class="status-summary">{check.message} {next}</span>
+        </li>
     }
     .into_any()
 }
