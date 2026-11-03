@@ -418,7 +418,7 @@ written to stderr, so stdout remains valid JSON.
 
 | Command | JSON output |
 | --- | --- |
-| `profiles` | `{ "profiles": [{ "name": string, "endpoint": string }] }` |
+| `profiles` | `{ "profiles": [{ "name": string, "endpoint": string, "default": bool }] }` |
 | `status` | `SystemStatus` |
 | `resources` | `DaemonStats` |
 | `settings` | `HostConfiguration` |

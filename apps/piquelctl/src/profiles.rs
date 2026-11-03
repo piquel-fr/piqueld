@@ -382,27 +382,28 @@ socket = "/tmp/user-only.sock"
     #[test]
     fn later_files_replace_the_default_which_must_name_a_merged_profile() {
         let files = Files::new();
+        // The system default names a profile defined only in the user file.
         let system = files.write(
             "system.toml",
-            "default = 'prod'\n[profiles.prod]\nurl = 'http://127.0.0.1:7845'",
+            "default = 'dev'\n[profiles.prod]\nurl = 'http://127.0.0.1:7845'",
         );
-        let user = files.write(
-            "user.toml",
-            "default = 'dev'\n[profiles.dev]\nsocket = '/tmp/dev.sock'",
-        );
+        let user = files.write("user.toml", "[profiles.dev]\nsocket = '/tmp/dev.sock'");
         let profiles =
             Profiles::load_files([(system.clone(), false), (user.clone(), false)]).unwrap();
         assert_eq!(profiles.default_name(), "dev");
-        // A system default may name a profile defined only in the user file.
-        let pointer = files.write("pointer.toml", "default = 'dev'");
-        let profiles = Profiles::load_files([(pointer.clone(), false), (user, false)]).unwrap();
-        assert_eq!(profiles.default_name(), "dev");
-        let error = Profiles::load_files([(system, false), (pointer.clone(), false)])
+        let later = files.write("later.toml", "default = 'prod'");
+        let profiles =
+            Profiles::load_files([(system.clone(), false), (user, false), (later, false)]).unwrap();
+        assert_eq!(profiles.default_name(), "prod");
+        let error = Profiles::load_files([(system.clone(), false)])
             .err()
             .unwrap()
             .to_string();
         assert!(
-            error.contains("dev") && error.contains(pointer.to_str().unwrap()),
+            error.contains(&format!(
+                "Unknown default connection profile dev in {}",
+                system.display()
+            )),
             "{error}"
         );
     }

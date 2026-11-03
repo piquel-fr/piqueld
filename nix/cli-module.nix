@@ -67,7 +67,7 @@ in
       ++ [
         {
           assertion = cfg.settings.default == null || cfg.settings.profiles ? ${cfg.settings.default};
-          message = "programs.piquelctl.settings.default must name one of programs.piquelctl.settings.profiles";
+          message = "programs.piquelctl.settings.default (${cfg.settings.default}) must name one of programs.piquelctl.settings.profiles";
         }
       ];
     environment.systemPackages = [ cfg.package ];
