@@ -63,6 +63,16 @@ pub(super) fn summary(grants: &Grants) -> AnyView {
     .into_any()
 }
 
+/// `grants` in a few words: the one grant, or how many there are.
+pub(super) fn short_summary(grants: &Grants) -> String {
+    let lines = grants.describe(application_name);
+    match lines.len() {
+        0 => "no access".to_owned(),
+        1 => lines.into_iter().next().unwrap_or_default(),
+        count => format!("{count} grants"),
+    }
+}
+
 /// Edits grants into `value`, starting from `initial`. `value` keeps
 /// `initial` until the selection changes. With `limit`, the result is
 /// clamped to it, e.g. a token to its owner's access, and the effective

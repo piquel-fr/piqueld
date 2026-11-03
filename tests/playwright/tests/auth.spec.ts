@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import {
   test, expect, api, auth, adminToken, call, register, proof, resolveEnvironment, webManifest, applicationTab, environmentTab, title, head,
-  accountCard, done, signUp, Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
+  accountRows, openAccount, done, signUp, Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
 } from '../fixtures.js';
 
 test('setup gates anonymous access, closes permanently, and supports username-less login', async ({ page, daemon, passkeys }) => {
@@ -46,7 +46,7 @@ test('rejects assertion replay, substituted user handles, and downgraded user ve
 
 test('invitations carry grants and limit what the new account may see and change', async ({ page, account }) => {
   await page.goto('/dashboard/accounts');
-  await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  await page.getByRole('button', { name: 'Invite', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Create invitation' });
   await dialog.getByLabel('Preset').selectOption('developer');
   await dialog.getByRole('button', { name: 'Create link', exact: true }).click();
@@ -67,8 +67,8 @@ test('invitations carry grants and limit what the new account may see and change
   expect(permissions).not.toContain('accounts:manage');
   // Without accounts:manage, Bob sees and changes only his own account.
   await page.goto('/dashboard/accounts');
-  await expect(page.locator('.auth-account')).toHaveCount(1);
-  await expect(page.getByRole('heading', { name: 'bob', exact: true })).toBeVisible();
+  await expect(accountRows(page)).toHaveCount(1);
+  await expect(accountRows(page).getByRole('link', { name: 'bob', exact: true })).toBeVisible();
   const denied = await api<{ code: string }>(page, 'manage', {
     action: 'update_user', user_id: account.id, username: 'taken-over', display_name: '',
   });
@@ -125,7 +125,7 @@ test('copy buttons are hidden without a clipboard API, as on plain HTTP origins'
   void account;
   await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'clipboard', { get: () => undefined }));
   await page.goto('/dashboard/accounts');
-  await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  await page.getByRole('button', { name: 'Invite', exact: true }).click();
   await page.getByRole('dialog', { name: 'Create invitation' }).getByRole('button', { name: 'Create link', exact: true }).click();
   await expect(page.locator('.secret-box')).toContainText('#invite=');
   await expect(page.getByRole('button', { name: 'Copy to clipboard', exact: true })).toHaveCount(0);
@@ -144,8 +144,7 @@ test('enrollment links add a passkey only to their account', async ({ page, acco
       expect((await api(page, 'register/start', {
         invitation: null, user_id: bob.id, username: '', display_name: '', passkey_name: 'Takeover',
       })).status).toBe(400);
-      await page.goto('/dashboard/accounts');
-      const card = accountCard(page, 'bob');
+      const card = await openAccount(page, 'bob', 'Access');
       await card.getByRole('button', { name: 'Create enrollment link', exact: true }).click();
       const secret = page.locator('.secret-box');
       await expect(secret).toContainText('#enroll=');
@@ -216,7 +215,7 @@ test('CLI device approval, private credentials, API tokens, revocation and expir
     await page.goto('/dashboard/accounts');
     // Revoke only once the reloaded dashboard has signed in again: revoked
     // before that, it never had a session to expire and shows the sign-in page.
-    await expect(page.getByRole('heading', { name: 'alice', exact: true })).toBeVisible();
+    await expect(accountRows(page).getByRole('link', { name: 'alice', exact: true })).toBeVisible();
     await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
     expect((await cli.run(['whoami'], token)).code).not.toBe(0);
     await page.clock.runFor(16_000);
@@ -273,14 +272,15 @@ test('the CLI edits and deletes accounts and manages their passkeys, links and c
 test('account deletion can be cancelled and the last administrator is protected', async ({ page, account }) => {
   const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'admin' }] })).invitation_url;
   const bob = await register(page, link, 'bob');
-  await page.goto('/dashboard/accounts');
-  const alice = accountCard(page, 'alice');
+  const alice = await openAccount(page, 'alice');
   page.once('dialog', dialog => dialog.dismiss());
   await alice.getByRole('button', { name: 'Delete account', exact: true }).click();
   expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).toContain(account.id);
   page.once('dialog', dialog => dialog.accept());
   await alice.getByRole('button', { name: 'Delete account', exact: true }).click();
-  await expect(alice).toHaveCount(0);
+  // Deleting returns to the directory, which no longer lists the account.
+  await expect(page).toHaveURL(/\/dashboard\/accounts$/);
+  await expect(accountRows(page).getByRole('link', { name: 'alice', exact: true })).toHaveCount(0);
   expect((await auth<Directory>(page, 'directory')).users.map(entry => entry.user.id)).not.toContain(account.id);
   expect((await api(page, 'manage', { action: 'delete_user', user_id: bob.id })).status).toBe(409);
 });
@@ -336,11 +336,11 @@ test.describe('as the host operator', () => {
 
       // Not being an account, it manages accounts but issues no links or tokens.
       await operator.goto(`${daemon.origin}/dashboard/accounts`);
-      const alice = accountCard(operator, 'alice');
+      await expect(operator.getByRole('button', { name: 'Invite', exact: true })).toHaveCount(0);
+      const alice = await openAccount(operator, 'alice', 'Access');
       await expect(alice.getByText(/An account with accounts:manage can send them a single-use enrollment link/)).toBeVisible();
       await expect(alice.getByRole('button', { name: 'Create enrollment link', exact: true })).toHaveCount(0);
-      await expect(alice.getByRole('heading', { name: 'New API token', exact: true })).toHaveCount(0);
-      await expect(operator.getByRole('button', { name: 'Create invitation', exact: true })).toHaveCount(0);
+      await expect(alice.getByRole('button', { name: 'New token', exact: true })).toHaveCount(0);
 
       await page.goto('/dashboard/accounts');
       const sessions = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Host operator sessions', exact: true }) });
@@ -358,28 +358,30 @@ test('the dashboard creates an API token within its form and its account\'s limi
     { permission: 'apps:read', applications: [blog] }, { permission: 'apps:deploy', applications: [blog] },
   ] })).invitation_url;
   await register(page, link, 'bob');
-  await page.goto('/dashboard/accounts');
-  const bob = accountCard(page, 'bob');
-  const effective = bob.locator('.field', { hasText: 'Effective access' }).locator('.grant-list li');
+  const bob = await openAccount(page, 'bob', 'Access');
+  await bob.getByRole('button', { name: 'New token', exact: true }).click();
+  const form = page.getByRole('dialog', { name: 'New API token' });
+  const effective = form.locator('.field', { hasText: 'Effective access' }).locator('.grant-list li');
   // New tokens start read-only, and every choice stays within Bob's access.
   await expect(effective).toHaveText(['apps:read on blog']);
-  await bob.getByLabel('Preset').selectOption('developer');
+  await form.getByLabel('Preset').selectOption('developer');
   await expect(effective).toHaveText(['apps:read on blog', 'apps:deploy on blog']);
 
-  const days = bob.getByLabel('Expires in days (blank: never)', { exact: true });
-  const tailnet = bob.getByLabel('Tailnet user or tag (optional, e.g. tag:ci)', { exact: true });
-  const create = bob.getByRole('button', { name: 'Create token', exact: true });
-  await bob.getByLabel('New token name', { exact: true }).fill('ci');
+  const days = form.getByLabel('Expires in days (blank: never)', { exact: true });
+  const tailnet = form.getByLabel('Tailnet user or tag (optional, e.g. tag:ci)', { exact: true });
+  const create = form.getByRole('button', { name: 'Create token', exact: true });
+  await form.getByLabel('New token name', { exact: true }).fill('ci');
   await days.fill('0');
   await create.click();
-  await expect(page.getByRole('alert')).toHaveText('Enter a positive number of days, or leave blank');
+  await expect(form.getByRole('alert')).toHaveText('Enter a positive number of days, or leave blank');
   await days.fill('');
   await tailnet.fill('ci');
   await create.click();
-  await expect(page.getByRole('alert')).toHaveText('a tailnet binding is a login name like alice@example.com or a tag like tag:ci');
+  await expect(form.getByRole('alert')).toHaveText('a tailnet binding is a login name like alice@example.com or a tag like tag:ci');
   await tailnet.fill('');
   await days.fill('30');
   await create.click();
+  await expect(form).toBeHidden();
   const token = await done(page);
 
   const row = bob.getByRole('row').filter({ has: page.getByRole('cell', { name: 'ci', exact: true }) });
@@ -405,8 +407,7 @@ test('editing grants that mix scopes warns, then applies the chosen applications
     { permission: 'apps:read' }, { permission: 'apps:deploy', applications: [blog] },
   ] })).invitation_url;
   await signUp(browser, link, 'bob');
-  await page.goto('/dashboard/accounts');
-  const bob = accountCard(page, 'bob');
+  const bob = await openAccount(page, 'bob');
   const original = ['apps:read on every application', 'apps:deploy on blog'];
   await expect(bob.locator('.grant-list li')).toHaveText(original);
   const edit = bob.getByRole('button', { name: 'Edit grants', exact: true });

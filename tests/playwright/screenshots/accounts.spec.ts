@@ -1,8 +1,8 @@
-import { adminToken, accountCard, chooseGrants, done, expect, signUp, submitRegistration } from '../fixtures.js';
+import { adminToken, accountRows, openAccount, chooseGrants, done, expect, signUp, submitRegistration } from '../fixtures.js';
 import { test, accountForm, accounts, invite, shoot } from './docs.js';
 
-// docs/user/accounts: alice's account and passkeys, a new API token and her
-// sessions and tokens, carol's invitation and grants, and pending links.
+// docs/user/accounts: the directory, alice's passkeys, a new API token and
+// her sessions and tokens, carol's grants, and pending links.
 test('accounts', async ({ page, browser, daemon, cli, passkeys }) => {
   await accountForm(page, daemon.setup);
   await submitRegistration(page);
@@ -14,50 +14,59 @@ test('accounts', async ({ page, browser, daemon, cli, passkeys }) => {
   // Revoked, so that alice's sessions and tokens show only the guide's.
   const revoked = await cli.run(['logout'], token);
   expect(revoked.code, revoked.stderr).toBe(0);
+  await accounts(page);
+  await signUp(browser, await invite(page, 'read-only'), 'carol', 'Carol');
 
   // A second passkey, from another device: the first one is already registered.
-  await accounts(page);
-  const alice = accountCard(page, 'alice');
+  let alice = await openAccount(page, 'alice', 'Access');
   await passkeys.reset();
-  await alice.getByLabel('New passkey name', { exact: true }).fill('Phone');
   await alice.getByRole('button', { name: 'Add passkey', exact: true }).click();
+  const adding = page.getByRole('dialog', { name: 'Add passkey' });
+  await adding.getByLabel('Passkey name', { exact: true }).fill('Phone');
+  await adding.getByRole('button', { name: 'Add passkey', exact: true }).click();
   await expect(page.getByText('Passkey added.', { exact: true })).toBeVisible();
   await accounts(page);
-  await expect(alice.getByLabel('Passkey name', { exact: true })).toHaveCount(2);
-  await shoot(page, 'accounts/accounts-page', alice.getByRole('button', { name: 'Add passkey', exact: true }));
+  await expect(accountRows(page)).toHaveCount(2);
+  await shoot(page, 'accounts/accounts-page', accountRows(page).last());
 
-  await accounts(page);
-  await chooseGrants(alice, 'deploy', ['blog']);
-  await alice.getByLabel('New token name', { exact: true }).fill('ci');
-  const days = alice.getByLabel('Expires in days (blank: never)', { exact: true });
+  alice = await openAccount(page, 'alice', 'Access');
+  const keys = alice.getByRole('list', { name: 'Passkeys' }).getByRole('listitem');
+  await expect(keys).toHaveCount(2);
+  await shoot(page, 'accounts/passkeys', keys.last(), alice.getByRole('heading', { name: 'Passkeys', exact: true }));
+
+  await alice.getByRole('button', { name: 'New token', exact: true }).click();
+  const creating = page.getByRole('dialog', { name: 'New API token' });
+  await chooseGrants(creating, 'deploy', ['blog']);
+  await creating.getByLabel('New token name', { exact: true }).fill('ci');
+  const days = creating.getByLabel('Expires in days (blank: never)', { exact: true });
   await days.fill('30');
   await days.blur();
-  await expect(alice.getByText('apps:deploy on blog', { exact: true })).toBeVisible();
-  await shoot(page, 'accounts/new-api-token', alice.getByRole('button', { name: 'Create token', exact: true }),
-    alice.getByRole('heading', { name: 'New API token', exact: true }));
-  await alice.getByRole('button', { name: 'Create token', exact: true }).click();
+  await expect(creating.getByText('apps:deploy on blog', { exact: true })).toBeVisible();
+  // At the default height the dialog shows from its title, scrolling inside.
+  await shoot(page, 'accounts/new-api-token');
+  await creating.getByRole('button', { name: 'Create token', exact: true }).click();
   await done(page);
 
   // Shot early, while every credential was last used "just now".
-  await accounts(page);
+  alice = await openAccount(page, 'alice', 'Access');
   await expect(alice.getByRole('cell', { name: 'ci', exact: true })).toBeVisible();
   await shoot(page, 'accounts/sessions-and-tokens', alice.getByRole('table'),
     alice.getByRole('heading', { name: 'Sessions and API tokens', exact: true }));
 
-  await signUp(browser, await invite(page, 'read-only'), 'carol', 'Carol');
-  await accounts(page);
-  const carol = accountCard(page, 'carol');
+  const carol = await openAccount(page, 'carol');
   await carol.getByRole('button', { name: 'Edit grants', exact: true }).click();
   await chooseGrants(carol, 'read-only', ['blog']);
   const save = carol.getByRole('button', { name: 'Save grants', exact: true });
-  await shoot(page, 'accounts/grant-editor', save, carol);
+  await shoot(page, 'accounts/grant-editor', save, carol.getByRole('heading', { name: 'Access', exact: true }));
   await save.click();
   await expect(carol.getByText('apps:read on blog', { exact: true })).toBeVisible();
 
   await accounts(page);
   await invite(page, 'deploy', ['blog']);
-  await carol.getByRole('button', { name: 'Create enrollment link', exact: true }).click();
+  const carolAccess = await openAccount(page, 'carol', 'Access');
+  await carolAccess.getByRole('button', { name: 'Create enrollment link', exact: true }).click();
   await done(page);
+  await accounts(page);
   const pending = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Pending links', exact: true }) });
   await expect(pending.getByRole('row')).toHaveCount(3);
   await shoot(page, 'accounts/pending-links', pending, pending);

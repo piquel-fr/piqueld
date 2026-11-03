@@ -48,7 +48,7 @@ configuration can already reach everything a command in a container could.
 
 ## Give an account access
 
-1. On the account's card on the **Accounts** page, under **Access**, select
+1. Open the account from the **Accounts** page. Under **Access**, select
    **Edit grants**.
 2. To limit the access to some applications, clear **Application permissions
    apply to every application, including future ones**, and select them.

@@ -1,7 +1,7 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
 import type { Locator, Page } from '@playwright/test';
-import { test as base, expect, adminToken, fillRegistration, applicationTab, card, rewrite, title, chooseGrants, done, Process, type Cli } from '../fixtures.js';
+import { test as base, expect, accountRows, adminToken, fillRegistration, applicationTab, card, rewrite, title, chooseGrants, done, Process, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -405,13 +405,13 @@ export async function telemetryGrant(page: Page, app: string, name: string): Pro
 export async function accounts(page: Page) {
   await page.goto('/dashboard/accounts');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Accounts');
-  await expect(page.locator('.auth-account').first()).toBeVisible();
+  await expect(accountRows(page).first()).toBeVisible();
 }
 
 /** Creates an invitation link on the Accounts page, as
  * docs/user/accounts/accounts.md does, and returns it. */
 export async function invite(page: Page, preset: string, applications: string[] = []): Promise<string> {
-  await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  await page.getByRole('button', { name: 'Invite', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Create invitation' });
   await chooseGrants(dialog, preset, applications);
   await dialog.getByRole('button', { name: 'Create link', exact: true }).click();

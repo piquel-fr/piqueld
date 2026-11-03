@@ -127,7 +127,8 @@ A token lets a script act as your account without a passkey. It acts with its
 own grants, limited on every request by your account's current access:
 lowering your access lowers your tokens' access too.
 
-1. On the **Accounts** page, go to **New API token**, on your own card.
+1. On the **Accounts** page, open your own account, then its **Access** tab,
+   and select **New token** under **Sessions and API tokens**.
 2. Choose the token's access: clear **Application permissions apply to every
    application, including future ones** and select applications to limit it,
    then choose a **Preset** or permissions. **Effective access** shows what
@@ -136,10 +137,10 @@ lowering your access lowers your tokens' access too.
 4. Under **Expires in days (blank: never)**, keep `90` or enter another number
    of days.
 5. Select **Create token**.
-6. At the top of the **Accounts** page, select **Copy** next to the new token,
-   then **Done**. The token isn't shown again.
+6. At the top of the page, select **Copy** next to the new token, then
+   **Done**. The token isn't shown again.
 
-![The New API token form: the deploy preset limited to blog, so the effective access is apps:read and apps:deploy on blog, named ci and expiring in 30 days](../../images/accounts/new-api-token.png)
+![The New API token dialog: the deploy preset limited to blog, so the effective access is apps:read and apps:deploy on blog, named ci and expiring in 30 days](../../images/accounts/new-api-token.png)
 
 With `piquelctl`:
 
@@ -229,7 +230,7 @@ their tokens to a tag. Logins can't be bound.
 
 On the dashboard, select **Revoke** next to the token, under
 [**Sessions and API tokens**](accounts.md#revoke-sessions-and-tokens) on your
-card.
+account's **Access** tab.
 
 With `piquelctl`, list your sessions and tokens, then revoke one by its ID:
 

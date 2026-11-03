@@ -212,9 +212,18 @@ export const title = (page: Page) => page.locator('.detail-title h1');
 /** The header of an application, environment, or service page, with its actions. */
 export const head = (page: Page) => page.locator('.detail-head');
 
-/** The card of account `username` on the Accounts page. */
-export const accountCard = (page: Page, username: string) =>
-  page.locator('.auth-account').filter({ has: page.getByRole('heading', { name: username, exact: true }) });
+/** The rows of the Accounts page's directory. */
+export const accountRows = (page: Page) => page.getByRole('list', { name: 'Accounts' }).getByRole('listitem');
+
+/** Opens account `username`'s page from the Accounts page, on `tab` when
+ * given, and returns the page's main region. */
+export async function openAccount(page: Page, username: string, tab?: 'Profile' | 'Access'): Promise<Locator> {
+  await page.goto('/dashboard/accounts');
+  await accountRows(page).getByRole('link', { name: username, exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1, name: username, exact: true })).toBeVisible();
+  if (tab) await page.getByRole('tablist', { name: 'Account sections' }).getByRole('tab', { name: tab, exact: true }).click();
+  return page.getByRole('main');
+}
 
 /** Chooses grants in the grant editor within `scope`, as the guides do: the
  * applications first, if any, then the preset. */

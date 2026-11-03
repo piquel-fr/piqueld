@@ -50,7 +50,7 @@ impl HistoryGuard {
 /// pushed, so Back still leaves the page, and only once the tab changes:
 /// the initial one came from the address, which may name a record to open
 /// on it, such as `?deployment=`.
-pub(super) fn remember_tab(tab: RwSignal<&'static str>) {
+pub(in crate::browser) fn remember_tab(tab: RwSignal<&'static str>) {
     let navigate = use_navigate();
     let location = use_location();
     Effect::new(move |previous: Option<&'static str>| {

@@ -379,6 +379,7 @@ fn App() -> impl IntoView {
                     <Route path={path!("applications")} view={ApplicationsPage} />
                     <Route path={path!("settings")} view={observability::HostPage} />
                     <Route path={path!("accounts")} view={auth::AccountsPage} />
+                    <Route path={path!("accounts/:id")} view={auth::AccountPage} />
                     <Route path={path!("builds")} view={builds::BuildsPage} />
                     <Route path={path!("events")} view={observability::HistoryPage} />
                     <Route path={path!("errors")} view={observability::ErrorsPage} />
