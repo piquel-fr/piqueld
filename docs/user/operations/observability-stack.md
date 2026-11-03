@@ -117,7 +117,7 @@ them, here `my-app`:
 
 - in the dashboard, select **Add export** on the `observability`
   application's **Links** tab, choose the `collector` service, list `my-app`
-  under **Applications**, save, and deploy;
+  under **Applications**, select **Add export**, and deploy;
 - with `piquelctl`:
 
   ```console

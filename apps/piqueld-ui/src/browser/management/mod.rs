@@ -872,6 +872,67 @@ impl Draft<String> {
     }
 }
 
+/// The dialog of a list edited row by row: it adds a row, or edits the one
+/// at `index`, as `draft`. Submitting saves the whole list at once, so the
+/// list needs no unsaved state of its own.
+struct RowDialog<T: Send + Sync + 'static> {
+    opened: RwSignal<bool>,
+    draft: RwSignal<T>,
+    index: RwSignal<Option<usize>>,
+}
+
+// Copied by hand: deriving would demand `T: Copy`, and signals copy anyway.
+impl<T: Send + Sync + 'static> Clone for RowDialog<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Send + Sync + 'static> Copy for RowDialog<T> {}
+
+impl<T: Clone + Default + Send + Sync + 'static> RowDialog<T> {
+    fn new() -> Self {
+        Self {
+            opened: RwSignal::new(false),
+            draft: RwSignal::new(T::default()),
+            index: RwSignal::new(None),
+        }
+    }
+
+    /// Opens the dialog on a blank row.
+    fn add(self) {
+        self.open(None, T::default());
+    }
+
+    /// Opens the dialog on `row`, the one at `index`.
+    fn edit(self, index: usize, row: T) {
+        self.open(Some(index), row);
+    }
+
+    fn open(self, index: Option<usize>, row: T) {
+        editor().set_error(None);
+        self.draft.set(row);
+        self.index.set(index);
+        self.opened.set(true);
+    }
+
+    /// `rows` with the draft in place of the edited row, or appended.
+    fn apply(self, mut rows: Vec<T>) -> Vec<T> {
+        let draft = self.draft.get_untracked();
+        match self.index.get_untracked() {
+            Some(index) if index < rows.len() => rows[index] = draft,
+            _ => rows.push(draft),
+        }
+        rows
+    }
+
+    /// `add` while the dialog adds a row, `edit` while it edits one.
+    fn title(self, add: &'static str, edit: &'static str) -> Signal<&'static str> {
+        let index = self.index;
+        Signal::derive(move || if index.get().is_some() { edit } else { add })
+    }
+}
+
 /// Rows of a list form, edited in place by index. A row removed meanwhile
 /// reads as empty and ignores edits.
 trait Rows<T> {

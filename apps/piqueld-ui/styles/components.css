@@ -580,6 +580,21 @@
         color: var(--muted);
     }
 
+    /* Each environment a route is deployed in, with its HTTPS state. */
+    .route-states {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 12px;
+        font-size: 12px;
+        color: var(--muted);
+    }
+
+    .route-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+
     .app-icon {
         display: grid;
         place-items: center;

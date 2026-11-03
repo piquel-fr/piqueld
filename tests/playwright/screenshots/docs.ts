@@ -422,8 +422,9 @@ export async function invite(page: Page, preset: string, applications: string[] 
  * ingress status are loaded. */
 export async function routes(page: Page, app: string) {
   await application(page, app, 'Routes');
-  await expect(card(page, 'Routes').getByRole('textbox', { name: 'Hostname' }).first()).not.toHaveValue('');
-  await expect(card(page, 'Deployed routes')).not.toContainText('Waiting for the ingress status');
+  await expect(card(page, 'Routes').getByRole('listitem').first()).toBeVisible();
+  // The notice that the fixture's gateway is off shows once readiness loaded.
+  await expect(card(page, 'Routes').getByRole('status')).toContainText('Ingress is disabled');
 }
 
 /** The Source tab of application `app`, once its GitHub webhook card is
