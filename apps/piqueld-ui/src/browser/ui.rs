@@ -1,5 +1,6 @@
 //! Shared presentational primitives: icons, badges, notices, page chrome, dialogs, and inputs.
 use super::format::{relative, timestamp};
+use crate::application::slug;
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
 use leptos::wasm_bindgen::JsCast;
@@ -542,8 +543,8 @@ pub(super) fn text_field(label: &'static str, value: RwSignal<String>) -> AnyVie
 }
 
 /// Native dialogs provide focus containment, Escape handling, and focus
-/// restoration. Opening focuses the first field, or without one the first
-/// button of the body.
+/// restoration. Opening focuses the first field; a dialog without one keeps
+/// the browser's choice, its Close button, so Enter never confirms by itself.
 #[component]
 pub(super) fn Modal(
     title: &'static str,
@@ -554,7 +555,7 @@ pub(super) fn Modal(
     children: Children,
 ) -> impl IntoView {
     let dialog = NodeRef::<leptos::html::Dialog>::new();
-    let heading = format!("dialog-{}", slug(title));
+    let heading = format!("dialog-{}-{}", next_id(), slug(title));
     let labelled_by = heading.clone();
     Effect::new(move |_| {
         if let Some(dialog) = dialog.get() {
@@ -563,7 +564,7 @@ pub(super) fn Modal(
                     leptos::logging::error!("Could not open dialog: {error:?}");
                 }
                 if let Ok(Some(field)) = dialog.query_selector(
-                    ".modal-body input:not([type=checkbox]), .modal-body select, .modal-body textarea, .modal-body button",
+                    ".modal-body input:not([type=checkbox]), .modal-body select, .modal-body textarea",
                 ) && let Some(field) = field.dyn_ref::<web_sys::HtmlElement>()
                 {
                     let _ = field.focus();
@@ -625,10 +626,9 @@ pub(super) struct TabSet {
 impl TabSet {
     /// A tab set named `label`, whose shown tab is `selected`.
     pub(super) fn new(label: &'static str, selected: RwSignal<&'static str>) -> Self {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         Self {
             label,
-            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id: next_id(),
             selected,
         }
     }
@@ -747,16 +747,9 @@ impl TabSet {
     }
 }
 
-/// `text` as an element ID fragment: lowercase, with runs of other
-/// characters as one hyphen.
-fn slug(text: &str) -> String {
-    let mut slug = String::with_capacity(text.len());
-    for character in text.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-        } else if !slug.ends_with('-') {
-            slug.push('-');
-        }
-    }
-    slug.trim_end_matches('-').to_owned()
+/// A page-unique number for element IDs that several instances of a
+/// component would otherwise share.
+fn next_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

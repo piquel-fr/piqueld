@@ -5,6 +5,7 @@ use super::{
     Draft, EditorFeedback, back_link, editor, logs::ApplicationLogs, navigation::remember_tab,
     settings::ServiceGroup,
 };
+use crate::application::slug;
 use crate::editor::Section;
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
@@ -162,7 +163,7 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
         SERVICE_TABS
             .iter()
             .copied()
-            .find(|tab| requested.as_deref() == Some(tab.to_lowercase().as_str()))
+            .find(|tab| requested.as_deref() == Some(slug(tab).as_str()))
             .unwrap_or(Section::General.title()),
     );
     let tabs = TabSet::new("Service sections", selected);

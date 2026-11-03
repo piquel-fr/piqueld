@@ -336,6 +336,8 @@
             z-index: 20;
             width: auto;
             max-height: 100vh;
+            /* The drawer hangs below the bar; the drawer scrolls, not the bar. */
+            overflow: visible;
             flex-direction: row;
             flex-wrap: wrap;
             align-items: center;
