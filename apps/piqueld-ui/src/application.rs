@@ -122,6 +122,11 @@ pub trait ApplicationViewExt {
     /// 0123456789ab on 89abcdef0123".
     fn describe_origin(&self, origin: &DeploymentOrigin) -> String;
 
+    /// What a deployment of `origin` is called in a list: "Deployment" for
+    /// one built from its source, else what brought it, such as
+    /// "Promotion from staging" or "Automatic rollback".
+    fn deployment_title(&self, origin: &DeploymentOrigin) -> String;
+
     /// Whether `grants` hold `permission` on the application, or in
     /// `environment`, if that is one of its previews, the previews permission
     /// that also allows it there (see `AppPermission::on_previews`).
@@ -161,6 +166,26 @@ impl ApplicationViewExt for ApplicationView {
         match source.promoted_from() {
             Some(from) => format!("promoted from {}", self.environment_name(from.as_str())),
             None => source.to_string(),
+        }
+    }
+
+    fn deployment_title(&self, origin: &DeploymentOrigin) -> String {
+        match origin {
+            DeploymentOrigin::Build | DeploymentOrigin::Local(_) => "Deployment".into(),
+            DeploymentOrigin::Promotion { environment, .. } => {
+                format!(
+                    "Promotion from {}",
+                    self.environment_name(environment.as_str())
+                )
+            }
+            DeploymentOrigin::Release => "Release redeployed".into(),
+            DeploymentOrigin::Restore {
+                rolled_back: None, ..
+            } => "Restore".into(),
+            DeploymentOrigin::Restore {
+                rolled_back: Some(_),
+                ..
+            } => "Automatic rollback".into(),
         }
     }
 

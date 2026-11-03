@@ -8732,18 +8732,21 @@ impl Client {
     }
     /*Lists deployments of an environment, newest first
 
-    Returns three deployment snapshots per page; follow `next_cursor` for older ones.
+    Returns `limit` deployment snapshots per page, three without it; follow
+    `next_cursor` for older ones.
 
     Sends a `GET` request to `/api/v1/environments/{id}/deployments`
 
     Arguments:
     - `id`
     - `cursor`: `next_cursor` from a previous page.
+    - `limit`: Deployments per page, from 1 to 100; 3 without it.
     */
     pub async fn list_deployments<'a>(
         &'a self,
         id: &'a str,
         cursor: Option<&'a str>,
+        limit: Option<u32>,
     ) -> Result<
         ResponseValue<
             piqueld_core::api::Envelope<piqueld_core::api::Page<piqueld_core::api::DeploymentView>>,
@@ -8769,6 +8772,7 @@ impl Client {
                 ::reqwest::header::HeaderValue::from_static("application/json"),
             )
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
+            .query(&progenitor_client::QueryParam::new("limit", &limit))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {

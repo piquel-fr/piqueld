@@ -35,8 +35,9 @@ To follow a deployment's steps in the dashboard:
 
 1. On the environment's **Deployments** tab, select the deployment to expand
    it.
-2. Select **Attempts**, which lists each time piqueld tried it.
-3. Select **Events** on an attempt to see its steps.
+2. Select **Events**, which lists its steps, newest first, with the same
+   filters as the Events page. **Attempts** lists each time piqueld tried it,
+   with a link to that attempt's events.
 
 With `piquelctl`, run `piquelctl operation <operation-id>`, which also waits
 for it to finish.

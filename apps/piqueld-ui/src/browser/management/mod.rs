@@ -217,6 +217,11 @@ impl EditorContext {
         self.saved.with(|saved| saved.describe_origin(origin))
     }
 
+    /// See `ApplicationViewExt::deployment_title`.
+    fn deployment_title(self, origin: &DeploymentOrigin) -> String {
+        self.saved.with(|saved| saved.deployment_title(origin))
+    }
+
     /// The application's name.
     fn name(self) -> String {
         self.saved

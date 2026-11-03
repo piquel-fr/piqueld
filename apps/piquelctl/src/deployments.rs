@@ -164,7 +164,7 @@ async fn find_deployment(
     let mut cursor = None;
     loop {
         let page = client
-            .deployments(environment.id.as_str(), cursor.as_deref())
+            .deployments(environment.id.as_str(), cursor.as_deref(), None)
             .await?;
         if let Some(deployment) = page
             .items
@@ -306,7 +306,9 @@ impl<T: Args + Target> WaitArgs<T> {
     /// `environment`'s, or its latest one.
     async fn deployment(&self, client: &Client, environment: &EnvironmentView) -> Result<String> {
         let Some(id) = &self.deployment else {
-            let page = client.deployments(environment.id.as_str(), None).await?;
+            let page = client
+                .deployments(environment.id.as_str(), None, Some(1))
+                .await?;
             return page
                 .items
                 .into_iter()
@@ -338,6 +340,9 @@ pub(crate) struct HistoryArgs<T: Args> {
     /// Cursor from the previous page.
     #[arg(long)]
     cursor: Option<String>,
+    /// Show at most this many deployments, from 1 to 100; 3 without it.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=100))]
+    limit: Option<u16>,
 }
 
 impl<T: Args + Target> HistoryArgs<T> {
@@ -345,7 +350,7 @@ impl<T: Args + Target> HistoryArgs<T> {
     pub(crate) async fn run(&self, console: &mut Console, client: &Client) -> Result<()> {
         let (application, environment) = self.target.resolve(client).await?;
         let page = client
-            .deployments(environment.id.as_str(), self.cursor.as_deref())
+            .deployments(environment.id.as_str(), self.cursor.as_deref(), self.limit)
             .await?;
         console.emit(&Named::new(&page, &application))
     }

@@ -861,7 +861,7 @@ impl AcceptanceApi {
     /// The rendered configuration deployment `operation` of `environment` captured.
     async fn deployed(&self, environment: &str, operation: &str) -> NormalizedApplication {
         self.client
-            .deployments(environment, None)
+            .deployments(environment, None, None)
             .await
             .unwrap()
             .items

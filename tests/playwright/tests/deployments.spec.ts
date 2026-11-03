@@ -1,4 +1,4 @@
-import { test, expect, call, environmentTab, webManifest } from '../fixtures.js';
+import { test, expect, call, deploymentCards, environmentTab, webManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 type Deployment = { operation: Record<string, unknown> } & Record<string, unknown>;
@@ -39,19 +39,19 @@ test('older deployments load once, and stay listed as the newest page is polled'
   await page.goto(`/dashboard/applications/${app}/environments/${app}`);
   await environmentTab(page, 'Deployments').click();
   const history = page.getByRole('region', { name: 'Deployment history' });
-  const titles = history.locator('.expander-summary strong');
-  await expect(titles).toHaveText(['Deployment #3', 'Deployment #2']);
+  const titles = history.locator('.expander-summary .tag', { hasText: /^Revision/ });
+  await expect(titles).toHaveText(['Revision 3', 'Revision 2']);
   const older = history.getByRole('button', { name: 'Load older deployments', exact: true });
   await older.click();
-  await expect(titles).toHaveText(['Deployment #3', 'Deployment #2', 'Deployment #1']);
+  await expect(titles).toHaveText(['Revision 3', 'Revision 2', 'Revision 1']);
   await expect(older).toBeHidden();
 
   // A newer deployment becomes the current target: polling adds it and
   // keeps the older pages, which stay exhausted, and moves the flag off #3.
   newest = [numbered(4, true)];
-  await expect(titles).toHaveText(['Deployment #4', 'Deployment #3', 'Deployment #2', 'Deployment #1']);
+  await expect(titles).toHaveText(['Revision 4', 'Revision 3', 'Revision 2', 'Revision 1']);
   await expect(history.getByText('Current target', { exact: true })).toHaveCount(1);
-  await expect(history.locator('.expander', { hasText: 'Deployment #4' })).toContainText('Current target');
+  await expect(history.locator('.expander', { hasText: 'Revision 4' })).toContainText('Current target');
   await expect(older).toBeHidden();
 });
 
@@ -72,7 +72,7 @@ test('a linked deployment opens with its attempts, the running one first, and ol
   });
 
   await page.goto(`/dashboard/applications/${app}/environments/${app}?tab=deployments&deployment=${id}`);
-  const card = page.locator('.expander', { hasText: 'Deployment #' });
+  const card = deploymentCards(page);
   await expect(card.getByText('Operation ID', { exact: true })).toBeVisible();
   await card.getByRole('tab', { name: 'Attempts', exact: true }).click();
   const rows = card.locator('tbody tr');

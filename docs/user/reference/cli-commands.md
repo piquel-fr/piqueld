@@ -3577,6 +3577,7 @@ Arguments:
 Options:
 
 - `--cursor <CURSOR>`: Cursor from the previous page.
+- `--limit <LIMIT>`: Show at most this many deployments, from 1 to 100; 3 without it.
 
 ## `piquelctl env restore`
 
@@ -3776,6 +3777,7 @@ Options:
 
 - `--slot <SLOT>`: The preview's slot. Needed to address a preview with a slot by its branch.
 - `--cursor <CURSOR>`: Cursor from the previous page.
+- `--limit <LIMIT>`: Show at most this many deployments, from 1 to 100; 3 without it.
 
 ## `piquelctl preview restore`
 

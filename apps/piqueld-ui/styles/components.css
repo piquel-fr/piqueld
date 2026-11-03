@@ -1106,6 +1106,39 @@
         color: var(--muted);
     }
 
+    /* A structured value changes line by line, under its field */
+    .diff-row.diff-block {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+
+    .diff-lines {
+        margin: 0;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--surface-muted);
+        font-size: 12px;
+        line-height: 1.5;
+        overflow: auto;
+        tab-size: 2;
+    }
+
+    .diff-line {
+        display: block;
+        white-space: pre;
+    }
+
+    .diff-line.removed {
+        color: var(--bad);
+        background: var(--bad-bg);
+    }
+
+    .diff-line.added {
+        color: var(--ok);
+        background: var(--ok-bg);
+    }
+
     /* Log terminal */
     .terminal {
         max-height: min(36rem, 65vh);

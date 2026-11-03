@@ -159,7 +159,14 @@ meanwhile, the daemon refuses it (`promotion_source_changed`) and the dialog
 shows why.
 
 An environment's or preview's **Deployments** tab lists its deployments, newest
-first. Expanding a deployment that succeeded offers **Restore**, unless it is the
+first, twenty at a time, with **Load older deployments** for the rest. Each is
+titled by what brought it: "Deployment" for one built from the environment's
+source, "Promotion from \<environment>", "Restore", "Automatic rollback" or
+"Release redeployed", tagged with the configuration revision it deploys, and
+marked **Current target** or **Last successful**. Expanding one shows its
+details, the configuration it captured (**Snapshot**), each time piqueld tried
+it (**Attempts**) and its events (**Events**), without leaving the page.
+Expanding a deployment that succeeded offers **Restore**, unless it is the
 newest and already current, so you can also return to it after a newer
 deployment failed. Once confirmed, it deploys the deployment again exactly as it
 ran, like `piquelctl env restore`: its manifest, images and secret versions, without running its jobs
@@ -432,9 +439,10 @@ deployment ("Not pushed" when a local snapshot was deployed before its branch
 existed); **Deploy on push** opts it in without a saved revision, and
 **Stop deploying on push** opts it out. A
 preview's page shows the same, without the opt-out. An environment's Overview
-has a **Telemetry** settings card: **Grant telemetry** confirms, then grants the
-environment telemetry, and **Revoke telemetry** revokes it, for holders of
-`telemetry:grant`. Events caused by sync name
+has a **Telemetry** card: whether it is granted the daemon's telemetry, which
+deployed service receives it and whether the daemon exports to it. **Grant
+telemetry** confirms, then grants the environment telemetry, and **Revoke
+telemetry** revokes it, for holders of `telemetry:grant`. Events caused by sync name
 `sync:poll` or `sync:webhook` as their requester.
 
 **Manifest**, beside the deployment actions, downloads the current server-saved configuration as TOML. Unsaved form edits and runtime/deployment state are excluded. Repository connection settings are preserved; the download does not fetch Git or require Docker. Original comments and formatting are not retained.

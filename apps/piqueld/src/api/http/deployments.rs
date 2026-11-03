@@ -24,6 +24,23 @@ impl QueryParams for HistoryQuery {
     const INVALID_MESSAGE: &'static str = "invalid pagination parameters";
 }
 
+/// A page of deployments: where it starts and how many it holds.
+#[derive(Default, serde::Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in=Query)]
+pub(super) struct DeploymentsQuery {
+    /// `next_cursor` from a previous page.
+    cursor: Option<String>,
+    /// Deployments per page, from 1 to 100; 3 without it.
+    #[param(minimum = 1, maximum = 100)]
+    limit: Option<u16>,
+}
+
+impl QueryParams for DeploymentsQuery {
+    const INVALID_CODE: &'static str = "pagination_invalid";
+    const INVALID_MESSAGE: &'static str = "invalid pagination parameters";
+}
+
 /// Deployment preconditions plus an optional one-time manifest revision.
 #[derive(Default, serde::Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
@@ -100,18 +117,23 @@ pub(super) async fn deploy(
 
 /// Lists deployments of an environment, newest first.
 ///
-/// Returns three deployment snapshots per page; follow `next_cursor` for older ones.
+/// Returns `limit` deployment snapshots per page, three without it; follow
+/// `next_cursor` for older ones.
 #[utoipa::path(get,path="/api/v1/environments/{id}/deployments",operation_id="listDeployments",
-    params(("id"=String,Path),HistoryQuery),
-    responses((status=200,description="Deployment snapshots, newest first (three per page)",body=Envelope<Page<DeploymentView>>),
+    params(("id"=String,Path),DeploymentsQuery),
+    responses((status=200,description="Deployment snapshots, newest first",body=Envelope<Page<DeploymentView>>),
     (status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=500,response=inline(ApiErrorResponse))))]
 pub(super) async fn list(
     State(state): State<ApiState>,
     ApiPath(id): ApiPath<String>,
-    ApiQuery(query): ApiQuery<HistoryQuery>,
+    ApiQuery(query): ApiQuery<DeploymentsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(ok(state
-        .deployments(&EnvironmentId::parse(id)?, query.cursor.as_deref())
+        .deployments(
+            &EnvironmentId::parse(id)?,
+            query.cursor.as_deref(),
+            query.limit,
+        )
         .await?))
 }
 

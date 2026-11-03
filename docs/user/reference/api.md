@@ -132,7 +132,7 @@ when the complete normalized manifest is needed.
 | GET | `/api/v1/environments/{id}/detail` | Environment, application intent, the `manifest` it deploys, resolved generation, `status`, current release, observed runtime, operation, diagnostics, the URL of each rendered route with its state (see [URL readiness](#url-readiness)), and its `links` (see below) |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
 | POST | `/api/v1/environments/{id}/deploy` | Deploy the environment from its source with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision instead of the environment's branch, for this deployment only |
-| GET | `/api/v1/environments/{id}/deployments` | Deployment snapshots, newest first, three per page |
+| GET | `/api/v1/environments/{id}/deployments` | Deployment snapshots, newest first; `limit` per page, from 1 to 100, three without it |
 | GET | `/api/v1/environments/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | GET | `/api/v1/applications/{id}/releases` | The application's releases, newest first, twenty per page |
 | POST | `/api/v1/environments/{id}/rename` | Rename an environment without redeployment: `{ "name": "...", "expected_generation": 3 }` |

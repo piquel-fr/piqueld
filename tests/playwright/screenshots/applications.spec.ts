@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { expect, applicationTab, card, environmentTab, rewrite, submitRegistration, title } from '../fixtures.js';
+import { expect, applicationTab, card, deploymentCards, environmentTab, rewrite, submitRegistration, title, toggleDeployment } from '../fixtures.js';
 import { test, accountForm, application, createApplication, environment, manifest, saveChanges, service, shoot, Piquelctl } from './docs.js';
 
 const guides = 'user/applications';
@@ -229,9 +229,9 @@ test('restoring a deployment', async ({ page, daemon, cli, passkeys }) => {
   await piquelctl.run(['app', 'service', 'replicas', 'hello', 'web', '2', '--deploy', '--yes']);
   await environment(page, 'hello', 'production');
   await environmentTab(page, 'Deployments').click();
-  const deployments = page.locator('.expander', { hasText: 'Deployment #' });
+  const deployments = deploymentCards(page);
   await expect(deployments).toHaveCount(2);
-  await deployments.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  await toggleDeployment(deployments.nth(1));
   // Let its chevron finish turning.
   await deployments.nth(1).evaluate(card => Promise.all(card.getAnimations({ subtree: true }).map(animation => animation.finished)));
   await shoot(page, 'applications/restore', deployments.nth(1));

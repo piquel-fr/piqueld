@@ -53,8 +53,8 @@ The restore is a new deployment, at the top of the list. Its **Origin** reads
 
    Each line has the deployment's ID, its outcome, and when it was created,
    in Unix milliseconds. `current` marks the one the environment runs. The
-   command lists three deployments at a time, and prints a cursor to pass
-   with `--cursor` for older ones.
+   command lists three deployments at a time, up to 100 with `--limit`, and
+   prints a cursor to pass with `--cursor` for older ones.
 
 2. Restore the earlier one:
 
@@ -222,8 +222,8 @@ It runs the release of the deployment it restored.
   describes. When piqueld can't roll back,
   because no earlier deployment succeeded or its images or secret versions
   are gone, the failed deployment records a `rollback_unavailable` event
-  saying why. To see it, expand the deployment on the **Deployments** tab,
-  select **Attempts**, then **Events**. Fix the cause, then deploy again.
+  saying why. To see it, expand the deployment on the **Deployments** tab
+  and select **Events**. Fix the cause, then deploy again.
 - **There is no Restore button.** The deployment didn't succeed, or it is
   the newest one and the environment runs it. Without `apps:deploy`, or
   `previews:deploy` for a preview, the dashboard doesn't offer it either.

@@ -445,7 +445,7 @@ async fn tcp_rejects_cross_site_mutations_without_creating_deployments() {
     }
     assert!(
         client
-            .deployments(&saved.application_id, None)
+            .deployments(&saved.application_id, None, None)
             .await
             .unwrap()
             .items
@@ -489,7 +489,7 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
     assert_eq!(unchanged.application.spec().services.len(), 1);
     assert!(
         client
-            .deployments(&saved.application_id, None)
+            .deployments(&saved.application_id, None, None)
             .await
             .unwrap()
             .items

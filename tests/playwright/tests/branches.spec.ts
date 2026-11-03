@@ -1,4 +1,4 @@
-import { test, expect, call, rewrite, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, call, deploymentCards, rewrite, toggleDeployment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** A repository-backed application following `main`, optionally with a `staging` environment on `release`. */
@@ -91,8 +91,8 @@ test('an environment page reads the manifest last fetched from its branch', asyn
   await expect(service.locator('option')).toHaveText(['All services', 'worker']);
 
   await environmentTab(page, 'Deployments').click();
-  const deployment = page.locator('.expander', { hasText: 'Deployment #' });
-  await deployment.getByRole('button', { name: /Deployment #/ }).click();
+  const deployment = deploymentCards(page);
+  await toggleDeployment(deployment);
   await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
   await expect(deployment).toContainText('manifest_connection_ignored: The fetched manifest names another repository.');
 });

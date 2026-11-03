@@ -209,6 +209,13 @@ export const card = (page: Page, heading: string) =>
   page.locator('section.card', { has: page.getByRole('heading', { name: heading, exact: true }) });
 /** The title of an application, environment, or service page. */
 export const title = (page: Page) => page.locator('.detail-title h1');
+
+/** The cards of the Deployments tab, each tagged with the revision it deploys. */
+export const deploymentCards = (page: Page) =>
+  page.locator('.expander', { has: page.locator('.expander-summary .tag', { hasText: /^Revision \d+$/ }) });
+
+/** Expands or collapses a deployment card. */
+export const toggleDeployment = (card: Locator) => card.getByRole('button', { name: /Revision \d+/ }).click();
 /** The header of an application, environment, or service page, with its actions. */
 export const head = (page: Page) => page.locator('.detail-head');
 

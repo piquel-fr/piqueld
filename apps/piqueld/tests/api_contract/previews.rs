@@ -163,7 +163,10 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
         .unwrap();
     assert!(created.created);
     let local = created.preview.id;
-    let deployments = client.deployments(local.as_str(), None).await.unwrap();
+    let deployments = client
+        .deployments(local.as_str(), None, None)
+        .await
+        .unwrap();
     assert!(matches!(
         &deployments.items[0].origin,
         piqueld_client::DeploymentOrigin::Local(snapshot) if snapshot.base.as_deref() == Some(base.as_str())
@@ -213,7 +216,10 @@ async fn local_snapshots_upload_within_limits_and_are_never_pruned() {
         api_error(invalid.unwrap_err()),
         ApiError::new(422, "snapshot_invalid")
     );
-    let deployments = client.deployments(local.as_str(), None).await.unwrap();
+    let deployments = client
+        .deployments(local.as_str(), None, None)
+        .await
+        .unwrap();
     assert_eq!(deployments.items.len(), 1);
 }
 
