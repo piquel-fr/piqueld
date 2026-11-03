@@ -41,6 +41,12 @@ in
     };
     settings = lib.mkOption {
       type = lib.types.submodule {
+        options.default = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "production";
+          description = "Profile used when neither --profile nor PIQUELD_PROFILE selects one. It must name one of the profiles.";
+        };
         options.profiles = lib.mkOption {
           type = lib.types.attrsOf profileType;
           default = { };
@@ -53,10 +59,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = lib.mapAttrsToList (name: profile: {
-      assertion = (profile.socket != null) != (profile.url != null);
-      message = "programs.piquelctl.settings.profiles.${name} must contain exactly one of socket or url";
-    }) cfg.settings.profiles;
+    assertions =
+      lib.mapAttrsToList (name: profile: {
+        assertion = (profile.socket != null) != (profile.url != null);
+        message = "programs.piquelctl.settings.profiles.${name} must contain exactly one of socket or url";
+      }) cfg.settings.profiles
+      ++ [
+        {
+          assertion = cfg.settings.default == null || cfg.settings.profiles ? ${cfg.settings.default};
+          message = "programs.piquelctl.settings.default must name one of programs.piquelctl.settings.profiles";
+        }
+      ];
     environment.systemPackages = [ cfg.package ];
     environment.etc."piqueld/profiles.toml".source = configuration;
   };

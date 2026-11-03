@@ -141,14 +141,56 @@ socket = "/tmp/dev.sock"
         serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
         serde_json::json!({
             "profiles": [
-                {"name": "dev", "endpoint": "/tmp/dev.sock"},
-                {"name": "prod", "endpoint": "http://127.0.0.1:7845"}
+                {"name": "dev", "endpoint": "/tmp/dev.sock", "default": false},
+                {"name": "prod", "endpoint": "http://127.0.0.1:7845", "default": false}
             ]
         })
     );
     let result = fixture.run(&["profiles", "--quiet"], &env);
     assert!(result.status.success());
     assert_eq!(result.stdout, b"");
+}
+
+#[test]
+fn configured_default_is_listed_and_yields_to_environment_and_flag() {
+    let fixture = ProfilesFixture::new();
+    std::fs::write(
+        fixture.directory.path().join("profiles.toml"),
+        r#"
+default = "prod"
+[profiles.prod]
+socket = "/tmp/prod-missing.sock"
+[profiles.default]
+socket = "/tmp/default-missing.sock"
+[profiles.dev]
+socket = "/tmp/dev-missing.sock"
+"#,
+    )
+    .unwrap();
+    let result = fixture.run(&["profiles"], &[]);
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "NAME  ENDPOINT\ndefault  /tmp/default-missing.sock\n\
+         dev  /tmp/dev-missing.sock\nprod  /tmp/prod-missing.sock  (default)\n"
+    );
+    for (args, env, selected) in [
+        (vec!["status"], vec![], "prod"),
+        (vec!["status"], vec![("PIQUELD_PROFILE", "dev")], "dev"),
+        (
+            vec!["--profile", "default", "status"],
+            vec![("PIQUELD_PROFILE", "dev")],
+            "default",
+        ),
+    ] {
+        let output = fixture.run(&args, &env);
+        assert_eq!(output.status.code(), Some(4));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(&format!("Endpoint source: profile \"{selected}\" in"))
+                && error.contains(&format!("/tmp/{selected}-missing.sock")),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -181,7 +223,9 @@ fn explicit_file_flag_replaces_environment_file_and_automatic_discovery() {
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
         serde_json::json!({
-            "profiles": [{"name": "explicit", "endpoint": "http://localhost:7845"}]
+            "profiles": [
+                {"name": "explicit", "endpoint": "http://localhost:7845", "default": false}
+            ]
         })
     );
     let result = fixture.run(&["profiles", "--json"], &env);

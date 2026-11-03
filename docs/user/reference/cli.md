@@ -1094,10 +1094,15 @@ files and all unreadable or malformed files are errors, with the file path.
 Surviving profiles are validated after replacement; invalid entries report their
 name and source file, even when they are not selected.
 
-An optional `[profiles.default]` is used when no name is selected; an explicitly
-selected missing profile is an error.
+When neither `--profile` nor `PIQUELD_PROFILE` selects a profile, the CLI uses
+the one named by the optional top-level `default`, else an optional
+`[profiles.default]`. A later file's `default` replaces an earlier one, and it
+may name a profile from either file. A `default` or an explicitly selected
+profile that does not exist is an error.
 
 ```toml
+default = "testing"
+
 [profiles.testing]
 socket = "/tmp/piqueld-dev-run/piqueld.sock"
 timeout = "2m"
@@ -1114,7 +1119,7 @@ and URL values are rejected unless an explicit transport overrides them.
 Authentication and credentials are not profile settings yet.
 
 `piquelctl profiles` lists the effective profile names and endpoints in alphabetical
-order after file selection and replacement. It does not contact a daemon or check
+order after file selection and replacement, marking the default. It does not contact a daemon or check
 endpoint reachability, and ignores `--profile`, `PIQUELD_PROFILE`, and connection
 overrides. Only configured profiles appear; the built-in local connection is not
 an additional profile.
@@ -1122,11 +1127,11 @@ an additional profile.
 ```text
 NAME  ENDPOINT
 dev   /tmp/piqueld-dev/piqueld.sock
-prod  http://127.0.0.1:7845
+prod  http://127.0.0.1:7845  (default)
 ```
 
 `piquelctl profiles --json` returns
-`{"profiles":[{"name":"dev","endpoint":"/tmp/piqueld-dev/piqueld.sock"}]}`.
+`{"profiles":[{"name":"dev","endpoint":"/tmp/piqueld-dev/piqueld.sock","default":false}]}`.
 An empty list prints `No profiles configured.` in human mode, or
 `{"profiles":[]}` in JSON.
 `--quiet` suppresses human results, information, and progress, but preserves JSON,

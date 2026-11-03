@@ -25,7 +25,7 @@ Global options:
 
 - `--profile <NAME>`: Connect with this profile from the profiles files.
 
-  Defaults to `PIQUELD_PROFILE`, else to the profile named `default` if there is one.
+  Defaults to `PIQUELD_PROFILE`, else to the profile named by the profiles file's top-level `default`, else to the profile named `default` if there is one.
 - `--profiles-file <PATH>`: Read profiles only from this file.
 
   Defaults to `PIQUELD_PROFILES_FILE`. Without either, `piquelctl` reads `/etc/piqueld/profiles.toml`, then `~/.config/piqueld/profiles.toml` (in `$XDG_CONFIG_HOME` when it is set), whose profiles replace those of the same name.

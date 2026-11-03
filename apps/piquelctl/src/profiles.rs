@@ -12,6 +12,8 @@ use std::{borrow::Cow, collections::BTreeMap, fmt, path::PathBuf};
 pub(crate) struct ProfileSummary<'a> {
     pub(crate) name: &'a str,
     pub(crate) endpoint: Cow<'a, str>,
+    /// Whether this profile is used when neither `--profile` nor `PIQUELD_PROFILE` names one.
+    pub(crate) default: bool,
 }
 
 /// Sources are tracked independently: endpoint and timeout may use different overrides.
@@ -54,11 +56,22 @@ impl fmt::Display for Source {
     }
 }
 
-/// Merged profiles files: a `[profiles.<name>]` table per named connection.
+/// Merged profiles files: an optional `default` profile name and a
+/// `[profiles.<name>]` table per named connection.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Profiles {
+    default: Option<DefaultProfile>,
     profiles: BTreeMap<String, Profile>,
+}
+/// The top-level `default = "<name>"`, used when no profile is selected.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct DefaultProfile {
+    name: String,
+    /// File that set the default, filled in after parsing.
+    #[serde(skip)]
+    source: PathBuf,
 }
 /// One named connection: exactly one of `socket` or `url`, plus an optional timeout.
 #[derive(Deserialize)]
@@ -100,7 +113,8 @@ impl Profiles {
     }
 
     /// Merge entire profiles before validating, so replacements never inherit fields.
-    /// Later files replace same-named profiles; `required` makes a missing file an error.
+    /// Later files replace same-named profiles and the `default`; `required` makes a
+    /// missing file an error.
     fn load_files(files: impl IntoIterator<Item = (PathBuf, bool)>) -> Result<Self> {
         let mut result = Self::default();
         for (path, required) in files {
@@ -119,6 +133,20 @@ impl Profiles {
                 profile.source.clone_from(&path);
             }
             result.profiles.extend(loaded.profiles);
+            if let Some(mut default) = loaded.default {
+                default.source.clone_from(&path);
+                result.default = Some(default);
+            }
+        }
+        // The default may name a profile from another file, so check it after merging.
+        if let Some(default) = &result.default
+            && !result.profiles.contains_key(&default.name)
+        {
+            return Err(Self::invalid(format!(
+                "Unknown default connection profile {} in {}",
+                default.name,
+                default.source.display()
+            )));
         }
         for (name, profile) in &result.profiles {
             profile.validate().map_err(|error| {
@@ -131,19 +159,30 @@ impl Profiles {
         Ok(result)
     }
 
-    /// Name and endpoint of each profile, sorted by name.
+    /// Name, endpoint and default flag of each profile, sorted by name.
     pub(crate) fn summaries(&self) -> Vec<ProfileSummary<'_>> {
+        let default = self.default_name();
         self.profiles
             .iter()
             .map(|(name, profile)| ProfileSummary {
                 name,
                 endpoint: profile.endpoint(),
+                default: name == default,
             })
             .collect()
     }
 
+    /// Profile used when none is selected: the `default` setting, else the profile
+    /// named `default`. Only a configured `default` is guaranteed to exist.
+    fn default_name(&self) -> &str {
+        self.default
+            .as_ref()
+            .map_or("default", |default| &default.name)
+    }
+
     /// Applies the selected profile and environment to `cli`, recording each setting's
-    /// source. The profile is `--profile`, then `PIQUELD_PROFILE`, then `default` if present.
+    /// source. The profile is `--profile`, then `PIQUELD_PROFILE`, then the default
+    /// (see `default_name`) if present.
     ///
     /// Precedence, highest first:
     /// - endpoint: `--socket`/`--url`, then `PIQUELD_SOCKET`/`PIQUELD_URL` (only one may be
@@ -153,22 +192,24 @@ impl Profiles {
         let selected = cli
             .profile
             .clone()
-            .or_else(|| std::env::var("PIQUELD_PROFILE").ok());
-        let profile = match selected.as_ref() {
-            Some(name) => Some(self.profiles.get(name).ok_or_else(|| {
-                Self::invalid(format!("Unknown connection profile: {name}")).configuration(
-                    if cli.profile.is_some() {
-                        Source::Flag("profile")
-                    } else {
-                        Source::Environment("PIQUELD_PROFILE")
-                    }
-                    .to_string(),
-                )
-            })?),
-            None => self.profiles.get("default"),
+            .map(|name| (name, Source::Flag("profile")))
+            .or_else(|| {
+                std::env::var("PIQUELD_PROFILE")
+                    .ok()
+                    .map(|name| (name, Source::Environment("PIQUELD_PROFILE")))
+            });
+        let (name, profile) = if let Some((name, source)) = selected {
+            let Some(profile) = self.profiles.get(&name) else {
+                return Err(Self::invalid(format!("Unknown connection profile: {name}"))
+                    .configuration(source.to_string()));
+            };
+            (name, Some(profile))
+        } else {
+            let name = self.default_name();
+            (name.to_owned(), self.profiles.get(name))
         };
         let profile_source = profile.map_or(Source::Default, |profile| Source::Profile {
-            name: selected.unwrap_or_else(|| "default".to_owned()),
+            name,
             path: profile.source.clone(),
         });
         // Resolve a transport as a pair: a higher-priority URL replaces a lower socket.
@@ -226,9 +267,9 @@ impl Profiles {
             let mut diagnostic = piqueld_client::TomlDiagnostic::new(text, &error);
             // Schema messages can quote values, which are not safe to print.
             diagnostic.message = if diagnostic.message.starts_with("unknown field") {
-                "unknown field (expected profiles containing socket, url, or timeout)"
+                "unknown field (expected default, or profiles containing socket, url, or timeout)"
             } else if diagnostic.message.starts_with("invalid type") {
-                "invalid field type (profiles must be tables; socket, url, and timeout must be strings)"
+                "invalid field type (profiles must be tables; default, socket, url, and timeout must be strings)"
             } else {
                 "invalid TOML or profile schema"
             }
@@ -336,6 +377,34 @@ socket = "/tmp/user-only.sock"
         assert!(prod.timeout.is_none());
         assert_eq!(prod.source, user);
         assert_eq!(profiles.profiles["system"].source, system);
+    }
+
+    #[test]
+    fn later_files_replace_the_default_which_must_name_a_merged_profile() {
+        let files = Files::new();
+        let system = files.write(
+            "system.toml",
+            "default = 'prod'\n[profiles.prod]\nurl = 'http://127.0.0.1:7845'",
+        );
+        let user = files.write(
+            "user.toml",
+            "default = 'dev'\n[profiles.dev]\nsocket = '/tmp/dev.sock'",
+        );
+        let profiles =
+            Profiles::load_files([(system.clone(), false), (user.clone(), false)]).unwrap();
+        assert_eq!(profiles.default_name(), "dev");
+        // A system default may name a profile defined only in the user file.
+        let pointer = files.write("pointer.toml", "default = 'dev'");
+        let profiles = Profiles::load_files([(pointer.clone(), false), (user, false)]).unwrap();
+        assert_eq!(profiles.default_name(), "dev");
+        let error = Profiles::load_files([(system, false), (pointer.clone(), false)])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("dev") && error.contains(pointer.to_str().unwrap()),
+            "{error}"
+        );
     }
 
     #[test]
