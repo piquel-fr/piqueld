@@ -19,6 +19,7 @@ use piqueld_client::{
     },
     system::{CheckStatus, SystemCheck},
 };
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 /// Revision counter that observability resources track to refetch.
@@ -171,6 +172,8 @@ pub(super) fn EventHistory(
             .or_else(|| query.with(|query| query.get("operation")))
     };
     let cursor = RwSignal::new(None::<String>);
+    // The events whose details are shown, kept across refreshes.
+    let expanded = RwSignal::new(BTreeSet::new());
     Effect::new(move |previous: Option<Option<String>>| {
         let operation = operation();
         if previous.as_ref() != Some(&operation) {
@@ -315,7 +318,11 @@ pub(super) fn EventHistory(
                         } else {
                             page.items
                                 .into_iter()
-                                .map(|event| view! { <EventCard event={event} scoped={scoped} /> })
+                                .map(|event| {
+                                    view! {
+                                        <EventCard event={event} scoped={scoped} expanded={expanded} />
+                                    }
+                                })
                                 .collect_view()
                                 .into_any()
                         }}
@@ -372,11 +379,18 @@ fn kind_badge(event: &Event) -> AnyView {
 /// One event: when it happened, what it is about, its kind, and the context
 /// that tells it apart, with every recorded field behind **Details**. Links
 /// lead to its environment, its operation's events, the requester's audit
-/// trail and its diagnostic.
+/// trail and its diagnostic. `expanded` holds the IDs of the events showing
+/// their details: it belongs to the list, which redraws its cards on every
+/// refresh, so an opened card stays open.
 #[component]
-fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
+fn EventCard(
+    event: Event,
+    #[prop(optional)] scoped: bool,
+    expanded: RwSignal<BTreeSet<i64>>,
+) -> impl IntoView {
     let signals = dashboard_context().signals;
-    let opened = RwSignal::new(false);
+    let id = event.id;
+    let opened = move || expanded.with(|expanded| expanded.contains(&id));
     let title = headline(&event);
     let diagnostic = event.diagnostic.as_ref().map(|d| d.id.clone());
     // Context worth a glance, without repeating the headline.
@@ -450,7 +464,7 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                             view! { <A href={format!("/dashboard/errors/{id}")}>"Diagnostic"</A> }
                         })}
                 </div>
-                <dl class="kv event-details" hidden={move || !opened.get()}>
+                <dl class="kv event-details" hidden={move || !opened()}>
                     {details
                         .into_iter()
                         .filter_map(|(label, value)| {
@@ -468,10 +482,17 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
             <button
                 type="button"
                 class="btn btn-ghost btn-sm event-toggle"
-                aria-expanded={move || opened.get().to_string()}
-                on:click={move |_| opened.update(|opened| *opened = !*opened)}
+                aria-expanded={move || opened().to_string()}
+                on:click={move |_| {
+                    expanded
+                        .update(|expanded| {
+                            if !expanded.remove(&id) {
+                                expanded.insert(id);
+                            }
+                        });
+                }}
             >
-                {move || if opened.get() { "Hide" } else { "Details" }}
+                {move || if opened() { "Hide" } else { "Details" }}
             </button>
         </article>
     }
@@ -628,7 +649,7 @@ fn DiagnosticDetails(event: Event) -> impl IntoView {
                     None => {
                         view! {
                             <section class="list">
-                                <EventCard event={event} />
+                                <EventCard event={event} expanded={RwSignal::new(BTreeSet::new())} />
                             </section>
                         }
                             .into_any()

@@ -20,6 +20,9 @@ test('an event leads to its operation\'s events and to the requests behind them 
   // Every recorded field is behind Details.
   await events.getByRole('button', { name: 'Details', exact: true }).click();
   await expect(events.locator('.event-details')).toContainText('environment_created');
+  // They stay shown while the list refreshes.
+  await page.getByRole('button', { name: 'Newest', exact: true }).click();
+  await expect(events.locator('.event-details')).toBeVisible();
   await kind.selectOption('');
 
   const requested = events.filter({ hasText: 'refresh requested' });
