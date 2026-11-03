@@ -330,10 +330,10 @@ test('unsaved edits guard back navigation, but not downloading the manifest', as
   await page.getByRole('link', { name: 'Manifest', exact: true }).click();
   await download;
   expect(dialogs).toEqual([]);
-  // Cancelling Back restores the editor's address, with its edits.
+  // Cancelling Back restores the editor's address, with its tab and edits.
   await page.goBack();
   await expect.poll(() => dialogs).toEqual([expect.stringContaining('discard unsaved form edits')]);
-  await expect(page).toHaveURL(editor);
+  await expect(page).toHaveURL(`${editor}?tab=volumes`);
   await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('kept');
   page.removeAllListeners('dialog');
   page.once('dialog', dialog => dialog.accept());
