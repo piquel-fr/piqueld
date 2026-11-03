@@ -517,8 +517,11 @@ pub(super) fn StoredSecrets(
                                         "No secrets stored for this application."
                                     },
                                 )
-                            } else {
+                            } else if feedback.error.get().is_none() {
                                 loading("Loading secrets…")
+                            } else {
+                                // The failed load's error is shown above.
+                                ().into_any()
                             }
                         } else {
                             view! {
@@ -847,8 +850,11 @@ pub(super) fn EnvironmentSecrets() -> impl IntoView {
                         if generated.with(Vec::is_empty) {
                             if ready.get() {
                                 empty("No secrets generated for this environment.")
-                            } else {
+                            } else if feedback.error.get().is_none() {
                                 loading("Loading secrets…")
+                            } else {
+                                // The failed load's error is shown above.
+                                ().into_any()
                             }
                         } else {
                             view! {
