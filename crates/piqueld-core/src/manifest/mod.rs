@@ -74,8 +74,8 @@ pub use validation::{
 };
 pub(crate) use validation::{registry_component, valid_image_reference};
 pub use variables::{
-    GitRevision, PREVIEW_DEPLOYMENT_ID, RenderContext, RenderTarget, SystemVariable, Template,
-    TemplateError, Typed, VariableValue,
+    GitRevision, PREVIEW_DEPLOYMENT_ID, Reference, RenderContext, RenderTarget, Segment,
+    SystemVariable, Template, TemplateError, Typed, VariableValue,
 };
 
 use crate::{ApplicationId, ApplicationName};
