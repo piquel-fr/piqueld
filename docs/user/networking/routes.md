@@ -88,10 +88,14 @@ redirects plain HTTP requests to HTTPS.
 1. Open **Applications**, then **hello**, then its **Routes** tab.
 2. Select **Add route**.
 3. Fill in the **Hostname**, and set **Visibility** to **Public**.
-4. Set **Destination** to **Service**, then choose the **Service** and its
+4. Set **Destination** to **A service**, then choose the **Service** and its
    **HTTP port**.
-5. Select **Save changes**.
+5. Select **Add route** at the bottom of the dialog.
 6. Select **Deploy to production**.
+
+Each route is a row, with the environments it is deployed in and whether
+HTTPS answers there. **Edit** changes it in the same dialog, and **Remove**
+takes it out of the saved configuration.
 
 ![The Routes tab of hello: a notice that ingress is disabled in the daemon configuration, then one route, hello.example.com, public, to the web service on HTTP port 80](../../images/networking/routes-tab.png)
 
@@ -231,7 +235,7 @@ everything in one save.
      changes**.
   4. On the **Routes** tab, select **Add route**. Set its **Hostname** to
      `${{ vars.domain }}`, its **Service** to **web**, its **HTTP port** to `80`
-     and its **Visibility** to **Public**, then select **Save changes**.
+     and its **Visibility** to **Public**, then select **Add route**.
   5. Select **Deploy**, then deploy each environment.
 
 - **With `piquelctl`**, create the environment with

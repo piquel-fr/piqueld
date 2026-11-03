@@ -558,7 +558,7 @@ pub(super) fn text_field(label: &'static str, value: RwSignal<String>) -> AnyVie
 /// the browser's choice, its Close button, so Enter never confirms by itself.
 #[component]
 pub(super) fn Modal(
-    title: &'static str,
+    #[prop(into)] title: Signal<&'static str>,
     opened: RwSignal<bool>,
     #[prop(default = Signal::derive(|| false), into)] busy: Signal<bool>,
     #[prop(optional, into)] on_close: Option<Callback<()>>,
@@ -566,7 +566,7 @@ pub(super) fn Modal(
     children: Children,
 ) -> impl IntoView {
     let dialog = NodeRef::<leptos::html::Dialog>::new();
-    let heading = format!("dialog-{}-{}", next_id(), slug(title));
+    let heading = format!("dialog-{}-{}", next_id(), slug(title.get_untracked()));
     let labelled_by = heading.clone();
     Effect::new(move |_| {
         if let Some(dialog) = dialog.get() {
@@ -605,7 +605,7 @@ pub(super) fn Modal(
             }}
         >
             <header>
-                <h2 id={heading}>{title}</h2>
+                <h2 id={heading}>{move || title.get()}</h2>
                 <button
                     type="button"
                     class="btn btn-ghost btn-icon"
@@ -619,6 +619,61 @@ pub(super) fn Modal(
             <div class="modal-body">{children()}</div>
         </dialog>
     }
+}
+
+/// A dialog holding one form: its fields, the `error` of the last attempt,
+/// and a `submit` button. Submitting runs `on_submit`; the fields are
+/// disabled while `busy`, and closing is left to the caller once the
+/// submission went through.
+#[component]
+pub(super) fn FormModal(
+    #[prop(into)] title: Signal<&'static str>,
+    opened: RwSignal<bool>,
+    #[prop(into)] busy: Signal<bool>,
+    #[prop(into)] error: Signal<Option<String>>,
+    #[prop(into)] submit: Signal<&'static str>,
+    on_submit: Callback<()>,
+    #[prop(optional)] wide: bool,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        <Modal title={title} opened={opened} busy={busy} wide={wide}>
+            <form
+                class="stack-sm"
+                on:submit={move |event| {
+                    event.prevent_default();
+                    on_submit.run(());
+                }}
+            >
+                <fieldset class="stack-sm" disabled={move || busy.get()}>
+                    {children()}
+                </fieldset>
+                {move || error.get().map(|error| notice(Tone::Bad, error))}
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" disabled={move || busy.get()}>
+                        {move || submit.get()}
+                    </button>
+                </div>
+            </form>
+        </Modal>
+    }
+}
+
+/// The buttons of a row edited in a dialog: **Edit**, opening it, and
+/// **Remove**.
+pub(super) fn row_actions(edit: impl Fn() + 'static, remove: impl Fn() + 'static) -> AnyView {
+    view! {
+        <span class="btn-group">
+            <button type="button" class="btn btn-sm" on:click={move |_| edit()}>
+                {icon(Icon::Pencil)}
+                "Edit"
+            </button>
+            <button type="button" class="btn btn-sm btn-ghost" on:click={move |_| remove()}>
+                "Remove"
+            </button>
+        </span>
+    }
+    .into_any()
 }
 
 /// A row of tabs and the panels they show, keyed so each tab labels its

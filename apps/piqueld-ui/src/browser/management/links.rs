@@ -1,49 +1,38 @@
 //! Private links: the services this application lets others reach, and the
-//! services of other applications it reaches.
-use super::super::ui::{add_button, empty, remove_button};
-use super::{Draft, Rows, editor};
+//! services of other applications it reaches. Each is a row, added and
+//! edited in a dialog; saving replaces the whole list.
+use super::super::confirm;
+use super::super::ui::{FormModal, Icon, empty, icon, row_actions, text_input};
+use super::{RowDialog, editor};
 use crate::application::{ExportDraft, ImportDraft};
 use leptos::prelude::*;
 use piqueld_client::edit::ApplicationEdit;
 
-/// A text input bound to one field of row `index`.
-fn row_field<D: Send + Sync + 'static>(
-    rows: RwSignal<Vec<D>>,
-    index: usize,
-    label: &'static str,
-    placeholder: &'static str,
-    read: fn(&D) -> String,
-    write: fn(&mut D, String),
-) -> impl IntoView {
-    view! {
-        <label class="field">
-            <span>{label}</span>
-            <input
-                type="text"
-                placeholder={placeholder}
-                prop:value={move || rows.field(index, read)}
-                on:input={move |event| {
-                    rows.edit(index, |row| write(row, event_target_value(&event)));
-                }}
-            />
-        </label>
-    }
-}
-
 /// Export editor: which services other applications may reach, and which
-/// applications may. Saving replaces every export.
+/// applications may.
 #[component]
 fn ExportSettings() -> impl IntoView {
     let context = editor();
-    let draft = Draft::synced("exports", ExportDraft::rows);
-    let exports = draft.value;
-    let save = move || {
-        let saved = exports
-            .get_untracked()
-            .into_iter()
-            .map(ExportDraft::export)
-            .collect();
-        draft.save(ApplicationEdit::Exports(saved), ExportDraft::rows);
+    let dialog = RowDialog::<ExportDraft>::new();
+    let draft = dialog.draft;
+    // Saves `rows` as the application's exports, closing the dialog.
+    let save = move |rows: Vec<ExportDraft>| {
+        let exports = rows.into_iter().map(ExportDraft::export).collect();
+        context.save(ApplicationEdit::Exports(exports), move |_| {
+            dialog.opened.set(false);
+        });
+    };
+    let remove = move |index: usize| {
+        if !confirm(
+            "Stop exporting this service? Importing applications lose it at their next deployment.",
+        ) {
+            return;
+        }
+        let mut rows = ExportDraft::rows(&context.manifest());
+        if index < rows.len() {
+            rows.remove(index);
+        }
+        save(rows);
     };
     view! {
         <section class="card">
@@ -51,88 +40,125 @@ fn ExportSettings() -> impl IntoView {
                 <div>
                     <h3>"Exports"</h3>
                     <p>
-                        "Services other applications may reach, without a route. An importing application's services reach an exported service as service.application, on a network only the two join: no other service of this application, and no other importer. Each environment exports to the same-named environment of the listed applications, or to the one they name; previews only when allowed. Any port the service listens on is reachable."
+                        "Services other applications may reach, without a route, as service.application on a network only the two share. Each environment exports to the same-named environment of the listed applications; previews only when allowed."
                     </p>
                 </div>
+                <button
+                    type="button"
+                    class="btn btn-sm"
+                    disabled={move || context.blocked()}
+                    on:click={move |_| dialog.add()}
+                >
+                    {icon(Icon::Plus)}
+                    "Add export"
+                </button>
             </header>
-            <fieldset class="stack-sm" disabled={move || context.blocked()}>
-                <Show when={move || {
-                    exports.with(Vec::is_empty)
-                }}>
-                    {empty(
+            {move || {
+                let rows = ExportDraft::rows(&context.manifest());
+                if rows.is_empty() {
+                    return empty(
                         "No exports. Other applications cannot reach this application's services.",
-                    )}
-                </Show>
-                <For
-                    each={move || exports.indices()}
-                    key={|index| *index}
-                    children={move |index| {
-                        view! {
-                            <div class="form-row" data-export={index}>
-                                <label class="field">
-                                    <span>"Service"</span>
-                                    <select
-                                        prop:value={move || {
-                                            exports.field(index, |e| e.service.clone())
-                                        }}
-                                        on:change={move |event| {
-                                            exports
-                                                .edit(index, |e| e.service = event_target_value(&event));
-                                        }}
-                                    >
-                                        {context.service_options()}
-                                    </select>
-                                </label>
-                                {row_field(
-                                    exports,
-                                    index,
-                                    "Applications",
-                                    "notes, billing",
-                                    |e| e.applications.clone(),
-                                    |e, value| e.applications = value,
-                                )}
-                                <label class="checkbox">
-                                    <input
-                                        type="checkbox"
-                                        prop:checked={move || exports.field(index, |e| e.previews)}
-                                        on:change={move |event| {
-                                            exports
-                                                .edit(index, |e| e.previews = event_target_checked(&event));
-                                        }}
-                                    />
-                                    <span>"Previews too"</span>
-                                </label>
-                                {remove_button(move || exports.remove(index))}
-                            </div>
-                        }
-                    }}
-                />
-                <div>
-                    {add_button(
-                        "Add export",
-                        move || exports.update(|exports| exports.push(ExportDraft::default())),
-                    )}
-                </div>
-                {draft.actions(save, || false)}
-            </fieldset>
+                    );
+                }
+                view! {
+                    <ul class="list" aria-label="Exports">
+                        {rows
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, row)| {
+                                let edited = row.clone();
+                                let reach = format!(
+                                    "to {}{}",
+                                    if row.applications.is_empty() {
+                                        "no application".to_owned()
+                                    } else {
+                                        row.applications.clone()
+                                    },
+                                    if row.previews { ", and their previews" } else { "" },
+                                );
+                                view! {
+                                    <li class="list-row">
+                                        <span class="title">
+                                            <code>{row.service.clone()}</code>
+                                            <small>{reach}</small>
+                                        </span>
+                                        {row_actions(
+                                            move || dialog.edit(index, edited.clone()),
+                                            move || remove(index),
+                                        )}
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                }
+                    .into_any()
+            }}
+            <FormModal
+                title={dialog.title("Add export", "Edit export")}
+                opened={dialog.opened}
+                busy={context.busy}
+                error={context.error}
+                submit={dialog.title("Add export", "Save export")}
+                on_submit={Callback::new(move |()| {
+                    save(dialog.apply(ExportDraft::rows(&context.manifest())));
+                })}
+            >
+                <label class="field">
+                    <span>"Service"</span>
+                    <select
+                        prop:value={move || draft.with(|e| e.service.clone())}
+                        on:change={move |event| {
+                            draft.update(|e| e.service = event_target_value(&event));
+                        }}
+                    >
+                        {context.service_options()}
+                    </select>
+                </label>
+                {text_input(
+                    "Applications",
+                    draft,
+                    |e| e.applications.clone(),
+                    |e, value| e.applications = value,
+                )}
+                <p class="hint">"Application names, separated by commas."</p>
+                <label class="checkbox">
+                    <input
+                        type="checkbox"
+                        prop:checked={move || draft.with(|e| e.previews)}
+                        on:change={move |event| {
+                            draft.update(|e| e.previews = event_target_checked(&event));
+                        }}
+                    />
+                    "Previews too"
+                </label>
+            </FormModal>
         </section>
     }
 }
 
-/// Import editor: services of other applications this one reaches. Saving
-/// replaces every import.
+/// Import editor: services of other applications this one reaches.
 #[component]
 fn ImportSettings() -> impl IntoView {
     let context = editor();
-    let draft = Draft::synced("imports", ImportDraft::rows);
-    let imports = draft.value;
-    let save = move || {
-        let saved = imports
-            .get_untracked()
-            .into_iter()
-            .map(ImportDraft::import)
-            .collect();
-        draft.save(ApplicationEdit::Imports(saved), ImportDraft::rows);
+    let dialog = RowDialog::<ImportDraft>::new();
+    let draft = dialog.draft;
+    // Saves `rows` as the application's imports, closing the dialog.
+    let save = move |rows: Vec<ImportDraft>| {
+        let imports = rows.into_iter().map(ImportDraft::import).collect();
+        context.save(ApplicationEdit::Imports(imports), move |_| {
+            dialog.opened.set(false);
+        });
+    };
+    let remove = move |index: usize| {
+        if !confirm("Stop importing this service? Services lose it at the next deployment.") {
+            return;
+        }
+        let mut rows = ImportDraft::rows(&context.manifest());
+        if index < rows.len() {
+            rows.remove(index);
+        }
+        save(rows);
     };
     view! {
         <section class="card">
@@ -140,55 +166,85 @@ fn ImportSettings() -> impl IntoView {
                 <div>
                     <h3>"Imports"</h3>
                     <p>
-                        "Services of other applications this application's services reach, as service.application, once that application exports them to it. Leave the environment empty to reach the one named like each environment of this application; previews must name one, for example with a variable. Each environment's page shows whether its imports connect."
+                        "Services of other applications this one reaches, as service.application, once exported to it. Without an environment, each environment reaches its namesake; previews must name one, for example with a variable. Each environment's page shows whether its imports connect."
                     </p>
                 </div>
+                <button
+                    type="button"
+                    class="btn btn-sm"
+                    disabled={move || context.blocked()}
+                    on:click={move |_| dialog.add()}
+                >
+                    {icon(Icon::Plus)}
+                    "Add import"
+                </button>
             </header>
-            <fieldset class="stack-sm" disabled={move || context.blocked()}>
-                <Show when={move || imports.with(Vec::is_empty)}>{empty("No imports.")}</Show>
-                <For
-                    each={move || imports.indices()}
-                    key={|index| *index}
-                    children={move |index| {
-                        view! {
-                            <div class="form-row" data-import={index}>
-                                {row_field(
-                                    imports,
-                                    index,
-                                    "Application",
-                                    "auth",
-                                    |i| i.application.clone(),
-                                    |i, value| i.application = value,
-                                )}
-                                {row_field(
-                                    imports,
-                                    index,
-                                    "Service",
-                                    "api",
-                                    |i| i.service.clone(),
-                                    |i, value| i.service = value,
-                                )}
-                                {row_field(
-                                    imports,
-                                    index,
-                                    "Environment",
-                                    "Same name",
-                                    |i| i.environment.clone(),
-                                    |i, value| i.environment = value,
-                                )}
-                                {remove_button(move || imports.remove(index))}
-                            </div>
-                        }
-                    }}
-                />
-                <div>
-                    {add_button(
-                        "Add import",
-                        move || imports.update(|imports| imports.push(ImportDraft::default())),
-                    )}
-                </div>
-                {draft.actions(save, || false)}
-            </fieldset>
+            {move || {
+                let rows = ImportDraft::rows(&context.manifest());
+                if rows.is_empty() {
+                    return empty(
+                        "No imports. This application reaches no other application's services.",
+                    );
+                }
+                view! {
+                    <ul class="list" aria-label="Imports">
+                        {rows
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, row)| {
+                                let edited = row.clone();
+                                let environment = if row.environment.is_empty() {
+                                    "from the same-named environment".to_owned()
+                                } else {
+                                    format!("from environment {}", row.environment)
+                                };
+                                view! {
+                                    <li class="list-row">
+                                        <span class="title">
+                                            <code>
+                                                {format!("{}.{}", row.service, row.application)}
+                                            </code>
+                                            <small>{environment}</small>
+                                        </span>
+                                        {row_actions(
+                                            move || dialog.edit(index, edited.clone()),
+                                            move || remove(index),
+                                        )}
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                }
+                    .into_any()
+            }}
+            <FormModal
+                title={dialog.title("Add import", "Edit import")}
+                opened={dialog.opened}
+                busy={context.busy}
+                error={context.error}
+                submit={dialog.title("Add import", "Save import")}
+                on_submit={Callback::new(move |()| {
+                    save(dialog.apply(ImportDraft::rows(&context.manifest())));
+                })}
+            >
+                {text_input(
+                    "Application",
+                    draft,
+                    |i| i.application.clone(),
+                    |i, value| i.application = value,
+                )}
+                {text_input("Service", draft, |i| i.service.clone(), |i, value| i.service = value)}
+                {text_input(
+                    "Environment",
+                    draft,
+                    |i| i.environment.clone(),
+                    |i, value| i.environment = value,
+                )}
+                <p class="hint">
+                    "Leave the environment empty to reach the one named like each of this application's environments."
+                </p>
+            </FormModal>
         </section>
     }
 }

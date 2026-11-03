@@ -126,15 +126,24 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await save(page);
   await applicationTab(page, 'Routes').click();
   await page.getByRole('button', { name: 'Add route', exact: true }).click();
-  await page.getByLabel('Hostname', { exact: true }).fill('shop.example.com');
-  await page.getByLabel('Name', { exact: true }).fill('shop');
-  await page.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
-  await page.getByLabel('HTTP port', { exact: true }).fill('8080');
-  await save(page);
+  const routeDialog = page.getByRole('dialog', { name: 'Add route' });
+  await routeDialog.getByLabel('Hostname', { exact: true }).fill('shop.example.com');
+  await routeDialog.getByLabel('Name', { exact: true }).fill('shop');
+  await routeDialog.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
+  await routeDialog.getByLabel('HTTP port', { exact: true }).fill('8080');
+  await routeDialog.getByRole('button', { name: 'Add route', exact: true }).click();
+  await expect(routeDialog).toBeHidden();
+  const route = page.getByRole('list', { name: 'Routes' }).getByRole('listitem');
+  await expect(route).toContainText('shop.example.com');
+  await expect(route).toContainText('to service web, port 8080');
   await page.reload();
   await applicationTab(page, 'Routes').click();
-  await expect(page.getByLabel('Hostname', { exact: true })).toHaveValue('shop.example.com');
-  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('shop');
+  await expect(route).toContainText('shop.example.com');
+  // Editing starts from the saved route.
+  await route.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editDialog = page.getByRole('dialog', { name: 'Edit route' });
+  await expect(editDialog.getByLabel('Name', { exact: true })).toHaveValue('shop');
+  await editDialog.getByRole('button', { name: 'Close dialog' }).click();
 
   await applicationTab(page, 'Environments').click();
   await page.getByRole('button', { name: 'New environment', exact: true }).click();
@@ -400,29 +409,44 @@ test('saves exports and imports from the Links tab, each card on its own', async
   await page.goto(`/dashboard/applications/${id}?tab=links`);
   const card = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
   await page.getByRole('button', { name: 'Add export', exact: true }).click();
-  const exported = card('Exports');
-  await exported.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
-  await exported.getByLabel('Applications', { exact: true }).fill(' notes ,, billing ');
-  await exported.getByLabel('Previews too', { exact: true }).check();
-  await page.getByRole('button', { name: 'Add import', exact: true }).click();
-  const imported = card('Imports');
-  await imported.getByLabel('Application', { exact: true }).fill('auth');
-  await imported.getByLabel('Service', { exact: true }).fill('api');
+  const exporting = page.getByRole('dialog', { name: 'Add export' });
+  await exporting.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
+  await exporting.getByLabel('Applications', { exact: true }).fill(' notes ,, billing ');
+  await exporting.getByLabel('Previews too', { exact: true }).check();
+  await exporting.getByRole('button', { name: 'Add export', exact: true }).click();
+  await expect(exporting).toBeHidden();
+  const exported = card('Exports').getByRole('listitem');
+  await expect(exported).toContainText('to notes, billing, and their previews');
 
-  // Saving the exports keeps the imports' unsaved edits.
-  await exported.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect(exported.getByRole('button', { name: 'Save changes', exact: true })).toBeHidden();
-  await expect(imported.getByLabel('Application', { exact: true })).toHaveValue('auth');
-  await imported.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect(imported.getByRole('button', { name: 'Save changes', exact: true })).toBeHidden();
+  await page.getByRole('button', { name: 'Add import', exact: true }).click();
+  const importing = page.getByRole('dialog', { name: 'Add import' });
+  await importing.getByLabel('Application', { exact: true }).fill('auth');
+  await importing.getByLabel('Service', { exact: true }).fill('api');
+  await importing.getByRole('button', { name: 'Add import', exact: true }).click();
+  await expect(importing).toBeHidden();
+  const imported = card('Imports').getByRole('listitem');
+  await expect(imported).toContainText('api.auth');
+  await expect(imported).toContainText('from the same-named environment');
 
   const { application } = await call(page, 'GET', `applications/${id}`);
   expect(application.spec.exports).toEqual([{ service: 'web', applications: ['notes', 'billing'], previews: true }]);
   // An empty environment reaches the importing environment's namesake.
   expect(application.spec.imports).toEqual([{ application: 'auth', service: 'api' }]);
-  await page.reload();
-  await expect(exported.getByLabel('Applications', { exact: true })).toHaveValue('notes, billing');
-  await expect(imported.getByLabel('Environment', { exact: true })).toHaveValue('');
+
+  // Editing an export starts from what was saved; removing asks first.
+  await exported.getByRole('button', { name: 'Edit', exact: true }).click();
+  const editing = page.getByRole('dialog', { name: 'Edit export' });
+  await expect(editing.getByLabel('Applications', { exact: true })).toHaveValue('notes, billing');
+  await editing.getByLabel('Applications', { exact: true }).fill('notes');
+  await editing.getByRole('button', { name: 'Save export', exact: true }).click();
+  await expect(editing).toBeHidden();
+  await expect(exported).toContainText('to notes, and their previews');
+  page.once('dialog', dialog => dialog.accept());
+  await imported.getByRole('button', { name: 'Remove', exact: true }).click();
+  await expect(imported).toHaveCount(0);
+  const { application: edited } = await call(page, 'GET', `applications/${id}`);
+  expect(edited.spec.exports).toEqual([{ service: 'web', applications: ['notes'], previews: true }]);
+  expect(edited.spec.imports ?? []).toEqual([]);
 });
 
 test('reloading after a change made elsewhere keeps unsaved edits and shows the change', async ({ page, account }) => {

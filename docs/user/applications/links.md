@@ -34,13 +34,13 @@ once both have deployed it.
    [deploying your first application](../getting-started/first-app.md#in-the-dashboard).
 2. On the **Links** tab of `auth`, under **Exports**, select **Add export**,
    pick the **Service**, and enter the **Applications**, separated by commas.
-   Select **Save changes**, then **Deploy to production**.
+   Select **Add export** in the dialog, then **Deploy to production**.
 
    ![The Links tab of auth: under Exports, api is exported to notes; there are no imports](../../images/applications/links-tab.png)
 
 3. On the **Links** tab of `notes`, under **Imports**, select **Add import**,
    and enter the **Application** and the **Service**. Leave **Environment**
-   empty. Select **Save changes**, then **Deploy to production**.
+   empty. Select **Add import** in the dialog, then **Deploy to production**.
 
 ### With piquelctl
 
