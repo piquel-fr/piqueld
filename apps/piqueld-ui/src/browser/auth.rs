@@ -7,6 +7,7 @@ use super::ui::{
     one_time_secret, row_actions, text_field, when,
 };
 use super::{ClientErrorExt, confirm, reload};
+use crate::application::slug;
 use crate::auth::{DeviceRequestLabels, Invite, SignInPage, TokenForm};
 use leptos::ev;
 use leptos::prelude::*;
@@ -1257,7 +1258,7 @@ pub(super) fn AccountPage() -> impl IntoView {
             ACCOUNT_TABS
                 .iter()
                 .copied()
-                .find(|tab| requested.as_deref() == Some(tab.to_lowercase().as_str()))
+                .find(|tab| requested.as_deref() == Some(slug(tab).as_str()))
                 .unwrap_or(ACCOUNT_TABS[0]),
         ),
     );
