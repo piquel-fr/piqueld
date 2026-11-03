@@ -174,6 +174,12 @@ impl Client {
     ) -> Result<piqueld_core::audit::AuditVerification, ClientError> {
         self.generated.verify_audit().data().await
     }
+    /// The kinds of the retained events the caller may read, in name order.
+    /// # Errors
+    /// Returns transport, decoding or API errors.
+    pub async fn event_kinds(&self) -> Result<Vec<String>, ClientError> {
+        Ok(self.generated.list_event_kinds().data().await?.kinds)
+    }
     /// Finds the contextual event for a diagnostic occurrence.
     /// # Errors
     /// Returns transport, decoding, absence or API errors.

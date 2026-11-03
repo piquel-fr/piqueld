@@ -3996,5 +3996,9 @@ Options:
 
 - `--application <APPLICATION_ID>`: Only show events of the application with this ID, and of all its environments, including deleted ones.
 - `--environment <ENVIRONMENT_ID>`: Only show events of the environment with this ID, even a deleted one.
+- `--kind <KIND>`: Only show events of this kind, such as `operation_failed`.
+
+  The dashboard's Events page lists the kinds recorded so far.
+- `--errors-only`: Only show failures: events that carry an error code.
 - `--cursor <CURSOR>`: Read the page after this cursor, which the previous page printed.
 - `--limit <LIMIT>`: Show at most this many items, from 1 to 100. Default: `50`.

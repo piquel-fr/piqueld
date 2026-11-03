@@ -48,18 +48,21 @@ scope, event kind or error code.
 
 ![The Errors page, listing an operation and an action of broken/production that failed with image_resolution_rejected](../../images/operations/errors.png)
 
-Each failure has a diagnostic. Select **Diagnostic details** to read it:
+Each failure has a diagnostic. Select **Diagnostic** to read it:
 
 - its heading is a stable error code, such as `image_resolution_rejected`, and
   a summary of what went wrong;
 - a badge says whether it's **retryable** or **needs attention**;
+- **What to do** says how to fix it;
 - **Causes** lists what led to it, such as the Docker request that failed and
   its HTTP status;
-- **Next action** says what to do.
+- **Where** names its environment, operation and request;
+- the events of its operation follow, so you can see what happened before and
+  after it.
 
-The **Errors** page links each failure to its environment and to the events of
-its deployment. **Requester** opens the audit trail of the session or token
-that started it. When a command fails, `piquelctl` prints the same code and
+Each event names its environment, and **Operation** lists the events of its
+deployment. **Details** shows every field recorded with it. **Requester**
+opens the audit trail of the session or token that started it. When a command fails, `piquelctl` prints the same code and
 message, with a hint for what to do next.
 
 ## Read logs and build output

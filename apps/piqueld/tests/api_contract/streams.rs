@@ -120,7 +120,7 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
     // Completion is recorded before the final frame is sent.
     let commands = unix
         .client()
-        .events(None, Some(&app.environment_id), None, 100)
+        .events(None, Some(&app.environment_id), None, false, None, 100)
         .await
         .unwrap()
         .items
@@ -166,7 +166,7 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     .await;
     let events = api
         .client
-        .events(None, None, None, 100)
+        .events(None, None, None, false, None, 100)
         .await
         .unwrap()
         .items;

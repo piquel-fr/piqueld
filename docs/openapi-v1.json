@@ -4375,6 +4375,31 @@
         ],
         "type": "object"
       },
+      "Envelope_EventKinds": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "The distinct kinds of the retained events a caller may read, in name\norder, to filter history by one.",
+            "properties": {
+              "kinds": {
+                "description": "Event kinds, such as `operation_succeeded`.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kinds"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_HostConfiguration": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -7307,6 +7332,22 @@
             "type": "object"
           }
         ]
+      },
+      "EventKinds": {
+        "description": "The distinct kinds of the retained events a caller may read, in name\norder, to filter history by one.",
+        "properties": {
+          "kinds": {
+            "description": "Event kinds, such as `operation_succeeded`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kinds"
+        ],
+        "type": "object"
       },
       "EventScope": {
         "description": "Ownership of historical data, independent of its contextual application and environment.",
@@ -30168,6 +30209,46 @@
           }
         },
         "summary": "Lists structured events.",
+        "x-piqueld-access": "authenticated"
+      }
+    },
+    "/api/v1/events/kinds": {
+      "get": {
+        "description": "The distinct `kind` values of the events the caller may read, in name\norder, for filtering `GET /api/v1/events` by `kind`.",
+        "operationId": "listEventKinds",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_EventKinds"
+                }
+              }
+            },
+            "description": "Event kinds, in name order"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Lists the kinds of retained events.",
         "x-piqueld-access": "authenticated"
       }
     },

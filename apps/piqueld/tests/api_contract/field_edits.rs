@@ -184,7 +184,11 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         "{error:?}"
     );
     assert_eq!(jobs_of().await, jobs);
-    let events = api.client.events(Some(id), None, None, 100).await.unwrap();
+    let events = api
+        .client
+        .events(Some(id), None, None, false, None, 100)
+        .await
+        .unwrap();
     let recorded = events
         .items
         .iter()
@@ -796,7 +800,7 @@ async fn typed_edits_record_safe_field_history() {
         .unwrap();
     let events = api
         .client
-        .events(Some(&saved.application_id), None, None, 100)
+        .events(Some(&saved.application_id), None, None, false, None, 100)
         .await
         .unwrap();
     let recorded = events

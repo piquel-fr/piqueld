@@ -366,6 +366,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(App(Read) => deployments::attempts))
         .routes(granted!(App(Read) => deployments::releases))
         .routes(authenticated!(events::list))
+        .routes(authenticated!(events::kinds))
         .routes(authenticated!(events::stream))
         .routes(authenticated!(observability::diagnostic))
         .routes(granted!(Global(SystemRead) => observability::resources))

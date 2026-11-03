@@ -38,7 +38,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
         .unwrap();
     assert_eq!(reconciled.operation_id, refreshed.operation_id);
     let first_page = client
-        .events(None, Some(&first.environment_id), None, 2)
+        .events(None, Some(&first.environment_id), None, false, None, 2)
         .await
         .unwrap();
     assert_eq!(first_page.items.len(), 2);
@@ -46,6 +46,8 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
         .events(
             None,
             Some(&first.environment_id),
+            None,
+            false,
             first_page.next_cursor.as_deref(),
             100,
         )
@@ -652,4 +654,36 @@ async fn receipts_replay_only_for_their_account() {
             Err(ApplicationError::Store(StoreError::ReplayConflict))
         ));
     }
+}
+
+#[tokio::test]
+async fn event_kinds_list_each_recorded_kind_once_in_name_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let client = server.client();
+    let request = new_application();
+    let deployed = client.apply_and_deploy(&request).await.unwrap();
+    // Deploying again records a second `refresh_requested`.
+    client
+        .deploy_environment(&deployed.environment_id, 1, None)
+        .await
+        .unwrap();
+    let kinds = client.event_kinds().await.unwrap();
+    let mut sorted = kinds.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(kinds, sorted, "distinct, in name order");
+    assert!(kinds.iter().any(|kind| kind == "environment_created"));
+    assert!(kinds.iter().any(|kind| kind == "refresh_requested"));
+    let requests = client
+        .events(None, None, Some("refresh_requested"), false, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(requests.items.len(), 2);
+    assert!(
+        requests
+            .items
+            .iter()
+            .all(|event| event.kind == "refresh_requested")
+    );
 }

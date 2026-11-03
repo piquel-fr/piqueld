@@ -12,18 +12,23 @@ test('an event leads to its operation\'s events and to the requests behind them 
   const events = page.locator('.event');
   await expect(events.filter({ hasText: 'created environment production' })).toHaveCount(1);
   await expect(events.filter({ hasText: 'alice became an administrator' })).toHaveCount(1);
-  const kind = page.getByRole('textbox', { name: 'Event kind', exact: true });
-  await kind.fill('environment_created');
-  await kind.press('Enter');
+  const kind = page.getByRole('combobox', { name: 'Event kind', exact: true });
+  await expect(kind.getByRole('option', { name: 'environment created', exact: true })).toHaveCount(1);
+  await kind.selectOption('environment_created');
   await expect(events).toHaveCount(1);
   await expect(events.locator('.badge')).toHaveText('environment created');
-  await kind.fill('');
-  await kind.press('Enter');
+  // Every recorded field is behind Details.
+  await events.getByRole('button', { name: 'Details', exact: true }).click();
+  await expect(events.locator('.event-details')).toContainText('environment_created');
+  // They stay shown while the list refreshes.
+  await page.getByRole('button', { name: 'Newest', exact: true }).click();
+  await expect(events.locator('.event-details')).toBeVisible();
+  await kind.selectOption('');
 
   const requested = events.filter({ hasText: 'refresh requested' });
-  await requested.getByRole('link', { name: 'Operation events', exact: true }).click();
+  await requested.getByRole('link', { name: 'Operation', exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/dashboard/events\\?operation=${deployed.operation_id}$`));
-  await expect(page.getByText('Filtered by operation', { exact: true })).toBeVisible();
+  await expect(page.getByText(/^Showing the events of operation/)).toBeVisible();
   await expect(events).toHaveCount(1);
   await expect(events.locator('.badge')).toHaveText('refresh requested');
 

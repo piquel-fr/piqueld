@@ -131,6 +131,21 @@ impl Store {
             .collect::<Result<_, StoreError>>()?;
         Ok(Page { items, next_cursor })
     }
+    /// The kinds of the retained events `visible` allows, in name order, so
+    /// history can be filtered by one.
+    /// # Errors
+    /// Returns storage errors.
+    pub async fn event_kinds(&self, visible: &Visibility) -> Result<Vec<String>, StoreError> {
+        let mut query = QueryBuilder::new("SELECT DISTINCT kind FROM events WHERE 1 = 1");
+        EventRow::restrict(&mut query, visible);
+        query.push(" ORDER BY kind");
+        query
+            .build_query_scalar::<String>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::database)
+    }
+
     /// Reads the next oldest-first stream batch after `after` from one snapshot.
     /// The returned checkpoint covers every scanned event, including those the
     /// filter excluded, so a quiet filtered stream still advances past pruning.
@@ -555,6 +570,20 @@ impl EventRow {
         if filter.errors_only {
             query.push(" AND error_code IS NOT NULL");
         }
+        Self::restrict(&mut query, visible);
+        query
+            .push(if filter.descending {
+                " ORDER BY id DESC LIMIT "
+            } else {
+                " ORDER BY id ASC LIMIT "
+            })
+            .push_bind(fetch);
+        Ok(query)
+    }
+
+    /// Appends the `WHERE` conditions limiting `query` to the events
+    /// `visible` allows.
+    fn restrict(query: &mut QueryBuilder<'_, Sqlite>, visible: &Visibility) {
         if let Some(applications) = scope_json(&visible.applications) {
             query
                 .push(" AND ((scope = 'application' AND application_id IN (SELECT value FROM json_each(")
@@ -568,14 +597,6 @@ impl EventRow {
         } else if !visible.daemon {
             query.push(" AND scope = 'application'");
         }
-        query
-            .push(if filter.descending {
-                " ORDER BY id DESC LIMIT "
-            } else {
-                " ORDER BY id ASC LIMIT "
-            })
-            .push_bind(fetch);
-        Ok(query)
     }
 
     /// Converts raw columns into an `Event`, reporting out-of-range values or

@@ -651,7 +651,11 @@ impl ClientErrorExt for ClientError {
                 format!("Could not initialize the API client: {source}")
             }
             Self::Endpoint { message } => format!("The dashboard endpoint is invalid: {message}"),
-            Self::Transport { message, .. } => format!("Could not reach piqueld: {message}"),
+            // The browser appends a JavaScript stack trace to the reason.
+            Self::Transport { message, .. } => format!(
+                "Could not reach piqueld: {}",
+                message.lines().next().unwrap_or_default()
+            ),
             // Validation refusals name each failing field in their details;
             // the message alone would only say the manifest is invalid.
             Self::Api { error, .. } => {

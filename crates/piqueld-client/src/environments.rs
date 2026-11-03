@@ -296,6 +296,8 @@ impl Client {
         &self,
         application_id: Option<&str>,
         environment_id: Option<&str>,
+        kind: Option<&str>,
+        errors_only: bool,
         cursor: Option<&str>,
         limit: u16,
     ) -> Result<Page<Event>, ClientError> {
@@ -303,6 +305,8 @@ impl Client {
             &EventFilter {
                 application_id: application_id.map(str::to_owned),
                 environment_id: environment_id.map(str::to_owned),
+                kind: kind.map(str::to_owned),
+                errors_only,
                 ..Default::default()
             },
             cursor,
