@@ -787,54 +787,87 @@
         border-color: var(--line-strong);
     }
 
-    /* Dependency status cards */
-    .status-grid {
+    /* Component status rows: name, state, one line, and details on demand. */
+    .status-list {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 12px;
     }
 
-    .status-card {
+    .status-list > li {
+        border-bottom: 1px solid var(--line);
+    }
+
+    .status-list > li:last-child {
+        border-bottom: 0;
+    }
+
+    .status-row {
         display: grid;
-        gap: 6px;
-        padding: 12px 14px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius-sm);
+        grid-template-columns: minmax(130px, 170px) auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 6px 14px;
+        padding: 10px 16px;
+        font-size: 13px;
+    }
+
+    /* A row that opens: the summary is the row itself, without a marker. */
+    .status-more > summary {
+        display: block;
+        list-style: none;
+        cursor: pointer;
+    }
+
+    .status-more > summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .status-more > summary:hover {
         background: var(--surface-muted);
     }
 
-    .status-card header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
+    .status-more .chevron {
+        color: var(--muted);
+        transition: transform .15s;
     }
 
-    .status-card strong {
-        font-size: 13px;
+    .status-more[open] .chevron {
+        transform: rotate(90deg);
+    }
+
+    .status-row strong {
         font-weight: 600;
     }
 
-    .status-card p {
-        font-size: 12px;
+    .status-summary {
+        min-width: 0;
+        font-size: 12.5px;
         color: var(--muted);
         overflow-wrap: anywhere;
     }
 
-    .status-card[data-tone="ok"] {
-        border-color: var(--ok-line);
+    .status-details {
+        padding: 4px 16px 14px;
+        border-top: 1px dashed var(--line);
     }
 
-    .status-card[data-tone="warn"] {
-        border-color: var(--warn-line);
+    .status-details .table {
+        margin: 0 -16px;
+        width: calc(100% + 32px);
     }
 
-    .status-card[data-tone="bad"] {
-        border-color: var(--bad-line);
+    .status-details .kv {
+        margin-top: 10px;
     }
 
-    .status-card[data-tone="pending"] {
-        border-color: var(--pending-line);
+    .status-details .hint {
+        margin-top: 10px;
+    }
+
+    .status-row[data-tone="bad"] {
+        box-shadow: inset 3px 0 0 var(--bad);
+    }
+
+    .status-row[data-tone="warn"] {
+        box-shadow: inset 3px 0 0 var(--warn);
     }
 
     /* Expandable record rows */
@@ -1340,6 +1373,14 @@
         .event {
             grid-template-columns: 1fr auto;
             gap: 4px 12px;
+        }
+
+        .status-row {
+            grid-template-columns: 1fr auto auto;
+        }
+
+        .status-summary {
+            grid-column: 1 / -1;
         }
 
         .event-time {

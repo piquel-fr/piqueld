@@ -188,9 +188,10 @@ Certificate: *.piquel.fr for admin.piquel.fr, staging.piquel.fr (expires at Unix
 ```
 
 A failing one adds a `Certificate problem:` line with the error. In the
-dashboard, **System status** shows a **Certificate** card for each, marked
-**Issued**, **Pending**, **Failed**, or **Renewal failing** when the latest
-attempt to renew a stored certificate failed.
+dashboard, **System status** counts them on one **certificates** row; opening
+it lists each, marked **issued**, **pending**, **failed**, or **renewal
+failing** when the latest attempt to renew a stored certificate failed, with
+its routes, expiry and last error.
 
 Each issue, renewal and deletion appears in the daemon's
 [events](../operations/history.md). A destination

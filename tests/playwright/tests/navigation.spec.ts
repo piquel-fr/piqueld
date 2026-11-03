@@ -24,7 +24,7 @@ test('the sidebar reaches every page and shows the account and daemon connection
     await expect(sidebar.getByRole('link', { name: link, exact: true })).toHaveAttribute('aria-current', 'page');
   }
   await expect(page.getByRole('heading', { name: 'System status', exact: true })).toBeVisible();
-  await expect(page.locator('.status-card', { hasText: 'piqueld daemon' })).toContainText('Reachable');
+  await expect(page.locator('.status-row', { hasText: 'piqueld daemon' })).toContainText('Reachable');
   await page.goto('/dashboard/missing');
   await expect(page.getByRole('heading', { name: 'Page not found', exact: true })).toBeVisible();
   await page.getByRole('link', { name: 'Back to overview', exact: true }).click();
@@ -35,8 +35,8 @@ test('daemon status runs the installation checks', async ({ page, account }) => 
   void account;
   await page.goto('/dashboard/system');
   await expect(page.getByRole('heading', { name: 'Installation checks', exact: true })).toBeVisible();
-  const backups = page.locator('.status-card', { hasText: 'Backups' });
+  const backups = page.locator('.status-row', { hasText: 'Backups' });
   await expect(backups).toContainText('Skipped');
   await expect(backups).toContainText('Next step: Back up the data directory');
-  await expect(page.locator('.status-card', { hasText: 'Public URL' })).toContainText('Warning');
+  await expect(page.locator('.status-row', { hasText: 'Public URL' })).toContainText('Warning');
 });

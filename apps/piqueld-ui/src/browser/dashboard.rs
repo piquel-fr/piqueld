@@ -1,7 +1,7 @@
 //! Sidebar navigation, overview metrics, application directory, and recent deployments.
 use super::format::timestamp;
 use super::ui::{
-    Icon, PageHeader, Tone, badge, empty, health_badge, icon, loading, metric, notice,
+    Icon, PageHeader, Tone, badge, empty, health_badge, icon, key_values, loading, metric, notice,
     operation_badge, when,
 };
 use super::{ApplicationRow, ClientErrorExt, access::can, dashboard_context, management};
@@ -20,7 +20,6 @@ use piqueld_client::{
         ReadinessStatus, TelemetryStatus,
     },
 };
-use std::fmt::Write as _;
 
 impl PreviewLoad {
     /// Tone of the previews card.
@@ -230,10 +229,12 @@ pub(super) fn OverviewPage() -> impl IntoView {
     }
 }
 
-/// Daemon connectivity and dependency readiness cards (database, Docker, Swarm,
-/// ingress), with a button that triggers a manual dashboard refresh and, when
-/// DNS providers are configured and the caller holds `system:operate`, one
-/// that checks their credentials now.
+/// Daemon connectivity and dependency readiness, one row each: the daemon,
+/// its database, Docker and Swarm, ingress, DNS providers, certificates,
+/// previews, built images and telemetry export, with a button that triggers
+/// a manual dashboard refresh and, when DNS providers are configured and the
+/// caller holds `system:operate`, one that checks their credentials now.
+/// Each row says its state in a line; the rest opens on demand.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn ReadinessPanel() -> impl IntoView {
@@ -262,11 +263,11 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
     };
 
     view! {
-        <section class="card" aria-labelledby="system-readiness-heading">
+        <section class="card card-flush" aria-labelledby="system-readiness-heading">
             <header>
                 <div>
                     <h3 id="system-readiness-heading">"System status"</h3>
-                    <p>"Daemon connectivity and the services required to deploy applications."</p>
+                    <p>"The daemon and what it needs to deploy and serve applications."</p>
                 </div>
                 <div class="btn-group">
                     {move || {
@@ -309,7 +310,7 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                     </button>
                 </div>
             </header>
-            <div class="stack-sm" aria-live="polite">
+            <div aria-live="polite">
                 {move || {
                     signals
                         .readiness_error
@@ -324,48 +325,89 @@ pub(super) fn ReadinessPanel() -> impl IntoView {
                             format!("DNS provider check failed: {error}"),
                         ))
                 }}
-                <div class="status-grid">
-                    {move || connection_card(signals.connection.get())}
+                <ul class="status-list">
+                    {move || connection_row(signals.connection.get())}
                     {move || {
                         signals
                             .system
                             .get()
                             .filter(|system| system.tailscale.enabled)
                             .map(|system| {
-                                health_card(
+                                health_row(
                                     "Tailnet node",
                                     system.tailscale.healthy,
-                                    &system.tailscale.message,
+                                    system.tailscale.message,
                                 )
                             })
-                    }}
-                    {move || {
-                        signals.system.get().map(|system| preview_card(system.previews.as_ref()))
-                    }} {move || signals.system.get().map(|system| images_card(&system.images))}
-                    {move || signals.system.get().map(|system| telemetry_cards(&system.telemetry))}
+                    }} {move || signals.readiness.get().map(|status| readiness_rows(&status))}
                     {move || {
                         signals
                             .system
                             .get()
                             .map(|system| {
-                                system
-                                    .dns
-                                    .providers
-                                    .iter()
-                                    .map(dns_provider_card)
-                                    .chain(system.dns.certificates.iter().map(certificate_card))
-                                    .collect_view()
+                                system.dns.providers.iter().map(dns_provider_row).collect_view()
                             })
-                    }} {move || signals.readiness.get().map(|status| readiness_cards(&status))}
-                </div>
+                    }}
+                    {move || {
+                        signals
+                            .system
+                            .get()
+                            .and_then(|system| certificates_row(&system.dns.certificates))
+                    }}
+                    {move || {
+                        signals.system.get().map(|system| preview_row(system.previews.as_ref()))
+                    }} {move || signals.system.get().map(|system| images_row(&system.images))}
+                    {move || signals.system.get().map(|system| telemetry_rows(&system.telemetry))}
+                </ul>
             </div>
         </section>
     }
 }
 
-/// Cards for the daemon's dependencies and its ingress: the HTTPS gateway,
+/// One component's row: its `name`, a `tone`d `label`, and a `summary` of
+/// a line. With `details`, the row opens to show them.
+fn status_row(
+    name: impl Into<String>,
+    tone: Tone,
+    label: impl Into<String>,
+    summary: impl Into<String>,
+    details: Option<AnyView>,
+) -> AnyView {
+    let (name, summary) = (name.into(), summary.into());
+    let head = view! {
+        <strong>{name}</strong>
+        {badge(tone, label)}
+        <span class="status-summary">{summary}</span>
+    };
+    match details {
+        Some(details) => view! {
+            <li>
+                <details class="status-more">
+                    <summary>
+                        <span class="status-row" data-tone={tone.attr()}>
+                            {head}
+                            <span class="chevron" aria-hidden="true">
+                                {icon(Icon::ChevronRight)}
+                            </span>
+                        </span>
+                    </summary>
+                    <div class="status-details">{details}</div>
+                </details>
+            </li>
+        }
+        .into_any(),
+        None => view! {
+            <li class="status-row" data-tone={tone.attr()}>
+                {head}
+            </li>
+        }
+        .into_any(),
+    }
+}
+
+/// Rows for the daemon's dependencies and its ingress: the HTTPS gateway,
 /// its Cloudflare Tunnel in tunnel mode, and its private listener.
-fn readiness_cards(status: &ReadinessStatus) -> AnyView {
+fn readiness_rows(status: &ReadinessStatus) -> AnyView {
     let ingress = &status.ingress;
     let (tone, label) = if !ingress.healthy {
         (Tone::Bad, "Unhealthy")
@@ -375,7 +417,7 @@ fn readiness_cards(status: &ReadinessStatus) -> AnyView {
         (Tone::Ok, "Ready")
     };
     // In tunnel mode, public routes' CNAME records point at the tunnel ID.
-    let tunnel_card = match &ingress.public {
+    let tunnel_row = match &ingress.public {
         PublicIngressStatus::Tunnel {
             id,
             connected,
@@ -386,11 +428,12 @@ fn readiness_cards(status: &ReadinessStatus) -> AnyView {
             } else {
                 (Tone::Bad, "Disconnected")
             };
-            Some(status_card(
+            Some(status_row(
                 "Cloudflare Tunnel",
                 tone,
                 label,
-                &format!("Tunnel {id}. {message}"),
+                format!("Tunnel {id}. {message}"),
+                None,
             ))
         }
         _ => None,
@@ -398,42 +441,41 @@ fn readiness_cards(status: &ReadinessStatus) -> AnyView {
     // The apps node's name and addresses are what private routes' DNS
     // records point at.
     let private = &ingress.private;
-    let private_card = (ingress.enabled && private.enabled).then(|| {
+    let private_row = (ingress.enabled && private.enabled).then(|| {
         let node = match (&private.dns_name, private.addresses.is_empty()) {
             (Some(name), false) => format!("{name} ({}). ", private.addresses.join(", ")),
             _ => String::new(),
         };
-        health_card(
+        health_row(
             "Private listener",
             private.healthy,
-            &format!("{node}{}", private.message),
+            format!("{node}{}", private.message),
         )
     });
     view! {
-        {dependency_card("Database", &status.database)}
-        {dependency_card("Docker Engine", &status.docker)}
-        {dependency_card("Swarm manager", &status.swarm)}
-        {status_card("HTTPS ingress", tone, label, &ingress.message)}
-        {tunnel_card}
-        {private_card}
+        {dependency_row("Database", &status.database)}
+        {dependency_row("Docker Engine", &status.docker)}
+        {dependency_row("Swarm manager", &status.swarm)}
+        {status_row("HTTPS ingress", tone, label, ingress.message.clone(), None)}
+        {tunnel_row}
+        {private_row}
     }
     .into_any()
 }
 
-/// Card for one DNS provider: its kind, discovered zones, health and whether
+/// Row for one DNS provider: its kind, discovered zones, health and whether
 /// it manages route records.
-fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
+fn dns_provider_row(provider: &DnsProviderStatus) -> AnyView {
     let zones = if provider.zones.is_empty() {
         "no zones".to_owned()
     } else {
         provider.zones.join(", ")
     };
-    health_card(
-        "DNS provider",
+    health_row(
+        format!("DNS provider ({})", provider.kind),
         provider.healthy,
-        &format!(
-            "{}: {zones}. {}. {}",
-            provider.kind,
+        format!(
+            "{zones}. {}. {}",
             provider.message,
             if provider.manage_records {
                 "Manages route DNS records"
@@ -444,205 +486,267 @@ fn dns_provider_card(provider: &DnsProviderStatus) -> AnyView {
     )
 }
 
-/// Card for previews against their `[previews]` limits: the installation's
-/// count, each readable application's, and the limits of their replicas. A
-/// count at its limit refuses new previews; one over it, after the limit was
-/// lowered, keeps its existing previews running.
-fn preview_card(usage: Option<&PreviewUsage>) -> AnyView {
+/// One row for every DNS-01 certificate, toned by the worst of them, counting
+/// how many are issued, pending, or failing; each one's name, hostnames,
+/// expiry and last error open on demand. Nothing without certificates.
+fn certificates_row(certificates: &[CertificateStatus]) -> Option<AnyView> {
+    if certificates.is_empty() {
+        return None;
+    }
+    let state =
+        |certificate: &CertificateStatus| match (&certificate.error, certificate.expires_at_ms) {
+            (Some(_), None) => (Tone::Bad, "failed"),
+            (Some(_), Some(_)) => (Tone::Warn, "renewal failing"),
+            (None, Some(_)) => (Tone::Ok, "issued"),
+            (None, None) => (Tone::Pending, "pending"),
+        };
+    let count = |label: &str| {
+        certificates
+            .iter()
+            .filter(|certificate| state(certificate).1 == label)
+            .count()
+    };
+    let counts = ["issued", "pending", "renewal failing", "failed"]
+        .into_iter()
+        .filter_map(|label| {
+            let count = count(label);
+            (count > 0).then(|| format!("{count} {label}"))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let worst = certificates
+        .iter()
+        .map(|certificate| state(certificate).0)
+        .max_by_key(|tone| match tone {
+            Tone::Bad => 3,
+            Tone::Warn => 2,
+            Tone::Pending => 1,
+            _ => 0,
+        })
+        .unwrap_or(Tone::Ok);
+    let label = match worst {
+        Tone::Bad => "Failing",
+        Tone::Warn => "Renewal failing",
+        Tone::Pending => "Pending",
+        _ => "Issued",
+    };
+    let rows = certificates
+        .iter()
+        .map(|certificate| {
+            let (tone, label) = state(certificate);
+            let hostnames = certificate.hostnames.join("\n");
+            let expiry = certificate.expires_at_ms.map_or_else(
+                || "not issued yet".to_owned(),
+                |at| format!("expires {}", timestamp(at)),
+            );
+            view! {
+                <tr>
+                    <td>
+                        <strong>{certificate.name.clone()}</strong>
+                    </td>
+                    <td>{badge(tone, label)}</td>
+                    <td class="muted" title={hostnames}>
+                        {match certificate.hostnames.len() {
+                            0 => "no routes".to_owned(),
+                            1 => certificate.hostnames[0].clone(),
+                            count => format!("{count} hostnames"),
+                        }}
+                    </td>
+                    <td class="muted">{expiry}</td>
+                    <td class="muted">{certificate.error.clone()}</td>
+                </tr>
+            }
+        })
+        .collect_view();
+    let details = view! {
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>"Certificate"</th>
+                    <th>"State"</th>
+                    <th>"Routes"</th>
+                    <th>"Expiry"</th>
+                    <th>"Last error"</th>
+                </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+        </table>
+    }
+    .into_any();
+    Some(status_row(
+        format!(
+            "{} certificate{}",
+            certificates.len(),
+            if certificates.len() == 1 { "" } else { "s" }
+        ),
+        worst,
+        label,
+        counts,
+        Some(details),
+    ))
+}
+
+/// Row for previews against their `[previews]` limits: the installation's
+/// count in a line, and on demand each readable application's and the limits
+/// of their replicas. A count at its limit refuses new previews; one over it,
+/// after the limit was lowered, keeps its existing previews running.
+fn preview_row(usage: Option<&PreviewUsage>) -> AnyView {
     let Some(usage) = usage else {
-        return status_card(
+        return status_row(
             "Previews",
             Tone::Neutral,
             "Unavailable",
             "The daemon could not count previews.",
+            None,
         );
     };
     let limits = &usage.limits;
     let load = PreviewLoad::of(usage);
-    let applications = usage
-        .applications
-        .iter()
-        .fold(String::new(), |mut text, application| {
-            let _ = write!(
-                text,
-                " {}: {} of {}.",
-                application.name, application.previews, limits.max_per_application
-            );
-            text
-        });
-    let unlimited = if usage.unlimited_replicas > 0 {
+    let applications = usage.applications.iter().map(|application| {
+        (
+            application.name.clone(),
+            format!("{} of {}", application.previews, limits.max_per_application),
+        )
+    });
+    let unlimited = (usage.unlimited_replicas > 0).then(|| {
         format!(
-            " {} replicas deployed before the limits applied run without them until redeployed.",
+            "{} replicas deployed before the limits applied run without them until redeployed.",
             usage.unlimited_replicas
         )
-    } else {
-        String::new()
-    };
-    status_card(
+    });
+    let details = view! {
+        {key_values(applications)}
+        <p class="hint">
+            {format!(
+                "Their replicas are limited to {} millicores and {} in total. Services without limits get {} millicores and {}, and replicas are capped at {}.",
+                usage.cpu_millis,
+                Bytes(usage.memory_bytes),
+                limits.default_cpu_millis,
+                Bytes(limits.default_memory_bytes),
+                limits.max_replicas,
+            )} {unlimited.map(|text| format!(" {text}"))}
+        </p>
+    }
+    .into_any();
+    status_row(
         "Previews",
         load.tone(),
         load.label(),
-        &format!(
-            "{} of {} previews.{applications} Their replicas are limited to {} millicores and {} in total.{unlimited} Services without limits get {} millicores and {}, and replicas are capped at {}.",
-            usage.total,
-            limits.max_total,
-            usage.cpu_millis,
-            Bytes(usage.memory_bytes),
-            limits.default_cpu_millis,
-            Bytes(limits.default_memory_bytes),
-            limits.max_replicas,
-        ),
+        format!("{} of {} previews", usage.total, limits.max_total),
+        Some(details),
     )
 }
 
-/// Card for the images this installation built: how many cleanup kept, and
+/// Row for the images this installation built: how many cleanup kept, and
 /// what it removed since the daemon started.
-fn images_card(images: &ImageStatus) -> AnyView {
+fn images_row(images: &ImageStatus) -> AnyView {
     match images.cleaned_at_ms {
-        Some(at) => status_card(
+        Some(at) => status_row(
             "Built images",
             Tone::Ok,
             "Cleaned up",
-            &format!(
-                "{} kept. Cleanup removed {} of images since the daemon started, last {}.",
+            format!(
+                "{} kept. Cleanup removed {} since the daemon started, last {}.",
                 images.images,
                 Bytes(images.reclaimed_bytes),
                 timestamp(at)
             ),
+            None,
         ),
-        None => status_card(
+        None => status_row(
             "Built images",
             Tone::Pending,
             "Not cleaned up",
             "Cleanup hasn't run since the daemon started.",
+            None,
         ),
     }
 }
 
-/// Cards for telemetry export: one per collector, the configured endpoint
-/// and each granted environment's receiving service, with its endpoint,
-/// last export and dropped records, or one saying export is off. Headers
-/// appear only as the file they were read from.
-fn telemetry_cards(telemetry: &TelemetryStatus) -> AnyView {
+/// Rows for telemetry export: one per collector, with the receiving service
+/// and last export in a line and the endpoint, dropped records and exported
+/// signals on demand, or one saying export is off. Headers appear only as
+/// the file they were read from.
+fn telemetry_rows(telemetry: &TelemetryStatus) -> AnyView {
     if telemetry.destinations.is_empty() {
-        return status_card(
+        return status_row(
             "Telemetry export",
             Tone::Neutral,
             "Off",
             "Set an endpoint under [telemetry] in the daemon configuration, or grant an environment with a receiving service telemetry, to export traces, metrics and logs over OTLP.",
+            None,
         );
     }
     telemetry
         .destinations
         .iter()
         .map(|destination| {
-            let receiver = destination
-                .receiver
-                .as_ref()
-                .map(
-                    |receiver| match (&receiver.application, &receiver.environment) {
-                        (Some(application), Some(environment)) => {
-                            format!("Received by {application} {environment} at ")
-                        }
-                        _ => format!("Received by {} at ", receiver.environment_id),
-                    },
-                )
-                .unwrap_or_default();
-            let last = destination.last_success_ms.map_or_else(
-                || "Nothing exported yet.".to_owned(),
-                |at| format!("Last export {}.", super::format::relative(at)),
+            let receiver = destination.receiver.as_ref().map_or_else(
+                || "the configured collector".to_owned(),
+                |receiver| match (&receiver.application, &receiver.environment) {
+                    (Some(application), Some(environment)) => {
+                        format!("{application} {environment}")
+                    }
+                    _ => receiver.environment_id.to_string(),
+                },
             );
-            let headers = destination
-                .headers
-                .as_ref()
-                .map(|headers| format!(" Headers {headers}."))
-                .unwrap_or_default();
-            status_card(
+            let last = destination.last_success_ms.map_or_else(
+                || "nothing exported yet".to_owned(),
+                |at| format!("last export {}", super::format::relative(at)),
+            );
+            let details = key_values([
+                ("Endpoint", destination.endpoint.clone()),
+                (
+                    "Dropped records",
+                    format!("{} since the daemon started", destination.dropped),
+                ),
+                (
+                    "Headers",
+                    destination.headers.clone().unwrap_or_else(|| "none".into()),
+                ),
+                ("Exports", telemetry.exported().to_owned()),
+            ])
+            .into_any();
+            status_row(
                 "Telemetry export",
                 super::ui::telemetry_tone(destination),
                 destination.state(),
-                &format!(
-                    "{receiver}{}. {last} {} records dropped since the daemon started.{headers} Exports {}.",
-                    destination.endpoint,
-                    destination.dropped,
-                    telemetry.exported()
-                ),
+                format!("To {receiver}, {last}."),
+                Some(details),
             )
         })
         .collect_view()
         .into_any()
 }
 
-/// Card for one DNS-01 certificate: its name, hostnames, expiry and last error.
-fn certificate_card(certificate: &CertificateStatus) -> AnyView {
-    let (tone, label) = match (&certificate.error, certificate.expires_at_ms) {
-        (Some(_), None) => (Tone::Bad, "Failed"),
-        (Some(_), Some(_)) => (Tone::Warn, "Renewal failing"),
-        (None, Some(_)) => (Tone::Ok, "Issued"),
-        (None, None) => (Tone::Pending, "Pending"),
-    };
-    let hostnames = if certificate.hostnames.is_empty() {
-        "no routes".to_owned()
-    } else {
-        certificate.hostnames.join(", ")
-    };
-    let expiry = certificate.expires_at_ms.map_or_else(
-        || "not issued yet".to_owned(),
-        |at| format!("expires {}", timestamp(at)),
-    );
-    let error = certificate
-        .error
-        .as_ref()
-        .map(|error| format!(" Last error: {error}"))
-        .unwrap_or_default();
-    status_card(
-        "Certificate",
-        tone,
-        label,
-        &format!("{} for {hostnames}, {expiry}.{error}", certificate.name),
-    )
-}
-
-/// Readiness card for the browser's connection to the daemon itself.
-fn connection_card(state: ConnectionState) -> AnyView {
+/// Row for the browser's connection to the daemon itself.
+fn connection_row(state: ConnectionState) -> AnyView {
     let message = match state {
         ConnectionState::Loading => "Waiting for the daemon",
         ConnectionState::Reachable => "The API is responding",
         ConnectionState::Failed => "The daemon returned an error",
         ConnectionState::Unreachable => "The dashboard cannot connect to piqueld",
     };
-    status_card("piqueld daemon", state.tone(), state.label(), message)
+    status_row("piqueld daemon", state.tone(), state.label(), message, None)
 }
 
-/// Readiness card for one daemon dependency.
-fn dependency_card(name: &'static str, status: &DependencyStatus) -> AnyView {
+/// Row for one daemon dependency.
+fn dependency_row(name: &'static str, status: &DependencyStatus) -> AnyView {
     match status {
-        DependencyStatus::Ready => status_card(name, Tone::Ok, "Ready", "Available"),
-        DependencyStatus::Failed { message } => status_card(name, Tone::Bad, "Failed", message),
+        DependencyStatus::Ready => status_row(name, Tone::Ok, "Ready", "Available", None),
+        DependencyStatus::Failed { message } => {
+            status_row(name, Tone::Bad, "Failed", message.clone(), None)
+        }
     }
 }
 
-/// Card for a component that is either ready or unhealthy.
-fn health_card(name: &'static str, healthy: bool, message: &str) -> AnyView {
+/// Row for a component that is either ready or unhealthy.
+fn health_row(name: impl Into<String>, healthy: bool, message: impl Into<String>) -> AnyView {
     if healthy {
-        status_card(name, Tone::Ok, "Ready", message)
+        status_row(name, Tone::Ok, "Ready", message, None)
     } else {
-        status_card(name, Tone::Bad, "Unhealthy", message)
+        status_row(name, Tone::Bad, "Unhealthy", message, None)
     }
-}
-
-/// Card with a `tone`d status `label` and a `message` explaining it.
-fn status_card(name: &'static str, tone: Tone, label: &'static str, message: &str) -> AnyView {
-    view! {
-        <article class="status-card" data-tone={tone.attr()}>
-            <header>
-                <strong>{name}</strong>
-                {badge(tone, label)}
-            </header>
-            <p>{message.to_owned()}</p>
-        </article>
-    }
-    .into_any()
 }
 
 /// Application directory linking to each application's detail page, with

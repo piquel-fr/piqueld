@@ -220,11 +220,12 @@ Each environment's Overview sets its visibility ceiling, and its **Rollback**
 card chooses what happens when a rollout fails: **Automatic** restores the last
 successful deployment, **Manual** leaves the environment degraded, and
 **Default** is automatic for promoted environments and manual for the others
-(see [rollback](reference/manifest.md#rollback)). System status shows a
-Previews card with the previews against their limits, installation-wide and for
-each readable application, flagged at or over a limit, and the CPU and memory
-limits of their deployed replicas. It also shows which DNS providers manage
-route records and the state of their certificates, the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
+(see [rollback](reference/manifest.md#rollback)). System status is one row
+per component, each with its state and a line about it; rows with more to say
+open on demand. The Previews row counts the previews against their limit,
+installation-wide, and opens to each readable application's count and the CPU
+and memory limits of their deployed replicas. It also shows which DNS providers manage
+route records and, on one row, the state of their certificates, the Cloudflare Tunnel's ID and connection state in tunnel mode, and the private listener
 with the apps tailnet node's name and addresses. With `system:operate`,
 **Check DNS providers** checks their credentials now. Saving routes updates only the route field;
 Deploy activates the change. Services lists saved services, with their observed

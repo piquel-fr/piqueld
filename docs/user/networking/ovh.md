@@ -93,7 +93,7 @@ doesn't expire, or replace the keys before they do.
 ## Check that it works
 
 Ask piqueld to list your zones now. In the dashboard, select **Check DNS
-providers** in **System status**: the **DNS provider** card shows the result.
+providers** in **System status**: the **DNS provider** row shows the result.
 On the host, with `piquelctl`:
 
 ```console
