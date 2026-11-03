@@ -59,6 +59,15 @@ impl Page {
         }
     }
 
+    /// The accessible name of the page's tab list.
+    #[must_use]
+    pub const fn tabs_label(&self) -> &'static str {
+        match self {
+            Self::Environment(_) | Self::Preview(_) => "Environment sections",
+            Self::Application | Self::Service(_) => "Application sections",
+        }
+    }
+
     /// The initial tab, reading query parameters with `query`: `?deployment=`
     /// opens deployments, `?release=` releases, and `?tab=` names a tab in
     /// lowercase. Tabs the page lacks open the overview.

@@ -21,7 +21,7 @@ test('getting started', async ({ page, daemon, passkeys }) => {
   await dialog.getByRole('button', { name: 'Add service', exact: true }).click();
   await expect(dialog).toBeHidden();
   await page.locator('a.list-row', { hasText: 'web' }).click();
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Health check', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Health check', exact: true }).click();
   await page.getByRole('combobox', { name: 'Check type', exact: true }).selectOption({ label: 'HTTP' });
   await page.getByLabel('Port', { exact: true }).fill('80');
   await page.getByLabel('Path', { exact: true }).fill('/');

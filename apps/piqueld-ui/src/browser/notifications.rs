@@ -155,7 +155,7 @@ fn Destinations(refresh: Refresh) -> impl IntoView {
                 </td>
                 <td class="actions">
                     <Show when={move || manage.get()}>
-                        <span class="btn-group" style="justify-content:flex-end">
+                        <span class="btn-group btn-group-end">
                             <button
                                 type="button"
                                 class="btn btn-sm"
@@ -524,7 +524,7 @@ fn Deliveries(refresh: Refresh, cursor: RwSignal<Option<String>>) -> impl IntoVi
                                         .into_any()
                                 }}
                             </div>
-                            {older_page(cursor, page.next_cursor, "Older deliveries", None)}
+                            {older_page(cursor, page.next_cursor, "Older deliveries")}
                         }
                             .into_any()
                     },

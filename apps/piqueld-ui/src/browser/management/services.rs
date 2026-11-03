@@ -1,8 +1,9 @@
 //! Service directory and individual service configuration pages.
 use super::super::confirm;
-use super::super::ui::{Icon, Tabs, Tone, empty, health_badge, icon, notice};
+use super::super::ui::{Icon, TabSet, Tone, empty, health_badge, icon, notice};
 use super::{
-    Draft, EditorFeedback, back_link, editor, logs::ApplicationLogs, settings::ServiceGroup,
+    Draft, EditorFeedback, back_link, editor, logs::ApplicationLogs, navigation::remember_tab,
+    settings::ServiceGroup,
 };
 use crate::editor::Section;
 use crate::state::ApplicationHealth;
@@ -155,16 +156,25 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             move |_| navigate(&href, NavigateOptions::default()),
         );
     };
-    let selected = RwSignal::new(Section::General.title());
+    // The tab the address names, else the first.
+    let requested = leptos_router::hooks::use_query_map().with_untracked(|query| query.get("tab"));
+    let selected = RwSignal::new(
+        SERVICE_TABS
+            .iter()
+            .copied()
+            .find(|tab| requested.as_deref() == Some(tab.to_lowercase().as_str()))
+            .unwrap_or(Section::General.title()),
+    );
+    let tabs = TabSet::new("Service sections", selected);
+    remember_tab(selected);
     let log_service = name.clone();
     let groups = Section::ALL
         .into_iter()
         .map(|section| {
-            view! {
-                <div hidden={move || selected.get() != section.title()}>
-                    <ServiceGroup name={name.clone()} section={section} />
-                </div>
-            }
+            tabs.panel(
+                section.title(),
+                view! { <ServiceGroup name={name.clone()} section={section} /> },
+            )
         })
         .collect_view();
     view! {
@@ -192,18 +202,18 @@ pub(super) fn ServiceEditor(name: String) -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <Tabs
-            label="Service sections"
-            options={&SERVICE_TABS}
-            selected={selected}
-            hidden={Callback::new(move |tab| context.tab_hidden(tab))}
-        />
+        {tabs.bar(&SERVICE_TABS, Some(Callback::new(move |tab| context.tab_hidden(tab))))}
         <div class="stack">
-            {move || {
-                if selected.get() == "Logs" { None } else { context.read_only_notice() }
-            }} <Show when={move || selected.get() == "Logs"}>
-                <ServiceLogs name={log_service.clone()} />
-            </Show> {groups}
+            {move || { if selected.get() == "Logs" { None } else { context.read_only_notice() } }}
+            {tabs
+                .panel(
+                    "Logs",
+                    view! {
+                        <Show when={move || selected.get() == "Logs"}>
+                            <ServiceLogs name={log_service.clone()} />
+                        </Show>
+                    },
+                )} {groups}
         </div>
     }
     .into_any()

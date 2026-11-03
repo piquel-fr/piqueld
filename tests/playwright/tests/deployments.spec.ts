@@ -74,7 +74,7 @@ test('a linked deployment opens with its attempts, the running one first, and ol
   await page.goto(`/dashboard/applications/${app}/environments/${app}?tab=deployments&deployment=${id}`);
   const card = page.locator('.expander', { hasText: 'Deployment #' });
   await expect(card.getByText('Operation ID', { exact: true })).toBeVisible();
-  await card.getByRole('button', { name: 'Attempts', exact: true }).click();
+  await card.getByRole('tab', { name: 'Attempts', exact: true }).click();
   const rows = card.locator('tbody tr');
   await expect(rows.locator('td.num')).toHaveText(['3', '2']);
   await expect(rows.nth(1)).toContainText('image_pull_failed: pull access denied');

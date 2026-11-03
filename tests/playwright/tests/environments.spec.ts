@@ -51,7 +51,7 @@ test('the application page stays whole and each environment has its own page', a
   await environments.getByRole('button', { name: 'Deploy to staging', exact: true }).click();
   await deploy;
   await expect(page).toHaveURL(url => url.pathname.endsWith(`/environments/${sibling}`) && url.searchParams.get('tab') === 'deployments');
-  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-current', 'page');
+  await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
   await expect(title(page)).toHaveText('staging');
   await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeVisible();
 
@@ -59,7 +59,7 @@ test('the application page stays whole and each environment has its own page', a
   await expect(title(page)).toHaveText('staging');
   await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'environments', exact: true }).click();
   await expect(page).toHaveURL(url => url.pathname.endsWith(`/applications/${app}`));
-  await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-current', 'page');
+  await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-selected', 'true');
 });
 
 test('the dashboard creates, renames and deletes only the chosen environment', async ({ page, account }) => {
@@ -92,7 +92,7 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().includes(`/environments/${qa}?`));
   await remove.click();
   expect((await deleted).status()).toBe(202);
-  await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-current', 'page');
+  await expect(applicationTab(page, 'Environments')).toHaveAttribute('aria-selected', 'true');
   const row = page.getByRole('listitem').filter({ hasText: 'preview' });
   await expect(row).toContainText('Deleting');
   await expect(row.getByRole('button', { name: 'Deploy to preview', exact: true })).toBeDisabled();
@@ -168,7 +168,7 @@ test('a service Logs tab offers each environment once the application has severa
   const app = saved.application_id as string;
   await page.clock.install();
   await page.goto(`/dashboard/applications/${app}/services/web`);
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Logs', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Logs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Service logs' })).toBeVisible();
 
   await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', expected_generation: saved.generation });
@@ -184,7 +184,7 @@ test('a service receives telemetry once its environment is granted it', async ({
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('collector'), expected_generation: 0 });
   const app = saved.application_id as string;
   await page.goto(`/dashboard/applications/${app}/services/web`);
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: 'Telemetry', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Telemetry', exact: true }).click();
   await page.getByLabel('Receive telemetry', { exact: true }).check();
   await page.getByRole('button', { name: 'Save changes', exact: true }).locator('visible=true').click();
   await expect(page.getByText('Saved.', { exact: true })).toBeVisible();

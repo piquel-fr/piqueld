@@ -360,7 +360,7 @@ export async function service(page: Page, app: string, name: string, tab: string
   await application(page, app, 'Services');
   await page.locator('a.list-row', { hasText: name }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(name);
-  await page.getByRole('navigation', { name: 'Service sections' }).getByRole('button', { name: tab, exact: true }).click();
+  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: tab, exact: true }).click();
 }
 
 /** Environment `name` of application `app`, reached as a reader would, once

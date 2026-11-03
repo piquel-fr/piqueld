@@ -2,7 +2,8 @@
 //! translates `WebAuthn` binary fields; all network/state handling stays in Rust.
 use super::access::{GrantEditor, can, summary};
 use super::ui::{
-    Icon, Modal, PageHeader, Tone, badge, empty, icon, notice, one_time_secret, text_field, when,
+    Icon, Modal, PageHeader, Tone, badge, empty, icon, loading, notice, one_time_secret,
+    text_field, when,
 };
 use super::{ClientErrorExt, confirm, reload};
 use crate::auth::{DeviceRequestLabels, Invite, SignInPage, TokenForm};
@@ -383,10 +384,12 @@ pub(super) fn Gate() -> impl IntoView {
         })
     });
     view! {
-        <div inert={move || state.expired.get().then_some("")}>
+        <div inert={move || {
+            state.expired.get().then_some("")
+        }}>
             {move || {
-                // Read, not only tracked: an unread memo never subscribes to `current`.
                 identity.with(|_| ());
+                // Read, not only tracked: an unread memo never subscribes to `current`.
                 view! { <super::App /> }
             }}
         </div>
@@ -785,7 +788,11 @@ fn DeviceApproval(who: String, code: String) -> impl IntoView {
                             </label>
                         </div>
                         <div class="form-actions">
-                            <button type="button" class="btn btn-primary" on:click={move |_| review()}>
+                            <button
+                                type="button"
+                                class="btn btn-primary"
+                                on:click={move |_| review()}
+                            >
                                 "Review request"
                             </button>
                         </div>
@@ -812,7 +819,7 @@ fn DeviceApproval(who: String, code: String) -> impl IntoView {
                                     )}
                             </dd>
                         </dl>
-                        <p class="hint" style="margin-top:12px">
+                        <p class="hint mt-sm">
                             "piquelctl printed this code and the address it connected from. Approve only if both match this request."
                         </p>
                         <div class="form-actions">
@@ -915,7 +922,7 @@ pub(super) fn AccountsPage() -> impl IntoView {
                                 feedback
                                     .error
                                     .with(String::is_empty)
-                                    .then(|| empty("Loading accounts…"))
+                                    .then(|| loading("Loading accounts…"))
                                     .into_any()
                             },
                             |data| {
@@ -1511,7 +1518,7 @@ fn NewToken(grants: Grants, feedback: Feedback) -> impl IntoView {
             "Tokens act with these grants, limited by this account's access, and cannot create credentials."
         </p>
         <GrantEditor initial={initial} value={token_grants} limit={grants} />
-        <div class="form-row" style="margin-top:14px">
+        <div class="form-row mt-md">
             {text_field("New token name", token_name)}
             <label class="field">
                 <span>"Expires in days (blank: never)"</span>

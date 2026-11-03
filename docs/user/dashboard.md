@@ -26,7 +26,8 @@ deliveries. With `notifications:manage` it adds, edits, tests and deletes
 destinations: their kind, URL (write-only), categories with an optional message
 each, applications and previews.
 Its footer shows daemon connectivity and the signed-in account with a sign-out
-button. The home page and Applications show the five most recent deployments
+button. On a narrow screen, such as a phone, the sidebar is a bar at the top
+whose **Menu** button opens the navigation and the footer. The home page and Applications show the five most recent deployments
 across applications; each row opens that deployment in its environment's history.
 Daemon status also runs the [installation checks](reference/cli.md#installation-checks)
 when it opens and on demand, showing each with its next step.
@@ -182,7 +183,8 @@ names the environment already reserving it.
 
 Applications have one main tab row: Overview (the default), Environments,
 Previews, Services, Source, Variables, Routes, Volumes, Jobs, Links, Secrets, Releases, Builds,
-and Events. The Releases tab lists the application's immutable releases, newest
+and Events. Every page keeps its shown tab in its address, as `?tab=events`
+for example, so reloading the page or sharing its link opens the same tab. The Releases tab lists the application's immutable releases, newest
 first: each successful preparation of an environment's deployment (never a preview's) records one,
 environments that prepared the same content share it, and deleting an environment keeps
 them. Expanding a release shows the commit its manifest was read from, its

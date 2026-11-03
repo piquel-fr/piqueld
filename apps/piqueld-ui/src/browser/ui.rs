@@ -34,6 +34,7 @@ pub(super) enum Icon {
     Copy,
     GitBranch,
     Restore,
+    Menu,
 }
 
 impl Icon {
@@ -105,6 +106,7 @@ impl Icon {
             Self::Restore => {
                 r#"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>"#
             }
+            Self::Menu => r#"<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>"#,
         }
     }
 }
@@ -444,15 +446,27 @@ pub(super) fn empty(message: impl Into<String>) -> AnyView {
     view! { <p class="empty">{message.into()}</p> }.into_any()
 }
 
-/// A loaded resource: `loading` until it loads, then its failure or `show`
+/// Placeholder for a list or section whose content is still being read,
+/// announced politely to assistive technology.
+pub(super) fn loading(message: impl Into<String>) -> AnyView {
+    view! {
+        <p class="empty loading" role="status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            {message.into()}
+        </p>
+    }
+    .into_any()
+}
+
+/// A loaded resource: `pending` until it loads, then its failure or `show`
 /// of its value.
 pub(super) fn loaded<T: Clone + Send + Sync + 'static>(
     data: LocalResource<Result<T, String>>,
-    loading: &'static str,
+    pending: &'static str,
     show: impl Fn(T) -> AnyView + Send + Sync + 'static,
 ) -> impl Fn() -> AnyView + Send + Sync + 'static {
     move || match data.get() {
-        None => empty(loading),
+        None => loading(pending),
         Some(Err(error)) => notice(Tone::Bad, error),
         Some(Ok(value)) => show(value),
     }
@@ -527,7 +541,9 @@ pub(super) fn text_field(label: &'static str, value: RwSignal<String>) -> AnyVie
     text_input(label, value, String::clone, |value, input| *value = input)
 }
 
-/// Native dialogs provide focus containment, Escape handling, and focus restoration.
+/// Native dialogs provide focus containment, Escape handling, and focus
+/// restoration. Opening focuses the first field, or without one the first
+/// button of the body.
 #[component]
 pub(super) fn Modal(
     title: &'static str,
@@ -538,16 +554,19 @@ pub(super) fn Modal(
     children: Children,
 ) -> impl IntoView {
     let dialog = NodeRef::<leptos::html::Dialog>::new();
+    let heading = format!("dialog-{}", slug(title));
+    let labelled_by = heading.clone();
     Effect::new(move |_| {
         if let Some(dialog) = dialog.get() {
             if opened.get() {
                 if let Err(error) = dialog.show_modal() {
                     leptos::logging::error!("Could not open dialog: {error:?}");
                 }
-                if let Ok(Some(input)) = dialog.query_selector("input")
-                    && let Some(input) = input.dyn_ref::<web_sys::HtmlElement>()
+                if let Ok(Some(field)) = dialog.query_selector(
+                    ".modal-body input:not([type=checkbox]), .modal-body select, .modal-body textarea, .modal-body button",
+                ) && let Some(field) = field.dyn_ref::<web_sys::HtmlElement>()
                 {
-                    let _ = input.focus();
+                    let _ = field.focus();
                 }
             } else {
                 dialog.close();
@@ -567,14 +586,14 @@ pub(super) fn Modal(
             class="modal"
             class:modal-wide={wide}
             node_ref={dialog}
-            aria-label={title}
+            aria-labelledby={labelled_by}
             on:cancel={move |event: web_sys::Event| {
                 event.prevent_default();
                 close();
             }}
         >
             <header>
-                <h2>{title}</h2>
+                <h2 id={heading}>{title}</h2>
                 <button
                     type="button"
                     class="btn btn-ghost btn-icon"
@@ -590,47 +609,154 @@ pub(super) fn Modal(
     }
 }
 
-/// Tab buttons choosing one of `options` into `selected`; the chosen tab is
-/// marked current. Tabs `hidden` holds for are not offered, and the first
-/// tab replaces one selected anyway, e.g. by a link.
-#[component]
-pub(super) fn Tabs(
+/// A row of tabs and the panels they show, keyed so each tab labels its
+/// panel for assistive technology. `selected` holds the shown tab, so pages
+/// can switch tabs themselves. Panels stay in the document while another tab
+/// is shown, so their forms keep their edits.
+#[derive(Clone, Copy)]
+pub(super) struct TabSet {
     label: &'static str,
-    options: &'static [&'static str],
-    selected: RwSignal<&'static str>,
-    #[prop(optional, into)] hidden: Option<Callback<&'static str, bool>>,
-) -> impl IntoView {
-    let is_hidden = move |tab| hidden.is_some_and(|hidden| hidden.run(tab));
-    let reveal = move || {
-        if is_hidden(selected.get()) {
-            selected.set(options[0]);
+    /// Tells this set's element IDs from another set's with the same label,
+    /// such as one per deployment.
+    id: u32,
+    pub(super) selected: RwSignal<&'static str>,
+}
+
+impl TabSet {
+    /// A tab set named `label`, whose shown tab is `selected`.
+    pub(super) fn new(label: &'static str, selected: RwSignal<&'static str>) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        Self {
+            label,
+            id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            selected,
         }
-    };
-    // At once, so panels rendered after the tabs never mount a hidden one,
-    // then whenever the selected tab becomes hidden.
-    untrack(reveal);
-    Effect::new(move |_| reveal());
-    view! {
-        <nav class="tabs" aria-label={label}>
-            {options
+    }
+
+    /// Element ID of `tab`'s button.
+    fn tab_id(self, tab: &str) -> String {
+        format!("tab-{}-{}-{}", self.id, slug(self.label), slug(tab))
+    }
+
+    /// Element ID of `tab`'s panel.
+    fn panel_id(self, tab: &str) -> String {
+        format!("panel-{}-{}-{}", self.id, slug(self.label), slug(tab))
+    }
+
+    /// The tab list offering `options`; the shown tab is marked selected.
+    /// Tabs `hidden` holds for are not offered, and the first tab replaces
+    /// one selected anyway, e.g. by a link. Left and Right move between the
+    /// offered tabs from the keyboard.
+    pub(super) fn bar(
+        self,
+        options: &'static [&'static str],
+        hidden: Option<Callback<&'static str, bool>>,
+    ) -> AnyView {
+        let selected = self.selected;
+        let is_hidden = move |tab| hidden.is_some_and(|hidden| hidden.run(tab));
+        let reveal = move || {
+            if is_hidden(selected.get()) {
+                selected.set(options[0]);
+            }
+        };
+        // At once, so panels rendered after the tabs never mount a hidden one,
+        // then whenever the selected tab becomes hidden.
+        untrack(reveal);
+        Effect::new(move |_| reveal());
+        let step = move |forward: bool| {
+            let offered = options
                 .iter()
                 .copied()
-                .map(|tab| {
-                    view! {
-                        <button
-                            type="button"
-                            hidden={move || is_hidden(tab)}
-                            class:active={move || selected.get() == tab}
-                            aria-current={move || {
-                                if selected.get() == tab { "page" } else { "false" }
-                            }}
-                            on:click={move |_| selected.set(tab)}
-                        >
-                            {tab}
-                        </button>
-                    }
-                })
-                .collect_view()}
-        </nav>
+                .filter(|tab| !is_hidden(tab))
+                .collect::<Vec<_>>();
+            let Some(index) = offered
+                .iter()
+                .position(|tab| *tab == selected.get_untracked())
+            else {
+                return;
+            };
+            let next = if forward {
+                (index + 1) % offered.len()
+            } else {
+                (index + offered.len() - 1) % offered.len()
+            };
+            selected.set(offered[next]);
+            if let Some(button) = document().get_element_by_id(&self.tab_id(offered[next]))
+                && let Some(button) = button.dyn_ref::<web_sys::HtmlElement>()
+            {
+                let _ = button.focus();
+            }
+        };
+        view! {
+            <div
+                class="tabs"
+                role="tablist"
+                aria-label={self.label}
+                on:keydown={move |event: web_sys::KeyboardEvent| {
+                    let forward = match event.key().as_str() {
+                        "ArrowRight" => true,
+                        "ArrowLeft" => false,
+                        _ => return,
+                    };
+                    event.prevent_default();
+                    step(forward);
+                }}
+            >
+                {options
+                    .iter()
+                    .copied()
+                    .map(|tab| {
+                        view! {
+                            <button
+                                type="button"
+                                role="tab"
+                                id={self.tab_id(tab)}
+                                aria-controls={self.panel_id(tab)}
+                                hidden={move || is_hidden(tab)}
+                                class:active={move || selected.get() == tab}
+                                aria-selected={move || {
+                                    if selected.get() == tab { "true" } else { "false" }
+                                }}
+                                tabindex={move || if selected.get() == tab { "0" } else { "-1" }}
+                                on:click={move |_| selected.set(tab)}
+                            >
+                                {tab}
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+        }
+        .into_any()
     }
+
+    /// The panel `tab` shows, hidden while another tab is selected.
+    pub(super) fn panel(self, tab: &'static str, children: impl IntoView + 'static) -> AnyView {
+        let selected = self.selected;
+        view! {
+            <div
+                role="tabpanel"
+                id={self.panel_id(tab)}
+                aria-labelledby={self.tab_id(tab)}
+                hidden={move || selected.get() != tab}
+            >
+                {children}
+            </div>
+        }
+        .into_any()
+    }
+}
+
+/// `text` as an element ID fragment: lowercase, with runs of other
+/// characters as one hyphen.
+fn slug(text: &str) -> String {
+    let mut slug = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_owned()
 }

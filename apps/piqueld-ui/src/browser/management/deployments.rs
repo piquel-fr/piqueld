@@ -2,8 +2,8 @@
 //! inspection.
 use super::super::format::timestamp;
 use super::super::ui::{
-    Icon, Modal, Tabs, Tone, badge, empty, expander_summary, icon, key_values, load_older, notice,
-    operation_badge, text_field, when,
+    Icon, Modal, TabSet, Tone, badge, empty, expander_summary, icon, key_values, load_older,
+    loading, notice, operation_badge, text_field, when,
 };
 use super::super::{
     Alive, ClientErrorExt, confirm, document_hidden, live_row, operation_events, release_link,
@@ -131,7 +131,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                                     class="btn btn-primary"
                                     title="Create an environment to deploy"
                                     hidden={move || !context.can(AppPermission::Deploy)}
-                                    on:click={move |_| context.tab.set("Environments")}
+                                    on:click={move |_| context.tabs.selected.set("Environments")}
                                 >
                                     {icon(Icon::Rocket)}
                                     "Deploy"
@@ -163,8 +163,7 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                     class="btn"
                     hidden={move || !context.can(AppPermission::Write)}
                     disabled={move || {
-                        context.environment_action_blocked()
-                            || context.next_manifest().is_none()
+                        context.environment_action_blocked() || context.next_manifest().is_none()
                     }}
                     on:click={inspect}
                     title={move || {
@@ -304,11 +303,7 @@ fn DeployRevision() -> impl IntoView {
             {icon(Icon::GitBranch)}
             "Deploy revision"
         </button>
-        <Modal
-            title="Deploy a branch or commit"
-            opened={opened}
-            busy={context.busy}
-        >
+        <Modal title="Deploy a branch or commit" opened={opened} busy={context.busy}>
             <form class="stack-sm" on:submit={submit}>
                 <fieldset class="stack-sm" disabled={move || context.environment_action_blocked()}>
                     <p class="hint">
@@ -876,6 +871,9 @@ struct History {
     paginated: RwSignal<bool>,
     error: RwSignal<Option<String>>,
     loading: RwSignal<bool>,
+    /// Whether the first page was read, so the list is known to be empty
+    /// rather than still loading.
+    fetched: RwSignal<bool>,
 }
 
 impl History {
@@ -886,6 +884,7 @@ impl History {
             paginated: RwSignal::new(false),
             error: RwSignal::new(None),
             loading: RwSignal::new(false),
+            fetched: RwSignal::new(false),
         }
     }
 
@@ -904,16 +903,14 @@ impl History {
     }
 
     /// Polls the first page of `environment` every 2 seconds while the
-    /// editor's Deployments tab is selected and the page is visible. Stops
-    /// when the owning view unmounts.
+    /// editor's Deployments tab is selected and the page is visible, and
+    /// right after the tab opens. Stops when the owning view unmounts.
     fn poll(self, context: EditorContext, environment: String) {
         let active = Alive::new();
         spawn_local(async move {
             while active.get() {
-                if context.tab.get_untracked() == "Deployments"
-                    && !self.loading.get_untracked()
-                    && !document_hidden()
-                {
+                let shown = context.tabs.selected.get_untracked() == "Deployments";
+                if shown && !self.loading.get_untracked() && !document_hidden() {
                     let result = Client::browser().deployments(&environment, None).await;
                     if !active.get() {
                         break;
@@ -925,8 +922,12 @@ impl History {
                         }
                         Err(e) => self.error.set(Some(e.user_message())),
                     }
+                    self.fetched.set(true);
                 }
-                gloo_timers::future::TimeoutFuture::new(2000).await;
+                // Checked often while the tab is closed, so opening it
+                // never waits a whole poll interval.
+                let delay = if shown { 2000 } else { 250 };
+                gloo_timers::future::TimeoutFuture::new(delay).await;
             }
         });
     }
@@ -966,9 +967,22 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     view! {
         <section class="stack-sm" aria-label="Deployment history">
             {move || history.error.get().map(|e| notice(Tone::Bad, e))}
-            <Show when={move || {
-                history.items.with(Vec::is_empty)
-            }}>{empty("No deployments yet. Deploy the saved configuration to create one.")}</Show>
+            {move || {
+                history
+                    .items
+                    .with(Vec::is_empty)
+                    .then(|| {
+                        if history.fetched.get() {
+                            empty(
+                                "No deployments yet. Deploy the saved configuration to create one.",
+                            )
+                        } else if history.error.get().is_none() {
+                            loading("Loading deployments…")
+                        } else {
+                            ().into_any()
+                        }
+                    })
+            }}
             <For
                 each={move || history.items.get()}
                 key={|d| d.operation.id.clone()}
@@ -976,9 +990,11 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                     let newer = {
                         let id = initial.operation.id.clone();
                         Signal::derive(move || {
-                            history.items.with(|items| {
-                                items.first().is_some_and(|newest| newest.operation.id != id)
-                            })
+                            history
+                                .items
+                                .with(|items| {
+                                    items.first().is_some_and(|newest| newest.operation.id != id)
+                                })
                         })
                     };
                     let deployment = live_row(history.items, initial, |d| &d.operation.id);
@@ -1010,6 +1026,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
         .with(|q| q.get("deployment").is_some_and(|id| id == op.id));
     let opened = RwSignal::new(selected);
     let tab = RwSignal::new("Details");
+    let tabs = TabSet::new("Deployment sections", tab);
     let attempts_requested = RwSignal::new(false);
     Effect::new(move |_| {
         if opened.get() && tab.get() == "Attempts" {
@@ -1049,120 +1066,116 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                 },
             )}
             <div class="expander-body" hidden={move || !opened.get()}>
-                <Tabs
-                    label="Deployment sections"
-                    options={&["Details", "Snapshot", "Attempts"]}
-                    selected={tab}
-                />
-                <div hidden={move || {
-                    tab.get() != "Details"
-                }}>
-                    {move || {
-                        let DeploymentView {
-                            operation: op,
-                            release,
-                            origin,
-                            succeeded_at_ms,
-                            current_target,
-                            ..
-                        } = deployment.get();
-                        let restore = (succeeded_at_ms.is_some()
-                            && (!current_target || newer.get())
-                            && context.can_restore())
-                            .then(|| {
-                                let id = op.id.clone();
-                                view! {
-                                    <div class="toolbar">
-                                        <p class="hint">
-                                            "Restoring deploys this deployment again exactly as it ran: its manifest, images and secret versions. Its jobs don't run again, and volume contents and migrations stay as they are."
-                                        </p>
-                                        <div class="toolbar-end">
-                                            <button
-                                                type="button"
-                                                class="btn btn-sm"
-                                                disabled={move || context.action_blocked()}
-                                                on:click={move |_| context.restore(id.clone())}
-                                            >
-                                                {icon(Icon::Restore)}
-                                                "Restore"
-                                            </button>
+                {tabs.bar(&["Details", "Snapshot", "Attempts"], None)}
+                {tabs
+                    .panel(
+                        "Details",
+                        move || {
+                            let DeploymentView {
+                                operation: op,
+                                release,
+                                origin,
+                                succeeded_at_ms,
+                                current_target,
+                                ..
+                            } = deployment.get();
+                            let restore = (succeeded_at_ms.is_some()
+                                && (!current_target || newer.get()) && context.can_restore())
+                                .then(|| {
+                                    let id = op.id.clone();
+                                    view! {
+                                        <div class="toolbar">
+                                            <p class="hint">
+                                                "Restoring deploys this deployment again exactly as it ran: its manifest, images and secret versions. Its jobs don't run again, and volume contents and migrations stay as they are."
+                                            </p>
+                                            <div class="toolbar-end">
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-sm"
+                                                    disabled={move || context.action_blocked()}
+                                                    on:click={move |_| context.restore(id.clone())}
+                                                >
+                                                    {icon(Icon::Restore)}
+                                                    "Restore"
+                                                </button>
+                                            </div>
                                         </div>
-                                    </div>
-                                }
-                            });
-                        let release = release
-                            .map_or_else(
-                                || "Not recorded".into_any(),
-                                |release| release_link(&application, &release.to_string()),
-                            );
+                                    }
+                                });
+                            let release = release
+                                .map_or_else(
+                                    || "Not recorded".into_any(),
+                                    |release| release_link(&application, &release.to_string()),
+                                );
+                            view! {
+                                <div class="stack-sm">
+                                    {restore} <dl class="kv">
+                                        <dt>"Operation ID"</dt>
+                                        <dd>
+                                            <code>{op.id}</code>
+                                        </dd>
+                                        <dt>"Release"</dt>
+                                        <dd>{release}</dd>
+                                        <dt>"Origin"</dt>
+                                        <dd>{context.describe_origin(&origin)}</dd>
+                                        <dt>"Kind"</dt>
+                                        <dd>{op.kind.as_str()}</dd>
+                                        <dt>"Generation"</dt>
+                                        <dd>{op.generation}</dd>
+                                        <dt>"Attempts"</dt>
+                                        <dd>{op.attempt}</dd>
+                                        <dt>"Phase"</dt>
+                                        <dd>{op.phase.unwrap_or_else(|| "Waiting".into())}</dd>
+                                        {op
+                                            .resource
+                                            .map(|resource| {
+                                                view! {
+                                                    <dt>"Resource"</dt>
+                                                    <dd>
+                                                        <code>{resource}</code>
+                                                    </dd>
+                                                }
+                                            })}
+                                        <dt>"Created"</dt>
+                                        <dd>{timestamp(op.created_at_ms)}</dd>
+                                        <dt>"Updated"</dt>
+                                        <dd>{timestamp(op.updated_at_ms)}</dd>
+                                        {op
+                                            .finished_at_ms
+                                            .map(|ms| {
+                                                view! {
+                                                    <dt>"Finished"</dt>
+                                                    <dd>{timestamp(ms)}</dd>
+                                                }
+                                            })}
+                                    </dl>
+                                    {op
+                                        .error_message
+                                        .map(|error| {
+                                            notice(
+                                                Tone::Bad,
+                                                view! {
+                                                    {op
+                                                        .error_code
+                                                        .map(|code| view! { <strong>{code}</strong> })}
+                                                    <span>{error}</span>
+                                                },
+                                            )
+                                        })}
+                                </div>
+                            }
+                        },
+                    )}
+                {tabs.panel("Snapshot", view! { <DeploymentSnapshot deployment={deployment} /> })}
+                {tabs
+                    .panel(
+                        "Attempts",
                         view! {
-                            <div class="stack-sm">
-                                {restore}
-                                <dl class="kv">
-                                    <dt>"Operation ID"</dt>
-                                    <dd>
-                                        <code>{op.id}</code>
-                                    </dd>
-                                    <dt>"Release"</dt>
-                                    <dd>{release}</dd>
-                                    <dt>"Origin"</dt>
-                                    <dd>{context.describe_origin(&origin)}</dd>
-                                    <dt>"Kind"</dt>
-                                    <dd>{op.kind.as_str()}</dd>
-                                    <dt>"Generation"</dt>
-                                    <dd>{op.generation}</dd>
-                                    <dt>"Attempts"</dt>
-                                    <dd>{op.attempt}</dd>
-                                    <dt>"Phase"</dt>
-                                    <dd>{op.phase.unwrap_or_else(|| "Waiting".into())}</dd>
-                                    {op
-                                        .resource
-                                        .map(|resource| {
-                                            view! {
-                                                <dt>"Resource"</dt>
-                                                <dd>
-                                                    <code>{resource}</code>
-                                                </dd>
-                                            }
-                                        })}
-                                    <dt>"Created"</dt>
-                                    <dd>{timestamp(op.created_at_ms)}</dd>
-                                    <dt>"Updated"</dt>
-                                    <dd>{timestamp(op.updated_at_ms)}</dd>
-                                    {op
-                                        .finished_at_ms
-                                        .map(|ms| {
-                                            view! {
-                                                <dt>"Finished"</dt>
-                                                <dd>{timestamp(ms)}</dd>
-                                            }
-                                        })}
-                                </dl>
-                                {op
-                                    .error_message
-                                    .map(|error| {
-                                        notice(
-                                            Tone::Bad,
-                                            view! {
-                                                {op
-                                                    .error_code
-                                                    .map(|code| view! { <strong>{code}</strong> })}
-                                                <span>{error}</span>
-                                            },
-                                        )
-                                    })}
-                            </div>
-                        }
-                    }}
-                </div>
-                <div hidden={move || tab.get() != "Snapshot"}>
-                    <DeploymentSnapshot deployment={deployment} />
-                </div>
-                <div hidden={move || tab.get() != "Attempts"}>
-                    <Show when={move || attempts_requested.get()}>
-                        <DeploymentAttempts deployment={deployment} />
-                    </Show>
-                </div>
+                            <Show when={move || attempts_requested.get()}>
+                                <DeploymentAttempts deployment={deployment} />
+                            </Show>
+                        },
+                    )}
             </div>
         </article>
     }
@@ -1353,7 +1366,7 @@ fn DeploymentAttempts(deployment: Signal<DeploymentView>) -> impl IntoView {
     view! {
         <div class="stack-sm">
             {move || failure.get().map(|error| notice(Tone::Bad, error))}
-            {move || loading.get().then(|| empty("Loading attempts…"))}
+            {move || loading.get().then(|| super::super::ui::loading("Loading attempts…"))}
             {move || {
                 if visible_attempts.with(Vec::is_empty) {
                     (!loading.get() && failure.get().is_none())

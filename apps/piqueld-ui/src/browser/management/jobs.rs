@@ -228,7 +228,7 @@ impl PairRows {
     fn view(self, jobs: RwSignal<Vec<JobDraft>>, index: usize) -> AnyView {
         view! {
             <div>
-                <h4 class="hint" style="margin-bottom:8px">
+                <h4 class="hint mb-sm">
                     {self.title}
                 </h4>
                 <div class="form-list">
@@ -343,7 +343,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                                             {context.service_options()}
                                         </select>
                                     </label>
-                                    <label class="field" style="max-width:160px">
+                                    <label class="field field-short">
                                         <span>"Timeout (seconds)"</span>
                                         <input
                                             type="number"
@@ -360,7 +360,7 @@ pub(super) fn JobSettings() -> impl IntoView {
                                             }}
                                         />
                                     </label>
-                                    <label class="field" style="max-width:200px">
+                                    <label class="field field-short">
                                         <span>"Volume access"</span>
                                         <select
                                             prop:value={move || {
