@@ -58,8 +58,9 @@ pub(crate) struct Cli {
 
     /// Connect with this profile from the profiles files.
     ///
-    /// Defaults to `PIQUELD_PROFILE`, else to the profile named `default` if
-    /// there is one.
+    /// Defaults to `PIQUELD_PROFILE`, else to the profile named by the
+    /// profiles file's top-level `default`, else to the profile named
+    /// `default` if there is one.
     #[arg(long, global = true, value_name = "NAME", help_heading = GLOBAL)]
     pub(crate) profile: Option<String>,
     /// Read profiles only from this file.

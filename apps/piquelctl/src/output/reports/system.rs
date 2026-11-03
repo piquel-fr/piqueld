@@ -369,7 +369,7 @@ report!(DoctorReport<'_>, self, out, {
     Ok(())
 });
 
-/// Effective connection profiles, as a `NAME  ENDPOINT` table.
+/// Effective connection profiles, as a `NAME  ENDPOINT` table marking the default.
 #[derive(Serialize)]
 pub(crate) struct ProfilesReport<'a> {
     pub(crate) profiles: Vec<ProfileSummary<'a>>,
@@ -379,6 +379,12 @@ report!(ProfilesReport<'_>, self, out, {
         &self.profiles,
         "No profiles configured.",
         "NAME  ENDPOINT",
-        |out, profile| out.line(format_args!("{}  {}", profile.name, profile.endpoint)),
+        |out, profile| {
+            let marker = if profile.default { "  (default)" } else { "" };
+            out.line(format_args!(
+                "{}  {}{marker}",
+                profile.name, profile.endpoint
+            ))
+        },
     )
 });

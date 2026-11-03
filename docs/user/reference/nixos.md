@@ -25,6 +25,7 @@ Connection profiles use the same typed-settings style as the daemon:
   imports = [ inputs.piqueld.nixosModules.piquelctl ];
   programs.piquelctl = {
     enable = true;
+    settings.default = "production";
     settings.profiles.production = {
       url = "http://127.0.0.1:7845";
       timeout = "2m";
@@ -34,6 +35,8 @@ Connection profiles use the same typed-settings style as the daemon:
 ```
 
 Each profile must set exactly one of `socket` or `url`; `timeout` is optional.
+`settings.default`, also optional, names the profile `piquelctl` uses when
+neither `--profile` nor `PIQUELD_PROFILE` selects one.
 The module writes `/etc/piqueld/profiles.toml` and installs the unwrapped CLI.
 Every user and every CLI build, including `cargo run -p piquelctl`, discovers
 these profiles without environment setup. User profiles can add or replace named
