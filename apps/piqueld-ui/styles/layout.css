@@ -331,8 +331,8 @@
            navigation and the footer below it, over the page. */
         .sidebar {
             position: sticky;
-            top: 0;
             inset: auto;
+            top: 0;
             z-index: 20;
             width: auto;
             max-height: 100vh;
