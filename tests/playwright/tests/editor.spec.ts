@@ -48,7 +48,7 @@ test('adds a service and edits it on the service page', async ({ page, account }
   await createApplication(page);
   await addService(page, 'web', 'nginx:1.27');
   const row = page.locator('a.list-row', { hasText: 'web' });
-  await expect(row).toContainText('1 replicas');
+  await expect(row).toContainText('1 replica');
   await row.click();
   await expect(page).toHaveURL(/\/services\/web$/);
   await expect(title(page)).toHaveText('web');

@@ -70,11 +70,11 @@ pub use piqueld_core::manifest::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, Build, DeclaredSource,
     EnvironmentChange, EnvironmentConfig, Export, FileMode, FileSource, GitRepository, HealthCheck,
     Import, Job, JobRun, JobVolumeAccess, ManifestRepository, ManifestRevision, Metadata, Mount,
-    Redirect, RedirectStatus, RepositoryManifest, ResourceLimits, Rollback, Rollout, RolloutOrder,
-    RolloutOrderSource, Route, RouteTarget, SecretDeclaration, SecretEncoding, SecretGenerator,
-    SecretMount, SecretSource, Service, ServiceFile, Source, SourceRepository, SystemVariable,
-    Template, Typed, ValidatedBuild, ValidatedRollout, ValidatedSource, Variable, VariableValue,
-    Visibility, Volume,
+    Redirect, RedirectStatus, Reference, RepositoryManifest, ResourceLimits, Rollback, Rollout,
+    RolloutOrder, RolloutOrderSource, Route, RouteTarget, SecretDeclaration, SecretEncoding,
+    SecretGenerator, SecretMount, SecretSource, Segment, Service, ServiceFile, Source,
+    SourceRepository, SystemVariable, Template, Typed, ValidatedBuild, ValidatedRollout,
+    ValidatedSource, Variable, VariableValue, Visibility, Volume,
 };
 pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{

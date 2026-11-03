@@ -3,7 +3,7 @@
 
 use piqueld_client::{
     ApplicationManifest, ApplicationView, DeploymentOrigin, EnvironmentSource, EnvironmentView,
-    Export, Import, TrackedBranch,
+    Export, Import, Reference, Segment, Service, TrackedBranch, Typed, VariableValue,
     access::{AppPermission, Grants},
     sync::short_commit,
 };
@@ -147,6 +147,12 @@ pub trait ApplicationViewExt {
     /// IDs of the promoted environments a release can be deployed into:
     /// those not being deleted.
     fn release_targets(&self) -> Vec<String>;
+
+    /// How many replicas `service` runs, for its row in the service list:
+    /// "3 replicas", or, when a variable sets the count, its value in the
+    /// sole environment, or in each ("replicas: production 3, staging 1"),
+    /// or the variable's name while no environment gives it a value.
+    fn replica_summary(&self, service: &Service) -> String;
 }
 
 impl ApplicationViewExt for ApplicationView {
@@ -258,6 +264,46 @@ impl ApplicationViewExt for ApplicationView {
                     && environment.source.branch()
                         == TrackedBranch::of(&connection.repository).ok().as_ref()
             })
+    }
+
+    fn replica_summary(&self, service: &Service) -> String {
+        let count = |value: &dyn std::fmt::Display, one: bool| {
+            format!("{value} replica{}", if one { "" } else { "s" })
+        };
+        let template = match &service.replicas {
+            Typed::Literal(replicas) => return count(replicas, *replicas == 1),
+            Typed::Template(template) => template,
+        };
+        // A typed template is exactly one reference.
+        let variable = match template.segments().as_deref() {
+            Ok([Segment::Reference(Reference::Variable(name))]) => name.clone(),
+            _ => return format!("{template} replicas"),
+        };
+        let values: Vec<(String, VariableValue)> = self
+            .environments
+            .iter()
+            .filter_map(|environment| {
+                let value = self
+                    .application
+                    .values(&environment.target())
+                    .remove(&variable)??;
+                Some((environment.name.to_string(), value))
+            })
+            .collect();
+        match values.as_slice() {
+            [] => format!("replicas from vars.{variable}"),
+            [(_, value)] if self.environments.len() == 1 => {
+                count(value, *value == VariableValue::Integer(1))
+            }
+            values => format!(
+                "replicas: {}",
+                values
+                    .iter()
+                    .map(|(environment, value)| format!("{environment} {value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 
     fn release_targets(&self) -> Vec<String> {
@@ -452,6 +498,67 @@ mod tests {
             sync_check: None,
             repository: None,
         }
+    }
+
+    #[test]
+    fn replica_summaries_resolve_variables_per_environment() {
+        let manifest: ApplicationManifest = serde_json::from_value(serde_json::json!({
+            "api_version": "piqueld.dev/v1alpha1",
+            "kind": "Application",
+            "metadata": { "name": "notes" },
+            "spec": {
+                "variables": { "web_replicas": 2 },
+                "environments": {
+                    "production": { "variables": { "web_replicas": 3, "api_replicas": 4 } },
+                    "staging": {},
+                },
+                "services": [
+                    { "name": "web", "source": { "type": "image", "image": "nginx:1.27" }, "replicas": "${{ vars.web_replicas }}" },
+                    { "name": "api", "source": { "type": "image", "image": "api:1" }, "replicas": "${{ vars.api_replicas }}" },
+                    { "name": "db", "source": { "type": "image", "image": "postgres:16" }, "replicas": 1 },
+                ],
+            },
+        }))
+        .unwrap();
+        let application = manifest
+            .validate_template()
+            .unwrap()
+            .normalize(ApplicationId::parse(APP).unwrap());
+        // Services are kept in name order.
+        let api = application.spec().services[0].clone();
+        let db = application.spec().services[1].clone();
+        let web = application.spec().services[2].clone();
+        let mut view = ApplicationView {
+            spec_hash: application.spec_hash(),
+            application,
+            generation: 1,
+            delete_intent: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            environments: Vec::new(),
+            previews: Vec::new(),
+            drift: Vec::new(),
+            sync_check: None,
+            repository: None,
+        };
+        assert_eq!(view.replica_summary(&db), "1 replica");
+        assert_eq!(
+            view.replica_summary(&web),
+            "replicas from vars.web_replicas"
+        );
+        view.environments = vec![environment(APP, "production", EnvironmentSource::Saved)];
+        assert_eq!(view.replica_summary(&web), "3 replicas");
+        view.environments.push(environment(
+            "app-notes-02",
+            "staging",
+            EnvironmentSource::Saved,
+        ));
+        assert_eq!(
+            view.replica_summary(&web),
+            "replicas: production 3, staging 2"
+        );
+        // A value in only one of several environments names that environment.
+        assert_eq!(view.replica_summary(&api), "replicas: production 4");
     }
 
     fn grants(permission: AppPermission, application: &str) -> Grants {

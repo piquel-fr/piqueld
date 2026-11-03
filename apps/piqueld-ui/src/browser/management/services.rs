@@ -5,7 +5,7 @@ use super::{
     Draft, EditorFeedback, back_link, editor, logs::ApplicationLogs, navigation::remember_tab,
     settings::ServiceGroup,
 };
-use crate::application::slug;
+use crate::application::{ApplicationViewExt, slug};
 use crate::editor::Section;
 use crate::state::ApplicationHealth;
 use leptos::prelude::*;
@@ -76,6 +76,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                             Source::Git { repository, .. } => format!("Git · {repository}"),
                         };
                         let runtime = observed(&service.name);
+                        let replicas = context.saved.with(|saved| saved.replica_summary(&service));
                         view! {
                             <A
                                 attr:class="list-row"
@@ -94,7 +95,7 @@ pub(super) fn ServiceList() -> impl IntoView {
                                 <span class="meta">
                                     {runtime
                                         .map_or_else(
-                                            || format!("{} replicas", service.replicas),
+                                            || replicas,
                                             |(_, healthy, desired)| {
                                                 format!("{healthy} / {desired} healthy")
                                             },
