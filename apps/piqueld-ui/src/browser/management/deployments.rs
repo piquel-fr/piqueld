@@ -1,6 +1,7 @@
 //! Deployment and promotion actions, plan dialogs, history, and snapshot
 //! inspection.
 use super::super::format::timestamp;
+use super::super::observability::EventHistory;
 use super::super::ui::{
     Icon, Modal, TabSet, Tone, badge, empty, expander_summary, icon, key_values, load_older,
     loading, notice, operation_badge, text_field, when,
@@ -10,6 +11,7 @@ use super::super::{
 };
 use super::releases::ReleaseCard;
 use super::{EditorContext, editor};
+use crate::changes::{ChangeDisplay, Mark};
 use crate::deployments::{Attempts, DeploymentList, Promotion};
 use crate::editor::Choice;
 use crate::overview::build_arguments;
@@ -23,6 +25,9 @@ use piqueld_client::{
     SecretProblem, Service, Source, Template, ValidatedRollout, access::AppPermission,
 };
 use std::fmt::Display;
+
+/// Deployments the history asks for per page.
+const PAGE: u16 = 20;
 
 /// "Preview" and "Deploy" buttons for the editor's target environment. Preview
 /// asks the daemon to plan the manifest that environment deploys (its last
@@ -747,16 +752,48 @@ fn DeploymentPreview(preview: RwSignal<Option<PlanView>>) -> impl IntoView {
     }
 }
 
-/// One manifest field change: its path, then its value before and after.
+/// One manifest field change: its path, then its value before and after,
+/// or line by line when the value is structured (see `ChangeDisplay`).
 pub(super) fn change_row(change: ManifestChange) -> impl IntoView {
+    let display = ChangeDisplay::of(&change);
+    let block = matches!(display, ChangeDisplay::Lines(_));
     view! {
-        <div class="diff-row">
+        <div class="diff-row" class:diff-block={block}>
             <code>{change.field}</code>
-            <span class="before">{change.before.unwrap_or_else(|| "absent".into())}</span>
-            <span class="arrow" aria-hidden="true">
-                "→"
-            </span>
-            <span class="after">{change.after.unwrap_or_else(|| "absent".into())}</span>
+            {match display {
+                ChangeDisplay::Scalar { before, after } => {
+                    view! {
+                        <span class="before">{before.unwrap_or_else(|| "absent".into())}</span>
+                        <span class="arrow" aria-hidden="true">
+                            "→"
+                        </span>
+                        <span class="after">{after.unwrap_or_else(|| "absent".into())}</span>
+                    }
+                        .into_any()
+                }
+                ChangeDisplay::Lines(lines) => {
+                    view! {
+                        <pre class="diff-lines">
+                            {lines
+                                .into_iter()
+                                .map(|line| {
+                                    let class = match line.mark {
+                                        Mark::Same => "diff-line",
+                                        Mark::Removed => "diff-line removed",
+                                        Mark::Added => "diff-line added",
+                                    };
+                                    view! {
+                                        <span class={class}>
+                                            {format!("{} {}\n", line.mark.sign(), line.text)}
+                                        </span>
+                                    }
+                                })
+                                .collect_view()}
+                        </pre>
+                    }
+                        .into_any()
+                }
+            }}
         </div>
     }
 }
@@ -911,7 +948,9 @@ impl History {
             while active.get() {
                 let shown = context.tabs.selected.get_untracked() == "Deployments";
                 if shown && !self.loading.get_untracked() && !document_hidden() {
-                    let result = Client::browser().deployments(&environment, None).await;
+                    let result = Client::browser()
+                        .deployments(&environment, None, Some(PAGE))
+                        .await;
                     if !active.get() {
                         break;
                     }
@@ -939,7 +978,7 @@ impl History {
         self.loading.set(true);
         spawn_local(async move {
             match Client::browser()
-                .deployments(&environment, next.as_deref())
+                .deployments(&environment, next.as_deref(), Some(PAGE))
                 .await
             {
                 Ok(page) => {
@@ -1011,11 +1050,13 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     }
 }
 
-/// Expandable deployment summary with details, snapshot and attempts tabs.
-/// Starts expanded when it matches the `?deployment=` query; attempts load
-/// lazily the first time their tab is opened. `newer` is whether a newer
-/// deployment is listed: one that failed before replacing the current target
-/// leaves Restore offered on it.
+/// Expandable deployment summary, titled by what brought it (see
+/// `ApplicationViewExt::deployment_title`) and tagged with the configuration
+/// revision it deploys, with details, snapshot, attempts and events tabs.
+/// Starts expanded when it matches the `?deployment=` query; attempts and
+/// events load lazily the first time their tab is opened. `newer` is whether
+/// a newer deployment is listed: one that failed before replacing the current
+/// target leaves Restore offered on it.
 #[component]
 fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> impl IntoView {
     let context = editor();
@@ -1028,20 +1069,27 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
     let tab = RwSignal::new("Details");
     let tabs = TabSet::new("Deployment sections", tab);
     let attempts_requested = RwSignal::new(false);
+    let events_requested = RwSignal::new(false);
     Effect::new(move |_| {
-        if opened.get() && tab.get() == "Attempts" {
-            attempts_requested.set(true);
+        if opened.get() {
+            match tab.get() {
+                "Attempts" => attempts_requested.set(true),
+                "Events" => events_requested.set(true),
+                _ => {}
+            }
         }
     });
+    let events_of = op.id.clone();
     view! {
         <article class="expander" class:selected={selected}>
             {expander_summary(
                 opened,
                 view! {
                     {move || operation_badge(deployment.get().operation.state)}
-                    <strong>
-                        {move || format!("Deployment #{}", deployment.get().operation.generation)}
-                    </strong>
+                    <strong>{move || context.deployment_title(&deployment.get().origin)}</strong>
+                    <span class="tag">
+                        {move || format!("Revision {}", deployment.get().operation.generation)}
+                    </span>
                     {move || {
                         deployment
                             .get()
@@ -1066,7 +1114,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                 },
             )}
             <div class="expander-body" hidden={move || !opened.get()}>
-                {tabs.bar(&["Details", "Snapshot", "Attempts"], None)}
+                {tabs.bar(&["Details", "Snapshot", "Attempts", "Events"], None)}
                 {tabs
                     .panel(
                         "Details",
@@ -1120,7 +1168,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                                         <dd>{context.describe_origin(&origin)}</dd>
                                         <dt>"Kind"</dt>
                                         <dd>{op.kind.as_str()}</dd>
-                                        <dt>"Generation"</dt>
+                                        <dt>"Configuration revision"</dt>
                                         <dd>{op.generation}</dd>
                                         <dt>"Attempts"</dt>
                                         <dd>{op.attempt}</dd>
@@ -1173,6 +1221,15 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                         view! {
                             <Show when={move || attempts_requested.get()}>
                                 <DeploymentAttempts deployment={deployment} />
+                            </Show>
+                        },
+                    )}
+                {tabs
+                    .panel(
+                        "Events",
+                        view! {
+                            <Show when={move || events_requested.get()}>
+                                <EventHistory operation={events_of.clone()} />
                             </Show>
                         },
                     )}

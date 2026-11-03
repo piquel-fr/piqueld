@@ -3,6 +3,7 @@
 
 pub mod application;
 pub mod auth;
+pub mod changes;
 pub mod deployments;
 pub mod editor;
 pub mod environments;

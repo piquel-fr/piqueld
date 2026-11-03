@@ -1,4 +1,4 @@
-import { test, expect, auth, call, proof, webManifest, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
+import { test, expect, auth, call, deploymentCards, proof, toggleDeployment, webManifest, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** Save buttons exist for every settings group; only the edited group's is shown. */
@@ -182,9 +182,9 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
 
   await page.locator('.detail-head').getByRole('button', { name: 'Deploy to production', exact: true }).click();
   await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
-  const deployment = page.locator('.expander', { hasText: 'Deployment #' });
+  const deployment = deploymentCards(page);
   await expect(deployment).toBeVisible();
-  await deployment.getByRole('button', { name: /Deployment #/ }).click();
+  await toggleDeployment(deployment);
   await expect(deployment.getByText('Operation ID', { exact: true })).toBeVisible();
   await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
   await expect(deployment).toContainText('nginx:1.27');
@@ -242,8 +242,8 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await expect(job(1)).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Deploy to production', exact: true }).click();
-  const deployment = page.locator('.expander', { hasText: 'Deployment #' });
-  await deployment.getByRole('button', { name: /Deployment #/ }).click();
+  const deployment = deploymentCards(page);
+  await toggleDeployment(deployment);
   await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
   await expect(deployment).toContainText('migrate on web, up to 60s: migrate --all');
 });

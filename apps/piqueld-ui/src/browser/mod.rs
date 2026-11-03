@@ -613,7 +613,7 @@ impl ApplicationRow {
                 Ok(status) => (Some(status), None),
                 Err(error) => (None, Some(error.user_message())),
             };
-            match client.deployments(id, None).await {
+            match client.deployments(id, None, Some(1)).await {
                 Ok(page) => deployments.extend(page.items),
                 Err(error) => deployment_error = Some(error.user_message()),
             }

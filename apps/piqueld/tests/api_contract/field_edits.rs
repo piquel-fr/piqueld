@@ -219,7 +219,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     assert_eq!(receipt.operation_id, None);
     assert!(
         api.client
-            .deployments(id, None)
+            .deployments(id, None, None)
             .await
             .unwrap()
             .items

@@ -5,11 +5,11 @@
 //! it declares exist, and their source and sync when their block sets them,
 //! so those controls are then read-only.
 use super::super::access::can;
-use super::super::confirm;
 use super::super::ui::{
-    Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, text_field,
-    text_input, when,
+    Icon, Modal, Tone, badge, empty, health_badge, icon, notice, operation_badge, telemetry_badge,
+    text_field, text_input, when,
 };
+use super::super::{confirm, dashboard_context};
 use super::deployments::EnvironmentAction;
 use super::{Draft, EditorContext, editor};
 use crate::environments::{BranchDraft, EnvironmentEdit, NAME_FORM, SOURCE_FORM, SourceDraft};
@@ -664,17 +664,36 @@ fn SourceSettings() -> impl IntoView {
 }
 
 /// Whether the environment page's environment is granted the daemon's
-/// telemetry, with a button granting or revoking it for holders of
-/// `telemetry:grant`.
+/// telemetry, which deployed service receives it and whether the daemon
+/// exports to it (from the runtime detail, once loaded), with a button
+/// granting or revoking it for holders of `telemetry:grant`.
 #[component]
 fn EnvironmentTelemetry() -> impl IntoView {
     let context = editor();
+    let detail = dashboard_context().signals.detail;
     let id = StoredValue::new(context.environment_id());
     let allowed = can(Permission::Global(GlobalPermission::TelemetryGrant));
     let granted = move || {
         context
             .selected_environment()
             .is_some_and(|environment| environment.telemetry)
+    };
+    // The receiver and export, from the runtime detail's telemetry report.
+    let report = move || detail.get().and_then(|detail| detail.telemetry);
+    let receiver = move || {
+        report().map(|report| {
+            report.receiver.as_ref().map_or_else(
+                || "No deployed service receives it.".to_owned(),
+                |service| format!("{service} receives it on /run/piqueld/telemetry/otlp.sock."),
+            )
+        })
+    };
+    let export = move || {
+        report().map(|report| match (&report.destination, granted()) {
+            (Some(destination), _) => telemetry_badge(destination),
+            (None, true) if report.receiver.is_some() => badge(Tone::Pending, "not connected yet"),
+            (None, _) => badge(Tone::Neutral, "not exported"),
+        })
     };
     let toggle = move |_| {
         let granted = !granted();
@@ -713,6 +732,24 @@ fn EnvironmentTelemetry() -> impl IntoView {
                         }
                     }}
                 </dd>
+                {move || {
+                    receiver()
+                        .map(|receiver| {
+                            view! {
+                                <dt>"Receiver"</dt>
+                                <dd>{receiver}</dd>
+                            }
+                        })
+                }}
+                {move || {
+                    export()
+                        .map(|export| {
+                            view! {
+                                <dt>"Export"</dt>
+                                <dd>{export}</dd>
+                            }
+                        })
+                }}
             </dl>
             <div class="form-actions">
                 <button

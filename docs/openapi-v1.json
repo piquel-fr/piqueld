@@ -27923,7 +27923,7 @@
     },
     "/api/v1/environments/{id}/deployments": {
       "get": {
-        "description": "Returns three deployment snapshots per page; follow `next_cursor` for older ones.",
+        "description": "Returns `limit` deployment snapshots per page, three without it; follow\n`next_cursor` for older ones.",
         "operationId": "listDeployments",
         "parameters": [
           {
@@ -27942,6 +27942,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Deployments per page, from 1 to 100; 3 without it.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -27953,7 +27965,7 @@
                 }
               }
             },
-            "description": "Deployment snapshots, newest first (three per page)"
+            "description": "Deployment snapshots, newest first"
           },
           "400": {
             "content": {

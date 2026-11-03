@@ -37,15 +37,24 @@ impl ApplicationService {
         Ok(self.store.operation(id).await?)
     }
 
-    /// Lists deployment snapshots, newest first, three per page.
+    /// Lists deployment snapshots, newest first, `limit` per page (up to
+    /// `MAX_PAGE_SIZE`), three without a limit.
     /// # Errors
     /// Returns pagination, absence, or storage errors.
     pub async fn deployments(
         &self,
         id: &EnvironmentId,
         cursor: Option<&str>,
+        limit: Option<u16>,
     ) -> Result<Page<DeploymentView>, ApplicationError> {
-        Ok(self.store.deployments(id, cursor, 3).await?)
+        let limit = limit.unwrap_or(3);
+        if !(1..=piqueld_core::api::MAX_PAGE_SIZE).contains(&limit) {
+            return Err(ApplicationError::InvalidPagination);
+        }
+        Ok(self
+            .store
+            .deployments(id, cursor, usize::from(limit))
+            .await?)
     }
 
     /// Lists an application's releases, newest first, twenty per page, with

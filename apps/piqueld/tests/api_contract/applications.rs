@@ -122,7 +122,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert_ne!(first.operation_id, second.operation_id);
     let history = api
         .client
-        .deployments(&saved.application_id, None)
+        .deployments(&saved.application_id, None, None)
         .await
         .unwrap();
     assert_eq!(history.items.len(), 2);
@@ -130,6 +130,21 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
         history.items[1].operation.state,
         piqueld_core::OperationState::Superseded
     );
+    // `limit` sizes the page: one per page here, and 0 is refused.
+    let page = api
+        .client
+        .deployments(&saved.application_id, None, Some(1))
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].operation.id, second.operation_id);
+    assert!(page.next_cursor.is_some());
+    let refused = api
+        .client
+        .deployments(&saved.application_id, None, Some(0))
+        .await
+        .unwrap_err();
+    assert_eq!(api_error(refused).code, "pagination_invalid");
     request.expected_application_id = Some(saved.application_id.clone());
     request.expected_generation = Some(saved.generation);
     request
@@ -289,7 +304,7 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
     assert_eq!(downloaded, apply.manifest);
     assert!(
         api.client
-            .deployments(&saved.application_id, None)
+            .deployments(&saved.application_id, None, None)
             .await
             .unwrap()
             .items

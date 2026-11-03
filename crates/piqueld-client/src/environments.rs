@@ -261,15 +261,20 @@ impl Client {
             .await
     }
 
-    /// Lists an environment's deployment snapshots newest first, three per page.
+    /// Lists an environment's deployment snapshots newest first, `limit`
+    /// per page (1 to 100), three without one.
     /// # Errors
     /// Returns transport, API, or decoding errors.
     pub async fn deployments(
         &self,
         id: &str,
         cursor: Option<&str>,
+        limit: Option<u16>,
     ) -> Result<Page<DeploymentView>, ClientError> {
-        self.generated.list_deployments(id, cursor).data().await
+        self.generated
+            .list_deployments(id, cursor, limit.map(u32::from))
+            .data()
+            .await
     }
 
     /// Lists retained attempt outcomes, 100 per page.

@@ -3872,7 +3872,7 @@ fn env_stop_waits_until_stopped_unless_the_stop_fails_or_is_undone() {
         (1, "running", "ready", 0),
     ] {
         let server = start_server(false, usize::MAX, move |request| {
-            match request.path.as_str() {
+            match request.path.split('?').next().unwrap() {
                 "/api/v1/applications/app-notes-01" => {
                     Reply::json(app_view("app-notes-01", "notes"))
                 }

@@ -1,4 +1,4 @@
-import { test, expect, auth, call, environmentTab, register, webManifest, type Managed } from '../fixtures.js';
+import { test, expect, auth, call, deploymentCards, environmentTab, register, toggleDeployment, webManifest, type Managed } from '../fixtures.js';
 import type { Route } from '@playwright/test';
 
 test('an earlier deployment is restored from the deployment history', async ({ page, account }) => {
@@ -33,14 +33,14 @@ test('an earlier deployment is restored from the deployment history', async ({ p
 
   await page.goto(`/dashboard/applications/${app}/environments/${app}`);
   await environmentTab(page, 'Deployments').click();
-  const cards = page.locator('.expander', { hasText: 'Deployment #' });
+  const cards = deploymentCards(page);
   await expect(cards).toHaveCount(2);
   // The current target has nothing to restore.
-  await cards.nth(0).getByRole('button', { name: /Deployment #/ }).click();
+  await toggleDeployment(cards.nth(0));
   await expect(cards.nth(0)).toContainText(`Restored from deployment ${earlier}`);
   await expect(cards.nth(0).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 
-  await cards.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  await toggleDeployment(cards.nth(1));
   page.once('dialog', dialog => dialog.accept());
   await cards.nth(1).getByRole('button', { name: 'Restore', exact: true }).click();
   await expect(page.getByText('Restore accepted. Follow its progress below.', { exact: true })).toBeVisible();
@@ -53,7 +53,7 @@ test('an earlier deployment is restored from the deployment history', async ({ p
   await register(page, link, 'bob');
   await page.goto(`/dashboard/applications/${app}/environments/${app}`);
   await environmentTab(page, 'Deployments').click();
-  await cards.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  await toggleDeployment(cards.nth(1));
   await expect(cards.nth(1)).toContainText('Origin');
   await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 });
@@ -82,8 +82,8 @@ test('the current deployment is offered for restore after a newer one failed', a
 
   await page.goto(`/dashboard/applications/${app}/environments/${app}`);
   await environmentTab(page, 'Deployments').click();
-  const cards = page.locator('.expander', { hasText: 'Deployment #' });
+  const cards = deploymentCards(page);
   await expect(cards).toHaveCount(2);
-  await cards.nth(1).getByRole('button', { name: /Deployment #/ }).click();
+  await toggleDeployment(cards.nth(1));
   await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
 });

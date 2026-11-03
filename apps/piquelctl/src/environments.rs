@@ -951,7 +951,9 @@ pub(crate) async fn deploy(
     let result = wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await;
     // The outcome matters more than its warnings, so failing to read them is ignored.
     if !flags.no_wait
-        && let Ok(deployments) = client.deployments(environment.id.as_str(), None).await
+        && let Ok(deployments) = client
+            .deployments(environment.id.as_str(), None, Some(1))
+            .await
     {
         let warnings = deployments
             .items
@@ -1073,7 +1075,7 @@ struct Baseline {
 impl Baseline {
     /// The latest deployment's operation of environment `id`, if any.
     async fn latest(client: &Client, id: &str) -> Result<Option<Self>> {
-        let deployments = client.deployments(id, None).await?;
+        let deployments = client.deployments(id, None, Some(1)).await?;
         Ok(deployments.items.into_iter().next().map(|deployment| Self {
             terminal: deployment.operation.state.terminal(),
             attempt: deployment.operation.attempt,
