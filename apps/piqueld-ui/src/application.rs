@@ -292,7 +292,9 @@ impl ApplicationViewExt for ApplicationView {
             .collect();
         match values.as_slice() {
             [] => format!("replicas from vars.{variable}"),
-            [(_, value)] => count(value, *value == VariableValue::Integer(1)),
+            [(_, value)] if self.environments.len() == 1 => {
+                count(value, *value == VariableValue::Integer(1))
+            }
             values => format!(
                 "replicas: {}",
                 values
@@ -507,11 +509,12 @@ mod tests {
             "spec": {
                 "variables": { "web_replicas": 2 },
                 "environments": {
-                    "production": { "variables": { "web_replicas": 3 } },
+                    "production": { "variables": { "web_replicas": 3, "api_replicas": 4 } },
                     "staging": {},
                 },
                 "services": [
                     { "name": "web", "source": { "type": "image", "image": "nginx:1.27" }, "replicas": "${{ vars.web_replicas }}" },
+                    { "name": "api", "source": { "type": "image", "image": "api:1" }, "replicas": "${{ vars.api_replicas }}" },
                     { "name": "db", "source": { "type": "image", "image": "postgres:16" }, "replicas": 1 },
                 ],
             },
@@ -522,8 +525,9 @@ mod tests {
             .unwrap()
             .normalize(ApplicationId::parse(APP).unwrap());
         // Services are kept in name order.
-        let db = application.spec().services[0].clone();
-        let web = application.spec().services[1].clone();
+        let api = application.spec().services[0].clone();
+        let db = application.spec().services[1].clone();
+        let web = application.spec().services[2].clone();
         let mut view = ApplicationView {
             spec_hash: application.spec_hash(),
             application,
@@ -553,6 +557,8 @@ mod tests {
             view.replica_summary(&web),
             "replicas: production 3, staging 2"
         );
+        // A value in only one of several environments names that environment.
+        assert_eq!(view.replica_summary(&api), "replicas: production 4");
     }
 
     fn grants(permission: AppPermission, application: &str) -> Grants {
