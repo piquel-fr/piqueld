@@ -56,6 +56,8 @@ test('an earlier deployment is restored from the deployment history', async ({ p
   await toggleDeployment(cards.nth(1));
   await expect(cards.nth(1)).toContainText('Origin');
   await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
+  // Nor the Events tab, which needs events:read.
+  await expect(cards.nth(1).getByRole('tab', { name: 'Events', exact: true })).toHaveCount(0);
 });
 
 test('the current deployment is offered for restore after a newer one failed', async ({ page, account }) => {

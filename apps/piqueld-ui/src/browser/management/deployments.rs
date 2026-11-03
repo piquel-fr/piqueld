@@ -958,10 +958,10 @@ impl History {
                         Ok(page) => {
                             self.merge(page);
                             self.error.set(None);
+                            self.fetched.set(true);
                         }
                         Err(e) => self.error.set(Some(e.user_message())),
                     }
-                    self.fetched.set(true);
                 }
                 // Checked often while the tab is closed, so opening it
                 // never waits a whole poll interval.
@@ -1114,7 +1114,11 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                 },
             )}
             <div class="expander-body" hidden={move || !opened.get()}>
-                {tabs.bar(&["Details", "Snapshot", "Attempts", "Events"], None)}
+                {tabs
+                    .bar(
+                        &["Details", "Snapshot", "Attempts", "Events"],
+                        Some(Callback::new(move |tab| context.tab_hidden(tab))),
+                    )}
                 {tabs
                     .panel(
                         "Details",
@@ -1229,7 +1233,10 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                         "Events",
                         view! {
                             <Show when={move || events_requested.get()}>
-                                <EventHistory operation={events_of.clone()} />
+                                <EventHistory
+                                    environment={context.environment_id()}
+                                    operation={events_of.clone()}
+                                />
                             </Show>
                         },
                     )}
