@@ -36,8 +36,8 @@ use leptos_router::components::{A, ToHref};
 use leptos_router::hooks::use_navigate;
 use leptos_router::params::ParamsMap;
 use logs::ApplicationLogs;
-pub(super) use navigation::HistoryGuard;
-use navigation::{guard_navigation, remember_tab};
+use navigation::guard_navigation;
+pub(super) use navigation::{HistoryGuard, remember_tab};
 use piqueld_client::{
     ApplicationManifest, ApplicationSpec, ApplicationTemplate, ApplicationView,
     ApplyApplicationRequest, Client, ClientError, DeploymentOrigin, EnvironmentConfig,

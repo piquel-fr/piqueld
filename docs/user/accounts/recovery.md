@@ -76,7 +76,7 @@ or run `piquelctl token revoke` with its ID. Revoking one needs
 First, they get a new passkey on their account, the first way that works:
 
 - **They still have another passkey, or a browser still signed in as their
-  account.** On their own card, they
+  account.** On their own account's page, they
   [add a passkey](accounts.md#to-your-own-account).
 - **`piquelctl` is still signed in as their account, with its full access.**
   On that machine, they create an enrollment link for their own account,
@@ -99,8 +99,9 @@ the link, see the next section.
 
 Then, signed in as their account or as that administrator:
 
-1. On their card on the **Accounts** page, select **Remove** next to the lost
-   passkey, or run `piquelctl account passkey remove` with its ID, from
+1. Open their account from the **Accounts** page and, on its **Access** tab,
+   select **Remove** next to the lost passkey, or run
+   `piquelctl account passkey remove` with its ID, from
    `piquelctl account passkey list bob`.
 2. If the passkey may have been stolen, select **Revoke all** under
    **Sessions and API tokens**, or run

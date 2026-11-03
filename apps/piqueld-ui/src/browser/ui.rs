@@ -638,8 +638,11 @@ pub(super) fn FormModal(
 ) -> impl IntoView {
     view! {
         <Modal title={title} opened={opened} busy={busy} wide={wide}>
+            // The form checks its own fields, with better messages than the
+            // browser's, so native validation never blocks a submission.
             <form
                 class="stack-sm"
+                novalidate
                 on:submit={move |event| {
                     event.prevent_default();
                     on_submit.run(());
