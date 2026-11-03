@@ -178,7 +178,10 @@ async function fingerprint(page: Page): Promise<string> {
       if (!order.has(id)) order.set(id, order.size);
       return `id-${order.get(id)}:${id.replace(/[0-9a-f]/g, 'x')}`;
     })
-    .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date');
+    .replace(new RegExp(`${date}|${isoDate}`, 'g'), 'date')
+    // Ages such as "just now" or "2 min ago" grow with how long the spec
+    // took to reach the page, which varies between machines.
+    .replace(/\b(?:just now|in a moment|in \d+ (?:min|h|d)|\d+ (?:min|h|d) ago)\b/g, 'age');
   return createHash('sha256').update(stable).digest('hex');
 }
 
@@ -315,7 +318,9 @@ export async function overview(page: Page) {
   await page.goto('/dashboard/');
   const metric = (name: string) => page.locator('.metric', { hasText: name }).locator('strong').textContent();
   await expect.poll(async () => await metric('Healthy') === await metric('Applications')).toBe(true);
-  await expect(page.getByRole('region', { name: 'Recent deployments' }).getByRole('row').nth(1)).toContainText(/succeeded/i);
+  // The dashboard refreshes every 15 seconds, so the deployment's end can
+  // take a whole interval to show.
+  await expect(page.getByRole('region', { name: 'Recent deployments' }).getByRole('row').nth(1)).toContainText(/succeeded/i, { timeout: 30_000 });
 }
 
 /** Application `name`'s page, reached as a reader would from a dashboard
@@ -368,6 +373,10 @@ export async function service(page: Page, app: string, name: string, tab: string
 export async function environment(page: Page, app: string, name: string) {
   await openEnvironment(page, app, name);
   await expect(page.getByRole('region', { name: 'Observed services' })).toContainText(/converged/i);
+  // The latest operation and the health in the title settle after the
+  // deployment, the title with the dashboard's next refresh.
+  await expect(card(page, 'Runtime status')).toContainText(/succeeded/i, { timeout: 30_000 });
+  await expect(page.locator('.detail-title .badge')).toHaveText('Converged', { timeout: 30_000 });
 }
 
 /** Environment `name` of application `app`, reached as a reader would. */
