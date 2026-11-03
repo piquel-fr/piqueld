@@ -204,8 +204,7 @@ server {
   await piquelctl.run(['app', 'exec', 'notes', 'db', '--', 'psql', '-U', 'notes', '-c', "SELECT pg_size_pretty(pg_database_size('notes'))"]);
   await environment(page, 'notes', 'production');
   await environmentTab(page, 'Events').click();
-  await page.getByLabel('Event kind', { exact: true }).fill('command_started');
-  await page.getByLabel('Event kind', { exact: true }).blur();
+  await page.getByRole('combobox', { name: 'Event kind', exact: true }).selectOption('command_started');
   const started = page.locator('article.event', { hasText: 'Command Started' });
   await expect(page.locator('article.event')).toHaveCount(1);
   await shoot(page, 'applications/command-events', started);

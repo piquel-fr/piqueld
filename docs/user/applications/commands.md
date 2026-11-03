@@ -107,7 +107,7 @@ piquelctl preview exec notes feat/login web -it -- sh
 The environment's history records each command, without the command line
 itself, which may hold secrets: who started it, in which replica, and its exit
 code. Open the environment's **Events** tab in the dashboard to see them. To
-see only commands, enter `command_started` or `command_finished` under
+see only commands, choose `command started` or `command finished` under
 **Event kind**:
 
 ![The Events tab of notes' production environment, with command_started under Event kind: alice started a command in task db.1](../../images/applications/command-events.png)

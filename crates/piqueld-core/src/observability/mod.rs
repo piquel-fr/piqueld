@@ -67,6 +67,14 @@ pub struct EventFilter {
     pub descending: bool,
 }
 
+/// The distinct kinds of the retained events a caller may read, in name
+/// order, to filter history by one.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
+pub struct EventKinds {
+    /// Event kinds, such as `operation_succeeded`.
+    pub kinds: Vec<String>,
+}
+
 /// Current daemon measurements. Missing OS values are unavailable, never fabricated zeroes.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct DaemonStats {

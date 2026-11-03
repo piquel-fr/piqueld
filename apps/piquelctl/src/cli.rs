@@ -324,6 +324,14 @@ pub(crate) enum Command {
         /// Only show events of the environment with this ID, even a deleted one.
         #[arg(long, value_name = "ENVIRONMENT_ID")]
         environment: Option<String>,
+        /// Only show events of this kind, such as `operation_failed`.
+        ///
+        /// The dashboard's Events page lists the kinds recorded so far.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only show failures: events that carry an error code.
+        #[arg(long)]
+        errors_only: bool,
         #[command(flatten)]
         page: crate::support::PageArgs,
     },

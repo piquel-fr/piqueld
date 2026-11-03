@@ -28,6 +28,12 @@ impl ApplicationService {
             .filtered_events(filter, visible, cursor, limit)
             .await?)
     }
+    /// The kinds of the retained events `visible` allows, in name order.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn event_kinds(&self, visible: &Visibility) -> Result<Vec<String>, ApplicationError> {
+        Ok(self.store.event_kinds(visible).await?)
+    }
     /// Looks up a diagnostic occurrence and its contextual event.
     /// # Errors
     /// Returns absence or storage failures.

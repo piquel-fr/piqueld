@@ -151,6 +151,7 @@ when the complete normalized manifest is needed.
 | DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
+| GET | `/api/v1/events/kinds` | The distinct kinds of the events the caller may read, in name order, to filter the history by `kind` |
 | GET | `/api/v1/events/stream` | Replay and follow history as server-sent events; see [event history](#event-history) |
 | GET | `/api/v1/environments/{id}/exec` | WebSocket streaming a command in a running service task |
 

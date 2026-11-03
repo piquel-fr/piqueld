@@ -2,7 +2,8 @@
 //! and the audit trail.
 use super::format::{now_ms, timestamp};
 use super::ui::{
-    Icon, PageHeader, Tone, badge, empty, icon, key_values, loaded, loading, metric, notice, when,
+    Icon, PageHeader, Tone, badge, code_badge, empty, icon, key_values, loaded, loading, metric,
+    notice, when,
 };
 use super::{ClientErrorExt, UserError, access::can, dashboard_context, operation_events};
 use leptos::prelude::*;
@@ -127,7 +128,7 @@ pub(super) fn HistoryPage() -> impl IntoView {
     view! {
         <PageHeader
             title="Events"
-            description="Retained control-plane history across every application and the daemon itself."
+            description="Everything piqueld did, newest first: deployments and their steps, configuration changes, and failures. Deleting an application removes its history."
         />
         <EventHistory />
     }
@@ -139,31 +140,39 @@ pub(super) fn ErrorsPage() -> impl IntoView {
     view! {
         <PageHeader
             title="Errors"
-            description="Failures recorded by the daemon, with diagnostics explaining causes and next steps."
+            description="Every failure, newest first. Each one's diagnostic explains what went wrong and what to do."
         />
         <EventHistory errors_only=true />
     }
 }
 
 /// Filterable, paginated event list (`DEFAULT_PAGE_SIZE` per page), optionally
-/// scoped to one application (with all its environments) or one environment.
-/// Also honours an `?operation=` query filter; changing any filter or the
-/// operation resets to the newest page. Auto-refreshes via `Refresh`.
+/// scoped to one application (with all its environments), one environment,
+/// or one `operation`. Also honours an `?operation=` query filter; changing
+/// any filter or the operation resets to the newest page. Auto-refreshes via
+/// `Refresh`.
 #[component]
 #[expect(clippy::too_many_lines, reason = "flat view! markup")]
 pub(super) fn EventHistory(
     #[prop(optional, into)] application: Option<String>,
     #[prop(optional, into)] environment: Option<String>,
+    #[prop(optional, into)] operation: Option<String>,
     #[prop(optional)] errors_only: bool,
 ) -> impl IntoView {
     let refresh = Refresh::new();
     let scoped = environment.is_some();
     let owned = scoped || application.is_some();
-    let scope_filter = StoredValue::new((application, environment));
+    let scope_filter = StoredValue::new((application, environment, operation));
     let query = use_query_map();
+    // The operation shown: the one this list is about, else the address's.
+    let operation = move || {
+        scope_filter
+            .with_value(|(_, _, operation)| operation.clone())
+            .or_else(|| query.with(|query| query.get("operation")))
+    };
     let cursor = RwSignal::new(None::<String>);
     Effect::new(move |previous: Option<Option<String>>| {
-        let operation = query.with(|query| query.get("operation"));
+        let operation = operation();
         if previous.as_ref() != Some(&operation) {
             cursor.set(None);
         }
@@ -174,13 +183,19 @@ pub(super) fn EventHistory(
     let scope = RwSignal::new(String::new());
     let period = Period::new();
     let failures = RwSignal::new(errors_only);
+    // The kinds on offer, read once and again on Newest.
+    let kinds_revision = RwSignal::new(0_u32);
+    let kinds = LocalResource::new(move || {
+        kinds_revision.track();
+        async move { Client::browser().event_kinds().await.user_error() }
+    });
     let data = LocalResource::new(move || {
         refresh.track();
-        let (application_id, environment_id) = scope_filter.get_value();
+        let (application_id, environment_id, _) = scope_filter.get_value();
         let filter = EventFilter {
             application_id,
             environment_id,
-            operation_id: query.with(|query| query.get("operation")),
+            operation_id: operation(),
             kind: Some(kind.get()).filter(|kind| !kind.is_empty()),
             error_code: Some(code.get()).filter(|code| !code.is_empty()),
             scope: match scope.get().as_str() {
@@ -210,6 +225,11 @@ pub(super) fn EventHistory(
             reset();
         }
     };
+    // The address's operation filter is the page's, so it is cleared by link.
+    let filtered_by_address = move || {
+        scope_filter.with_value(|(_, _, operation)| operation.is_none())
+            && query.with(|query| query.get("operation").is_some())
+    };
     view! {
         <div class="toolbar">
             {period.select(true, reset)} <Show when={move || !owned}>
@@ -223,7 +243,20 @@ pub(super) fn EventHistory(
                 </label>
             </Show> <label class="field">
                 <span>"Event kind"</span>
-                <input placeholder="All kinds" on:change={filter(kind)} />
+                <select prop:value={move || kind.get()} on:change={filter(kind)}>
+                    <option value="">"All kinds"</option>
+                    {move || {
+                        kinds
+                            .get()
+                            .and_then(Result::ok)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|name| {
+                                view! { <option value={name.clone()}>{words(&name)}</option> }
+                            })
+                            .collect_view()
+                    }}
+                </select>
             </label> <label class="field">
                 <span>"Error code"</span>
                 <input placeholder="All codes" on:change={filter(code)} />
@@ -239,24 +272,13 @@ pub(super) fn EventHistory(
                     />
                     "Errors only"
                 </label>
-            </Show>
-            <div class="toolbar-end">
-                {move || {
-                    query
-                        .with(|q| q.get("operation"))
-                        .map(|operation| {
-                            view! {
-                                <span class="tag" title={operation}>
-                                    "Filtered by operation"
-                                </span>
-                            }
-                        })
-                }}
+            </Show> <div class="toolbar-end">
                 <button
                     type="button"
                     class="btn"
                     on:click={move |_| {
                         reset();
+                        kinds_revision.update(|revision| *revision = revision.wrapping_add(1));
                         refresh.request();
                     }}
                 >
@@ -265,6 +287,23 @@ pub(super) fn EventHistory(
                 </button>
             </div>
         </div>
+        {move || {
+            filtered_by_address()
+                .then(|| {
+                    let id = operation().unwrap_or_default();
+                    notice(
+                        Tone::Info,
+                        view! {
+                            <span>"Showing the events of operation " <code>{id}</code></span>
+                            <div class="btn-group">
+                                <A attr:class="btn btn-sm" href="/dashboard/events">
+                                    "Show all events"
+                                </A>
+                            </div>
+                        },
+                    )
+                })
+        }}
         {loaded(
             data,
             "Loading history…",
@@ -272,7 +311,7 @@ pub(super) fn EventHistory(
                 view! {
                     <div class="list">
                         {if page.items.is_empty() {
-                            empty("No matching events.")
+                            empty("No events match these filters.")
                         } else {
                             page.items
                                 .into_iter()
@@ -286,69 +325,115 @@ pub(super) fn EventHistory(
                     .into_any()
             },
         )}
-        <p class="hint mt-sm">
-            "Application deletion removes its history; daemon diagnostics may retain application context."
-        </p>
     }
 }
 
-/// Stable event kinds read better as words; failures are highlighted.
+/// An event kind or other identifier as words: `action_succeeded` reads
+/// "action succeeded".
+fn words(identifier: &str) -> String {
+    identifier.replace('_', " ")
+}
+
+/// What an event is about, read first: its message, unless that only
+/// repeats its kind; else the resource it concerns, else its phase (action
+/// events name their action there, such as `ensure_swarm`); else its kind as
+/// words.
+fn headline(event: &Event) -> String {
+    let kind = words(&event.kind);
+    event
+        .message
+        .clone()
+        .filter(|message| !message.is_empty() && *message != kind)
+        .or_else(|| event.resource.clone())
+        .or_else(|| event.phase.clone())
+        .unwrap_or(kind)
+}
+
+/// The event's kind as a badge, toned by its outcome: failures, successes
+/// and recoveries stand out; the rest is neutral.
 fn kind_badge(event: &Event) -> AnyView {
-    let failure = event.error_code.is_some() || event.kind.contains("fail");
-    let tone = if failure {
+    let kind = event.kind.as_str();
+    let tone = if event.error_code.is_some()
+        || kind.contains("fail")
+        || kind.contains("rejected")
+        || kind.contains("expired")
+    {
         Tone::Bad
-    } else if event.kind.contains("succeeded") || event.kind.contains("recover") {
+    } else if kind.contains("succeeded") || kind.contains("recover") || kind.contains("completed") {
         Tone::Ok
+    } else if kind.contains("cancelled") || kind.contains("superseded") {
+        Tone::Warn
     } else {
         Tone::Neutral
     };
-    badge(tone, event.kind.replace('_', " "))
+    badge(tone, words(kind))
 }
 
-/// Summary card for one event, linking to related operation events and, when
-/// present, its diagnostic details.
+/// One event: when it happened, what it is about, its kind, and the context
+/// that tells it apart, with every recorded field behind **Details**. Links
+/// lead to its environment, its operation's events, the requester's audit
+/// trail and its diagnostic.
 #[component]
 fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
     let signals = dashboard_context().signals;
+    let opened = RwSignal::new(false);
+    let title = headline(&event);
     let diagnostic = event.diagnostic.as_ref().map(|d| d.id.clone());
+    // Context worth a glance, without repeating the headline.
+    let unless_title = |value: &Option<String>| value.clone().filter(|value| *value != title);
     let meta = [
-        Some(event.scope.as_str().to_owned()),
-        event.phase.clone(),
-        event.resource.clone(),
+        unless_title(&event.phase),
+        unless_title(&event.resource),
         event.attempt.map(|attempt| format!("attempt {attempt}")),
-        event.retry.map(|retry| format!("request {retry}")),
         event
             .duration_ms
             .map(|ms| Elapsed(Duration::from_millis(ms)).to_string()),
-        event.error_code.clone(),
-        event.action_id.clone().map(|id| format!("action {id}")),
-        match &event.actor {
-            Some(actor @ EventActor::System { .. }) => Some(format!("by {actor}")),
-            _ => None,
-        },
     ];
     let environment = event.environment_id.clone().filter(|_| !scoped);
+    let actor = event.actor.as_ref().map(ToString::to_string);
+    let details = [
+        ("Kind", Some(event.kind.clone())),
+        ("Scope", Some(event.scope.as_str().to_owned())),
+        ("Message", event.message.clone()),
+        ("Resource", event.resource.clone()),
+        ("Phase", event.phase.clone()),
+        ("Attempt", event.attempt.map(|attempt| attempt.to_string())),
+        ("Request", event.retry.map(|retry| retry.to_string())),
+        ("Duration", event.duration_ms.map(|ms| format!("{ms} ms"))),
+        ("Error code", event.error_code.clone()),
+        ("Operation", event.operation_id.clone()),
+        ("Action", event.action_id.clone()),
+        ("Request ID", event.request_id.clone()),
+        ("By", actor),
+        ("Event", Some(event.id.to_string())),
+    ];
     view! {
-        <article class="event">
+        <article class="event" data-tone={event.error_code.as_ref().map(|_| "bad")}>
             <span class="event-time">{when(event.created_at_ms)}</span>
-            <div>
+            <div class="event-main">
                 <div class="event-title">
-                    {kind_badge(&event)} <span>{event.message.clone().unwrap_or_default()}</span>
+                    <strong>{title}</strong>
+                    {kind_badge(&event)}
+                    {event.error_code.clone().map(|code| code_badge(Tone::Bad, code))}
                 </div>
                 <div class="event-meta">
-                    {meta
-                        .into_iter()
-                        .flatten()
-                        .map(|item| view! { <span>{item}</span> })
-                        .collect_view()}
-                </div>
-                <div class="event-links">
                     {move || {
                         environment
                             .as_ref()
                             .and_then(|id| signals.environment_link(id.as_str()))
                             .map(|(label, href)| view! { <A href={href}>{label}</A> })
                     }}
+                    {meta
+                        .iter()
+                        .flatten()
+                        .map(|item| view! { <span>{item.clone()}</span> })
+                        .collect_view()}
+                </div>
+                <div class="event-links">
+                    {event
+                        .operation_id
+                        .clone()
+                        .map(|id| view! { <A href={operation_events(&id)}>"Operation"</A> })}
                     {event
                         .actor
                         .as_ref()
@@ -360,17 +445,34 @@ fn EventCard(event: Event, #[prop(optional)] scoped: bool) -> impl IntoView {
                                 )}>"Requester"</A>
                             }
                         })}
-                    {event
-                        .operation_id
-                        .map(|id| view! { <A href={operation_events(&id)}>"Operation events"</A> })}
                     {diagnostic
                         .map(|id| {
-                            view! {
-                                <A href={format!("/dashboard/errors/{id}")}>"Diagnostic details"</A>
-                            }
+                            view! { <A href={format!("/dashboard/errors/{id}")}>"Diagnostic"</A> }
                         })}
                 </div>
+                <dl class="kv event-details" hidden={move || !opened.get()}>
+                    {details
+                        .into_iter()
+                        .filter_map(|(label, value)| {
+                            value
+                                .map(|value| {
+                                    view! {
+                                        <dt>{label}</dt>
+                                        <dd>{value}</dd>
+                                    }
+                                })
+                        })
+                        .collect_view()}
+                </dl>
             </div>
+            <button
+                type="button"
+                class="btn btn-ghost btn-sm event-toggle"
+                aria-expanded={move || opened.get().to_string()}
+                on:click={move |_| opened.update(|opened| *opened = !*opened)}
+            >
+                {move || if opened.get() { "Hide" } else { "Details" }}
+            </button>
         </article>
     }
 }
@@ -389,7 +491,6 @@ pub(super) fn DiagnosticPage() -> impl IntoView {
             {icon(Icon::ChevronRight)}
             <span>"Diagnostic"</span>
         </nav>
-        <PageHeader title="Diagnostic details" />
         {loaded(
             data,
             "Loading diagnostic…",
@@ -398,92 +499,141 @@ pub(super) fn DiagnosticPage() -> impl IntoView {
     }
 }
 
-/// Full diagnostic view: event context, causes, suggested next action and retryability.
+/// Full diagnostic view: what failed and what to do, where it happened, and
+/// the events of its operation, or the event itself without one.
 #[component]
 fn DiagnosticDetails(event: Event) -> impl IntoView {
     let detail = event.diagnostic.clone();
     let operation = event.operation_id.clone();
+    // Named once the application listing has loaded.
+    let signals = dashboard_context().signals;
     let environment = event.environment_id.clone().map_or_else(
         || "Daemon".into_any(),
-        |id| dashboard_context().signals.environment_label(id.as_str()),
+        |id| view! { {move || signals.environment_label(id.as_str())} }.into_any(),
     );
+    let (code, summary, retryable) = detail.as_ref().map_or_else(
+        || (event.kind.clone(), headline(&event), None),
+        |d| (d.code.clone(), d.summary.clone(), Some(d.retryable)),
+    );
+    let context = [
+        ("Recorded", Some(timestamp(event.created_at_ms).into_any())),
+        ("Environment", Some(environment)),
+        (
+            "Operation",
+            operation.clone().map(|id| {
+                view! {
+                    <A href={operation_events(&id)}>
+                        <code>{id.clone()}</code>
+                    </A>
+                }
+                .into_any()
+            }),
+        ),
+        (
+            "Action",
+            event
+                .action_id
+                .clone()
+                .map(|id| view! { <code>{id}</code> }.into_any()),
+        ),
+        (
+            "Request ID",
+            event
+                .request_id
+                .clone()
+                .map(|id| view! { <code>{id}</code> }.into_any()),
+        ),
+        (
+            "Diagnostic ID",
+            detail
+                .as_ref()
+                .map(|d| view! { <code>{d.id.clone()}</code> }.into_any()),
+        ),
+    ];
     view! {
+        <header class="page-header">
+            <div>
+                <h1>
+                    <code>{code}</code>
+                </h1>
+                <p>{summary}</p>
+            </div>
+            <div class="page-actions">
+                {retryable
+                    .map(|retryable| {
+                        badge(
+                            if retryable { Tone::Info } else { Tone::Warn },
+                            if retryable { "retryable" } else { "needs attention" },
+                        )
+                    })}
+            </div>
+        </header>
         <div class="stack">
             {detail
                 .map(|d| {
                     view! {
-                        <section class="card">
-                            <header>
-                                <div>
-                                    <h2>{d.code}</h2>
-                                    <p>{d.summary}</p>
-                                </div>
-                                {badge(
-                                    if d.retryable { Tone::Info } else { Tone::Warn },
-                                    if d.retryable { "retryable" } else { "needs attention" },
-                                )}
-                            </header>
-                            <div class="stack-sm">
-                                {(!d.causes.is_empty())
-                                    .then(|| {
-                                        view! {
-                                            <div>
-                                                <h3>"Causes"</h3>
-                                                <ul class="bullets">
-                                                    {d
-                                                        .causes
-                                                        .into_iter()
-                                                        .map(|cause| view! { <li>{cause}</li> })
-                                                        .collect_view()}
-                                                </ul>
-                                            </div>
-                                        }
-                                    })}
-                                {notice(
-                                    Tone::Info,
-                                    view! {
-                                        <strong>"Next action"</strong>
-                                        {d.next_action}
-                                        {if d.retryable {
-                                            " Automatic recovery is supported; inspect related events for the latest outcome."
-                                        } else {
-                                            " Administrator intervention may be required."
-                                        }}
-                                    },
-                                )}
-                            </div>
-                        </section>
+                        {notice(
+                            Tone::Info,
+                            view! {
+                                <strong>"What to do"</strong>
+                                {d.next_action}
+                                {if d.retryable {
+                                    " piqueld retries this on its own; the operation's events below show the latest outcome."
+                                } else {
+                                    " It will not recover on its own."
+                                }}
+                            },
+                        )}
+                        {(!d.causes.is_empty())
+                            .then(|| {
+                                view! {
+                                    <section class="card">
+                                        <header>
+                                            <h3>"Causes"</h3>
+                                        </header>
+                                        <ul class="bullets">
+                                            {d
+                                                .causes
+                                                .into_iter()
+                                                .map(|cause| view! { <li>{cause}</li> })
+                                                .collect_view()}
+                                        </ul>
+                                    </section>
+                                }
+                            })}
                     }
                 })} <section class="card">
                 <header>
-                    <h3>"Context"</h3>
+                    <h3>"Where"</h3>
                 </header>
-                <dl class="kv">
-                    <dt>"Recorded"</dt>
-                    <dd>{timestamp(event.created_at_ms)}</dd>
-                    <dt>"Environment"</dt>
-                    <dd>{environment}</dd>
-                    <dt>"Operation"</dt>
-                    <dd>
-                        {operation
-                            .map_or_else(
-                                || "None".into_any(),
-                                |id| view! { <A href={operation_events(&id)}>{id}</A> }.into_any(),
-                            )}
-                    </dd>
-                    <dt>"Action"</dt>
-                    <dd>{event.action_id.clone().unwrap_or_else(|| "None".into())}</dd>
-                    <dt>"Request"</dt>
-                    <dd>{event.request_id.clone().unwrap_or_else(|| "None".into())}</dd>
-                    <dt>"Diagnostic ID"</dt>
-                    <dd>
-                        <code>
-                            {event.diagnostic.as_ref().map(|d| d.id.clone()).unwrap_or_default()}
-                        </code>
-                    </dd>
-                </dl>
-            </section> <section class="list">
-                <EventCard event={event} />
+                {key_values(
+                    context
+                        .into_iter()
+                        .filter_map(|(label, value)| value.map(|value| (label, value))),
+                )}
+            </section> <section>
+                <div class="section-header">
+                    <div>
+                        <h2>
+                            {if operation.is_some() {
+                                "Events of this operation"
+                            } else {
+                                "The event"
+                            }}
+                        </h2>
+                    </div>
+                </div>
+                {match operation {
+                    Some(operation) => view! { <EventHistory operation={operation} /> }.into_any(),
+                    None => {
+                        view! {
+                            <section class="list">
+                                <EventCard event={event} />
+                            </section>
+                        }
+                            .into_any()
+                    }
+                }}
             </section>
         </div>
     }

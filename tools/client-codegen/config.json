@@ -581,6 +581,11 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::DaemonStats>"
     },
     {
+      "schema": "Envelope_EventKinds",
+      "name": "EnvelopeEventKinds",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::EventKinds>"
+    },
+    {
       "schema": "Envelope_DeploymentAnalytics",
       "name": "EnvelopeDeploymentAnalytics",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::DeploymentAnalytics>"

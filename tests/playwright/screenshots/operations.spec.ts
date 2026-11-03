@@ -22,7 +22,7 @@ test('history', async ({ page, cli, account }) => {
   });
   await (await Piquelctl.signIn(page, cli)).applyFailing(await broken());
   await errors(page, 2);
-  await shoot(page, 'operations/errors', page.getByText(/^Application deletion removes its history/));
+  await shoot(page, 'operations/errors', page.locator('article.event').last());
 });
 
 test('notifications', async ({ page, cli, account }) => {

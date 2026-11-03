@@ -19,7 +19,7 @@ use axum::{
 use piqueld_core::{
     Event,
     api::{Envelope, Page},
-    observability::{EventFilter, EventScope},
+    observability::{EventFilter, EventKinds, EventScope},
 };
 use serde::Deserialize;
 use std::{collections::VecDeque, convert::Infallible};
@@ -102,6 +102,19 @@ pub(super) async fn list(
             query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
         )
         .await?))
+}
+/// Lists the kinds of retained events.
+///
+/// The distinct `kind` values of the events the caller may read, in name
+/// order, for filtering `GET /api/v1/events` by `kind`.
+#[utoipa::path(get,path="/api/v1/events/kinds",operation_id="listEventKinds",responses((status=200,description="Event kinds, in name order",body=Envelope<EventKinds>),(status=503,response=inline(ApiErrorResponse))))]
+pub(super) async fn kinds(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<Identity>,
+) -> Result<impl IntoResponse, ApiError> {
+    let visible = super::access::history(&identity.grants)?;
+    let kinds = state.event_kinds(&visible).await?;
+    Ok(ok(EventKinds { kinds }))
 }
 // The first batch is read before responding so request errors are still plain
 // JSON; afterwards the stream polls the store every second.

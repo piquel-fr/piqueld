@@ -233,6 +233,17 @@ pub(super) fn badge(tone: Tone, label: impl Into<String>) -> AnyView {
     .into_any()
 }
 
+/// Small `tone`d pill with a machine-readable `code`, such as an error
+/// code, kept as written.
+pub(super) fn code_badge(tone: Tone, code: impl Into<String>) -> AnyView {
+    view! {
+        <span class="badge badge-code" data-tone={tone.attr()}>
+            {code.into()}
+        </span>
+    }
+    .into_any()
+}
+
 /// The tone of how export to a telemetry collector is going.
 pub(super) const fn telemetry_tone(destination: &TelemetryDestinationStatus) -> Tone {
     match (

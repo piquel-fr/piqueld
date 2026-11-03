@@ -6,7 +6,7 @@ use super::*;
 /// environment deployed has no Docker secrets to clean up.
 async fn assert_secret_history(client: &Client, application_id: &str) {
     let history = client
-        .events(Some(application_id), None, None, 100)
+        .events(Some(application_id), None, None, false, None, 100)
         .await
         .unwrap()
         .items;
