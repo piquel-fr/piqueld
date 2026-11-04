@@ -22,7 +22,10 @@ edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
 repository = "https://github.com/piquel-fr/piqueld"
-homepage = "https://docs.piqueld.dev"
+homepage = "https://piqueld.dev"
+# The daemon and CLI link the book; the library crates leave this unset, so
+# crates.io links their API documentation on docs.rs.
+documentation = "https://docs.piqueld.dev"
 readme = "README.md"
 keywords = ["docker", "swarm", "deployment", "paas", "self-hosted"]
 
