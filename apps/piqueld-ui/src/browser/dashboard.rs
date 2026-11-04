@@ -1,8 +1,8 @@
 //! Sidebar navigation, overview metrics, application directory, and recent deployments.
 use super::format::timestamp;
 use super::ui::{
-    Icon, PageHeader, Tone, badge, empty, health_badge, icon, key_values, loading, metric, notice,
-    operation_badge, when,
+    Icon, PageHeader, Tone, badge, empty, health_badge, icon, key_values, loading, logo, metric,
+    notice, operation_badge, when,
 };
 use super::{ApplicationRow, ClientErrorExt, access::can, dashboard_context, management};
 use crate::overview::PreviewLoad;
@@ -78,10 +78,7 @@ pub(super) fn Sidebar() -> impl IntoView {
     view! {
         <aside class="sidebar" data-open={move || opened.get().then_some("")}>
             <A attr:class="brand" href="/dashboard/">
-                <span class="brand-mark" aria-hidden="true">
-                    "p"
-                </span>
-                "piqueld"
+                {logo()}
             </A>
             <button
                 type="button"

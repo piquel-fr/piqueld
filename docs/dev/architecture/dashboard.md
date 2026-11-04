@@ -39,6 +39,12 @@ tokens, shell layout, and component rules, in `apps/piqueld-ui/styles/`. To
 format view macros as well as Rust, run `leptosfmt` from `apps/piqueld-ui` (it
 reads the local `leptosfmt.toml`), followed by `cargo fmt --all`.
 
+The logo's mark is `apps/piqueld-ui/assets/favicon.svg`, with `favicon.png` as
+its 512-pixel raster. The dashboard inlines the SVG next to its name and serves
+both as its icons, and the documentation book uses them as its favicon. The
+wordmark, mark and name together, is `docs/images/wordmark.svg`. The name is
+drawn with Inter outlines, so it needs no font.
+
 ## Production assets
 
 The release dashboard ships inside the daemon binary itself, and Cargo builds
@@ -49,7 +55,8 @@ it. With the `embedded-ui` feature, the daemon build script:
 2. generates the JavaScript bindings in-process with `wasm-bindgen-cli-support`,
    pinned to the exact `wasm-bindgen` version;
 3. concatenates `styles/` in cascade order, and writes a small loader module;
-4. fills the placeholders in `apps/piqueld-ui/index.html` with the
+4. copies the logo and other files of `assets/` with content hashes;
+5. fills the placeholders in `apps/piqueld-ui/index.html` with the
    content-hashed file names, and embeds every file.
 
 Setting `PIQUELD_DASHBOARD_WASM` to a compiled `piqueld-ui.wasm` skips step 1

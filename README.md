@@ -1,5 +1,5 @@
 <!-- Links are absolute, so they also work on crates.io, which shows this file. -->
-# piqueld
+# <img src="https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/images/wordmark.svg" alt="piqueld" height="40">
 
 [![CI](https://github.com/piquel-fr/piqueld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/piquel-fr/piqueld/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/piqueld.svg)](https://crates.io/crates/piqueld)

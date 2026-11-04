@@ -3,7 +3,7 @@
 use super::access::{GrantEditor, can, short_summary, summary};
 use super::management::remember_tab;
 use super::ui::{
-    FormModal, Icon, Modal, PageHeader, TabSet, Tone, badge, empty, icon, loading, notice,
+    FormModal, Icon, Modal, PageHeader, TabSet, Tone, badge, empty, icon, loading, logo, notice,
     one_time_secret, row_actions, text_field, when,
 };
 use super::{ClientErrorExt, confirm, reload};
@@ -343,17 +343,9 @@ fn account_session() -> Signal<bool> {
     })
 }
 
-/// The piqueld mark and name heading authentication cards.
+/// The piqueld logo heading authentication cards.
 fn brand() -> AnyView {
-    view! {
-        <div class="auth-brand">
-            <span class="brand-mark" aria-hidden="true">
-                "p"
-            </span>
-            "piqueld"
-        </div>
-    }
-    .into_any()
+    view! { <div class="auth-brand">{logo()}</div> }.into_any()
 }
 
 /// Keep the router and route definitions mounted for the lifetime of the page.

@@ -4,3 +4,4 @@
 !flake.lock
 !book.toml
 !docs
+!apps/piqueld-ui/assets
