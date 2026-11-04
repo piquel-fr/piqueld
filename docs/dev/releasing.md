@@ -147,8 +147,8 @@ docs.rs builds the new `piqueld-client` documentation within a few minutes.
   ```
 
 - **Tagging or creating the GitHub release fails.** The crates are published.
-  Run the `git` and `gh` commands above that didn't run, and close the
-  milestone on GitHub.
+  Run the command that failed again, then the `git` and `gh` commands above
+  that come after it, and close the milestone on GitHub.
 
 - **A published version is broken.** A version can't be replaced. Yank it
   with `cargo yank --version 0.2.0 <crate>` for each crate, so new installs
