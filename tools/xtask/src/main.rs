@@ -1,8 +1,7 @@
 //! Development tasks for the piqueld workspace, run with `cargo xtask`: this
 //! worktree's development instance (`just dev`, see docs/dev/development.md), the
 //! isolated Docker integration tests, the Playwright browser suite, the
-//! `piqueld-core` dependency boundary, test coverage, and publishing to
-//! crates.io.
+//! `piqueld-core` dependency boundary, test coverage, and releases.
 
 mod boundary;
 mod coverage;
@@ -63,6 +62,9 @@ enum Task {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Release the workspace version from the latest main: publish the
+    /// crates, then tag the commit and create its GitHub release.
+    Release,
 }
 
 #[tokio::main]
@@ -75,6 +77,7 @@ async fn main() -> Result<ExitCode> {
         Task::Boundary => boundary::check(&workspace),
         Task::Coverage { args } => coverage::run(&workspace, &args),
         Task::Publish { args } => publish::run(&workspace, &args),
+        Task::Release => publish::release(&workspace),
     }
 }
 

@@ -2,8 +2,8 @@
 
 A release publishes the daemon, `piquelctl` and `piqueld-client` to
 [crates.io](https://crates.io/crates/piqueld), with the two crates they depend
-on, then tags the commit and creates a GitHub release. A maintainer runs each
-step by hand.
+on, then tags the commit and creates a GitHub release. A maintainer runs it
+with `just release`.
 
 ## Versions
 
@@ -94,33 +94,19 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    git switch main && git pull
    ```
 
-3. Check that every crate packages and builds, without uploading anything:
+3. Release it:
 
    ```console
-   just publish --dry-run
+   just release
    ```
 
-4. Publish the crates:
-
-   ```console
-   just publish
-   ```
-
-   It builds the dashboard, publishes the five crates in dependency order, and
-   takes several minutes.
-5. Tag the commit, and push the tag:
-
-   ```console
-   git tag --annotate v0.2.0 --message "piqueld 0.2.0"
-   git push origin v0.2.0
-   ```
-
-6. Create the GitHub release, with notes listing the pull requests merged
-   since the previous release:
-
-   ```console
-   gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --generate-notes
-   ```
+   It checks that you are on the latest `main` with a clean working tree, and
+   that the version isn't released yet. It then publishes the five crates in
+   dependency order, which takes several minutes, tags the commit
+   `v<version>`, pushes the tag, and creates the GitHub release, with notes
+   listing the pull requests merged since the previous release. To check that
+   every crate packages and builds without uploading anything, run
+   `just publish --dry-run` first.
 
    For a release that breaks existing setups, edit the release on GitHub to
    say how to upgrade.
@@ -140,13 +126,20 @@ docs.rs builds the new `piqueld-client` documentation within a few minutes.
 ## Troubleshooting
 
 - **Publishing fails partway.** The crates published before the failure stay
-  published, and crates.io refuses to publish a version twice. Fix the cause,
-  then publish the remaining crates, with `--exclude` for each one already
-  published:
+  published, and crates.io refuses to publish a version twice, so
+  `just release` can't run again. Fix the cause, publish the remaining crates
+  with `--exclude` for each one already published, then tag and create the
+  release by hand:
 
   ```console
   just publish --exclude piqueld-probe --exclude piqueld-core
+  git tag --annotate v0.2.0 --message "piqueld 0.2.0"
+  git push origin v0.2.0
+  gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --generate-notes
   ```
+
+- **Tagging or creating the GitHub release fails.** The crates are published.
+  Run the `git` and `gh` commands above that didn't run.
 
 - **A published version is broken.** A version can't be replaced. Yank it
   with `cargo yank --version 0.2.0 <crate>` for each crate, so new installs

@@ -83,6 +83,12 @@ boundary:
 publish *ARGS:
     @cargo xtask publish "$@"
 
+# Releases the workspace version from the latest main: publishes the crates,
+# then tags the commit and creates its GitHub release; see
+# docs/dev/releasing.md.
+release:
+    @cargo xtask release
+
 # UI checks and embedded builds need only the wasm32 target from
 # rust-toolchain.toml: the daemon build script compiles and binds the dashboard
 # itself. Default all-feature Clippy builds the embedded dashboard, and

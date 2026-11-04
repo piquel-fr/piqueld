@@ -1,17 +1,69 @@
 //! `cargo xtask publish`: publishes the workspace's crates to crates.io, with
-//! the prebuilt dashboard the published daemon embeds. See
+//! the prebuilt dashboard the published daemon embeds, and `cargo xtask
+//! release`, which also tags the release and creates it on GitHub. See
 //! docs/dev/releasing.md.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, Stdio};
+use std::process::{Command, ExitCode, ExitStatus, Stdio};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
 use crate::Workspace;
 use crate::process::{checked_stdout, exit_code};
+
+/// Releases the workspace version from `HEAD`, which must be the latest
+/// `origin/main`, unless the version is already tagged on `origin`: publishes
+/// the crates, then tags `HEAD` `v<version>`, pushes the tag, and creates its
+/// GitHub release, with notes listing the pull requests merged since the
+/// previous release.
+pub fn release(workspace: &Workspace) -> Result<ExitCode> {
+    let root = workspace.root();
+    let package_id = daemon_package_id(workspace)?;
+    let version = package_id
+        .rsplit(['#', '@'])
+        .next()
+        .with_context(|| format!("no version in the package ID {package_id}"))?;
+    let tag = format!("v{version}");
+    let title = format!("piqueld {version}");
+
+    Workspace::git(root, &["fetch", "origin", "main"])?;
+    ensure!(
+        Workspace::git(root, &["rev-parse", "HEAD"])?
+            == Workspace::git(root, &["rev-parse", "FETCH_HEAD"])?,
+        "release from the latest origin/main: run `git switch main && git pull`"
+    );
+    let tagged = Workspace::git(
+        root,
+        &["ls-remote", "--tags", "origin", &format!("refs/tags/{tag}")],
+    )?;
+    ensure!(
+        tagged.is_empty(),
+        "{tag} is already released; set a new version in Cargo.toml first"
+    );
+
+    let status = publish(workspace, &[])?;
+    if !status.success() {
+        return Ok(exit_code(status));
+    }
+    Workspace::git(root, &["tag", "--annotate", &tag, "--message", &title])?;
+    Workspace::git(root, &["push", "origin", &tag])?;
+    println!("tagged and pushed {tag}");
+    let status = Command::new("gh")
+        .args(["release", "create", &tag, "--verify-tag", "--title", &title])
+        .arg("--generate-notes")
+        .current_dir(root)
+        .status()
+        .context("run gh release create")?;
+    Ok(exit_code(status))
+}
+
+/// Runs [`publish`] for `cargo xtask publish`.
+pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
+    publish(workspace, args).map(exit_code)
+}
 
 /// Ships the dashboard in the daemon crate, then runs
 /// `cargo publish --workspace` with `args`, such as `--dry-run`. Cargo
@@ -20,7 +72,7 @@ use crate::process::{checked_stdout, exit_code};
 /// Cargo counts the shipped dashboard, which is gitignored but packaged, as an
 /// uncommitted change, so this checks that the working tree is clean itself,
 /// unless `args` has `--allow-dirty`, and always passes `--allow-dirty`.
-pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
+fn publish(workspace: &Workspace, args: &[String]) -> Result<ExitStatus> {
     let allow_dirty = args.iter().any(|arg| arg == "--allow-dirty");
     if !allow_dirty {
         let changes = Workspace::git(
@@ -33,14 +85,23 @@ pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
         );
     }
     let _dashboard = ShippedDashboard::build(workspace)?;
-    let status = workspace
+    workspace
         .cargo()
         .args(["publish", "--locked", "--workspace"])
         .args((!allow_dirty).then_some("--allow-dirty"))
         .args(args)
         .status()
-        .context("run cargo publish")?;
-    Ok(exit_code(status))
+        .context("run cargo publish")
+}
+
+/// The daemon's package ID, such as `path+file:///…/apps/piqueld#0.1.0`.
+fn daemon_package_id(workspace: &Workspace) -> Result<String> {
+    let output = workspace
+        .cargo()
+        .args(["pkgid", "--package", "piqueld"])
+        .output()
+        .context("run cargo pkgid")?;
+    checked_stdout("cargo pkgid", output)
 }
 
 /// The dashboard bundle in `apps/piqueld/dashboard`, which the daemon's build
@@ -53,12 +114,7 @@ impl ShippedDashboard {
     /// script's `OUT_DIR/dashboard-dist`.
     fn build(workspace: &Workspace) -> Result<Self> {
         let daemon = workspace.root().join("apps/piqueld");
-        let output = workspace
-            .cargo()
-            .args(["pkgid", "--package", "piqueld"])
-            .output()
-            .context("run cargo pkgid")?;
-        let package_id = checked_stdout("cargo pkgid", output)?;
+        let package_id = daemon_package_id(workspace)?;
         let mut cargo = workspace
             .cargo()
             .args(["check", "--locked", "--package", "piqueld"])

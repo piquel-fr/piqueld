@@ -40,7 +40,8 @@ skips `check` and `build`: the stronger all-target Clippy and the Nix package
 build cover them. `fmt` and `generate` are editing commands whose results are
 checked above, and `setup-playwright` installs the browser test dependencies.
 `run`, `ctl`, `daemon`, `daemon-embedded`, `dev`, and `docs-serve` launch
-interactive processes and are not finite validation commands. `coverage`
+interactive processes and are not finite validation commands. `publish` and
+`release` [release piqueld](releasing.md). `coverage`
 measures the tests without checking a minimum; see
 [test coverage](#test-coverage).
 
