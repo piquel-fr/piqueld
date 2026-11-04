@@ -3,6 +3,7 @@ name = "xtask"
 description = "Development tasks for the piqueld workspace, run with `cargo xtask`"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false

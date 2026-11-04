@@ -32,7 +32,7 @@ minutes: run it as a background command rather than polling. If it prints:
 
 ## Iterate
 
-Every save under `apps/piqueld`, `apps/piqueld-ui`, `crates`, `migrations`, the
+Every save under `apps/piqueld` (its migrations included), `apps/piqueld-ui`, `crates`, the
 Cargo manifests and build settings, or `piqueld.local.toml` rebuilds and
 restarts the daemon. Run `just dev wait` after editing and before testing: it
 treats files saved after the current build started as unbuilt, so it never

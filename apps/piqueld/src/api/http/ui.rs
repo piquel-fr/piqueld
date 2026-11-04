@@ -53,7 +53,7 @@ pub(super) async fn security_headers(request: Request, next: Next) -> Response {
 /// Describes whether the dashboard is available to the daemon.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UiAssets {
-    /// The binary was built without `embedded-ui`; no dashboard routes are
+    /// The binary was built without a dashboard; no dashboard routes are
     /// registered and the process serves the API only.
     Disabled,
     /// Serve this compile-time bundle below `/dashboard/`.
@@ -63,16 +63,16 @@ pub enum UiAssets {
 impl UiAssets {
     /// Resolves dashboard availability for the current binary.
     ///
-    /// The dashboard exists exactly when the daemon was built with the
-    /// `embedded-ui` feature; there is no runtime configuration anymore.
+    /// The dashboard exists exactly when the build script embedded one (see
+    /// `ui_bundle`); there is no runtime configuration.
     #[must_use]
     pub fn resolve() -> Self {
-        #[cfg(feature = "embedded-ui")]
+        #[cfg(embedded_dashboard)]
         {
             Self::Embedded(crate::ui_bundle::BUNDLE)
         }
 
-        #[cfg(not(feature = "embedded-ui"))]
+        #[cfg(not(embedded_dashboard))]
         {
             Self::Disabled
         }

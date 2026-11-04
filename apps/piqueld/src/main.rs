@@ -313,7 +313,7 @@ impl Listeners {
 /// embedded bundle is identifiable in the log without probing `/dashboard`.
 fn log_ui_status(ui_assets: &UiAssets) {
     match ui_assets {
-        UiAssets::Disabled => info!("dashboard disabled: built without the embedded-ui feature"),
+        UiAssets::Disabled => info!("dashboard disabled: built without a dashboard"),
         UiAssets::Embedded(bundle) => {
             info!(
                 assets = bundle.len(),

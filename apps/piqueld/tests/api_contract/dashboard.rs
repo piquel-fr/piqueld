@@ -18,13 +18,13 @@ async fn dashboard_fallback_preserves_api_and_asset_route_precedence() {
 
 /// Exercise the shipped bundle: every script is a same-origin file, so the
 /// constant CSP needs no inline-script hashes.
-#[cfg(feature = "embedded-ui")]
+#[cfg(embedded_dashboard)]
 #[tokio::test]
 async fn compiled_dashboard_serves_assets_without_inline_scripts() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let assets = UiAssets::resolve();
     let UiAssets::Embedded(bundle) = assets else {
-        panic!("embedded-ui must resolve to the compiled bundle");
+        panic!("an embedded dashboard must resolve to its bundle");
     };
     let application = web_router(state(&temp).await, assets, FakeAuth);
     let shell = application.send(request("/dashboard/")).await;

@@ -37,13 +37,20 @@ impl NestedCargo {
     }
 
     /// Builds `package` with `profile` for `target` from `dir`, and returns the
-    /// directory holding its artifacts.
+    /// directory holding its artifacts. `config` is a Cargo configuration file
+    /// passed with `--config`, such as one that defines `profile`.
+    ///
+    /// Reruns the build script when `dir`, `config`, or the manifest and
+    /// lockfile it builds against change. These are the workspace's when `dir`
+    /// is a workspace member, and the package's own when it is a published
+    /// crate.
     pub fn build(
         &self,
         dir: &Path,
         package: &str,
         profile: &str,
         target: &str,
+        config: Option<&Path>,
     ) -> Result<PathBuf, Box<dyn Error>> {
         const HOST_SETTINGS: [&str; 6] = [
             "RUSTFLAGS",
@@ -53,6 +60,18 @@ impl NestedCargo {
             "RUSTC_WRAPPER",
             "RUSTC_WORKSPACE_WRAPPER",
         ];
+        let root = dir
+            .ancestors()
+            .find(|ancestor| ancestor.join("Cargo.lock").is_file())
+            .ok_or_else(|| io::Error::other(format!("no Cargo.lock above {}", dir.display())))?;
+        let inputs = [
+            dir.to_owned(),
+            root.join("Cargo.toml"),
+            root.join("Cargo.lock"),
+        ];
+        for input in inputs.iter().map(PathBuf::as_path).chain(config) {
+            println!("cargo:rerun-if-changed={}", input.display());
+        }
         let cargo = env::var_os("CARGO")
             .ok_or("Cargo did not provide CARGO to the piqueld build script")?;
         println!(
@@ -65,6 +84,9 @@ impl NestedCargo {
             .args(["build", "--locked", "--package", package])
             .args(["--profile", profile, "--target", target])
             .env("CARGO_TARGET_DIR", &self.target_dir);
+        if let Some(config) = config {
+            command.arg("--config").arg(config);
+        }
         for (key, _) in env::vars_os() {
             if key.to_str().is_some_and(|key| {
                 HOST_SETTINGS.contains(&key) || key.starts_with("CARGO_PROFILE_")

@@ -5,16 +5,18 @@
 #
 #   checks  -> fmt-check, deny
 #   rust    -> lint, test, doc-test, openapi-check, boundary
+#   msrv    -> the published crates on the Rust their `rust-version` names
 #   wasm-ui -> ui-check, check-wasm, test-wasm
 #   docker-integration -> docker-test
 #   browser-playwright -> test-playwright
 #   cli (macOS)        -> validate-cli
 #   nix                -> the combined Nix package
+#   package            -> publish --dry-run
 #   docs               -> docs
 #
 # Pull requests run only the jobs whose inputs changed (see `changes`). Draft
-# pull requests run only the quick jobs (checks, rust, wasm-ui): the slower
-# ones (Docker, Playwright, macOS, Nix) wait until the pull request is marked
+# pull requests run only the quick jobs (checks, rust, msrv, wasm-ui): the slower
+# ones (Docker, Playwright, macOS, Nix, packaging) wait until the pull request is marked
 # ready, so iterating on a draft stays cheap. `docs` runs on every pull
 # request, as its links point all over the repository and any change can
 # break one. Pushes to main and manual runs run everything, and build every
@@ -69,6 +71,7 @@ jobs:
       docker: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.docker == 'true' && !github.event.pull_request.draft) }}
       playwright: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.playwright == 'true' && !github.event.pull_request.draft) }}
       nix: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.nix == 'true' && !github.event.pull_request.draft) }}
+      package: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.package == 'true' && !github.event.pull_request.draft) }}
     steps:
       - if: github.event_name == 'pull_request'
         id: filter
@@ -90,7 +93,6 @@ jobs:
               - *crates
               - apps/**
               - tools/**
-              - migrations/**
               - examples/**
               # A piqueld-core test loads piqueld.dev's manifest and its files.
               - deploy/**
@@ -115,14 +117,12 @@ jobs:
             docker:
               - *crates
               - apps/piqueld/**
-              - migrations/**
               - tools/**
               - examples/**
               - scripts/**
             playwright:
               - *crates
               - apps/**
-              - migrations/**
               - tools/**
               - examples/**
               - tests/playwright/**
@@ -137,8 +137,14 @@ jobs:
               - nix/**
               - apps/**
               - tools/xtask/**
-              - migrations/**
               - examples/**
+            # What the published crates are packaged from.
+            package:
+              - *crates
+              - apps/**
+              - tools/xtask/**
+              - README.md
+              - LICENSE
 
   checks:
     name: checks
@@ -185,6 +191,33 @@ jobs:
       - run: just doc-test
       - run: just openapi-check
       - run: just boundary
+
+  # Builds the published crates, as `cargo install` and their dependents do,
+  # with the oldest Rust the workspace's `rust-version` promises. Warnings
+  # aren't errors here: lints differ between Rust versions, and `rust` lints
+  # with the pinned one.
+  msrv:
+    name: msrv
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml for every later step,
+      # including the cache key and the daemon build script's nested build.
+      - name: Install the minimum supported Rust
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal --target x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-directories: target-probe
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --locked --package piqueld --package piquelctl --package piqueld-client
 
   wasm-ui:
     name: wasm-ui
@@ -338,6 +371,27 @@ jobs:
       - name: Build the other Nix packages
         run: nix build -L --out-link result-other ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
 
+  # Packages every published crate, with the dashboard the daemon ships, and
+  # builds each from its package, as `cargo install` would: everything
+  # `just publish` does except uploading.
+  package:
+    name: package
+    needs: changes
+    if: needs.changes.outputs.package == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-directories: |
+            target-ui
+            target-probe
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo xtask publish --dry-run
+
   # Builds the documentation book and checks its links. The flake's `docs`
   # shell provides the tools at the versions flake.lock pins, as in
   # `nix develop`.
@@ -360,16 +414,18 @@ jobs:
       - changes
       - checks
       - rust
+      - msrv
       - wasm-ui
       - docker-integration
       - browser-playwright
       - macos-cli
       - nix
+      - package
       - docs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
-          allowed-skips: checks, rust, wasm-ui, docker-integration, browser-playwright, macos-cli, nix
+          allowed-skips: checks, rust, msrv, wasm-ui, docker-integration, browser-playwright, macos-cli, nix, package
           jobs: ${{ toJSON(needs) }}

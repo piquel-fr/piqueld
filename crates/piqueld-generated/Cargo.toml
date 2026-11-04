@@ -3,6 +3,7 @@ name = "piqueld-generated"
 description = "Writes and checks the files `just generate` produces"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false

@@ -44,7 +44,7 @@ restart or later migration failure can resume from any committed version
 without changing the instance identity.
 
 Each file in
-[`migrations/`](https://github.com/piquel-fr/piqueld/tree/main/migrations)
+[`apps/piqueld/migrations/`](https://github.com/piquel-fr/piqueld/tree/main/apps/piqueld/migrations)
 explains in its comments what it changes and what it does to existing data.
 The migration tests cover upgrading populated databases, the data moves of
 `0012`, `0014`, `0021` and `0022`, and reopening every committed version after
@@ -52,7 +52,7 @@ a later migration fails.
 
 ### Adding a migration
 
-Add `migrations/NNNN_<name>.sql` with the next number, starting with a comment
+Add `apps/piqueld/migrations/NNNN_<name>.sql` with the next number, starting with a comment
 that says what it changes and what happens to existing data. The daemon build
 script embeds every file in name order and fails unless the numbers are
 contiguous from `0001`; migration `N` upgrades schema `N - 1` to `N`, and the

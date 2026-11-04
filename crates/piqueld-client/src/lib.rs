@@ -4,6 +4,23 @@
 //! shared request pipeline on every target, with platform differences
 //! confined inside `client`: TCP and Unix-domain sockets natively,
 //! and same-origin browser fetch under WASM.
+//!
+//! On the daemon's host, connect to its Unix socket, as `piquelctl` does. The
+//! host operator needs no credentials there; elsewhere, connect with
+//! [`Client::tcp`] and sign in with an API token through
+//! [`Client::with_bearer`].
+//!
+//! ```no_run
+//! # async fn example() -> Result<(), piqueld_client::ClientError> {
+//! let client = piqueld_client::Client::unix("/run/piqueld/piqueld.sock")?;
+//! let status = client.system_status().await?;
+//! println!("piqueld {}", status.daemon_version);
+//! for application in client.applications().await?.items {
+//!     println!("{}", application.name);
+//! }
+//! # Ok(())
+//! # }
+//! ```
 
 #[cfg(target_os = "windows")]
 compile_error!("Windows is not supported by piqueld-client");

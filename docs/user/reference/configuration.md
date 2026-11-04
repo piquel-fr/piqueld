@@ -111,10 +111,11 @@ old state-directory socket. Existing custom installations must prepare a runtime
 directory and update their configuration. CLI socket overrides and profiles
 remain available for custom locations.
 
-The dashboard is not configurable at runtime: it is embedded when the daemon
-is built with the `embedded-ui` cargo feature and absent otherwise. It is
-served on the TCP listener only, so a TCP listen mode must be enabled to reach
-it; the Unix API socket serves the API alone.
+The dashboard is not configurable at runtime. The daemon that the NixOS module
+and `cargo install piqueld` install embeds it; one built from a checkout
+embeds it only with the `embedded-ui` cargo feature. It is served on the TCP
+listener only, so a TCP listen mode must be enabled to reach it; the Unix API
+socket serves the API alone.
 
 ## Previews
 

@@ -1,7 +1,7 @@
 //! Development tasks for the piqueld workspace, run with `cargo xtask`: this
 //! worktree's development instance (`just dev`, see docs/dev/development.md), the
 //! isolated Docker integration tests, the Playwright browser suite, the
-//! `piqueld-core` dependency boundary, and test coverage.
+//! `piqueld-core` dependency boundary, test coverage, and releases.
 
 mod boundary;
 mod coverage;
@@ -10,6 +10,7 @@ mod docker;
 mod docker_test;
 mod playwright;
 mod process;
+mod publish;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -53,6 +54,23 @@ enum Task {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Publish the crates to crates.io, with the prebuilt dashboard the
+    /// published daemon embeds.
+    #[command(disable_help_flag = true)]
+    Publish {
+        /// Arguments for `cargo publish`, such as `--dry-run`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Release the workspace version from the latest main: publish the
+    /// crates, tag the commit, create its GitHub release, and close its
+    /// milestone.
+    Release {
+        /// Run the checks and `cargo publish --dry-run`, and only print the
+        /// other steps.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -64,6 +82,8 @@ async fn main() -> Result<ExitCode> {
         Task::Playwright { args } => playwright::run(&workspace, &args).await,
         Task::Boundary => boundary::check(&workspace),
         Task::Coverage { args } => coverage::run(&workspace, &args),
+        Task::Publish { args } => publish::run(&workspace, &args),
+        Task::Release { dry_run } => publish::release(&workspace, dry_run),
     }
 }
 

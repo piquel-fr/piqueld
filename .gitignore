@@ -43,3 +43,7 @@ target-ui/
 
 # Private development configuration read by `just dev` instead of the example.
 /piqueld.local.toml
+
+# The prebuilt dashboard `cargo xtask publish` ships in the daemon crate while
+# it publishes.
+/apps/piqueld/dashboard/

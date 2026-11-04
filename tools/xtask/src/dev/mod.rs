@@ -37,11 +37,10 @@ const LEGACY_RUNTIME_ROOT: &str = "/tmp/piqueld-dev";
 /// Changes to these rebuild and restart the daemon. It embeds the dashboard and
 /// the migrations at compile time, so they are watched too, as are the build
 /// settings, and it reads its configuration at startup.
-const SOURCES: [&str; 9] = [
+const SOURCES: [&str; 8] = [
     "apps/piqueld",
     "apps/piqueld-ui",
     "crates",
-    "migrations",
     "Cargo.toml",
     "Cargo.lock",
     ".cargo/config.toml",
@@ -831,12 +830,12 @@ mod tests {
     #[test]
     fn migrations_and_configuration_are_sources() {
         let root = tempfile::tempdir().unwrap();
-        fs::create_dir(root.path().join("migrations")).unwrap();
+        fs::create_dir_all(root.path().join("apps/piqueld/migrations")).unwrap();
         let instance = instance(root.path());
         let built = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));
         assert!(!instance.sources_changed_since(built));
-        fs::write(root.path().join("migrations/0001_new.sql"), "").unwrap();
+        fs::write(root.path().join("apps/piqueld/migrations/0001_new.sql"), "").unwrap();
         assert!(instance.sources_changed_since(built));
         let built = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));

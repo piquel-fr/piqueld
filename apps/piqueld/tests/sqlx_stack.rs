@@ -9,16 +9,16 @@ use sqlx::{Connection, sqlite::SqliteConnection};
 /// The first migrations, which upgrade tests apply by hand to build a
 /// database of an older schema.
 const MIGRATIONS: [&str; 10] = [
-    include_str!("../../../migrations/0001_control_plane.sql"),
-    include_str!("../../../migrations/0002_deployments.sql"),
-    include_str!("../../../migrations/0003_deployment_inputs.sql"),
-    include_str!("../../../migrations/0004_build_records.sql"),
-    include_str!("../../../migrations/0005_structured_build_logs.sql"),
-    include_str!("../../../migrations/0006_observability.sql"),
-    include_str!("../../../migrations/0007_authentication.sql"),
-    include_str!("../../../migrations/0008_application_secrets.sql"),
-    include_str!("../../../migrations/0009_ingress.sql"),
-    include_str!("../../../migrations/0010_history_pagination.sql"),
+    include_str!("../migrations/0001_control_plane.sql"),
+    include_str!("../migrations/0002_deployments.sql"),
+    include_str!("../migrations/0003_deployment_inputs.sql"),
+    include_str!("../migrations/0004_build_records.sql"),
+    include_str!("../migrations/0005_structured_build_logs.sql"),
+    include_str!("../migrations/0006_observability.sql"),
+    include_str!("../migrations/0007_authentication.sql"),
+    include_str!("../migrations/0008_application_secrets.sql"),
+    include_str!("../migrations/0009_ingress.sql"),
+    include_str!("../migrations/0010_history_pagination.sql"),
 ];
 
 /// Applies the first `count` [`MIGRATIONS`], then `sql`.

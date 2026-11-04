@@ -1,25 +1,31 @@
 [package]
 name = "piqueld"
-description = "The piqueld control-plane daemon"
+description = "Control plane for a single-node Docker Swarm: deployments, HTTPS routes, secrets and more"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities", "web-programming::http-server"]
+# The published crate leaves out the tests and examples, which read files from
+# across the repository. `dashboard/` is the prebuilt dashboard
+# `cargo xtask publish` ships; see `build/dashboard.rs`.
+include = ["/build.rs", "/build", "/dashboard", "/migrations", "/src", "/LICENSE"]
 
-# Builds with this feature embed the dashboard bundle at compile time. The
-# build script compiles `piqueld-ui` with a nested Cargo, so the
-# wasm32-unknown-unknown target (listed in rust-toolchain.toml) must be installed.
+# `embedded-ui` builds the dashboard from `apps/piqueld-ui` and embeds it, so
+# it works only in a checkout of the repository. The build script compiles it
+# with a nested Cargo, so the wasm32-unknown-unknown target (listed in
+# rust-toolchain.toml) must be installed. The published crate embeds the
+# prebuilt bundle it ships instead, without the feature.
 [features]
 embedded-ui = ["dep:wasm-bindgen-cli-support"]
-openapi-codegen = ["dep:piqueld-generated", "dep:prettyplease", "dep:progenitor", "dep:syn"]
 # The in-memory Docker engine (`piqueld::docker::fake`) of the integration
 # tests and the browser fixture. Release builds leave it out.
 fake-docker = []
-
-[[bin]]
-name = "generate_openapi"
-path = "src/bin/generate_openapi/main.rs"
-required-features = ["openapi-codegen"]
 
 [dependencies]
 chacha20poly1305.workspace = true
@@ -49,10 +55,7 @@ hyper-util.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 piqueld-core.workspace = true
-piqueld-generated = { workspace = true, optional = true }
 piqueld-probe.workspace = true
-prettyplease = { workspace = true, optional = true }
-progenitor = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["param"] }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 serde.workspace = true
@@ -61,7 +64,6 @@ serde_path_to_error.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-syn = { workspace = true, optional = true }
 tempfile.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -87,6 +89,11 @@ hyper.workspace = true
 hyper-util.workspace = true
 # Drives exec WebSockets frame by frame.
 tokio-tungstenite.workspace = true
+# The `generate_openapi` example, which `just generate` runs.
+piqueld-generated.workspace = true
+prettyplease.workspace = true
+progenitor.workspace = true
+syn.workspace = true
 
 [build-dependencies]
 tokio.workspace = true

@@ -3,7 +3,8 @@
 CI runs on GitHub-hosted runners. Jobs group the recipes that compile the same
 code, so each job builds the workspace once, and run in parallel. Pull requests
 run only the jobs whose inputs changed, and drafts only the quick ones: Docker,
-Playwright, macOS, and Nix jobs wait until a pull request is marked ready.
+Playwright, macOS, Nix, and packaging jobs wait until a pull request is marked
+ready.
 The `docs` job runs on every pull request. Pushes to main run every job. The
 `ci` job summarizes them: it fails if any job failed. Failed checks do not
 cancel unrelated jobs.
@@ -22,12 +23,14 @@ package. Dashboard tools are cached by version.
 | Documentation tests | `doc-test` | `rust` |
 | Generated API specification, client, and manifest JSON Schema freshness | `openapi-check` | `rust` |
 | Core dependency boundaries | `boundary` | `rust` |
+| Published crates on the minimum supported Rust, `rust-version` | `cargo +<rust-version> check` | `msrv` |
 | Browser compilation | `ui-check`, `check-wasm` | `wasm-ui` |
 | Real browser transport tests | `test-wasm` | `wasm-ui` |
 | Isolated Engine integration tests | `docker-test` | `docker-integration` |
 | Browser end-to-end tests | `test-playwright` | `browser-playwright` |
 | CLI on macOS | `validate-cli` | `cli (macOS)` |
 | Embedded daemon and CLI release builds | `nix build` | `nix packages` |
+| Every published crate packaged and built from its package | `publish --dry-run` | `package` |
 | Documentation book build and link check | `docs` | `docs` |
 
 `just` runs the default validation set (`validate`), including a single check of
@@ -37,7 +40,8 @@ skips `check` and `build`: the stronger all-target Clippy and the Nix package
 build cover them. `fmt` and `generate` are editing commands whose results are
 checked above, and `setup-playwright` installs the browser test dependencies.
 `run`, `ctl`, `daemon`, `daemon-embedded`, `dev`, and `docs-serve` launch
-interactive processes and are not finite validation commands. `coverage`
+interactive processes and are not finite validation commands. `publish` and
+`release` [release piqueld](releasing.md). `coverage`
 measures the tests without checking a minimum; see
 [test coverage](#test-coverage).
 

@@ -1,6 +1,7 @@
 //! Provisions the migrated `SQLite` schema used by `SQLx` compile-time query
-//! checks, embeds the static health probe and, under `--features embedded-ui`,
-//! builds and embeds the dashboard bundle into the daemon binary.
+//! checks, embeds the static health probe and embeds the dashboard bundle into
+//! the daemon binary: built under `--features embedded-ui`, or the prebuilt one
+//! a published crate ships.
 
 use std::{
     env,
@@ -11,7 +12,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(feature = "embedded-ui")]
 #[path = "build/dashboard.rs"]
 mod dashboard;
 #[path = "build/nested.rs"]
@@ -24,8 +24,8 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteConnection},
 };
 
-/// Always provisions the migration schema and embeds the health probe; embeds
-/// the dashboard only when the `embedded-ui` feature is enabled.
+/// Provisions the migration schema, and embeds the health probe and any
+/// dashboard bundle.
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR")
@@ -33,13 +33,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     embed_migrations(&manifest_dir)?;
     probe::embed(&manifest_dir)?;
-
-    #[cfg(feature = "embedded-ui")]
     dashboard::embed(&manifest_dir)?;
     Ok(())
 }
 
-/// Embeds the workspace migrations and builds the `SQLx` check database.
+/// Embeds the crate's migrations and builds the `SQLx` check database.
 ///
 /// 1. Collect `migrations/*.sql` in name order and require contiguous
 ///    numeric prefixes starting at 1 (`0001_init.sql`, `0002_…`).
@@ -47,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// 3. Recreate `OUT_DIR/sqlx-build.db`, apply every migration, and point
 ///    `DATABASE_URL` at it so `SQLx` macros check against the real schema.
 fn embed_migrations(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let migrations_dir = manifest_dir.join("../../migrations").canonicalize()?;
+    let migrations_dir = manifest_dir.join("migrations").canonicalize()?;
     println!("cargo:rerun-if-changed={}", migrations_dir.display());
 
     let mut migrations = fs::read_dir(&migrations_dir)?

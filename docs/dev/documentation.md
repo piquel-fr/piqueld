@@ -28,7 +28,7 @@ root, configures it.
   for developers go in `//` comments, which stay out of the schemas. The
   command reference's layout and introduction are in
   `apps/piquelctl/examples/cli_reference.rs`, the settings references' in
-  `apps/piqueld/src/bin/generate_openapi`. `just openapi-check`, which CI
+  `apps/piqueld/examples/generate_openapi`. `just openapi-check`, which CI
   runs, fails when a generated file is stale. `.gitattributes` marks every
   generated file so GitHub collapses it in pull request diffs; list a new one
   there too.

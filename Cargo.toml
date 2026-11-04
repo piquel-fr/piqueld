@@ -11,20 +11,34 @@ members = [
   "tools/xtask",
 ]
 
+# Every crate shares one version, released together; see
+# docs/dev/releasing.md.
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The oldest Rust the crates build with, which the `msrv` CI job checks. Raise
+# it when code needs a newer Rust. Cargo then prefers dependency versions that
+# support it when updating the lockfile.
+rust-version = "1.99"
 license = "Apache-2.0"
 repository = "https://github.com/piquel-fr/piqueld"
+homepage = "https://piqueld.dev"
+# The daemon and CLI link the book; the library crates leave this unset, so
+# crates.io links their API documentation on docs.rs.
+documentation = "https://docs.piqueld.dev"
+readme = "README.md"
+keywords = ["docker", "swarm", "deployment", "paas", "self-hosted"]
 
 [workspace.dependencies]
 chacha20poly1305 = "0.10.1"
 zeroize = "1.8"
-# Internal
-piqueld-client    = { version = "0.1.0", path = "crates/piqueld-client"    }
-piqueld-core      = { version = "0.1.0", path = "crates/piqueld-core"      }
-piqueld-generated = { version = "0.1.0", path = "crates/piqueld-generated" }
-piqueld-probe     = { version = "0.1.0", path = "crates/piqueld-probe"     }
+# Internal. Published crates carry the version they are published with;
+# piqueld-generated isn't published, so the crates that use it as a development
+# dependency publish without it.
+piqueld-client    = { version = "0.1.0", path = "crates/piqueld-client" }
+piqueld-core      = { version = "0.1.0", path = "crates/piqueld-core"   }
+piqueld-generated = { path = "crates/piqueld-generated" }
+piqueld-probe     = { version = "0.1.0", path = "crates/piqueld-probe"  }
 
 # External
 anstream = "1.0.0"
@@ -144,11 +158,4 @@ inherits = "release"
 opt-level = "z"
 codegen-units = 1
 
-# The static health probe the daemon build script embeds and Swarm mounts into
-# containers as a config. Swarm caps config size, so it is built for size.
-[profile.probe]
-inherits = "release"
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
+# The static health probe's `probe` profile is in `apps/piqueld/build/probe.toml`.
