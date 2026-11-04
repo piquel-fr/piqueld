@@ -29,13 +29,6 @@ present in the manifest and editable through the CLI and the dashboard.
 
 When changing/adding to configuration, make sure to update the NixOS module.
 
-## Cleanup passes
-
-The `piqueld-cleanup` skill in `.agents/skills` runs a repository-wide,
-behavior-preserving cleanup pass: one agent and one draft refactor PR per area
-of the workspace, each reviewed before it merges, and a report of the bugs it
-found.
-
 ## Documentation
 
 The documentation in `docs/` is an mdBook with a user guide (`docs/user`) and a

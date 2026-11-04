@@ -28,8 +28,11 @@ cosmetic churn:
 - Delete dead code. Use `rg` across the whole workspace, including the wasm32
   dashboard, to confirm nothing calls it.
 - Deduplicate test setup into shared fixtures.
-- Split files that mix unrelated jobs. A module with a sibling `foo_tests.rs`
-  becomes a directory, `foo/mod.rs` with `foo/tests.rs`.
+- Split files that mix unrelated jobs. A module with child modules is
+  `foo/mod.rs`, never `foo.rs` next to `foo/` (Clippy's
+  `self_named_module_files` enforces this), so a module with a sibling
+  `foo_tests.rs` becomes `foo/mod.rs` with `foo/tests.rs`. A module without
+  children stays a plain `foo.rs`.
 
 ## The owner's style
 
@@ -113,8 +116,8 @@ load; rerun them once and say so.
   cleanup. Keep any single commit small enough to review; a behavior change
   hidden in an 8,000-line commit had to be split out in the first pass.
 - Conventional commit messages, such as
-  `refactor(store): share row decoding between deployment queries`, ending
-  with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+  `refactor(store): share row decoding between deployment queries`, with no
+  `Co-Authored-By` line.
 - Before you push, `git fetch origin && git rebase origin/main`, and re-run
   your checks if the rebase brought in changes to your area. Apply your
   cleanup to any new code the rebase brought in.

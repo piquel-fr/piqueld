@@ -1,27 +1,45 @@
 ---
 name: piqueld-cleanup
 description: >
-  Run a repository-wide, behavior-preserving cleanup pass on piqueld: split the
-  workspace into areas, have one agent per area remove duplication and
-  inconsistency and open a draft refactor PR, have every PR reviewed, run a
-  docs accuracy pass alongside, and report the bugs and design issues found.
-  Use when asked for a "cleanup pass", "refactor pass", "clean up the
-  codebase", to "deduplicate" or "simplify" piqueld as a whole, or to repeat
-  the October 2026 pass (#241–#249). Not for cleaning up a single PR or file.
+  Run a repository-wide cleanup of piqueld. First an audit: measure the code
+  (lines, tests, comments, generated share, largest files, panics and lint
+  suppressions), check coverage, untested areas, module layout and stale
+  allows, and suggest fixes. Then the area pass: one agent per area removes
+  duplication and inconsistency in a reviewed draft refactor PR, a docs pass
+  runs alongside, and the bugs found are reported. Use when asked for a
+  "cleanup pass", "refactor pass", "clean up the codebase", codebase stats or
+  an audit of piqueld, to "deduplicate" or "simplify" piqueld as a whole, or
+  to repeat the October 2026 pass (#241–#249) or the November 2026 audit. Not
+  for cleaning up a single PR or file.
 ---
 
 # Run a cleanup pass
 
-A cleanup pass is a set of pure refactor PRs, one per area of the workspace,
-written in parallel and each reviewed before the owner merges it. The pass
-does not fix bugs. It writes them down, and they are fixed afterwards in their
-own PRs. The first pass (#241–#246, #248 and #249, October 17–18, 2026) removed
-about 3,700 lines net, most of them from tests, with no change to any API,
-schema, manifest, CLI output or configuration format. Its docs PR (#247) ran
-alongside it.
+A cleanup has two parts. The **audit** measures the codebase, checks it for
+known kinds of problems, and suggests fixes that the owner picks from; the
+November 2, 2026 audit led to #354, #355, #357–#359 and #361–#365. The **area
+pass** is a set of pure refactor PRs, one per area of the workspace, written
+in parallel and each reviewed before the owner merges it. It does not fix
+bugs. It writes them down, and they are fixed afterwards in their own PRs. The
+first pass (#241–#246, #248 and #249, October 17–18, 2026) removed about 3,700
+lines net, most of them from tests, with no change to any API, schema,
+manifest, CLI output or configuration format. Its docs PR (#247) ran alongside
+it.
+
+Run the audit first, then the area pass, unless the owner asks for only one.
+The audit's numbers size the areas, and rerunning it at the end shows what
+the pass changed.
 
 You are the orchestrator. You split the work, brief the agents, route reviews,
 and keep the owner informed. You write little code yourself.
+
+## Audit
+
+Follow [references/audit.md](references/audit.md): run
+`scripts/stats.py`, chart the numbers, run the checks, and send the owner a
+ranked list of suggestions. Act only on the ones the owner picks. Changes that
+touch many areas, such as splitting large files, either merge before the area
+pass starts or go to the area agents as part of their tasks.
 
 ## 1. Plan the split
 
@@ -29,9 +47,9 @@ Delegated agents start from your current commit and read their briefs from
 this skill's `references/`, so run the pass from a checkout of
 `origin/main` (or a branch off it) that contains this skill.
 
-Fetch `origin/main` and measure the areas (count lines with
-`git ls-files <dir> | xargs cat | wc -l`, leaving out generated files). Start
-from this split, which kept the first pass's PRs almost free of conflicts:
+Fetch `origin/main` and measure the areas with the audit's numbers, or rerun
+`scripts/stats.py` (it leaves out generated files). Start from this split,
+which kept the first pass's PRs almost free of conflicts:
 
 | Area | Paths | Title scope |
 | --- | --- | --- |
@@ -188,7 +206,9 @@ issue or PR N.
 
 ## 6. Follow up after the merge
 
-The pass isn't done when the area PRs merge. Offer, in this order:
+The pass isn't done when the area PRs merge. Rerun `scripts/stats.py` on the
+new `main` and show the owner its summary next to the audit's. Then offer, in
+this order:
 
 1. **Cross-area PRs.** Duplication that crossed areas was held back so the
    agents wouldn't collide. Once the area PRs merge, open one small PR per
