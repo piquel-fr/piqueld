@@ -4,6 +4,9 @@ unmaintained = "workspace"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# piqueld-generated isn't published, so piqueld and piquelctl depend on it by
+# path alone, as a development dependency, which Cargo strips when publishing.
+allow-wildcard-paths = true
 # Duplicates below are pinned by transitive dependencies (rand_core 0.6/ring,
 # indexmap under the Leptos 0.8 reactive crates, asn1-rs and gloo-net) and by
 # clap's move to syn 3. They cannot converge until those crates publish
