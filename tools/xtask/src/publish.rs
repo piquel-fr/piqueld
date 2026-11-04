@@ -8,56 +8,166 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 
 use crate::Workspace;
 use crate::process::{checked_stdout, exit_code};
 
-/// Releases the workspace version from `HEAD`, which must be the latest
-/// `origin/main`, unless the version is already tagged on `origin`: publishes
-/// the crates, then tags `HEAD` `v<version>`, pushes the tag, and creates its
-/// GitHub release, with notes listing the pull requests merged since the
-/// previous release.
-pub fn release(workspace: &Workspace) -> Result<ExitCode> {
-    let root = workspace.root();
+/// A release of the workspace version, from `HEAD`, by `cargo xtask release`.
+struct Release<'a> {
+    workspace: &'a Workspace,
+    /// The workspace version, such as `0.2.0`.
+    version: String,
+    /// Runs the checks and `cargo publish --dry-run`, and only prints what the
+    /// other steps would do.
+    dry_run: bool,
+}
+
+impl Release<'_> {
+    /// Checks that `HEAD` is the latest `origin/main` and that the version
+    /// isn't tagged on `origin` yet. Then publishes the crates, tags `HEAD`
+    /// `v<version>`, pushes the tag, creates its GitHub release, with notes
+    /// listing the pull requests merged since the previous release, and closes
+    /// its minor version's GitHub milestone, such as `v0.2`.
+    fn run(&self) -> Result<ExitCode> {
+        self.check()?;
+        let dry_run = self.dry_run.then(|| "--dry-run".to_owned());
+        let status = publish(self.workspace, dry_run.as_slice())?;
+        if !status.success() {
+            return Ok(exit_code(status));
+        }
+        let tag = self.tag();
+        let title = format!("piqueld {}", self.version);
+        self.step("git", &["tag", "--annotate", &tag, "--message", &title])?;
+        self.step("git", &["push", "origin", &tag])?;
+        self.step(
+            "gh",
+            &[
+                "release",
+                "create",
+                &tag,
+                "--verify-tag",
+                "--title",
+                &title,
+                "--generate-notes",
+            ],
+        )?;
+        let milestone = self.milestone_title()?;
+        match self.milestone(&milestone)? {
+            Some(number) => self.step(
+                "gh",
+                &[
+                    "api",
+                    "--method",
+                    "PATCH",
+                    "--silent",
+                    &format!("repos/{{owner}}/{{repo}}/milestones/{number}"),
+                    "--field",
+                    "state=closed",
+                ],
+            )?,
+            // A patch release finds its minor version's milestone closed.
+            None => println!("no open GitHub milestone named {milestone} to close"),
+        }
+        Ok(ExitCode::SUCCESS)
+    }
+
+    /// `v<version>`, the release's tag.
+    fn tag(&self) -> String {
+        format!("v{}", self.version)
+    }
+
+    /// `v<major>.<minor>`, the name of the release's milestone.
+    fn milestone_title(&self) -> Result<String> {
+        let mut parts = self.version.split('.');
+        let (Some(major), Some(minor)) = (parts.next(), parts.next()) else {
+            bail!("the version {} has no minor version", self.version);
+        };
+        Ok(format!("v{major}.{minor}"))
+    }
+
+    /// Fails unless `HEAD` is the latest `origin/main`, and the version isn't
+    /// tagged on `origin` yet.
+    fn check(&self) -> Result<()> {
+        let root = self.workspace.root();
+        Workspace::git(root, &["fetch", "origin", "main"])?;
+        ensure!(
+            Workspace::git(root, &["rev-parse", "HEAD"])?
+                == Workspace::git(root, &["rev-parse", "FETCH_HEAD"])?,
+            "release from the latest origin/main: run `git switch main && git pull`"
+        );
+        let tag = self.tag();
+        let tagged = Workspace::git(
+            root,
+            &["ls-remote", "--tags", "origin", &format!("refs/tags/{tag}")],
+        )?;
+        ensure!(
+            tagged.is_empty(),
+            "{tag} is already released; set a new version in Cargo.toml first"
+        );
+        Ok(())
+    }
+
+    /// The number of the open GitHub milestone named `title`, if any.
+    fn milestone(&self, title: &str) -> Result<Option<u64>> {
+        let query = format!(".[] | select(.title == \"{title}\") | .number");
+        let output = Command::new("gh")
+            .args([
+                "api",
+                "--paginate",
+                "repos/{owner}/{repo}/milestones",
+                "--jq",
+                &query,
+            ])
+            .current_dir(self.workspace.root())
+            .output()
+            .context("run gh api")?;
+        let number = checked_stdout("gh api", output)?;
+        Ok(if number.is_empty() {
+            None
+        } else {
+            Some(
+                number
+                    .parse()
+                    .with_context(|| format!("invalid milestone number {number}"))?,
+            )
+        })
+    }
+
+    /// Runs `program` with `args` from the workspace root, failing unless it
+    /// succeeds, or only prints the command in a dry run.
+    fn step(&self, program: &str, args: &[&str]) -> Result<()> {
+        let command = format!("{program} {}", args.join(" "));
+        if self.dry_run {
+            println!("would run: {command}");
+            return Ok(());
+        }
+        println!("running: {command}");
+        let status = Command::new(program)
+            .args(args)
+            .current_dir(self.workspace.root())
+            .status()
+            .with_context(|| format!("run {program}"))?;
+        ensure!(status.success(), "{command} failed ({status})");
+        Ok(())
+    }
+}
+
+/// Runs [`Release::run`] for `cargo xtask release`, for the workspace version.
+pub fn release(workspace: &Workspace, dry_run: bool) -> Result<ExitCode> {
     let package_id = daemon_package_id(workspace)?;
     let version = package_id
         .rsplit(['#', '@'])
         .next()
-        .with_context(|| format!("no version in the package ID {package_id}"))?;
-    let tag = format!("v{version}");
-    let title = format!("piqueld {version}");
-
-    Workspace::git(root, &["fetch", "origin", "main"])?;
-    ensure!(
-        Workspace::git(root, &["rev-parse", "HEAD"])?
-            == Workspace::git(root, &["rev-parse", "FETCH_HEAD"])?,
-        "release from the latest origin/main: run `git switch main && git pull`"
-    );
-    let tagged = Workspace::git(
-        root,
-        &["ls-remote", "--tags", "origin", &format!("refs/tags/{tag}")],
-    )?;
-    ensure!(
-        tagged.is_empty(),
-        "{tag} is already released; set a new version in Cargo.toml first"
-    );
-
-    let status = publish(workspace, &[])?;
-    if !status.success() {
-        return Ok(exit_code(status));
+        .with_context(|| format!("no version in the package ID {package_id}"))?
+        .to_owned();
+    Release {
+        workspace,
+        version,
+        dry_run,
     }
-    Workspace::git(root, &["tag", "--annotate", &tag, "--message", &title])?;
-    Workspace::git(root, &["push", "origin", &tag])?;
-    println!("tagged and pushed {tag}");
-    let status = Command::new("gh")
-        .args(["release", "create", &tag, "--verify-tag", "--title", &title])
-        .arg("--generate-notes")
-        .current_dir(root)
-        .status()
-        .context("run gh release create")?;
-    Ok(exit_code(status))
+    .run()
 }
 
 /// Runs [`publish`] for `cargo xtask publish`.

@@ -84,10 +84,12 @@ publish *ARGS:
     @cargo xtask publish "$@"
 
 # Releases the workspace version from the latest main: publishes the crates,
-# then tags the commit and creates its GitHub release; see
-# docs/dev/releasing.md.
-release:
-    @cargo xtask release
+# tags the commit, creates its GitHub release, and closes its milestone; see
+# docs/dev/releasing.md. `--dry-run` runs the checks and `cargo publish
+# --dry-run`, and only prints the other steps.
+[positional-arguments]
+release *ARGS:
+    @cargo xtask release "$@"
 
 # UI checks and embedded builds need only the wasm32 target from
 # rust-toolchain.toml: the daemon build script compiles and binds the dashboard

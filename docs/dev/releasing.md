@@ -94,7 +94,15 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    git switch main && git pull
    ```
 
-3. Release it:
+3. Check the release without changing anything:
+
+   ```console
+   just release --dry-run
+   ```
+
+   It runs every check below, and packages and builds each crate without
+   uploading it, then prints the commands the other steps would run.
+4. Release it:
 
    ```console
    just release
@@ -104,9 +112,9 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    that the version isn't released yet. It then publishes the five crates in
    dependency order, which takes several minutes, tags the commit
    `v<version>`, pushes the tag, and creates the GitHub release, with notes
-   listing the pull requests merged since the previous release. To check that
-   every crate packages and builds without uploading anything, run
-   `just publish --dry-run` first.
+   listing the pull requests merged since the previous release. Last, it
+   closes the GitHub milestone of the minor version, such as `v0.2` for
+   0.2.0. A patch release finds it already closed.
 
    For a release that breaks existing setups, edit the release on GitHub to
    say how to upgrade.
@@ -129,7 +137,7 @@ docs.rs builds the new `piqueld-client` documentation within a few minutes.
   published, and crates.io refuses to publish a version twice, so
   `just release` can't run again. Fix the cause, publish the remaining crates
   with `--exclude` for each one already published, then tag and create the
-  release by hand:
+  release by hand, and close the milestone on GitHub:
 
   ```console
   just publish --exclude piqueld-probe --exclude piqueld-core
@@ -139,7 +147,8 @@ docs.rs builds the new `piqueld-client` documentation within a few minutes.
   ```
 
 - **Tagging or creating the GitHub release fails.** The crates are published.
-  Run the `git` and `gh` commands above that didn't run.
+  Run the `git` and `gh` commands above that didn't run, and close the
+  milestone on GitHub.
 
 - **A published version is broken.** A version can't be replaced. Yank it
   with `cargo yank --version 0.2.0 <crate>` for each crate, so new installs

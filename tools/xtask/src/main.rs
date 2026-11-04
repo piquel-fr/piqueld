@@ -63,8 +63,14 @@ enum Task {
         args: Vec<String>,
     },
     /// Release the workspace version from the latest main: publish the
-    /// crates, then tag the commit and create its GitHub release.
-    Release,
+    /// crates, tag the commit, create its GitHub release, and close its
+    /// milestone.
+    Release {
+        /// Run the checks and `cargo publish --dry-run`, and only print the
+        /// other steps.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -77,7 +83,7 @@ async fn main() -> Result<ExitCode> {
         Task::Boundary => boundary::check(&workspace),
         Task::Coverage { args } => coverage::run(&workspace, &args),
         Task::Publish { args } => publish::run(&workspace, &args),
-        Task::Release => publish::release(&workspace),
+        Task::Release { dry_run } => publish::release(&workspace, dry_run),
     }
 }
 
