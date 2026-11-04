@@ -23,20 +23,25 @@ use crate::nested::NestedCargo;
 /// after, so the published daemon embeds the dashboard without a wasm32
 /// toolchain.
 const SHIPPED: &str = "dashboard";
+/// The file Cargo adds to every package, which tells a packaged crate from the
+/// workspace member it was packaged from.
+const PACKAGED: &str = "Cargo.toml.orig";
 
 /// Writes `OUT_DIR/ui_assets.rs`, which embeds every bundle file into the
 /// daemon, and sets the `embedded_dashboard` cfg, when there is a bundle: one
-/// built from source under `embedded-ui`, or else [`SHIPPED`] when the crate
-/// has one.
+/// built from source under `embedded-ui`, or else [`SHIPPED`] when a packaged
+/// crate has one.
 ///
-/// [`SHIPPED`] isn't tracked: it only exists while `cargo xtask publish`
-/// packages the crate, and each package builds from scratch.
+/// Workspace builds ignore [`SHIPPED`], so they never embed one that
+/// `cargo xtask publish` is packaging or left behind. It isn't tracked: a
+/// package never changes.
 pub fn embed(manifest_dir: &Path) -> Result<(), Box<dyn Error>> {
     println!("cargo::rustc-check-cfg=cfg(embedded_dashboard)");
     #[cfg(feature = "embedded-ui")]
     let dist = Some(Dashboard::new(manifest_dir)?.build()?);
     #[cfg(not(feature = "embedded-ui"))]
-    let dist = Some(manifest_dir.join(SHIPPED)).filter(|shipped| shipped.is_dir());
+    let dist = Some(manifest_dir.join(SHIPPED))
+        .filter(|shipped| manifest_dir.join(PACKAGED).is_file() && shipped.is_dir());
     let Some(dist) = dist else {
         return Ok(());
     };

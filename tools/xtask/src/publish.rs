@@ -11,16 +11,29 @@ use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
 use crate::Workspace;
-use crate::process::exit_code;
+use crate::process::{checked_stdout, exit_code};
 
 /// Ships the dashboard in the daemon crate, then runs
 /// `cargo publish --workspace` with `args`, such as `--dry-run`. Cargo
 /// publishes the crates in dependency order and skips the unpublished ones.
+///
+/// Cargo counts the shipped dashboard, which is gitignored but packaged, as an
+/// uncommitted change, so this checks that the working tree is clean itself,
+/// unless `args` has `--allow-dirty`, and always passes `--allow-dirty`.
 pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
+    let allow_dirty = args.iter().any(|arg| arg == "--allow-dirty");
+    if !allow_dirty {
+        let changes = Workspace::git(workspace.root(), &["status", "--porcelain"])?;
+        ensure!(
+            changes.is_empty(),
+            "the working tree has uncommitted changes; commit them, or pass --allow-dirty:\n{changes}"
+        );
+    }
     let _dashboard = ShippedDashboard::build(workspace)?;
     let status = workspace
         .cargo()
         .args(["publish", "--locked", "--workspace"])
+        .args((!allow_dirty).then_some("--allow-dirty"))
         .args(args)
         .status()
         .context("run cargo publish")?;
@@ -28,9 +41,8 @@ pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
 }
 
 /// The dashboard bundle in `apps/piqueld/dashboard`, which the daemon's build
-/// script embeds when it builds without `embedded-ui`, as a published crate
-/// does. It is removed when dropped, so later workspace builds can't embed a
-/// stale copy.
+/// script embeds when a packaged crate builds without `embedded-ui`. It is
+/// removed when dropped.
 struct ShippedDashboard(PathBuf);
 
 impl ShippedDashboard {
@@ -38,6 +50,12 @@ impl ShippedDashboard {
     /// script's `OUT_DIR/dashboard-dist`.
     fn build(workspace: &Workspace) -> Result<Self> {
         let daemon = workspace.root().join("apps/piqueld");
+        let output = workspace
+            .cargo()
+            .args(["pkgid", "--package", "piqueld"])
+            .output()
+            .context("run cargo pkgid")?;
+        let package_id = checked_stdout("cargo pkgid", output)?;
         let mut cargo = workspace
             .cargo()
             .args(["check", "--locked", "--package", "piqueld"])
@@ -47,14 +65,11 @@ impl ShippedDashboard {
             .spawn()
             .context("run cargo check")?;
         let stdout = cargo.stdout.take().context("stdout is not piped")?;
-        let package_id = format!("path+file://{}#", daemon.display());
         let mut out_dir = None;
         for line in BufReader::new(stdout).lines() {
             let message: Message = serde_json::from_str(&line.context("read cargo's output")?)
                 .context("parse cargo's output")?;
-            if message.reason == "build-script-executed"
-                && message.package_id.starts_with(&package_id)
-            {
+            if message.reason == "build-script-executed" && message.package_id == package_id {
                 out_dir = message.out_dir;
             }
         }
