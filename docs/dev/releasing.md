@@ -2,8 +2,8 @@
 
 A release publishes the daemon, `piquelctl` and `piqueld-client` to
 [crates.io](https://crates.io/crates/piqueld), with the two crates they depend
-on, then tags the commit and creates a GitHub release from its changelog
-entry. A maintainer runs each step by hand.
+on, then tags the commit and creates a GitHub release. A maintainer runs each
+step by hand.
 
 ## Versions
 
@@ -15,13 +15,13 @@ Versions follow [semantic versioning](https://semver.org). Before 1.0:
 
 - a minor release, such as 0.2.0, may change the manifest, the daemon
   configuration, `piquelctl`, the HTTP API or the Rust crates in ways that
-  break existing users. Its changelog entry says how to upgrade.
+  break existing users. Its release notes say how to upgrade.
 - a patch release, such as 0.1.1, only fixes bugs: upgrading to it needs no
   changes.
 
 The crates build with Rust 1.99 or newer: `rust-version` under
 `[workspace.package]`, which the `msrv` CI job checks. Raising it is a change
-users notice, so it goes in the changelog.
+users notice, so the release notes say so.
 
 Each release is tagged `v<version>`, such as `v0.1.0`, on a commit of `main`.
 A released [migration](architecture/persistence.md#adding-a-migration) is
@@ -83,13 +83,11 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
 
 ## Release a version
 
-1. Open a pull request that prepares the release:
-   - Set the new version in the root `Cargo.toml`: `version` under
-     `[workspace.package]`, and the `version` of each internal dependency
-     under `[workspace.dependencies]`. Then run `cargo update --workspace` to
-     update `Cargo.lock`. The Nix packages read the version from `Cargo.toml`.
-   - In `CHANGELOG.md`, move the entries under **Unreleased** into a new
-     section, `## <version> - <date>`, such as `## 0.2.0 - 2027-01-15`.
+1. Open a pull request that sets the new version in the root `Cargo.toml`:
+   `version` under `[workspace.package]`, and the `version` of each internal
+   dependency under `[workspace.dependencies]`. Then run
+   `cargo update --workspace` to update `Cargo.lock`. The Nix packages read the
+   version from `Cargo.toml`.
 2. Merge it, and check out the merge commit:
 
    ```console
@@ -117,11 +115,15 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    git push origin v0.2.0
    ```
 
-6. Create the GitHub release, with the version's changelog entry as its notes:
+6. Create the GitHub release, with notes listing the pull requests merged
+   since the previous release:
 
    ```console
-   gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --notes-file <notes>
+   gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --generate-notes
    ```
+
+   For a release that breaks existing setups, edit the release on GitHub to
+   say how to upgrade.
 
 ## Check that it works
 

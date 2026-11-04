@@ -20,9 +20,6 @@ to start with. Before working on a larger change, open an issue to discuss it.
   NixOS module.
 - Update the documentation in the same pull request; see
   [changing the documentation](docs/dev/documentation.md).
-- Add an entry to [CHANGELOG.md](CHANGELOG.md) under **Unreleased** for a
-  change users will notice. [Releasing piqueld](docs/dev/releasing.md)
-  describes versions and releases.
 
 Report security vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 Other questions go to [contact@piqueld.dev](mailto:contact@piqueld.dev).

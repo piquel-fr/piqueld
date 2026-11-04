@@ -20,8 +20,7 @@ done. Drafts run only the quick CI jobs; marking a pull request ready runs the
 slow ones (Docker, Playwright, macOS, Nix, packaging), which it must pass
 before merging.
 
-Add an entry to `CHANGELOG.md` under **Unreleased** for changes users will
-notice. `docs/dev/releasing.md` describes versions and releases.
+`docs/dev/releasing.md` describes versions and releases.
 
 ## Adding features
 

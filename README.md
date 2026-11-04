@@ -46,8 +46,7 @@ for running piqueld and deploying to it, and a
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/piquel-fr/piqueld/blob/main/CONTRIBUTING.md), and the
-[code of conduct](https://github.com/piquel-fr/piqueld/blob/main/CODE_OF_CONDUCT.md). [CHANGELOG.md](https://github.com/piquel-fr/piqueld/blob/main/CHANGELOG.md) lists what
-each release changes. Questions and feedback go to
+[code of conduct](https://github.com/piquel-fr/piqueld/blob/main/CODE_OF_CONDUCT.md). Questions and feedback go to
 [contact@piqueld.dev](mailto:contact@piqueld.dev).
 
 ## Security

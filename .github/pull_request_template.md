@@ -8,4 +8,3 @@
 
 - [ ] The feature works through the manifest, `piquelctl`, and the dashboard.
 - [ ] The documentation and the NixOS module are updated.
-- [ ] `CHANGELOG.md` has an entry under **Unreleased**, if users will notice the change.
