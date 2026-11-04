@@ -1,0 +1,13 @@
+# The profile the daemon build script builds `piqueld-probe` with, passed to
+# its nested Cargo with `--config`. It lives here rather than in the workspace
+# manifest because the published crates build the probe outside the
+# workspace, from the `piqueld-probe` package.
+#
+# Swarm caps config size, so the probe is built for size.
+[profile.probe]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

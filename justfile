@@ -70,7 +70,7 @@ deny:
 # Check generated artifacts against freshly generated endpoint, manifest,
 # configuration, and command-line metadata.
 openapi-check:
-    @cargo run --package piqueld --features openapi-codegen --bin generate_openapi -- --check
+    @cargo run --package piqueld --example generate_openapi -- --check
     @cargo run --package piquelctl --example cli_reference -- --check
 
 boundary:
@@ -84,8 +84,7 @@ ui-check:
     @cargo check --locked --target wasm32-unknown-unknown --package piqueld-client --package piqueld-ui
 
 # Release daemon and CLI; the daemon build script compiles the dashboard.
-# Select only the shipped binaries to avoid optimizing the OpenAPI generator,
-# and build them together so Cargo can share dependencies and schedule both.
+# Build the shipped binaries together so Cargo can share dependencies and schedule both.
 build-embedded:
     @cargo build --release --package piqueld --package piquelctl --bin piqueld --bin piquelctl --features piqueld/embedded-ui --locked
 
@@ -106,7 +105,7 @@ ctl *ARGS:
 # Schemas, and the configuration reference page together, then the CLI
 # reference page, whose generator builds on the regenerated client.
 generate:
-    @cargo run --package piqueld --features openapi-codegen --bin generate_openapi
+    @cargo run --package piqueld --example generate_openapi
     @cargo run --package piquelctl --example cli_reference
 
 # Builds the documentation book into target/book, failing on any mdBook

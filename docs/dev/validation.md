@@ -3,7 +3,8 @@
 CI runs on GitHub-hosted runners. Jobs group the recipes that compile the same
 code, so each job builds the workspace once, and run in parallel. Pull requests
 run only the jobs whose inputs changed, and drafts only the quick ones: Docker,
-Playwright, macOS, and Nix jobs wait until a pull request is marked ready.
+Playwright, macOS, Nix, and packaging jobs wait until a pull request is marked
+ready.
 The `docs` job runs on every pull request. Pushes to main run every job. The
 `ci` job summarizes them: it fails if any job failed. Failed checks do not
 cancel unrelated jobs.
@@ -28,6 +29,7 @@ package. Dashboard tools are cached by version.
 | Browser end-to-end tests | `test-playwright` | `browser-playwright` |
 | CLI on macOS | `validate-cli` | `cli (macOS)` |
 | Embedded daemon and CLI release builds | `nix build` | `nix packages` |
+| Every published crate packaged and built from its package | `cargo xtask publish --dry-run` | `package` |
 | Documentation book build and link check | `docs` | `docs` |
 
 `just` runs the default validation set (`validate`), including a single check of

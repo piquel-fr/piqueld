@@ -17,7 +17,11 @@ Titles should follow the `feat(server): add docker swarm reconciliation` convent
 
 Open pull requests as drafts and mark them ready for review once the work is
 done. Drafts run only the quick CI jobs; marking a pull request ready runs the
-slow ones (Docker, Playwright, macOS, Nix), which it must pass before merging.
+slow ones (Docker, Playwright, macOS, Nix, packaging), which it must pass
+before merging.
+
+Add an entry to `CHANGELOG.md` under **Unreleased** for changes users will
+notice. `docs/dev/releasing.md` describes versions and releases.
 
 ## Adding features
 

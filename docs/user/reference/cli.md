@@ -7,6 +7,18 @@ default.
 [piquelctl commands](cli-commands.md) lists every command with its arguments
 and options.
 
+## Installing
+
+On the daemon's host, the [NixOS module](nixos.md) installs `piquelctl`, and
+the [other installations](../getting-started/install.md#other-linux-distributions)
+install it beside the daemon. On any other Linux or macOS machine, install
+Rust with [rustup](https://rustup.rs), then install `piquelctl` from
+[crates.io](https://crates.io/crates/piquelctl):
+
+```console
+cargo install --locked piquelctl
+```
+
 ## macOS support
 
 On Apple Silicon, Nix users can run `nix build .#cli` or

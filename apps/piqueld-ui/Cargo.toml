@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# The daemon embeds the dashboard; the published daemon ships it prebuilt.
+publish = false
 
 [dependencies]
 js-sys.workspace = true

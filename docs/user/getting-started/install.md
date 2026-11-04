@@ -8,7 +8,7 @@ and sets up the address you open the dashboard at.
 You need:
 
 - **An x86_64 Linux host.** NixOS is the supported way to install piqueld. On
-  other distributions, you [build it yourself](#other-linux-distributions).
+  other distributions, you [install it with Cargo](#other-linux-distributions).
 - **Docker Engine on that host, dedicated to piqueld.** piqueld runs your
   applications as Docker Swarm services and manages the engine's services,
   networks and volumes. If the engine isn't part of a Swarm yet, piqueld makes
@@ -127,13 +127,37 @@ tailnet. Never expose piqueld to the internet, even through a proxy.
 ## Other Linux distributions
 
 piqueld has no packages for other distributions yet, and the NixOS module is
-the only tested setup. To run it elsewhere, build it from source with
-`just build-embedded`, as described in the
-[developer guide](../../dev/getting-started.md), and copy
-`target/release/piqueld` and `target/release/piquelctl` to `/usr/local/bin`.
-Then set it up the way the NixOS module does:
+the only tested setup. To run it elsewhere, install it from
+[crates.io](https://crates.io/crates/piqueld) with Cargo, then set it up the
+way the NixOS module does:
 
-1. Create a `piqueld` system user and group, and add the user to the `docker`
+1. Install Rust with [rustup](https://rustup.rs), then the musl target, a C
+   compiler, `pkg-config` and OpenSSL's development files. On Debian and
+   Ubuntu:
+
+   ```console
+   rustup target add x86_64-unknown-linux-musl
+   sudo apt install build-essential pkg-config libssl-dev
+   ```
+
+   The daemon embeds a small static program built for the musl target, which
+   runs the HTTP health checks inside your containers.
+
+2. Build the daemon and `piquelctl`, and copy them to `/usr/local/bin`:
+
+   ```console
+   cargo install --locked piqueld piquelctl
+   sudo install ~/.cargo/bin/piqueld ~/.cargo/bin/piquelctl /usr/local/bin/
+   ```
+
+   The build takes several minutes. `--locked` builds with the dependency
+   versions the release was tested with. The daemon includes the dashboard.
+   To run a version that isn't released yet, build it from a checkout with
+   `just build-embedded` instead, as the
+   [developer guide](../../dev/getting-started.md) describes, and copy
+   `target/release/piqueld` and `target/release/piquelctl`.
+
+3. Create a `piqueld` system user and group, and add the user to the `docker`
    group:
 
    ```console
@@ -141,7 +165,7 @@ Then set it up the way the NixOS module does:
      --home-dir /var/lib/piqueld --no-create-home piqueld
    ```
 
-2. Write the daemon's configuration to `/etc/piqueld/config.toml`, with the
+4. Write the daemon's configuration to `/etc/piqueld/config.toml`, with the
    settings from [the previous section](#choose-how-to-reach-the-dashboard).
    Each `services.piqueld.settings` option is the same setting in the file:
    `settings.server.listen_mode = "localhost"` becomes
@@ -154,7 +178,7 @@ Then set it up the way the NixOS module does:
    The [configuration reference](../reference/configuration.md) lists every
    setting.
 
-3. Save this unit as `/etc/systemd/system/piqueld.service`:
+5. Save this unit as `/etc/systemd/system/piqueld.service`:
 
    ```ini
    [Unit]
@@ -182,7 +206,7 @@ Then set it up the way the NixOS module does:
    directory holding the API socket, `/run/piqueld`. The daemon also needs
    `git`, `ssh` and `docker` on its `PATH`, which includes `/usr/bin`.
 
-4. If piqueld joins your tailnet as [its own node](#piquelds-own-tailnet-node),
+6. If piqueld joins your tailnet as [its own node](#piquelds-own-tailnet-node),
    it also needs `tailscale` and `tailscaled` on its `PATH`. Store the auth key
    in a file only root can read, such as `/etc/piqueld/ts-auth-key`, and pass
    it to the service by adding to the unit's `[Service]` section:
@@ -199,14 +223,14 @@ Then set it up the way the NixOS module does:
    auth_key_file = "ts-auth-key"
    ```
 
-5. Start the daemon, and have it start at boot:
+7. Start the daemon, and have it start at boot:
 
    ```console
    sudo systemctl daemon-reload
    sudo systemctl enable --now piqueld
    ```
 
-6. Add the users who should run `piquelctl` on the host to the `piqueld`
+8. Add the users who should run `piquelctl` on the host to the `piqueld`
    group.
 
 ## Check that it works

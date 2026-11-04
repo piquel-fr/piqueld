@@ -1,10 +1,14 @@
 [package]
 name = "piqueld-core"
-description = "Pure domain contracts for piqueld"
+description = "Domain contracts shared by piqueld, its client and its CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["data-structures"]
 
 [dependencies]
 piqueld-probe.workspace = true

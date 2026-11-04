@@ -11,5 +11,6 @@ what an attacker could do with it.
 
 ## Supported versions
 
-piqueld has no stable release yet. Only the latest `main` receives security
-fixes.
+Security fixes go into the latest release, as a patch release, and into
+`main`. piqueld has no stable 1.0 release yet, so older minor versions don't
+receive fixes: upgrade to the latest one.

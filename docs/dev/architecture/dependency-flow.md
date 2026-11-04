@@ -11,7 +11,7 @@ CLI and dashboard. `piqueld-probe` is the static HTTP health probe, depending
 only on `thiserror`: the daemon build script embeds its binary, and
 `piqueld-core` uses its container path and arguments to validate and compile
 HTTP health checks. `piqueld-generated` writes and checks the files
-`just generate` produces, for the daemon's `generate_openapi` binary and
+`just generate` produces, for the daemon's `generate_openapi` example and
 `piquelctl`'s `cli_reference` example.
 
 Endpoint bindings are generated from the daemon's OpenAPI document by
@@ -19,8 +19,8 @@ Progenitor and checked into `piqueld-client`. They reuse the core wire contracts
 and share bounded TCP/Unix/browser response handling. Handwritten convenience
 methods unwrap envelopes, provide local validation, and cover the requests
 Progenitor cannot generate: the two TOML operations, the local snapshot upload,
-and the exec WebSocket. The generator is enabled
-only by the daemon's `openapi-codegen` feature; the client uses Progenitor's
+and the exec WebSocket. The generator is a
+daemon example that only development builds compile; the client uses Progenitor's
 small runtime support crate. See
 [client generation](https://github.com/piquel-fr/piqueld/blob/main/tools/client-codegen/README.md).
 

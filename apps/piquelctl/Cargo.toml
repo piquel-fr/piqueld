@@ -1,11 +1,18 @@
 [package]
 name = "piquelctl"
 default-run = "piquelctl"
-description = "Command-line client for piqueld"
+description = "Command-line client for piqueld, a control plane for a single-node Docker Swarm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities"]
+# The tests and the `cli_reference` example read files from across the
+# repository, so the published crate leaves them out.
+include = ["/src", "/LICENSE"]
 
 [dependencies]
 anstream.workspace = true

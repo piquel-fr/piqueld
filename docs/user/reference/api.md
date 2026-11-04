@@ -18,6 +18,12 @@ before calling it, then cancels and joins the returned worker before releasing
 those locks. `ApplicationService::new` accepts supplied storage and runtime
 adapters for tests or embedded use; it does not start background work.
 
+To script the API from Rust, use
+[`piqueld-client`](https://crates.io/crates/piqueld-client), the typed client
+`piquelctl` and the dashboard use. Its documentation is on
+[docs.rs](https://docs.rs/piqueld-client). Use the release matching your
+daemon's version.
+
 The API is rooted at `/api/v1` over a Unix socket and optional localhost or Tailscale TCP.
 Responses use a `data` envelope; lists contain `items` and an opaque
 `next_cursor`. Errors expose a safe message, code, details, and request ID.

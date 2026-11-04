@@ -1,5 +1,5 @@
 //! Files `just generate` writes from code, and `just openapi-check` compares
-//! against the checked-in copies. The daemon's `generate_openapi` binary and
+//! against the checked-in copies. The daemon's `generate_openapi` example and
 //! `piquelctl`'s `cli_reference` example both write through [`Artifacts`],
 //! and render the documentation's reference pages with [`Page`].
 

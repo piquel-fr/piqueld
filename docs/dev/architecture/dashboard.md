@@ -68,8 +68,16 @@ cargo build --release --package piqueld --bin piqueld --features embedded-ui --l
 # Build both the embedded daemon and CLI: just build-embedded
 ```
 
+The published `piqueld` crate can't build the dashboard: `piqueld-ui` isn't
+published, and installing it would need the wasm32 target. Instead,
+`cargo xtask publish` builds the bundle as above and ships it in the crate as
+`apps/piqueld/dashboard/`, which is gitignored and removed once the crates are
+published; see [releasing](../releasing.md). A build without `embedded-ui`
+embeds that bundle when the crate has one, so `cargo install piqueld` includes
+the dashboard.
+
 There is no runtime UI configuration: the dashboard exists exactly when the
-binary was built with the feature, and binaries built without it are API-only.
+binary embeds a bundle, and binaries built without one are API-only.
 The combined Nix package (`.#combined`, the default `.#` on Linux) includes
 `piquelctl` and a daemon with the release dashboard embedded, built by the same
 build script. The `.#daemon` output contains only the daemon without the

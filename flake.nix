@@ -63,7 +63,6 @@
               ./Cargo.lock
               ./apps
               ./crates
-              ./migrations
               # A workspace member, so Cargo needs it to build anything.
               ./tools/xtask
               ./examples
@@ -71,7 +70,8 @@
           };
           commonArgs = {
             inherit src;
-            version = "0.1.0";
+            # The workspace version, which every crate shares.
+            version = (lib.importTOML ./Cargo.toml).workspace.package.version;
             cargoVendorDir = craneLib.vendorCargoDeps { inherit src; };
             nativeBuildInputs = lib.optionals pkgs.stdenv.isLinux [
               pkgs.cmake
