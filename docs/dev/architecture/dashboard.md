@@ -43,7 +43,9 @@ The logo's mark is `apps/piqueld-ui/assets/favicon.svg`, with `favicon.png` as
 its 512-pixel raster. The dashboard inlines the SVG next to its name and serves
 both as its icons, and the documentation book uses them as its favicon. The
 wordmark, mark and name together, is `docs/images/wordmark.svg`. The name is
-drawn with Inter outlines, so it needs no font.
+drawn with Inter outlines, so it needs no font. The build fails on a file of
+`assets/` that `index.html` doesn't reference, and the book reads that directory
+as its mdBook theme, so keep only the shell's icons there.
 
 ## Production assets
 

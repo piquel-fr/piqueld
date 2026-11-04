@@ -50,6 +50,7 @@
 
     /* Holds the logo's SVG, which fills it. */
     .brand-mark {
+        flex: none;
         width: 28px;
         height: 28px;
     }
