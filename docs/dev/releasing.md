@@ -21,6 +21,10 @@ Versions follow [semantic versioning](https://semver.org). Before 1.0:
 - a patch release, such as 0.1.1, only fixes bugs: upgrading to it needs no
   changes.
 
+The crates build with Rust 1.95 or newer: `rust-version` under
+`[workspace.package]`, which the `msrv` CI job checks. Raising it is a change
+users notice, so it goes in the changelog.
+
 Each release is tagged `v<version>`, such as `v0.1.0`, on a commit of `main`.
 A released [migration](architecture/persistence.md#adding-a-migration) is
 never edited, since databases that applied it won't run it again.

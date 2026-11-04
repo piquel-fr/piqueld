@@ -3,6 +3,7 @@ name = "piqueld-core"
 description = "Domain contracts shared by piqueld, its client and its CLI"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

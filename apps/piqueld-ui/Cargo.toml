@@ -3,6 +3,7 @@ name = "piqueld-ui"
 description = "Web administration interface for piqueld"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 # The daemon embeds the dashboard; the published daemon ships it prebuilt.

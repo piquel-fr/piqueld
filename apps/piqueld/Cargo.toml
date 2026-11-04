@@ -3,6 +3,7 @@ name = "piqueld"
 description = "Control plane for a single-node Docker Swarm: deployments, HTTPS routes, secrets and more"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

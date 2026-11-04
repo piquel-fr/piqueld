@@ -23,6 +23,7 @@ package. Dashboard tools are cached by version.
 | Documentation tests | `doc-test` | `rust` |
 | Generated API specification, client, and manifest JSON Schema freshness | `openapi-check` | `rust` |
 | Core dependency boundaries | `boundary` | `rust` |
+| Published crates on the minimum supported Rust, `rust-version` | `cargo +<rust-version> check` | `msrv` |
 | Browser compilation | `ui-check`, `check-wasm` | `wasm-ui` |
 | Real browser transport tests | `test-wasm` | `wasm-ui` |
 | Isolated Engine integration tests | `docker-test` | `docker-integration` |

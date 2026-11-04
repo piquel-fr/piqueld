@@ -4,6 +4,7 @@ default-run = "piquelctl"
 description = "Command-line client for piqueld, a control plane for a single-node Docker Swarm"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
