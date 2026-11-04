@@ -16,6 +16,7 @@ RUN nix develop .#docs --command mdbook --version
 WORKDIR /book
 COPY book.toml ./
 COPY docs docs
+COPY apps/piqueld-ui/assets apps/piqueld-ui/assets
 RUN nix develop /flake#docs --command mdbook build
 
 # Serves the built book on port 8080, with its 404.html for missing pages. The

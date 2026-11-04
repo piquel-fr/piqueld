@@ -86,6 +86,7 @@ fn write_bundle_module(dist: &Path) -> Result<(), Box<dyn Error>> {
 /// piqueld-ui-<hash>.js        wasm-bindgen JavaScript bindings
 /// piqueld-ui-<hash>_bg.wasm   the dashboard itself
 /// style-<hash>.css            `STYLESHEETS`, concatenated in cascade order
+/// favicon-<hash>.svg ...    each file of apps/piqueld-ui/assets, e.g. the logo
 /// snippets/...                `inline_js` modules emitted by wasm-bindgen
 /// ```
 ///
@@ -172,23 +173,44 @@ impl Dashboard {
         let stylesheet = write_hashed(&dist, "style", "css", self.stylesheet()?.as_bytes())?;
         let loader = format!("import init from \"./{bindings}.js\";\nawait init();\n");
         let loader = write_hashed(&dist, "start", "js", loader.as_bytes())?;
+        let mut files = vec![
+            ("{{stylesheet}}".to_owned(), stylesheet),
+            ("{{bindings}}".to_owned(), format!("{bindings}.js")),
+            ("{{wasm}}".to_owned(), format!("{bindings}_bg.wasm")),
+            ("{{loader}}".to_owned(), loader),
+        ];
+        files.extend(self.assets(&dist)?);
         let mut shell = fs::read_to_string(self.ui_dir.join("index.html"))?;
-        for (placeholder, file) in [
-            ("{{stylesheet}}", stylesheet),
-            ("{{bindings}}", format!("{bindings}.js")),
-            ("{{wasm}}", format!("{bindings}_bg.wasm")),
-            ("{{loader}}", loader),
-        ] {
-            if !shell.contains(placeholder) {
+        for (placeholder, file) in files {
+            if !shell.contains(&placeholder) {
                 return Err(io::Error::other(format!(
                     "apps/piqueld-ui/index.html has no {placeholder} placeholder"
                 ))
                 .into());
             }
-            shell = shell.replace(placeholder, &file);
+            shell = shell.replace(&placeholder, &file);
         }
         fs::write(dist.join("index.html"), shell)?;
         Ok(dist)
+    }
+
+    /// Copies each file of `apps/piqueld-ui/assets`, such as the logo, into
+    /// `dist` with a content hash, and returns its `{{<name>}}` placeholder,
+    /// e.g. `{{favicon.svg}}`, with the hashed file name.
+    fn assets(&self, dist: &Path) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+        let mut assets = Vec::new();
+        for file in walk_files(&self.ui_dir.join("assets"))? {
+            let name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| io::Error::other(format!("{} has no UTF-8 name", file.display())))?;
+            let (stem, extension) = name
+                .rsplit_once('.')
+                .ok_or_else(|| io::Error::other(format!("{} has no extension", file.display())))?;
+            let hashed = write_hashed(dist, stem, extension, &fs::read(&file)?)?;
+            assets.push((format!("{{{{{name}}}}}"), hashed));
+        }
+        Ok(assets)
     }
 
     /// Returns the dashboard module: `PIQUELD_DASHBOARD_WASM` when set, as the

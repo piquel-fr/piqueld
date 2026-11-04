@@ -48,17 +48,17 @@
         display: contents;
     }
 
+    /* Holds the logo's SVG, which fills it. */
     .brand-mark {
-        display: grid;
-        place-items: center;
+        flex: none;
         width: 28px;
         height: 28px;
-        border: 1px solid #544073;
-        border-radius: 7px;
-        color: #d6c4f4;
-        background: #282036;
-        font-size: 18px;
-        font-weight: 700;
+    }
+
+    .brand-mark svg {
+        display: block;
+        width: 100%;
+        height: 100%;
     }
 
     .nav {
@@ -356,7 +356,6 @@
         .brand-mark {
             width: 24px;
             height: 24px;
-            font-size: 15px;
         }
 
         .sidebar .nav-toggle {

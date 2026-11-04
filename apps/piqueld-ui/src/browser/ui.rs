@@ -130,6 +130,20 @@ pub(super) fn icon(icon: Icon) -> AnyView {
     .into_any()
 }
 
+/// The piqueld logo: its mark, the dashboard's favicon, and its name. The mark
+/// is decorative; the name labels it.
+pub(super) fn logo() -> AnyView {
+    view! {
+        <span
+            class="brand-mark"
+            aria-hidden="true"
+            inner_html={include_str!("../../assets/favicon.svg")}
+        ></span>
+        "piqueld"
+    }
+    .into_any()
+}
+
 /// A small button copying `text` to the clipboard, labelled `label` for
 /// assistive technology, that says "Copied" once it did. Browsers expose no
 /// clipboard on plain HTTP origins, so there it renders nothing and the text
