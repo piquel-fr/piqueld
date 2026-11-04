@@ -27,5 +27,5 @@ them needs Rust 1.99 or newer.
   tamper-evident audit trail.
 - **Access:** passkey accounts, scoped API tokens, per-application
   permissions, and CLI sign-in from another machine.
-- **Surfaces:** every feature through the dashboard, `piquelctl`, and the
-  manifest, and the versioned HTTP API under `/api/v1`.
+- **Surfaces:** the dashboard, `piquelctl`, the application manifest for an
+  application's configuration, and the versioned HTTP API under `/api/v1`.
