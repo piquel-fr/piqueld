@@ -11,7 +11,7 @@
 #   browser-playwright -> test-playwright
 #   cli (macOS)        -> validate-cli
 #   nix                -> the combined Nix package
-#   package            -> cargo xtask publish --dry-run
+#   package            -> publish --dry-run
 #   docs               -> docs
 #
 # Pull requests run only the jobs whose inputs changed (see `changes`). Draft
@@ -372,8 +372,8 @@ jobs:
         run: nix build -L --out-link result-other ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
 
   # Packages every published crate, with the dashboard the daemon ships, and
-  # builds each from its package, as `cargo install` would: everything the
-  # release workflow does except uploading.
+  # builds each from its package, as `cargo install` would: everything
+  # `just publish` does except uploading.
   package:
     name: package
     needs: changes

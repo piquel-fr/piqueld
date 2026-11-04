@@ -30,7 +30,7 @@ package. Dashboard tools are cached by version.
 | Browser end-to-end tests | `test-playwright` | `browser-playwright` |
 | CLI on macOS | `validate-cli` | `cli (macOS)` |
 | Embedded daemon and CLI release builds | `nix build` | `nix packages` |
-| Every published crate packaged and built from its package | `cargo xtask publish --dry-run` | `package` |
+| Every published crate packaged and built from its package | `publish --dry-run` | `package` |
 | Documentation book build and link check | `docs` | `docs` |
 
 `just` runs the default validation set (`validate`), including a single check of

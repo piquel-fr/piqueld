@@ -2,10 +2,8 @@
 
 A release publishes the daemon, `piquelctl` and `piqueld-client` to
 [crates.io](https://crates.io/crates/piqueld), with the two crates they depend
-on, and creates a GitHub release from its changelog entry. Pushing a version
-tag starts it; the
-[release workflow](https://github.com/piquel-fr/piqueld/blob/main/.github/workflows/release.yml)
-does the rest.
+on, then tags the commit and creates a GitHub release from its changelog
+entry. A maintainer runs each step by hand.
 
 ## Versions
 
@@ -21,7 +19,7 @@ Versions follow [semantic versioning](https://semver.org). Before 1.0:
 - a patch release, such as 0.1.1, only fixes bugs: upgrading to it needs no
   changes.
 
-The crates build with Rust 1.95 or newer: `rust-version` under
+The crates build with Rust 1.99 or newer: `rust-version` under
 `[workspace.package]`, which the `msrv` CI job checks. Raising it is a change
 users notice, so it goes in the changelog.
 
@@ -55,33 +53,33 @@ Each crate builds from its package alone, as `cargo install` builds it:
 - `piqueld` and `piquelctl` leave out their tests and examples, which read
   files from across the repository, through `include` in their manifests.
 
-`cargo xtask publish` builds the dashboard into `apps/piqueld/dashboard/`, runs
-`cargo publish --workspace`, which publishes the crates in dependency order,
-then removes the dashboard. The `package` CI job runs
-`cargo xtask publish --dry-run` on every pull request that changes the crates,
-once it is ready for review. It packages each crate and builds it from its
+`just publish`, which runs `cargo xtask publish`, builds the dashboard into
+`apps/piqueld/dashboard/`, runs `cargo publish --workspace`, which publishes
+the crates in dependency order, then removes the dashboard. The `package` CI
+job runs it with `--dry-run` on every pull request that changes the crates,
+once it is ready for review: it packages each crate and builds it from its
 package, without uploading anything. Run it yourself after changing a
 manifest, a build script, or a file a crate reads at compile time:
 
 ```console
-cargo xtask publish --dry-run --allow-dirty
+just publish --dry-run --allow-dirty
 ```
 
 ## Set up publishing
 
-Do this once, before the first release.
+Do this once, on the machine you release from:
 
 1. On crates.io, open **Account Settings**, then **API Tokens**, and create a
    token with the `publish-new` and `publish-update` scopes, limited to the
    crates `piqueld*` and `piquelctl`.
-2. In the repository's **Settings** on GitHub, open **Environments** and create
-   an environment named `crates-io`. Limit its deployments to tags matching
-   `v*`, and add the token as the secret `CARGO_REGISTRY_TOKEN`.
+2. Save it for Cargo:
 
-Once the crates exist, crates.io can trust the release workflow directly
-instead, through
-[trusted publishing](https://crates.io/docs/trusted-publishing), so no
-long-lived token is stored.
+   ```console
+   cargo login
+   ```
+
+You also need the Rust toolchain of `rust-toolchain.toml` with its targets,
+and the [GitHub CLI](https://cli.github.com) signed in to the repository.
 
 ## Release a version
 
@@ -92,23 +90,43 @@ long-lived token is stored.
      update `Cargo.lock`. The Nix packages read the version from `Cargo.toml`.
    - In `CHANGELOG.md`, move the entries under **Unreleased** into a new
      section, `## <version> - <date>`, such as `## 0.2.0 - 2027-01-15`.
-2. Merge it.
-3. Tag the merge commit, and push the tag:
+2. Merge it, and check out the merge commit:
 
    ```console
    git switch main && git pull
+   ```
+
+3. Check that every crate packages and builds, without uploading anything:
+
+   ```console
+   just publish --dry-run
+   ```
+
+4. Publish the crates:
+
+   ```console
+   just publish
+   ```
+
+   It builds the dashboard, publishes the five crates in dependency order, and
+   takes several minutes.
+5. Tag the commit, and push the tag:
+
+   ```console
    git tag --annotate v0.2.0 --message "piqueld 0.2.0"
    git push origin v0.2.0
    ```
 
-The release workflow checks that the tag matches the workspace version and
-that the changelog has an entry for it. It then runs `cargo xtask publish`,
-and creates the GitHub release with the changelog entry as its notes.
+6. Create the GitHub release, with the version's changelog entry as its notes:
+
+   ```console
+   gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --notes-file <notes>
+   ```
 
 ## Check that it works
 
-The release's **Actions** run succeeded, and its GitHub release lists the
-changelog entry. On a machine with Rust, install the new version:
+The crates' pages on crates.io list the new version. On a machine with Rust,
+install it:
 
 ```console
 cargo install --locked piquelctl
@@ -119,21 +137,13 @@ docs.rs builds the new `piqueld-client` documentation within a few minutes.
 
 ## Troubleshooting
 
-- **The workflow fails before publishing.** The tag doesn't match the
-  workspace version, or the changelog has no entry for it. Nothing was
-  published: delete the tag with `git push origin :refs/tags/v0.2.0` and
-  `git tag --delete v0.2.0`, fix the version or changelog in a pull request,
-  and tag again.
 - **Publishing fails partway.** The crates published before the failure stay
-  published, and crates.io refuses to publish a version twice, so the workflow
-  can't be run again. Fix the cause, then publish the remaining crates from the
-  tag, with `--exclude` for each one already published, and create the GitHub
-  release by hand:
+  published, and crates.io refuses to publish a version twice. Fix the cause,
+  then publish the remaining crates, with `--exclude` for each one already
+  published:
 
   ```console
-  git switch --detach v0.2.0
-  CARGO_REGISTRY_TOKEN=<token> cargo xtask publish --exclude piqueld-probe --exclude piqueld-core
-  gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --notes "<the changelog entry>"
+  just publish --exclude piqueld-probe --exclude piqueld-core
   ```
 
 - **A published version is broken.** A version can't be replaced. Yank it

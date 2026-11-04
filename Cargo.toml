@@ -19,7 +19,7 @@ edition = "2024"
 # The oldest Rust the crates build with, which the `msrv` CI job checks. Raise
 # it when code needs a newer Rust. Cargo then prefers dependency versions that
 # support it when updating the lockfile.
-rust-version = "1.95"
+rust-version = "1.99"
 license = "Apache-2.0"
 repository = "https://github.com/piquel-fr/piqueld"
 homepage = "https://docs.piqueld.dev"

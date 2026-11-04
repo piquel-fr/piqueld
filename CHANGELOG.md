@@ -14,7 +14,7 @@ users will notice.
 
 The first release of piqueld: the `piqueld` daemon, the `piquelctl` CLI, and
 the `piqueld-client` Rust crate, on crates.io and as a NixOS module. Building
-them needs Rust 1.95 or newer.
+them needs Rust 1.99 or newer.
 
 - **Deployments:** applications described in a manifest, from prebuilt images
   or Git builds. Environments, releases and promotion, branch previews, jobs

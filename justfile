@@ -76,6 +76,13 @@ openapi-check:
 boundary:
     @cargo xtask boundary
 
+# Publishes the crates to crates.io, with the prebuilt dashboard the published
+# daemon embeds; see docs/dev/releasing.md. ARGS go on to `cargo publish`,
+# such as `--dry-run`.
+[positional-arguments]
+publish *ARGS:
+    @cargo xtask publish "$@"
+
 # UI checks and embedded builds need only the wasm32 target from
 # rust-toolchain.toml: the daemon build script compiles and binds the dashboard
 # itself. Default all-feature Clippy builds the embedded dashboard, and
