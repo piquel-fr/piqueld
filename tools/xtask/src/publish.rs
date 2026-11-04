@@ -23,7 +23,10 @@ use crate::process::{checked_stdout, exit_code};
 pub fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
     let allow_dirty = args.iter().any(|arg| arg == "--allow-dirty");
     if !allow_dirty {
-        let changes = Workspace::git(workspace.root(), &["status", "--porcelain"])?;
+        let changes = Workspace::git(
+            workspace.root(),
+            &["status", "--porcelain", "--untracked-files=all"],
+        )?;
         ensure!(
             changes.is_empty(),
             "the working tree has uncommitted changes; commit them, or pass --allow-dirty:\n{changes}"

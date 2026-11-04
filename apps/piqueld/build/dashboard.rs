@@ -25,6 +25,7 @@ use crate::nested::NestedCargo;
 const SHIPPED: &str = "dashboard";
 /// The file Cargo adds to every package, which tells a packaged crate from the
 /// workspace member it was packaged from.
+#[cfg(not(feature = "embedded-ui"))]
 const PACKAGED: &str = "Cargo.toml.orig";
 
 /// Writes `OUT_DIR/ui_assets.rs`, which embeds every bundle file into the
