@@ -662,29 +662,33 @@ impl Checkout {
         let root = self.root();
         tokio::task::spawn_blocking(move || {
             use std::os::unix::fs::PermissionsExt;
-            let mode = |mode| std::fs::Permissions::from_mode(mode);
+            let set = |path: &Path, mode| {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+                    .with_context(|| format!("set the mode of {}", path.display()))
+            };
             let mut directories = vec![root.clone()];
             while let Some(directory) = directories.pop() {
-                std::fs::set_permissions(&directory, mode(0o755))?;
-                for entry in std::fs::read_dir(&directory)? {
-                    let entry = entry?;
+                set(&directory, 0o755)?;
+                let entries = std::fs::read_dir(&directory)
+                    .with_context(|| format!("read {}", directory.display()))?;
+                for entry in entries {
+                    let entry = entry.with_context(|| format!("read {}", directory.display()))?;
                     let path = entry.path();
-                    let file_type = entry.file_type()?;
-                    if file_type.is_dir() && path != root.join(".git") {
+                    let metadata = entry
+                        .metadata()
+                        .with_context(|| format!("read the mode of {}", path.display()))?;
+                    if metadata.is_dir() && path != root.join(".git") {
                         directories.push(path);
-                    } else if file_type.is_file() {
-                        let executable = entry.metadata()?.permissions().mode() & 0o100 != 0;
-                        std::fs::set_permissions(
-                            &path,
-                            mode(if executable { 0o755 } else { 0o644 }),
-                        )?;
+                    } else if metadata.is_file() {
+                        let executable = metadata.permissions().mode() & 0o100 != 0;
+                        set(&path, if executable { 0o755 } else { 0o644 })?;
                     }
                 }
             }
             anyhow::Ok(())
         })
         .await
-        .context("restore Git checkout modes")?
+        .context("join the Git checkout mode restoration")?
         .context("restore Git checkout modes")
     }
 
