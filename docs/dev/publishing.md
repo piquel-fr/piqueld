@@ -1,21 +1,26 @@
 # Publishing piqueld.dev
 
 piqueld.dev is served by a piqueld instance, which runs everything on it as one
-application, `piqueld-dev`: this book at <https://docs.piqueld.dev>, and
-Grafana at `grafana.piqueld.dev`, on the instance's tailnet, showing the
-instance's own telemetry. Every push to `main` deploys it. This page sets it
-up once, on the instance that serves it.
+application, `piqueld-dev`: the marketing site at <https://piqueld.dev>, this
+book at <https://docs.piqueld.dev>, and Grafana at `grafana.piqueld.dev`, on
+the instance's tailnet, showing the instance's own telemetry. Every push to
+`main` deploys it. This page sets it up once, on the instance that serves it.
 
 [`deploy/piqueld-dev.toml`](https://github.com/piquel-fr/piqueld/blob/main/deploy/piqueld-dev.toml)
 is the application's manifest. piqueld reads it from `main` on each
 deployment, with the files its services build and mount, from the same commit:
 
-- [`deploy/docs`](https://github.com/piquel-fr/piqueld/tree/main/deploy/docs)
-  holds the `Dockerfile` of the `web` service. It builds the book with the
-  mdBook that `flake.lock` pins, through `nix develop .#docs`, the shell
-  `just docs` and CI use. It serves the pages with
+- [`deploy/site`](https://github.com/piquel-fr/piqueld/tree/main/deploy/site)
+  holds the `Dockerfile` of the `site` service. It serves
+  [`apps/site`](https://github.com/piquel-fr/piqueld/tree/main/apps/site),
+  static pages with no build step, with
   [static-web-server](https://static-web-server.net/) on port 8080, as an
   unprivileged user.
+- [`deploy/docs`](https://github.com/piquel-fr/piqueld/tree/main/deploy/docs)
+  holds the `Dockerfile` of the `docs` service. It builds the book with the
+  mdBook that `flake.lock` pins, through `nix develop .#docs`, the shell
+  `just docs` and CI use. It serves the pages with static-web-server
+  too.
 - [`deploy/observability`](https://github.com/piquel-fr/piqueld/tree/main/deploy/observability)
   holds the configuration of the telemetry stack: an OpenTelemetry Collector
   receiving the daemon's telemetry, Prometheus keeping metrics for 15 days,
@@ -28,8 +33,8 @@ The user guide's
 [observability stack](../user/operations/observability-stack.md) is
 a smaller version of this stack, for any instance.
 
-To add a site, such as a marketing page, add its service and route to the
-manifest in a pull request.
+To add another site, add its service and route to the manifest in a pull
+request.
 
 ## Before you start
 
@@ -61,8 +66,9 @@ host or on any machine where `piquelctl` is signed in to the instance.
 ## Set it up
 
 1. Point the hostnames at the instance:
-   - `docs.piqueld.dev`, like any public route: an `A` record to the host's
-     public address, a CNAME to the tunnel with a
+   - `piqueld.dev`, `www.piqueld.dev` and `docs.piqueld.dev`, like any public
+     route: an `A` record to the host's public address, a CNAME to the tunnel
+     (flattened at the zone's apex) with a
      [Cloudflare Tunnel](../user/networking/cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel),
      or nothing when piqueld
      [manages the zone's records](../user/networking/dns-records.md).
@@ -77,9 +83,10 @@ host or on any machine where `piquelctl` is signed in to the instance.
    piquelctl app plan --file deploy/piqueld-dev.toml
    ```
 
-   The plan creates the `piqueld-dev` application, with its `web`,
+   The plan creates the `piqueld-dev` application, with its `site`, `docs`,
    `collector`, `prometheus`, `tempo`, `loki` and `grafana` services, and its
-   routes on `docs.piqueld.dev` and `grafana.piqueld.dev`.
+   routes on `piqueld.dev`, `docs.piqueld.dev` and `grafana.piqueld.dev`, and
+   the redirect from `www.piqueld.dev`.
 
 3. Save the manifest, grant its environment the daemon's telemetry, and deploy
    it:
@@ -121,9 +128,10 @@ describe how this works.
 
 ## Check that it works
 
-The site serves the book:
+The site serves the marketing pages and the book:
 
 ```console
+curl --fail --head https://piqueld.dev/
 curl --fail --head https://docs.piqueld.dev/dev/publishing.html
 ```
 
@@ -168,7 +176,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-dev:4317"
 OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
 ```
 
-## Build the docs image locally
+## Build the images locally
 
 From the root of the repository:
 
@@ -177,7 +185,9 @@ docker build --file deploy/docs/Dockerfile --tag piqueld-docs .
 docker run --rm --publish 8080:8080 piqueld-docs
 ```
 
-The book is then on <http://localhost:8080>. To build it in a
+The book is then on <http://localhost:8080>. The marketing site builds the same
+way from `deploy/site/Dockerfile`; to look at it without Docker, see
+[`apps/site`](https://github.com/piquel-fr/piqueld/tree/main/apps/site). To build it in a
 [development instance](development.md#docker)'s engine rather than the host's,
 set `DOCKER_HOST` to that engine's socket first.
 
@@ -195,8 +205,9 @@ set `DOCKER_HOST` to that engine's socket first.
   `piquelctl --timeout 10m app deploy piqueld-dev`: the steps that finished
   stay cached. If it keeps failing, raise the setting.
 - **The deployment fails with `hostname_conflict`.** Another application
-  holds `docs.piqueld.dev` or `grafana.piqueld.dev`. This instance already
-  serves piqueld.dev: migrate that deployment instead.
+  holds `piqueld.dev`, `www.piqueld.dev`, `docs.piqueld.dev` or
+  `grafana.piqueld.dev`. This instance already serves piqueld.dev: migrate
+  that deployment instead.
 - **A push deploys nothing.** `piquelctl env show piqueld-dev production`
   says why on its `Sync` line, and GitHub's **Recent Deliveries** shows whether
   the delivery failed. A `401` means the secret doesn't match: generate a new one

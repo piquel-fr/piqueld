@@ -1,0 +1,8 @@
+# The build context is the repository root; the Dockerfile only reads the site
+# and the logo its favicon links point to.
+*
+!apps/site
+apps/site/README.md
+apps/site/favicon.*
+!apps/piqueld-ui/assets/favicon.svg
+!apps/piqueld-ui/assets/favicon.png
