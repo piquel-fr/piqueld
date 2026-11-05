@@ -2,9 +2,9 @@
 
 piqueld.dev is served by a piqueld instance, which runs everything on it as one
 application, `piqueld-dev`: the marketing site at <https://piqueld.dev>, this
-book at <https://docs.piqueld.dev>, and Grafana at `grafana.piqueld.dev`, on the instance's tailnet, showing the
-instance's own telemetry. Every push to `main` deploys it. This page sets it
-up once, on the instance that serves it.
+book at <https://docs.piqueld.dev>, and Grafana at `grafana.piqueld.dev`, on
+the instance's tailnet, showing the instance's own telemetry. Every push to
+`main` deploys it. This page sets it up once, on the instance that serves it.
 
 [`deploy/piqueld-dev.toml`](https://github.com/piquel-fr/piqueld/blob/main/deploy/piqueld-dev.toml)
 is the application's manifest. piqueld reads it from `main` on each
@@ -205,8 +205,9 @@ set `DOCKER_HOST` to that engine's socket first.
   `piquelctl --timeout 10m app deploy piqueld-dev`: the steps that finished
   stay cached. If it keeps failing, raise the setting.
 - **The deployment fails with `hostname_conflict`.** Another application
-  holds `piqueld.dev`, `docs.piqueld.dev` or `grafana.piqueld.dev`. This
-  instance already serves piqueld.dev: migrate that deployment instead.
+  holds `piqueld.dev`, `www.piqueld.dev`, `docs.piqueld.dev` or
+  `grafana.piqueld.dev`. This instance already serves piqueld.dev: migrate
+  that deployment instead.
 - **A push deploys nothing.** `piquelctl env show piqueld-dev production`
   says why on its `Sync` line, and GitHub's **Recent Deliveries** shows whether
   the delivery failed. A `401` means the secret doesn't match: generate a new one

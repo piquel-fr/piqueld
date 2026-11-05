@@ -1,9 +1,9 @@
 # Everything piqueld.dev serves, as one application: the marketing site at
-# piqueld.dev, the documentation at docs.piqueld.dev, and the telemetry stack receiving this instance's
-# telemetry, with Grafana at grafana.piqueld.dev on the tailnet. Each
-# deployment reads this file, and the files its services build and mount,
-# from main, and every push to main deploys it. Add a site with its own
-# service and route. See docs/dev/publishing.md.
+# piqueld.dev, the documentation at docs.piqueld.dev, and the telemetry stack
+# receiving this instance's telemetry, with Grafana at grafana.piqueld.dev on
+# the tailnet. Each deployment reads this file, and the files its services
+# build and mount, from main, and every push to main deploys it. Add a site
+# with its own service and route. See docs/dev/publishing.md.
 api_version = "piqueld.dev/v1alpha1"
 kind = "Application"
 

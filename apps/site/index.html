@@ -821,8 +821,8 @@ pre .b { color: var(--preview); }
   <span class="f">--permission</span> previews:delete
 
 <span class="c"># Deploy the worktree, uncommitted and all</span>
-out=$(<span class="cmd">piquelctl</span> <span class="f">--json</span> preview deploy blog \
-  <span class="f">--local</span> <span class="f">--slot</span> agent-2)
+out=$(<span class="cmd">piquelctl</span> <span class="f">--json</span> <span class="f">--timeout</span> 15m \
+  preview deploy blog <span class="f">--local</span> <span class="f">--slot</span> agent-2)
 slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
 
 <span class="c"># Read it, try it, delete it</span>
@@ -844,7 +844,7 @@ slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
                 </ul>
             </div>
             <figure class="panel">
-                <figcaption class="panel-title">piqueld.toml, in the repository</figcaption>
+                <figcaption class="panel-title">From piqueld.toml, in the repository</figcaption>
 <pre><code><span class="h">[[spec.services]]</span>
 <span class="k">name</span> = <span class="s">"web"</span>
 <span class="h">[spec.services.source]</span>
@@ -858,6 +858,7 @@ slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
 <span class="k">service</span> = <span class="s">"web"</span>
 <span class="k">port</span> = <span class="b">3000</span>
 <span class="k">hostname</span> = <span class="s">"${{ vars.domain }}"</span>
+<span class="k">visibility</span> = <span class="s">"public"</span>
 
 <span class="h">[spec.previews.variables]</span>
 <span class="k">domain</span> = <span class="s">"${{ env.slug }}.example.com"</span>
