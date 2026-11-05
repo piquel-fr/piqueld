@@ -211,6 +211,8 @@ Then list the preview's URLs:
 piquelctl preview show piqueld-dev <branch>
 ```
 
+For a preview with a slot, add `--slot <name>` here and when you delete it.
+
 The preview's site still links to the book on `docs.piqueld.dev`, since the
 site's links are absolute.
 
