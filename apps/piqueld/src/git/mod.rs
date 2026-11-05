@@ -348,11 +348,13 @@ impl Checkouts {
         .await?;
         let commit = Checkout::head(&root).await?;
         let disk = self.settle(directory.path(), disk).await?;
-        Ok(Checkout {
+        let checkout = Checkout {
             directory,
             _disk: disk,
             commit,
-        })
+        };
+        checkout.restore_modes().await?;
+        Ok(checkout)
     }
 
     /// Checks the disk a checkout in `directory` takes against `disk`, its
@@ -650,6 +652,42 @@ impl Checkout {
         Ok(commit)
     }
 
+    /// Gives the working tree the modes Git records, whatever the daemon's
+    /// umask (`UMask=0077` in the NixOS module checks files out `0600`):
+    /// directories and executables `0755`, other files `0644`. Images copy
+    /// these modes, so a service running as an unprivileged user can read
+    /// the files it was built with. The checkout's temporary directory stays
+    /// private, and so does `.git`; symlinks are left alone.
+    async fn restore_modes(&self) -> anyhow::Result<()> {
+        let root = self.root();
+        tokio::task::spawn_blocking(move || {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |mode| std::fs::Permissions::from_mode(mode);
+            let mut directories = vec![root.clone()];
+            while let Some(directory) = directories.pop() {
+                std::fs::set_permissions(&directory, mode(0o755))?;
+                for entry in std::fs::read_dir(&directory)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    let file_type = entry.file_type()?;
+                    if file_type.is_dir() && path != root.join(".git") {
+                        directories.push(path);
+                    } else if file_type.is_file() {
+                        let executable = entry.metadata()?.permissions().mode() & 0o100 != 0;
+                        std::fs::set_permissions(
+                            &path,
+                            mode(if executable { 0o755 } else { 0o644 }),
+                        )?;
+                    }
+                }
+            }
+            anyhow::Ok(())
+        })
+        .await
+        .context("restore Git checkout modes")?
+        .context("restore Git checkout modes")
+    }
+
     /// Working tree root inside the temporary directory.
     pub(crate) fn root(&self) -> PathBuf {
         self.directory.path().join("repository")
@@ -894,6 +932,38 @@ mod tests {
             tokio::fs::read_to_string(dockerfile).await.unwrap(),
             "$Id$\n"
         );
+    }
+
+    /// A checkout under a restrictive umask still has Git's modes, so an
+    /// unprivileged user in an image built from it can read its files.
+    #[tokio::test]
+    async fn checkouts_have_the_committed_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let repository = tempfile::tempdir().unwrap();
+        let source = fixture(repository.path()).await;
+        let script = repository.path().join("bin/run");
+        tokio::fs::create_dir(repository.path().join("bin"))
+            .await
+            .unwrap();
+        tokio::fs::write(&script, "#!/bin/sh\n").await.unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit(repository.path(), "FROM scratch\n").await;
+        let checkouts = checkouts(repository.path(), 1 << 30).await;
+        let checkout = checkouts.checkout(&source, None).await.unwrap();
+        let root = checkout.root();
+        // As `UMask=0077` checks them out.
+        for (path, mode) in [("Dockerfile", 0o600), ("bin", 0o700), ("bin/run", 0o700)] {
+            std::fs::set_permissions(root.join(path), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+        }
+        checkout.restore_modes().await.unwrap();
+        for (path, mode) in [("Dockerfile", 0o644), ("bin", 0o755), ("bin/run", 0o755)] {
+            let actual = std::fs::metadata(root.join(path))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(actual & 0o777, mode, "{path}");
+        }
     }
 
     /// Directories are charged too: a deep tree of tiny files takes far
