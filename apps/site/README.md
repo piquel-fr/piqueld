@@ -7,10 +7,12 @@ file server can serve this directory as it is. The `site` service of
 [publishing piqueld.dev](../../docs/dev/publishing.md).
 
 `index.html` is the whole site: a change's path through piqueld, drawn as a
-transit map, followed by what sets piqueld apart. `favicon.svg` and `favicon.png` are piqueld's
-logo, copied from `apps/piqueld-ui/assets`. `fonts/overpass.woff2` is the
-Latin subset of Overpass, an OFL-licensed font, served from this site so that
-the page makes no third-party requests; its licence is in `fonts/OFL.txt`.
+transit map, followed by what sets piqueld apart. `favicon.svg` and
+`favicon.png`, piqueld's logo, link to the dashboard's in
+`apps/piqueld-ui/assets`, and the image copies them from there.
+`fonts/overpass.woff2` is the Latin subset of Overpass, an OFL-licensed font,
+served from this site so that the page makes no third-party requests; its
+licence is in `fonts/OFL.txt`.
 
 ## Preview
 

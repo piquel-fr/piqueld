@@ -12,4 +12,6 @@
 FROM joseluisq/static-web-server:2.44.1@sha256:94618e3d17802265a21926217e6f9e7832b311b6fbf5933684001739fafed06a
 ENV SERVER_PORT=8080
 COPY apps/site /public
+# The site's favicons link to the dashboard's logo; copy the files themselves.
+COPY apps/piqueld-ui/assets/favicon.svg apps/piqueld-ui/assets/favicon.png /public/
 USER 65532:65532
