@@ -21,4 +21,6 @@ licence is in `fonts/OFL.txt`.
 python3 -m http.server --directory apps/site 8000
 ```
 
-Then open <http://localhost:8000>.
+Then open <http://localhost:8000>. To see it served as it is published, with
+the book next to it, deploy your worktree to a preview of `piqueld-dev`; see
+[previewing a branch](../../docs/dev/publishing.md#preview-a-branch).

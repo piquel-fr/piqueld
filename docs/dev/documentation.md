@@ -225,4 +225,5 @@ because a change anywhere in the repository can break a link to it. It uses
 `nix develop .#docs`, so CI and your shell run the same versions.
 
 Every push to `main` publishes the book at <https://docs.piqueld.dev>; see
-[publishing piqueld.dev](publishing.md).
+[publishing piqueld.dev](publishing.md). To read a branch's book as it would
+be published, deploy it to a [preview](publishing.md#preview-a-branch).

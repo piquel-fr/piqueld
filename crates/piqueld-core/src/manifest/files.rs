@@ -342,27 +342,30 @@ mod tests {
         assert_eq!("644".parse::<FileMode>().unwrap().to_string(), "0644");
     }
 
-    /// piqueld.dev's manifest validates, and a deployment can capture every
-    /// repository file it mounts.
+    /// piqueld.dev's manifests validate, and a deployment can capture every
+    /// repository file they mount.
     #[test]
     fn piqueld_dev_captures_its_files() {
-        let site = crate::manifest::parse_template_toml(include_str!(
-            "../../../../deploy/piqueld-dev.toml"
-        ))
-        .unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let files = RepositoryFiles(
-            site.spec()
-                .repository_file_paths()
-                .into_iter()
-                .map(|path| {
-                    let content = std::fs::read_to_string(root.join(path))
-                        .unwrap_or_else(|error| panic!("{path}: {error}"));
-                    (path.to_owned(), content)
-                })
-                .collect(),
-        );
-        site.spec().check_captured(&files).unwrap();
+        for manifest in [
+            include_str!("../../../../deploy/piqueld-dev.toml"),
+            include_str!("../../../../deploy/piqueld-observability.toml"),
+        ] {
+            let application = crate::manifest::parse_template_toml(manifest).unwrap();
+            let files = RepositoryFiles(
+                application
+                    .spec()
+                    .repository_file_paths()
+                    .into_iter()
+                    .map(|path| {
+                        let content = std::fs::read_to_string(root.join(path))
+                            .unwrap_or_else(|error| panic!("{path}: {error}"));
+                        (path.to_owned(), content)
+                    })
+                    .collect(),
+            );
+            application.spec().check_captured(&files).unwrap();
+        }
     }
 
     /// The observability example validates and deploys from its file alone.
