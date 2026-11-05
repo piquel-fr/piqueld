@@ -229,7 +229,10 @@ checkout really takes is compared with what it was charged: a checkout that
 takes more than the budget has room for fails. Clones still downloading are not counted, so
 checkouts take at most twice `max_bytes`. Files are checked out as
 committed: the repository's attributes cannot run filters such as LFS's, or
-convert encodings, line endings or `$Id$`. Git runs with the daemon user's
+convert encodings, line endings or `$Id$`. Their modes are Git's too,
+whatever the daemon's umask: `0644`, or `0755` for executables and
+directories, so a service whose image runs as an unprivileged user can read
+the files it was built with. Git runs with the daemon user's
 configuration and credentials but ignores the host-wide `/etc/gitconfig`, so an
 operator setting such as rewriting GitHub URLs to SSH does not reach checkouts. A pinned commit that the server
 won't serve by itself is found in the history of every branch. `GET /api/v1/system/status` reports the limit, so `piquelctl
