@@ -1,14 +1,21 @@
 # Publishing piqueld.dev
 
-piqueld.dev is served by a piqueld instance, which runs everything on it as one
-application, `piqueld-dev`: the marketing site at <https://piqueld.dev>, this
-book at <https://docs.piqueld.dev>, and Grafana at `grafana.piqueld.dev`, on
-the instance's tailnet, showing the instance's own telemetry. Every push to
-`main` deploys it. This page sets it up once, on the instance that serves it.
+piqueld.dev is served by a piqueld instance, as two applications:
+
+- `piqueld-dev` serves the marketing site at <https://piqueld.dev> and this
+  book at <https://docs.piqueld.dev>. Each [preview](#preview-a-branch)
+  serves a branch's site and book on the tailnet.
+- `piqueld-observability` receives the instance's own telemetry, and shows it
+  in Grafana at `grafana.piqueld.dev`, on the instance's tailnet.
+
+Every push to `main` deploys both. This page sets them up once, on the
+instance that serves them, then shows how to preview a change.
 
 [`deploy/piqueld-dev.toml`](https://github.com/piquel-fr/piqueld/blob/main/deploy/piqueld-dev.toml)
-is the application's manifest. piqueld reads it from `main` on each
-deployment, with the files its services build and mount, from the same commit:
+and
+[`deploy/piqueld-observability.toml`](https://github.com/piquel-fr/piqueld/blob/main/deploy/piqueld-observability.toml)
+are their manifests. piqueld reads each from `main` on each deployment, with
+the files its services build and mount, from the same commit:
 
 - [`deploy/site`](https://github.com/piquel-fr/piqueld/tree/main/deploy/site)
   holds the `Dockerfile` of the `site` service. It serves
@@ -29,19 +36,22 @@ deployment, with the files its services build and mount, from the same commit:
   dashboards cover the daemon's health, deployments and builds, services, and
   logs.
 
-The user guide's
+The telemetry stack is an application of its own because
+[previews are never granted telemetry](../user/operations/telemetry.md#receive-telemetry-in-an-application):
+in a preview of one application with both, the collector couldn't start. The
+user guide's
 [observability stack](../user/operations/observability-stack.md) is
 a smaller version of this stack, for any instance.
 
-To add another site, add its service and route to the manifest in a pull
-request.
+To add another site, add its service, route and hostname variables to
+`deploy/piqueld-dev.toml` in a pull request.
 
 ## Before you start
 
 These steps set up an instance that doesn't serve piqueld.dev yet. If the
 instance already serves it, such as from other applications, migrate that
-deployment to `piqueld-dev` instead: these steps would create a second
-application, which can't deploy while the others hold its hostnames.
+deployment to these two applications instead: these steps would create new
+ones, which can't deploy while the others hold their hostnames.
 
 - The instance serves public routes through
   [HTTP ingress](../user/networking/routes.md), and has a
@@ -54,8 +64,8 @@ application, which can't deploy while the others hold its hostnames.
   supports, and can reach GitHub and `cache.nixos.org` while it builds.
 - You can create applications on the instance, change and deploy them, and
   run commands in them: `apps:create`, `apps:write`, `apps:deploy` and
-  `apps:exec`. Granting the application the daemon's telemetry also needs
-  `telemetry:grant`, which only `admin` holds by default; see
+  `apps:exec`. Granting `piqueld-observability` the daemon's telemetry also
+  needs `telemetry:grant`, which only `admin` holds by default; see
   [permissions](../user/accounts/permissions.md#grants).
 - You can change the DNS of `piqueld.dev` and the settings of the
   `piquel-fr/piqueld` repository on GitHub.
@@ -72,56 +82,71 @@ host or on any machine where `piquelctl` is signed in to the instance.
      [Cloudflare Tunnel](../user/networking/cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel),
      or nothing when piqueld
      [manages the zone's records](../user/networking/dns-records.md).
-   - `grafana.piqueld.dev`, like any
+   - `grafana.piqueld.dev` and `*.preview.piqueld.dev`, like any
      [private route](../user/networking/private-routes.md#dns-for-private-routes):
      `A` and `AAAA` records to the apps node's tailnet addresses, or nothing
-     when piqueld manages the zone's records.
+     when piqueld manages the zone's records. The wildcard covers every
+     preview's hostnames.
 
-2. Check what saving the manifest would do:
+2. Check what saving the manifests would do:
 
    ```console
    piquelctl app plan --file deploy/piqueld-dev.toml
+   piquelctl app plan --file deploy/piqueld-observability.toml
    ```
 
-   The plan creates the `piqueld-dev` application, with its `site`, `docs`,
-   `collector`, `prometheus`, `tempo`, `loki` and `grafana` services, and its
-   routes on `piqueld.dev`, `docs.piqueld.dev` and `grafana.piqueld.dev`, and
-   the redirect from `www.piqueld.dev`.
+   The first plan creates the `piqueld-dev` application, with its `site` and
+   `docs` services, its routes on `piqueld.dev` and `docs.piqueld.dev`, and
+   the redirect from `www.piqueld.dev`. The second creates
+   `piqueld-observability`, with its `collector`, `prometheus`, `tempo`,
+   `loki` and `grafana` services, and its route on `grafana.piqueld.dev`.
 
-3. Save the manifest, grant its environment the daemon's telemetry, and deploy
-   it:
+3. Save the websites' manifest and deploy it:
 
    ```console
    piquelctl app apply --file deploy/piqueld-dev.toml
-   piquelctl env telemetry piqueld-dev production on
    piquelctl --timeout 10m app deploy piqueld-dev
    ```
 
    `app apply` and `app deploy` ask you to confirm. `app deploy` then waits
-   until the deployment finishes. Grant the telemetry first: without it, the
-   collector can't start, and the deployment fails. The first build downloads
-   the Nix image and the documentation toolchain, and can take several
-   minutes. Later builds reuse them, and only rebuild the book.
+   until the deployment finishes. The first build downloads the Nix image and
+   the documentation toolchain, and can take several minutes. Later builds
+   reuse them, and only rebuild the book.
 
-4. Generate the secret of the repository's webhook:
+4. Save the telemetry stack's manifest, grant its environment the daemon's
+   telemetry, and deploy it:
+
+   ```console
+   piquelctl app apply --file deploy/piqueld-observability.toml
+   piquelctl env telemetry piqueld-observability production on
+   piquelctl app deploy piqueld-observability
+   ```
+
+   Grant the telemetry first: without it, the collector can't start, and the
+   deployment fails.
+
+5. Generate the secret of each application's webhook:
 
    ```console
    piquelctl app repository webhook rotate piqueld-dev
+   piquelctl app repository webhook rotate piqueld-observability
    ```
 
-   It prints the webhook's payload URL and secret. piqueld never shows the
-   secret again.
+   Each prints its application's payload URL and secret. piqueld never shows
+   a secret again.
 
-5. In GitHub, open the repository's **Settings**, then **Webhooks**, and
+6. In GitHub, open the repository's **Settings**, then **Webhooks**, and
    select **Add webhook**. Set **Payload URL** and **Secret** to the values
-   from the previous step, **Content type** to `application/json`, and the
-   events to **Just the push event**. Then select **Add webhook**.
+   `piqueld-dev` printed, **Content type** to `application/json`, and the
+   events to **Just the push event**. Then select **Add webhook**. Add a
+   second webhook the same way, with the values `piqueld-observability`
+   printed.
 
-From now on, change the site through pull requests to `main`, including
-`deploy/piqueld-dev.toml`: each push to `main` deploys the manifest, the book
-and the stack's configuration of that commit. Services whose configuration
-didn't change keep running. Applying the file again is safe, since it is the
-same manifest the repository holds.
+From now on, change the sites and the stack through pull requests to `main`,
+including their manifests: each push to `main` deploys the manifests, the
+book and the stack's configuration of that commit. Services whose
+configuration didn't change keep running. Applying a file again is safe,
+since it is the same manifest the repository holds.
 [Repository-backed manifests](../user/reference/manifest.md#repository-backed-manifests)
 and [deploying on push](../user/reference/manifest.md#deploying-on-push)
 describe how this works.
@@ -140,39 +165,84 @@ curl --fail --head https://docs.piqueld.dev/dev/publishing.html
 generated password:
 
 ```console
-piquelctl app exec piqueld-dev grafana -- cat /run/secrets/grafana-admin-password
+piquelctl app exec piqueld-observability grafana -- cat /run/secrets/grafana-admin-password
 ```
 
 Grafana sets it when it first starts, so regenerating the secret doesn't
 change it; change it in Grafana instead. Grafana's **piqueld** folder holds the
 dashboards.
 
-After the next push to `main`, check that it deployed:
+After the next push to `main`, check that both deployed:
 
 ```console
 piquelctl env show piqueld-dev production
+piquelctl env show piqueld-observability production
 ```
 
-Its `Sync` line says `following`, with the commit of that push. In GitHub,
-the webhook's **Recent Deliveries** shows each push, with piqueld's response
+Each `Sync` line says `following`, with the commit of that push. In GitHub,
+each webhook's **Recent Deliveries** shows each push, with piqueld's response
 `204`.
+
+## Preview a branch
+
+A [preview](../user/reference/manifest.md#previews) of `piqueld-dev`
+serves a branch's site and book, so you can read a change before it reaches
+`main`. Its routes are private, on the tailnet. With the slug piqueld gives
+the preview, such as `piqueld-dev-feat-x-3fa2c1`, the site is on
+`https://<slug>.preview.piqueld.dev` and the book on
+`https://docs-<slug>.preview.piqueld.dev`.
+
+To preview your worktree without pushing it, uncommitted changes included,
+run this from the worktree:
+
+```console
+piquelctl --timeout 10m preview deploy piqueld-dev --local
+```
+
+It deploys to the preview of the current branch, creating it if needed. Add
+`--slot <name>` to give each agent working on one branch a preview of its
+own. To preview a pushed branch instead, run
+`piquelctl preview create piqueld-dev --branch <branch>`, or select
+**New preview** on the application's **Previews** tab in the dashboard.
+
+Then list the preview's URLs:
+
+```console
+piquelctl preview show piqueld-dev <branch>
+```
+
+For a preview with a slot, add `--slot <name>` here and when you delete it.
+
+The preview's site still links to the book on `docs.piqueld.dev`, since the
+site's links are absolute.
+
+Delete the preview when you are done:
+
+```console
+piquelctl preview delete piqueld-dev <branch>
+```
+
+The [`piquelctl` reference](../user/reference/cli-commands.md#piquelctl-preview)
+covers the other preview commands, such as pruning the previews of deleted
+branches.
 
 ## Send applications' telemetry to it
 
 Other applications on the instance can send their own telemetry to the
-collector. Uncomment the manifest's `[[spec.exports]]`, with their names in
-place of `my-app`. Then import the collector in each of them, and point its
-OpenTelemetry SDK at it:
+collector. Uncomment the `[[spec.exports]]` of
+`deploy/piqueld-observability.toml`, with their names in place of `my-app`.
+Then import the collector in each of them, and point its OpenTelemetry SDK at
+it:
 
 ```toml
 [[spec.imports]]
-application = "piqueld-dev"
+application = "piqueld-observability"
 service = "collector"
 
 [[spec.services]]
 name = "web"
 [spec.services.environment]
-OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-dev:4317"
+OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.piqueld-observability:4317"
 OTEL_EXPORTER_OTLP_PROTOCOL = "grpc"
 ```
 
@@ -208,7 +278,11 @@ set `DOCKER_HOST` to that engine's socket first.
   holds `piqueld.dev`, `www.piqueld.dev`, `docs.piqueld.dev` or
   `grafana.piqueld.dev`. This instance already serves piqueld.dev: migrate
   that deployment instead.
-- **A push deploys nothing.** `piquelctl env show piqueld-dev production`
+- **A preview's URLs don't open.** Check that the device you open them from
+  is on the tailnet, and that `*.preview.piqueld.dev` resolves to the apps
+  node's tailnet addresses. The first preview's certificate,
+  `*.preview.piqueld.dev`, can take up to 10 minutes to issue.
+- **A push deploys nothing.** `piquelctl env show <application> production`
   says why on its `Sync` line, and GitHub's **Recent Deliveries** shows whether
-  the delivery failed. A `401` means the secret doesn't match: generate a new one
-  and copy it into GitHub again.
+  the delivery failed. A `401` means the secret doesn't match: generate a new
+  one and copy it into GitHub again.

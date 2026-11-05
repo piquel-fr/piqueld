@@ -850,3 +850,47 @@ visibility = "public"
         Visibility::Public
     );
 }
+
+/// piqueld.dev's previews render, on private hostnames below
+/// preview.piqueld.dev that never conflict with production's.
+#[test]
+fn piqueld_dev_previews_serve_private_hostnames_apart_from_production() {
+    let template = parse_template_toml(include_str!("../../../../../deploy/piqueld-dev.toml"))
+        .unwrap()
+        .normalize(id());
+    let preview = RenderTarget::Preview(crate::PreviewSlug::derive(
+        &crate::ApplicationName::parse("piqueld-dev").unwrap(),
+        &crate::GitBranch::parse("feat/landing").unwrap(),
+        None,
+    ));
+    let routes = |target: RenderTarget| {
+        let manifest = template.spec().manifest.as_ref();
+        template
+            .render(&RenderContext::preview(target, manifest))
+            .unwrap()
+            .application
+            .spec()
+            .routes
+            .iter()
+            .map(|route| (route.hostname.to_string(), route.visibility))
+            .collect::<Vec<_>>()
+    };
+    let production = routes(RenderTarget::Environment(
+        EnvironmentName::parse("production").unwrap(),
+    ));
+    let slug = preview.name().to_owned();
+    assert_eq!(
+        routes(preview),
+        [
+            format!("docs-{slug}.preview.piqueld.dev"),
+            format!("{slug}.preview.piqueld.dev"),
+            format!("www-{slug}.preview.piqueld.dev"),
+        ]
+        .map(|hostname| (hostname, Visibility::Private))
+    );
+    assert_eq!(
+        production,
+        ["docs.piqueld.dev", "piqueld.dev", "www.piqueld.dev"]
+            .map(|hostname| (hostname.to_owned(), Visibility::Public))
+    );
+}
