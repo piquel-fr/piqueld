@@ -1,0 +1,4 @@
+# The build context is the repository root; the Dockerfile only reads the site.
+*
+!apps/site
+apps/site/README.md

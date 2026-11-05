@@ -1,5 +1,5 @@
-# Everything piqueld.dev serves, as one application: the documentation at
-# docs.piqueld.dev, and the telemetry stack receiving this instance's
+# Everything piqueld.dev serves, as one application: the marketing site at
+# piqueld.dev, the documentation at docs.piqueld.dev, and the telemetry stack receiving this instance's
 # telemetry, with Grafana at grafana.piqueld.dev on the tailnet. Each
 # deployment reads this file, and the files its services build and mount,
 # from main, and every push to main deploys it. Add a site with its own
@@ -52,6 +52,41 @@ name = "docs"
 hostname = "docs.piqueld.dev"
 service = "docs"
 port = 8080
+visibility = "public"
+
+# The marketing site, apps/site, served from deploy/site/Dockerfile at the
+# deployed commit.
+[[spec.services]]
+name = "site"
+
+[spec.services.source]
+type = "git"
+repository = "self"
+
+[spec.services.source.build]
+type = "docker"
+dockerfile = "deploy/site/Dockerfile"
+
+[spec.services.resources]
+cpu_millis = 500
+memory_bytes = 67108864 # 64 MiB
+
+[spec.services.healthcheck]
+type = "http"
+port = 8080
+path = "/"
+
+[[spec.routes]]
+name = "site"
+hostname = "piqueld.dev"
+service = "site"
+port = 8080
+visibility = "public"
+
+[[spec.routes]]
+name = "www"
+hostname = "www.piqueld.dev"
+redirect = { to = "https://piqueld.dev" }
 visibility = "public"
 
 # The telemetry stack: an OpenTelemetry Collector receiving the daemon's
