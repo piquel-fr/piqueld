@@ -2,8 +2,9 @@
 
 The marketing site for piqueld, served at <https://piqueld.dev>. It is plain
 static HTML and CSS with no build step and no server runtime, so any static
-file server can serve this directory as it is. The `site` service of
-`deploy/piqueld-dev.toml` serves it with `deploy/site/Dockerfile`; see
+file server that follows symlinks can serve this directory as it is. The
+`site` service of `deploy/piqueld-dev.toml` serves it with
+`deploy/site/Dockerfile`; see
 [publishing piqueld.dev](../../docs/dev/publishing.md).
 
 `index.html` is the whole site: a change's path through piqueld, drawn as a

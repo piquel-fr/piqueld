@@ -315,7 +315,7 @@ a { color: inherit; }
 
 .points strong { display: block; color: var(--ink); font-weight: 800; }
 
-.section-head code, .points code, .journey code {
+.section-head code, .points code, .journey p code {
     padding: 1px 5px;
     color: var(--ink);
     background: var(--sheet-2);
@@ -819,6 +819,7 @@ pre .b { color: var(--preview); }
 <span class="cmd">piquelctl</span> token create agent <span class="f">--app</span> blog \
   <span class="f">--permission</span> previews:deploy \
   <span class="f">--permission</span> previews:delete
+export PIQUELD_TOKEN=<span class="s">pqd_…</span>
 
 <span class="c"># Deploy the worktree, uncommitted and all</span>
 out=$(<span class="cmd">piquelctl</span> <span class="f">--json</span> <span class="f">--timeout</span> 15m \
@@ -1002,8 +1003,9 @@ slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
                     <span class="number" aria-hidden="true">2</span>
                     <div>
                         <h3>Create your account</h3>
-                        <p>Print a one-time setup link, open it, and sign up with a passkey.</p>
-                        <pre><code><span class="cmd">piquelctl</span> setup-link</code></pre>
+                        <p>Print a one-time setup link, open it, and sign up with a passkey. Then sign piquelctl in with it.</p>
+                        <pre><code><span class="cmd">piquelctl</span> setup-link
+<span class="cmd">piquelctl</span> login</code></pre>
                         <a class="text-link" href="https://docs.piqueld.dev/user/getting-started/first-account.html">Read how to create your account</a>
                     </div>
                 </li>
