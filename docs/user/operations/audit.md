@@ -51,7 +51,7 @@ With `piquelctl`:
 
 ```console
 $ piquelctl audit --limit 3
-1792797893351  allowed  200 GET /api/v1/environments/{id}/logs on environment app-01a16b1282cf755287920502b5793cd1  host operator (uid 1000)  unix socket
+1792797893351  allowed  200 GET /api/v1/environments/{id}/logs on environment env-01a16b1282cf755287920502b5793cd2  host operator (uid 1000)  unix socket
 1792797804727  allowed  200 POST /api/v1/auth/login/operator  host operator (uid 1000)  ::1
 1792797775115  denied  401 GET /api/v1/auth/me  anonymous  ::1
 Next cursor: v1:5

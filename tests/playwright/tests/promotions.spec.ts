@@ -1,4 +1,4 @@
-import { test, expect, call, applicationTab, environmentTab, head } from '../fixtures.js';
+import { test, expect, call, applicationTab, environmentTab, head, production } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 /** The manifest of `shop`, which declares `staging` and `production`
@@ -25,8 +25,8 @@ async function createPromotion(page: Page) {
   const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
   const app = saved.application_id as string;
   const { environments } = await call(page, 'GET', `applications/${app}`);
-  const staging = environments.find((environment: { name: string }) => environment.name === 'staging').id as string;
-  return { app, production: app, staging };
+  const id = (name: string) => environments.find((environment: { name: string }) => environment.name === name).id as string;
+  return { app, production: id('production'), staging: id('staging') };
 }
 
 /** `shop` without environment blocks, whose `staging` and promotion are
@@ -42,8 +42,9 @@ async function createUndeclaredPromotion(page: Page) {
     name: 'staging', expected_generation: saved.generation,
   })).id as string;
   const { generation } = await call(page, 'GET', `applications/${app}`);
-  await call(page, 'PUT', `environments/${app}/source`, { promote_from: staging, expected_generation: generation });
-  return { app, production: app, staging };
+  const env = await production(page, app);
+  await call(page, 'PUT', `environments/${env}/source`, { promote_from: staging, expected_generation: generation });
+  return { app, production: env, staging };
 }
 
 /** A release of `shop`'s saved manifest, as the daemon would list it; the

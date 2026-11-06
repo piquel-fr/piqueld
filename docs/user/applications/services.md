@@ -380,7 +380,7 @@ service with its healthy replicas. With `piquelctl`:
 
 ```console
 $ piquelctl env show notes
-production of notes (app-01a16d95420677219cf7b65149b4f7e7)
+production of notes (env-01a16d95420677219cf7b65149b4f7e8)
 
 Intent: ready
 Runtime: ready (observed 6 s ago)

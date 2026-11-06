@@ -274,7 +274,7 @@ $ piquelctl app show welcome
 welcome (app-01a16d91fb2c7b93bfe138a7d95dc56f)
 
 Configuration revision: 1
-Environment: production (app-01a16d91fb2c7b93bfe138a7d95dc56f): ready, deploys from saved
+Environment: production (env-01a16d91fb2c7b93bfe138a7d95dc560): ready, deploys from saved
 
 Service: web
   Replicas: 1
@@ -285,7 +285,7 @@ List the application's builds by its ID, which `app show` prints:
 
 ```console
 $ piquelctl builds list --application app-01a16d91fb2c7b93bfe138a7d95dc56f
-1  app-01a16d91fb2c7b93bfe138a7d95dc56f  web  Succeeded  1792839646134
+1  env-01a16d91fb2c7b93bfe138a7d95dc560  web  Succeeded  1792839646134
 ```
 
 Each line is a build: its number, the environment's ID, the service, its

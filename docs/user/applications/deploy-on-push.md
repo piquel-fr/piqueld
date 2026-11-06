@@ -112,7 +112,7 @@ blog (app-01a16d9202157fe18b0580467224f247)
 
 Configuration revision: 3
 Sync: off
-Environment: production (app-01a16d9202157fe18b0580467224f247): ready, deploys from main
+Environment: production (env-01a16d9202157fe18b0580467224f248): ready, deploys from main
 
 Service: web
   Replicas: 1
@@ -219,7 +219,7 @@ instead.
 
    ```console
    $ piquelctl env sync blog production on
-   Environment production (app-01a16d9202157fe18b0580467224f247), deploys from branch main, opted into sync.
+   Environment production (env-01a16d9202157fe18b0580467224f248), deploys from branch main, opted into sync.
    ```
 
 `app repository connect` takes the same `--sync` and `--interval` options, to
@@ -338,7 +338,7 @@ With `piquelctl`:
 
 ```console
 $ piquelctl env show blog production
-production of blog (app-01a16d9202157fe18b0580467224f247)
+production of blog (env-01a16d9202157fe18b0580467224f248)
 
 Intent: ready
 Runtime: ready (observed 2 s ago)

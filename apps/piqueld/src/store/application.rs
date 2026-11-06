@@ -67,6 +67,7 @@ impl Store {
     /// application's only environment, creating it when the application is new.
     /// Optional `resolve` supports importing an already prepared target: it
     /// compiles the target for the environment, whose ID is only known here.
+    /// Only tests save this way; the API accepts mutations instead.
     /// # Errors
     /// Returns storage, revision, name collision, environment selection, or
     /// pending-deletion errors.
