@@ -310,6 +310,29 @@ async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
     }
 }
 
+/// An undocumented status with a structured body still decodes as an API
+/// error: `system_status` documents no 409.
+#[tokio::test]
+async fn structured_api_errors_expose_status_code_and_message() {
+    let (listener, client) = listen().await;
+    let body = r#"{"code":"application_deleting","message":"the application is being deleted","details":{"application_id":"app-notes-01"},"request_id":"req-1"}"#;
+    let server = tokio::spawn(serve_raw(
+        listener,
+        raw_response("HTTP/1.1 409 Conflict", "application/json", body),
+    ));
+    let result = client.system_status().await;
+    server.await.unwrap();
+    match result {
+        Err(ClientError::Api { status, error }) => {
+            assert_eq!(status, http::StatusCode::CONFLICT);
+            assert_eq!(error.code, "application_deleting");
+            assert_eq!(error.message, "the application is being deleted");
+            assert_eq!(error.request_id, "req-1");
+        }
+        other => panic!("expected an API error, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn redirects_are_not_followed() {
     let (listener, client) = listen().await;
