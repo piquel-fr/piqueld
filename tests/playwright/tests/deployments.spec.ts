@@ -1,26 +1,5 @@
-import { test, expect, call, deploymentCards, environmentTab, environmentId, webManifest } from '../fixtures.js';
-import type { Page, Route } from '@playwright/test';
-
-type Deployment = { operation: Record<string, unknown> } & Record<string, unknown>;
-
-/** `notes`, deployed once, and that deployment as the daemon lists it. The
- * fixture never deploys, so tests derive the deployments they list from it. */
-async function deployed(page: Page) {
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
-  const app = saved.application_id as string;
-  const env = await environmentId(page, app);
-  await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
-  const deployment = (await call(page, 'GET', `environments/${env}/deployments`)).items[0] as Deployment;
-  return { app, env, deployment };
-}
-
-/** Serves `pages(cursor)` as `environment`'s deployment pages. */
-async function serveDeployments(page: Page, environment: string, pages: (cursor: string | null) => { items: Deployment[]; next_cursor: string | null }) {
-  await page.route(url => url.pathname === `/api/v1/environments/${environment}/deployments`, async (route: Route) => {
-    const cursor = new URL(route.request().url()).searchParams.get('cursor');
-    await route.fulfill({ json: { data: pages(cursor) } });
-  });
-}
+import { test, expect, deployed, deploymentCards, environmentTab, serveDeployments } from '../fixtures.js';
+import type { Route } from '@playwright/test';
 
 test('older deployments load once, and stay listed as the newest page is polled', async ({ page, account }) => {
   void account;

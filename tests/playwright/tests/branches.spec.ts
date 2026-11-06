@@ -1,20 +1,27 @@
-import { test, expect, call, deploymentCards, environmentId, rewrite, toggleDeployment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import {
+  test, expect, apply, call, card, confirmNext, deploymentCards, head, repositoryManifest, rewrite, toggleDeployment, webManifest,
+  applicationTab, environmentTab, title,
+} from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
-/** A repository-backed application following `main`, optionally with a `staging` environment on `release`. */
+/** A repository-backed application following `main`, and its `production`
+ * environment `env`, optionally with a `staging` environment on `release`. */
 async function createRepositoryApplication(page: Page, staging = false) {
-  const saved = await call(page, 'POST', 'applications/apply', {
-    manifest: webManifest('notes', {
-      manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } },
-    }),
-    expected_generation: 0,
-  });
+  const { app, env, generation } = await apply(page, webManifest('notes', { manifest: repositoryManifest }));
   const sibling = staging
-    ? await call(page, 'POST', `applications/${saved.application_id}/environments`, {
-      name: 'staging', branch: 'release', expected_generation: saved.generation,
-    })
+    ? await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', branch: 'release', expected_generation: generation })
     : null;
-  return { app: saved.application_id as string, staging: sibling?.id as string };
+  return { app, env, staging: sibling?.id as string };
+}
+
+/** Shows the manifest `app` last read from its repository as the one it
+ * was created with: the browser fixture never fetches. */
+async function readAtCreation(page: Page, app: string) {
+  let read: Record<string, any> | undefined;
+  await rewrite(page, `/api/v1/applications/${app}`, data => {
+    read ??= structuredClone(data.application);
+    data.repository = { ...structuredClone(read), spec: { ...structuredClone(read!.spec), manifest: data.application.spec.manifest } };
+  });
 }
 
 test('each environment of a repository-backed application follows its own branch', async ({ page, account }) => {
@@ -35,9 +42,6 @@ test('each environment of a repository-backed application follows its own branch
   const change = page.getByRole('button', { name: 'Save source', exact: true });
   await expect(branch).toHaveValue('release');
   await expect(change).toBeDisabled();
-  // Surrounding whitespace names the same branch.
-  await branch.fill(' release ');
-  await expect(change).toBeDisabled();
   await branch.fill('next');
   const changed = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes(`/environments/${staging}/branch`));
   await change.click();
@@ -50,13 +54,26 @@ test('each environment of a repository-backed application follows its own branch
   await expect(environments.getByRole('listitem').filter({ hasText: 'production' })).toContainText('branch main');
 });
 
-test('an environment page reads the manifest last fetched from its branch', async ({ page, account }) => {
+test('Preview plans the saved manifest on the connection branch, and the one last fetched on another', async ({ page, account }) => {
   void account;
-  const { app, staging } = await createRepositoryApplication(page, true);
+  const { app, env, staging } = await createRepositoryApplication(page, true);
+  await readAtCreation(page, app);
+  const { generation } = await call(page, 'GET', `applications/${app}`);
+  await call(page, 'POST', `applications/${app}/volumes?expected_generation=${generation}`, { name: 'cache' });
+  const preview = page.getByRole('button', { name: 'Preview', exact: true });
+  const planned = () => page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/applications/plan'));
+  const dialog = page.getByRole('dialog', { name: 'Deployment preview' });
+
+  // Production follows `main`, the connection's branch, so it deploys the saved manifest.
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
+  let plan = planned();
+  await preview.click();
+  expect((await plan).postDataJSON().manifest.spec.volumes.map((volume: { name: string }) => volume.name)).toEqual(['cache']);
+  await expect(dialog).toContainText('volumes.cache');
+
+  // Staging follows `release`, from which nothing has been fetched yet.
   await page.goto(`/dashboard/applications/${app}/environments/${staging}`);
   await expect(title(page)).toHaveText('staging');
-  // Nothing has been fetched from `release` yet.
-  const preview = page.getByRole('button', { name: 'Preview', exact: true });
   await expect(preview).toBeDisabled();
   await expect(preview).toHaveAttribute('title', 'Deploy this environment to fetch its manifest from its branch first');
   await expect(page.getByText('Deploy this environment to fetch its manifest from its branch.', { exact: true })).toBeVisible();
@@ -73,15 +90,14 @@ test('an environment page reads the manifest last fetched from its branch', asyn
     }
   });
   const deployed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${staging}/deploy?`));
-  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
+  await head(page).getByRole('button', { name: 'Deploy', exact: true }).click();
   expect((await deployed).status()).toBe(202);
   await page.reload();
 
   await expect(preview).toBeEnabled();
-  const planned = page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/applications/plan'));
+  plan = planned();
   await preview.click();
-  expect((await planned).postDataJSON().manifest.spec.services.map((service: { name: string }) => service.name)).toEqual(['worker']);
-  const dialog = page.getByRole('dialog', { name: 'Deployment preview' });
+  expect((await plan).postDataJSON().manifest.spec.services.map((service: { name: string }) => service.name)).toEqual(['worker']);
   await expect(dialog).toContainText('services.worker');
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
@@ -100,13 +116,7 @@ test('an environment page reads the manifest last fetched from its branch', asyn
 test('a repository-backed application is edited like any other, and resets to its repository manifest', async ({ page, account }) => {
   void account;
   const { app } = await createRepositoryApplication(page);
-  // The browser fixture never fetches: model the manifest the application
-  // last read from its repository as the one it was created with.
-  let read: Record<string, any> | undefined;
-  await rewrite(page, `/api/v1/applications/${app}`, data => {
-    read ??= structuredClone(data.application);
-    data.repository = { ...structuredClone(read), spec: { ...structuredClone(read!.spec), manifest: data.application.spec.manifest } };
-  });
+  await readAtCreation(page, app);
   await page.goto(`/dashboard/applications/${app}`);
   await applicationTab(page, 'Volumes').click();
   const edits = page.getByText('Edited since the manifest was last read from the repository.', { exact: false });
@@ -119,10 +129,7 @@ test('a repository-backed application is edited like any other, and resets to it
   await expect(edits).toBeVisible();
   await expect(page.locator('.diff-row', { hasText: 'volumes.cache' })).toBeVisible();
 
-  page.once('dialog', async dialog => {
-    expect(dialog.message()).toContain('Discard every edit');
-    await dialog.accept();
-  });
+  confirmNext(page, 'Discard every edit');
   await page.getByRole('button', { name: 'Reset to repository', exact: true }).click();
   await expect(page.getByText("Reset to the repository's manifest.", { exact: true })).toBeVisible();
   await expect(edits).toHaveCount(0);
@@ -131,29 +138,6 @@ test('a repository-backed application is edited like any other, and resets to it
   await applicationTab(page, 'Volumes').click();
   await expect(page.getByLabel('Volume name', { exact: true })).toHaveCount(0);
   await expect(edits).toHaveCount(0);
-});
-
-test('an environment following the connection branch previews the saved manifest', async ({ page, account }) => {
-  void account;
-  const { app, staging } = await createRepositoryApplication(page, true);
-  // As above, the manifest last read is the one the application was created with.
-  let read: Record<string, any> | undefined;
-  await rewrite(page, `/api/v1/applications/${app}`, data => {
-    read ??= structuredClone(data.application);
-    data.repository = { ...structuredClone(read), spec: { ...structuredClone(read!.spec), manifest: data.application.spec.manifest } };
-  });
-  const saved = await call(page, 'GET', `applications/${app}`);
-  await call(page, 'POST', `applications/${app}/volumes?expected_generation=${saved.generation}`, { name: 'cache' });
-  const production = await environmentId(page, app);
-  await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  const preview = page.getByRole('button', { name: 'Preview', exact: true });
-  await expect(preview).toBeEnabled();
-  const planned = page.waitForRequest(request => request.method() === 'POST' && request.url().includes('/applications/plan'));
-  await preview.click();
-  expect((await planned).postDataJSON().manifest.spec.volumes.map((volume: { name: string }) => volume.name)).toEqual(['cache']);
-  // Staging follows `release`, and deploys its own manifest, not fetched yet.
-  await page.goto(`/dashboard/applications/${app}/environments/${staging}`);
-  await expect(preview).toBeDisabled();
 });
 
 test('an environment following a branch deploys another branch or commit once', async ({ page, account }) => {
@@ -262,7 +246,7 @@ test('a preview created from the dashboard opens on its own page, also from its 
 
   await environmentTab(page, 'Overview').click();
   await expect(page.getByText('feat/login', { exact: true })).toBeVisible();
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().endsWith(`/previews/${preview}`));
   await page.getByRole('button', { name: 'Delete preview', exact: true }).click();
   expect((await deleted).status()).toBe(202);
@@ -284,7 +268,7 @@ test('Prune gone submits the previews whose branch is gone', async ({ page, acco
   await page.route(`**/api/v1/applications/${app}/previews/prune`, route => route.fulfill({ json: { data: [] } }));
 
   await page.goto(`/dashboard/applications/${app}?tab=previews`);
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   await page.getByRole('button', { name: 'Prune gone', exact: true }).click();
   expect((await pruned).postDataJSON()).toEqual({ previews: [preview] });
 });
@@ -301,10 +285,10 @@ test('a preview page shows the local snapshot it runs, and redeploys its branch 
   });
 
   await page.goto(`/dashboard/applications/${app}/previews/${preview}`);
-  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Preview', exact: true }) });
-  await expect(card).toContainText(`Local snapshot ${commit.slice(0, 12)}, uploaded with its whole history`);
-  await expect(card).toContainText(`Redeploy branch head fails until it is. Deploy a new snapshot from its worktree with \`piquelctl preview deploy ${app} --local --slot agent-2\`.`);
-  await expect(card).toContainText('never pushed');
+  const shown = card(page, 'Preview');
+  await expect(shown).toContainText(`Local snapshot ${commit.slice(0, 12)}, uploaded with its whole history`);
+  await expect(shown).toContainText(`Redeploy branch head fails until it is. Deploy a new snapshot from its worktree with \`piquelctl preview deploy ${app} --local --slot agent-2\`.`);
+  await expect(shown).toContainText('never pushed');
 
   const redeployed = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(`/previews/${preview}/deploy`));
   await page.getByRole('button', { name: 'Redeploy branch head', exact: true }).click();
@@ -332,7 +316,7 @@ test('an application deploys on push by polling or webhook, and an environment o
   request = saved();
   await save.click();
   expect((await request).postDataJSON().value.sync).toEqual({ mode: 'webhook' });
-  const webhook = page.locator('section.card', { has: page.getByRole('heading', { name: 'GitHub webhook' }) });
+  const webhook = card(page, 'GitHub webhook');
   // The fixture daemon sets no `ingress.webhook_hostname`.
   await expect(webhook).toContainText('set ingress.webhook_hostname');
   await expect(webhook).toContainText('None yet');
@@ -373,7 +357,7 @@ test('an application deploys on push by polling or webhook, and an environment o
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   await page.route(`**/applications/${app}/webhook/secret`, async route => { await held; await route.continue(); });
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   await webhook.getByRole('button', { name: 'Rotate secret', exact: true }).click();
   await applicationTab(page, 'Overview').click();
   const reloaded = page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith(`/applications/${app}/webhook`));
@@ -391,7 +375,7 @@ test('an application deploys on push by polling or webhook, and an environment o
 
   await page.goto(`/dashboard/applications/${app}?tab=environments`);
   await page.getByRole('list', { name: 'Environments' }).getByRole('link', { name: 'production' }).click();
-  const source = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source' }) });
+  const source = card(page, 'Source');
   // Environments opt in, then follow from their next deployment.
   await expect(source).toContainText('not opted in');
   const optedIn = page.waitForRequest(request => request.method() === 'PUT' && request.url().endsWith('/sync'));

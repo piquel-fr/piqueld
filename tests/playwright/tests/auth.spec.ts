@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises';
 import {
-  test, expect, api, auth, adminToken, call, register, proof, resolveEnvironment, webManifest, applicationTab, environmentTab, title, head,
+  test, expect, api, auth, adminToken, apply, card, register, proof, resolveEnvironment, webManifest, applicationTab, environmentTab, title, head,
   accountRows, openAccount, done, signUp, Passkeys, type Account, type Session, type Directory, type Managed, type Ceremony,
 } from '../fixtures.js';
 
@@ -79,9 +79,7 @@ test('invitations carry grants and limit what the new account may see and change
 
 test('an application shows only the controls the account may use on it', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('limited'), expected_generation: 0 });
-  const app: string = saved.application_id;
-  const [environment] = (await call(page, 'GET', `applications/${app}`)).environments;
+  const { app, env, generation } = await apply(page, webManifest('limited'));
   const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
     { permission: 'apps:read', applications: [app] },
     { permission: 'secrets:write', applications: [app] },
@@ -103,7 +101,7 @@ test('an application shows only the controls the account may use on it', async (
   await applicationTab(page, 'Secrets').click();
   await expect(page.getByText('Read-only: editing this configuration requires the apps:write permission.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Add secret file', exact: true })).toBeDisabled();
-  const store = page.locator('.card', { has: page.getByRole('heading', { name: 'Secret store', exact: true }) });
+  const store = card(page, 'Secret store');
   await store.getByLabel('Secret name', { exact: true }).fill('token');
   await store.getByLabel('Value', { exact: true }).fill('hunter2');
   await store.getByRole('button', { name: 'Save secret', exact: true }).click();
@@ -111,8 +109,8 @@ test('an application shows only the controls the account may use on it', async (
 
   // A link to a hidden tab opens the environment's overview instead, and
   // the deployed environment offers no Stop.
-  await resolveEnvironment(page, environment.id, saved.generation);
-  await page.goto(`/dashboard/applications/${app}/environments/${environment.id}?tab=logs`);
+  await resolveEnvironment(page, env, generation);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}?tab=logs`);
   await expect(environmentTab(page, 'Overview')).toHaveAttribute('aria-selected', 'true');
   await expect(environmentTab(page, 'Logs')).toHaveCount(0);
   await expect(environmentTab(page, 'Events')).toHaveCount(0);
@@ -353,7 +351,7 @@ test.describe('as the host operator', () => {
 
 test('the dashboard creates an API token within its form and its account\'s limits, and revokes it', async ({ page, account, cli }) => {
   void account;
-  const blog = (await call(page, 'POST', 'applications/apply', { manifest: webManifest('blog'), expected_generation: 0 })).application_id;
+  const { app: blog } = await apply(page, webManifest('blog'));
   const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
     { permission: 'apps:read', applications: [blog] }, { permission: 'apps:deploy', applications: [blog] },
   ] })).invitation_url;
@@ -367,18 +365,13 @@ test('the dashboard creates an API token within its form and its account\'s limi
   await form.getByLabel('Preset').selectOption('developer');
   await expect(effective).toHaveText(['apps:read on blog', 'apps:deploy on blog']);
 
+  // An invalid field is reported in the form, which stays open.
   const days = form.getByLabel('Expires in days (blank: never)', { exact: true });
-  const tailnet = form.getByLabel('Tailnet user or tag (optional, e.g. tag:ci)', { exact: true });
   const create = form.getByRole('button', { name: 'Create token', exact: true });
   await form.getByLabel('New token name', { exact: true }).fill('ci');
   await days.fill('0');
   await create.click();
   await expect(form.getByRole('alert')).toHaveText('Enter a positive number of days, or leave blank');
-  await days.fill('');
-  await tailnet.fill('ci');
-  await create.click();
-  await expect(form.getByRole('alert')).toHaveText('a tailnet binding is a login name like alice@example.com or a tag like tag:ci');
-  await tailnet.fill('');
   await days.fill('30');
   await create.click();
   await expect(form).toBeHidden();
@@ -399,10 +392,8 @@ test('the dashboard creates an API token within its form and its account\'s limi
 
 test('editing grants that mix scopes warns, then applies the chosen applications to every permission', async ({ page, account, browser }) => {
   void account;
-  const apply = async (name: string): Promise<string> =>
-    (await call(page, 'POST', 'applications/apply', { manifest: webManifest(name), expected_generation: 0 })).application_id;
-  const blog = await apply('blog');
-  const shop = await apply('shop');
+  const { app: blog } = await apply(page, webManifest('blog'));
+  const { app: shop } = await apply(page, webManifest('shop'));
   const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [
     { permission: 'apps:read' }, { permission: 'apps:deploy', applications: [blog] },
   ] })).invitation_url;

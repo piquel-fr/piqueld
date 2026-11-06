@@ -1,36 +1,11 @@
-import { test, expect } from '../fixtures.js';
-import type { Page } from '@playwright/test';
-
-/** Creates an application with services `web` (running in the fixture) and `worker` (not running). */
-async function createApplication(page: Page) {
-  return page.evaluate(async () => {
-    const response = await fetch('/api/v1/applications/apply', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        manifest: {
-          api_version: 'piqueld.dev/v1alpha1', kind: 'Application',
-          metadata: { name: 'terminal' },
-          spec: {
-            services: [
-              { name: 'web', source: { type: 'image', image: 'nginx:alpine' } },
-              { name: 'worker', source: { type: 'image', image: 'nginx:alpine' } },
-            ],
-          },
-        },
-        expected_generation: 0,
-      }),
-    });
-    const saved = (await response.json()).data;
-    const application = (await (await fetch(`/api/v1/applications/${saved.application_id}`)).json()).data;
-    return { app: saved.application_id as string, environment: application.environments[0].id as string };
-  });
-}
+import { test, expect, apply, environmentTab, webManifest } from '../fixtures.js';
 
 test('the terminal runs a command, relays input and resizes, and reports failures and exit codes', async ({ page, account }) => {
   void account;
-  const { app, environment } = await createApplication(page);
-  await page.goto(`/dashboard/applications/${app}/environments/${environment}?tab=terminal`);
+  // The fixture runs `web`, but not `worker`.
+  const image = { type: 'image', image: 'nginx:alpine' };
+  const { app, env } = await apply(page, webManifest('terminal', { services: [{ name: 'web', source: image }, { name: 'worker', source: image }] }));
+  await page.goto(`/dashboard/applications/${app}/environments/${env}?tab=terminal`);
   const service = page.getByRole('combobox', { name: 'Service', exact: true });
   const run = page.getByRole('button', { name: 'Run', exact: true });
   const screen = page.locator('.exec-screen');
@@ -62,6 +37,6 @@ test('the terminal runs a command, relays input and resizes, and reports failure
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect(page.getByText('Disconnected. The command may still be running in the task.')).toBeVisible();
 
-  await page.getByRole('tablist', { name: 'Environment sections' }).getByRole('tab', { name: 'Events', exact: true }).click();
+  await environmentTab(page, 'Events').click();
   await expect(page.locator('.event', { hasText: 'started a command in task fixture-task' }).first()).toBeVisible();
 });

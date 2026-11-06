@@ -1,34 +1,29 @@
-import { test, expect, auth, call, deploymentCards, environmentTab, environmentId, register, toggleDeployment, webManifest, type Managed } from '../fixtures.js';
+import {
+  test, expect, auth, confirmNext, deployed, deploymentCards, environmentTab, register, serveDeployments, toggleDeployment, type Managed,
+} from '../fixtures.js';
 import type { Route } from '@playwright/test';
 
 test('an earlier deployment is restored from the deployment history', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
-  const app = saved.application_id as string;
-  const env = await environmentId(page, app);
-  const accepted = await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
-  const earlier = accepted.operation_id as string;
+  const { app, env, deployment } = await deployed(page);
+  const earlier = deployment.operation.id as string;
   // The fixture never deploys: show that deployment as succeeded, and a
   // restore of it as the current one.
-  await page.route(url => url.pathname === `/api/v1/environments/${env}/deployments`, async (route: Route) => {
-    const { data } = await (await route.fetch()).json();
-    const deployment = data.items.find((item: { operation: { id: string } }) => item.operation.id === earlier);
-    const succeeded = { ...deployment, succeeded_at_ms: Date.now(), current_target: false, last_successful: true };
-    const restore = {
-      ...deployment,
-      operation: { ...deployment.operation, id: 'operation-0123456789abcdf0' },
-      origin: { type: 'restore', deployment: earlier },
-      succeeded_at_ms: Date.now(),
-      current_target: true,
-    };
-    await route.fulfill({ json: { data: { items: [restore, succeeded], next_cursor: null } } });
-  });
+  const succeeded = { ...deployment, succeeded_at_ms: Date.now(), current_target: false, last_successful: true };
+  const restore = {
+    ...deployment,
+    operation: { ...deployment.operation, id: 'operation-0123456789abcdf0' },
+    origin: { type: 'restore', deployment: earlier },
+    succeeded_at_ms: Date.now(),
+    current_target: true,
+  };
+  await serveDeployments(page, env, () => ({ items: [restore, succeeded], next_cursor: null }));
   let restored: unknown;
   await page.route(url => url.pathname === `/api/v1/environments/${env}/restore`, async (route: Route) => {
     restored = route.request().postDataJSON();
     await route.fulfill({
       status: 202,
-      json: { data: { operation_id: 'operation-0123456789abcdf1', environment_id: env, generation: saved.generation } },
+      json: { data: { operation_id: 'operation-0123456789abcdf1', environment_id: env, generation: deployment.operation.generation } },
     });
   });
 
@@ -42,7 +37,7 @@ test('an earlier deployment is restored from the deployment history', async ({ p
   await expect(cards.nth(0).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
 
   await toggleDeployment(cards.nth(1));
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   await cards.nth(1).getByRole('button', { name: 'Restore', exact: true }).click();
   await expect(page.getByText('Restore accepted. Follow its progress below.', { exact: true })).toBeVisible();
   expect(restored).toEqual({ deployment: earlier });
@@ -63,26 +58,18 @@ test('an earlier deployment is restored from the deployment history', async ({ p
 
 test('the current deployment is offered for restore after a newer one failed', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
-  const app = saved.application_id as string;
-  const env = await environmentId(page, app);
-  const accepted = await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
-  const earlier = accepted.operation_id as string;
+  const { app, env, deployment } = await deployed(page);
   // A newer deployment failed before replacing the earlier one, which stays
   // the current target.
-  await page.route(url => url.pathname === `/api/v1/environments/${env}/deployments`, async (route: Route) => {
-    const { data } = await (await route.fetch()).json();
-    const deployment = data.items.find((item: { operation: { id: string } }) => item.operation.id === earlier);
-    const current = { ...deployment, succeeded_at_ms: Date.now(), current_target: true, last_successful: true };
-    const failed = {
-      ...deployment,
-      operation: { ...deployment.operation, id: 'operation-0123456789abcdf0', state: 'failed' },
-      succeeded_at_ms: null,
-      current_target: false,
-      last_successful: false,
-    };
-    await route.fulfill({ json: { data: { items: [failed, current], next_cursor: null } } });
-  });
+  const current = { ...deployment, succeeded_at_ms: Date.now(), current_target: true, last_successful: true };
+  const failed = {
+    ...deployment,
+    operation: { ...deployment.operation, id: 'operation-0123456789abcdf0', state: 'failed' },
+    succeeded_at_ms: null,
+    current_target: false,
+    last_successful: false,
+  };
+  await serveDeployments(page, env, () => ({ items: [failed, current], next_cursor: null }));
 
   await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   await environmentTab(page, 'Deployments').click();

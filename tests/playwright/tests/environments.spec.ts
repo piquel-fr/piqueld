@@ -1,31 +1,23 @@
-import { test, expect, call, card, head, environmentId, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import {
+  test, expect, apply, call, card, confirmNext, head, repositoryManifest, resolveEnvironment, webManifest,
+  applicationTab, environmentTab, serviceTab, title,
+} from '../fixtures.js';
 import type { Page, Request } from '@playwright/test';
 
 /** `environments`, its `production` environment `env`, and a second
  * environment, `staging` or, to `collide`, one named after `env`'s ID. */
 async function createEnvironments(page: Page, collide = false) {
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('environments'), expected_generation: 0 });
-  const app = saved.application_id as string;
-  const env = await environmentId(page, app);
+  const { app, env, generation } = await apply(page, webManifest('environments'));
   const sibling = await call(page, 'POST', `applications/${app}/environments`, {
     name: collide ? env : 'staging',
-    expected_generation: saved.generation,
+    expected_generation: generation,
   });
   return { app, env, sibling: sibling.id as string };
 }
 
 /** A repository-backed application following `main`, and its `production`
  * environment `env`. */
-async function createRepositoryApplication(page: Page) {
-  const saved = await call(page, 'POST', 'applications/apply', {
-    manifest: webManifest('notes', {
-      manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } },
-    }),
-    expected_generation: 0,
-  });
-  const app = saved.application_id as string;
-  return { app, env: await environmentId(page, app), generation: saved.generation as number };
-}
+const createRepositoryApplication = (page: Page) => apply(page, webManifest('notes', { manifest: repositoryManifest }));
 
 test('the application page stays whole and each environment has its own page', async ({ page, account }) => {
   void account;
@@ -35,7 +27,7 @@ test('the application page stays whole and each environment has its own page', a
   await expect(page.getByRole('button', { name: 'Preview', exact: true })).toHaveCount(0);
 
   // With several environments, deploying starts by choosing one.
-  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
+  await head(page).getByRole('button', { name: 'Deploy', exact: true }).click();
   const chooser = page.getByRole('dialog', { name: 'Deploy an environment' });
   await expect(chooser.getByRole('button', { name: /^Deploy to / })).toHaveCount(2);
   await chooser.getByRole('button', { name: 'Close dialog', exact: true }).click();
@@ -57,7 +49,7 @@ test('the application page stays whole and each environment has its own page', a
   await expect(page).toHaveURL(url => url.pathname.endsWith(`/environments/${sibling}`) && url.searchParams.get('tab') === 'deployments');
   await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
   await expect(title(page)).toHaveText('staging');
-  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeVisible();
+  await expect(head(page).getByRole('button', { name: 'Deploy', exact: true })).toBeVisible();
 
   await page.reload();
   await expect(title(page)).toHaveText('staging');
@@ -75,24 +67,20 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   await creator.getByLabel('Environment name', { exact: true }).fill('qa');
   await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
   await expect(title(page)).toHaveText('qa');
-  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
+  await expect(head(page).getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
   const qa = new URL(page.url()).pathname.split('/').pop()!;
   expect(qa).not.toBe(env);
 
   await page.getByLabel('Environment name', { exact: true }).fill('preview');
   await page.getByRole('button', { name: 'Rename environment', exact: true }).click();
   await expect(title(page)).toHaveText('preview');
-  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
+  await expect(head(page).getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
 
   const remove = page.getByRole('button', { name: 'Delete environment', exact: true });
   page.once('dialog', dialog => dialog.dismiss());
   await remove.click();
   await expect(remove).toBeEnabled();
-  page.once('dialog', async dialog => {
-    expect(dialog.message()).toContain('The application and other environments remain');
-    expect(dialog.message()).toContain('Docker volume data will be retained');
-    await dialog.accept();
-  });
+  confirmNext(page, 'The application and other environments remain. Docker volume data will be retained.');
   const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().includes(`/environments/${qa}?`));
   await remove.click();
   expect((await deleted).status()).toBe(202);
@@ -105,7 +93,7 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   // The whole row opens the environment, not only its name.
   await row.click({ position: { x: 400, y: 10 } });
   await expect(title(page)).toHaveText('preview');
-  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled();
+  await expect(head(page).getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled();
   const retried = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${qa}/reconcile?`));
   await page.getByRole('button', { name: 'Retry deletion', exact: true }).click();
   expect((await retried).status()).toBe(202);
@@ -136,14 +124,14 @@ test('an application with no environments can create one in the dashboard', asyn
     await route.fulfill({ response, json: body });
   });
   await page.goto(`/dashboard/applications/${app}`);
-  await page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true }).click();
+  await head(page).getByRole('button', { name: 'Deploy', exact: true }).click();
   await expect(page.getByText('No environments yet.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'New environment', exact: true }).click();
   const creator = page.getByRole('dialog', { name: 'Create environment' });
   await creator.getByLabel('Environment name', { exact: true }).fill('replacement');
   await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
   await expect(title(page)).toHaveText('replacement');
-  await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
+  await expect(head(page).getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
   await expect(page).toHaveURL(url => url.pathname.includes(`/applications/${app}/environments/`));
 });
 
@@ -168,14 +156,13 @@ test('a deleted environment page cannot resolve to another environment with that
 
 test('a service Logs tab offers each environment once the application has several', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('single'), expected_generation: 0 });
-  const app = saved.application_id as string;
+  const { app, generation } = await apply(page, webManifest('single'));
   await page.clock.install();
   await page.goto(`/dashboard/applications/${app}/services/web`);
-  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Logs', exact: true }).click();
+  await serviceTab(page, 'Logs').click();
   await expect(page.getByRole('heading', { name: 'Service logs' })).toBeVisible();
 
-  await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', expected_generation: saved.generation });
+  await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', expected_generation: generation });
   // The next dashboard refresh lists the new environment.
   await page.clock.runFor(16_000);
   await expect(page.getByText('Logs are read per environment.', { exact: false })).toBeVisible();
@@ -185,10 +172,9 @@ test('a service Logs tab offers each environment once the application has severa
 
 test('a service receives telemetry once its environment is granted it', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('collector'), expected_generation: 0 });
-  const app = saved.application_id as string;
+  const { app, env } = await apply(page, webManifest('collector'));
   await page.goto(`/dashboard/applications/${app}/services/web`);
-  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Telemetry', exact: true }).click();
+  await serviceTab(page, 'Telemetry').click();
   await page.getByLabel('Receive telemetry', { exact: true }).check();
   await page.getByRole('button', { name: 'Save changes', exact: true }).locator('visible=true').click();
   await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
@@ -197,13 +183,9 @@ test('a service receives telemetry once its environment is granted it', async ({
   };
   expect(application.spec.services[0].receives_telemetry).toBe(true);
 
-  const env = await environmentId(page, app);
   await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   const grant = page.getByRole('button', { name: 'Grant telemetry', exact: true });
-  page.once('dialog', async dialog => {
-    expect(dialog.message()).toContain('every application');
-    await dialog.accept();
-  });
+  confirmNext(page, 'every application');
   const granted = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes(`/environments/${env}/telemetry`));
   await grant.click();
   expect((await granted).status()).toBe(200);
@@ -214,18 +196,13 @@ test('a service receives telemetry once its environment is granted it', async ({
 
 test('a deployed environment stops and starts from its page', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('stopping'), expected_generation: 0 });
-  const app = saved.application_id as string;
-  const env = await environmentId(page, app);
-  await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
+  const { app, env, generation } = await apply(page, webManifest('stopping'));
+  await call(page, 'POST', `environments/${env}/deploy?expected_generation=${generation}`);
   // Stop shows once the environment is deployed.
-  await resolveEnvironment(page, env, saved.generation);
+  await resolveEnvironment(page, env, generation);
   await page.goto(`/dashboard/applications/${app}/environments/${env}`);
 
-  page.once('dialog', async dialog => {
-    expect(dialog.message()).toContain('routes are withdrawn');
-    await dialog.accept();
-  });
+  confirmNext(page, 'routes are withdrawn');
   const stopped = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${env}/stop`));
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   expect((await stopped).status()).toBe(202);

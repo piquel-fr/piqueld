@@ -167,6 +167,42 @@ export async function environmentId(page: Page, app: string, name = 'production'
   return environments.find((environment: { name: string }) => environment.name === name).id;
 }
 
+/** Saves `manifest` as a new application, returning its ID, its
+ * `production` environment's, and its generation. */
+export async function apply(page: Page, manifest: Record<string, unknown>): Promise<{ app: string; env: string; generation: number }> {
+  const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
+  const app = saved.application_id as string;
+  return { app, env: await environmentId(page, app), generation: saved.generation as number };
+}
+
+/** A deployment as the daemon lists it. */
+export type Deployment = { operation: Record<string, unknown> } & Record<string, unknown>;
+
+/** `notes`, deployed once, and that deployment as the daemon lists it. The
+ * fixture never deploys, so tests derive the deployments they list from it. */
+export async function deployed(page: Page) {
+  const { app, env, generation } = await apply(page, webManifest('notes'));
+  await call(page, 'POST', `environments/${env}/deploy?expected_generation=${generation}`);
+  const deployment = (await call(page, 'GET', `environments/${env}/deployments`)).items[0] as Deployment;
+  return { app, env, deployment };
+}
+
+/** Serves `pages(cursor)` as `environment`'s deployment pages. */
+export async function serveDeployments(page: Page, environment: string, pages: (cursor: string | null) => { items: Deployment[]; next_cursor: string | null }) {
+  await page.route(url => url.pathname === `/api/v1/environments/${environment}/deployments`, async (route: Route) => {
+    const cursor = new URL(route.request().url()).searchParams.get('cursor');
+    await route.fulfill({ json: { data: pages(cursor) } });
+  });
+}
+
+/** Accepts the next confirmation, once its message contains `text` when given. */
+export function confirmNext(page: Page, text?: string) {
+  page.once('dialog', async dialog => {
+    if (text !== undefined) expect(dialog.message()).toContain(text);
+    await dialog.accept();
+  });
+}
+
 /** Rewrites the JSON `data` of GET responses whose path is exactly `path`. */
 export async function rewrite(page: Page, path: string, edit: (data: Record<string, any>) => void) {
   await page.route(url => url.pathname === path, async (route: Route) => {
@@ -196,6 +232,10 @@ export async function resolveEnvironment(page: Page, id: string, generation: num
   });
 }
 
+/** The `spec.manifest` of `notes`, read from `app.toml` on branch `main`
+ * of its repository, which the fixture never fetches. */
+export const repositoryManifest = { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } };
+
 /** The manifest of application `name`, running one `web` service from
  * `nginx:alpine`, with the rest of `spec`. */
 export const webManifest = (name: string, spec: Record<string, unknown> = {}) => ({
@@ -210,6 +250,9 @@ export const applicationTab = (page: Page, name: string) =>
 /** One of an environment or preview page's section tabs. */
 export const environmentTab = (page: Page, name: string) =>
   page.getByRole('tablist', { name: 'Environment sections' }).getByRole('tab', { name, exact: true });
+/** One of a service page's section tabs. */
+export const serviceTab = (page: Page, name: string) =>
+  page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name, exact: true });
 /** The card of a page section, by its heading. */
 export const card = (page: Page, heading: string) =>
   page.locator('section.card', { has: page.getByRole('heading', { name: heading, exact: true }) });

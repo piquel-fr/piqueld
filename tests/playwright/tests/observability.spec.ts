@@ -1,12 +1,11 @@
-import { test, expect, call, environmentId, webManifest } from '../fixtures.js';
+import { test, expect, apply, call, webManifest } from '../fixtures.js';
 
 test('an event leads to its operation\'s events and to the requests behind them in the audit trail', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('shop'), expected_generation: 0 });
-  const id = await environmentId(page, saved.application_id);
-  const deployed = await call(page, 'POST', `environments/${id}/deploy?expected_generation=${saved.generation}`);
+  const { env, generation } = await apply(page, webManifest('shop'));
+  const deployed = await call(page, 'POST', `environments/${env}/deploy?expected_generation=${generation}`);
   // A stale generation is refused, and audited as failed.
-  await expect(call(page, 'POST', `environments/${id}/deploy?expected_generation=${saved.generation + 1}`)).rejects.toThrow('generation_conflict');
+  await expect(call(page, 'POST', `environments/${env}/deploy?expected_generation=${generation + 1}`)).rejects.toThrow('generation_conflict');
 
   await page.goto('/dashboard/events');
   const events = page.locator('.event');
