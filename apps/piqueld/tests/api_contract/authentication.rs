@@ -209,6 +209,12 @@ async fn as_peer(
     (response.status.as_u16(), response.json(), cookie)
 }
 
+/// The daemon's own user, the host operator, and another user, a stranger.
+fn unix_peers() -> (u32, u32) {
+    let operator = rustix::process::geteuid().as_raw();
+    (operator, if operator == 0 { 1 } else { operator + 1 })
+}
+
 /// Admin recovery is served only over the Unix socket, only to root or the
 /// daemon's own user, and only once setup has completed.
 #[tokio::test]
@@ -217,8 +223,7 @@ async fn admin_recovery_requires_the_host_operator_over_the_unix_socket() {
     let state = state(&temp).await;
     let database = database(&temp);
     let auth = auth(&temp).await;
-    let operator = rustix::process::geteuid().as_raw();
-    let stranger = if operator == 0 { 1 } else { operator + 1 };
+    let (operator, stranger) = unix_peers();
     let unix = api_router(state.clone(), auth.clone());
     let web = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth);
     let recover = async |router: &axum::Router, uid: Option<u32>| {
@@ -266,8 +271,7 @@ async fn the_host_operator_acts_without_a_token_over_the_unix_socket() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
     let auth = auth(&temp).await;
-    let operator = rustix::process::geteuid().as_raw();
-    let stranger = if operator == 0 { 1 } else { operator + 1 };
+    let (operator, stranger) = unix_peers();
     let unix = api_router(state.clone(), auth.clone());
     let web = web_router(state.clone(), UiAssets::Embedded(TEST_BUNDLE), auth);
     let me = "/api/v1/auth/me";
@@ -361,7 +365,7 @@ async fn credentials_presented_by_the_host_operator_keep_their_meaning() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
     let auth = auth(&temp).await;
-    let operator = rustix::process::geteuid().as_raw();
+    let (operator, _) = unix_peers();
     let unix = api_router(state, auth);
     let me = "/api/v1/auth/me";
     let token = admin_token();
@@ -721,9 +725,7 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
 #[tokio::test]
 async fn authentication_bodies_fail_with_structured_errors() {
     let temp = TempDir::new().unwrap();
-    let store = Store::open(database(&temp)).await.unwrap();
-    let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
-    let unix = api_router(state(&temp).await, auth);
+    let unix = api_router(state(&temp).await, auth(&temp).await);
     let oversized = format!(r#"{{"device_code":"{}"}}"#, "x".repeat(64 * 1024));
     for (content_type, body, status, code) in [
         ("application/json", "{", 400, "json_malformed"),

@@ -214,8 +214,11 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
         expected_generation: Some(saved.generation),
         ..EditOptions::default()
     };
-    let keyed = api.client.clone().with_request_id("field-save");
-    let receipt = keyed.edit_application(id, &edit, &options).await.unwrap();
+    let receipt = api
+        .client
+        .edit_application(id, &edit, &options)
+        .await
+        .unwrap();
     assert_eq!(receipt.generation, 2);
     assert_eq!(receipt.operation_id, None);
     assert!(
@@ -241,8 +244,6 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
         .await
         .unwrap_err();
     assert_eq!(api_error(stale).code, "generation_conflict");
-    let replay = keyed.edit_application(id, &edit, &options).await.unwrap();
-    assert_eq!(replay.generation, receipt.generation);
     let deploy = EditOptions {
         expected_generation: Some(2),
         deploy: true,

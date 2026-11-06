@@ -938,9 +938,7 @@ async fn deletion_proceeds_after_another_node_joins() {
 #[tokio::test]
 async fn restoring_a_deployment_runs_its_image_again_without_jobs() {
     let harness = ControllerHarness::new().await;
-    let first = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let first = harness.apply(migration(), None).await;
     harness.finish(&first).await;
     let environment = first.environment_id.clone();
     let image = async || {

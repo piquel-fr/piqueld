@@ -86,7 +86,11 @@ async fn exec_streams_over_both_transports_and_records_history_without_the_comma
         stdin: true,
         tty: None,
     };
-    let app = create_and_inspect(&unix.client(), &manifest()).await;
+    let app = unix
+        .client()
+        .apply_and_deploy(&new_application())
+        .await
+        .unwrap();
     for client in [unix.client(), tcp.client()] {
         let (mut output, mut input) = client
             .exec(&app.environment_id, &request("web"))
@@ -389,15 +393,19 @@ async fn exec_rechecks_access_once_the_command_is_created() {
     let grants = [("apps:exec", Some(f.blog.as_str()))];
     let token = seed_account(&database(&f.temp), "operator", &grants).await;
     let server = f.serve().await;
-    let mut socket = open_exec(server.address(), &f.blog_production, Some(&token), "slow").await;
+    let mut socket = open_exec(server.address(), &f.blog_production, Some(&token), "held").await;
     // Input that would let the command finish as soon as it runs.
     for input in [ExecInput::Stdin(b"hi".to_vec()), ExecInput::CloseStdin] {
         socket.send(Message::binary(input.encode())).await.unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let gate = &f.runtime.exec_gate;
+    tokio::time::timeout(Duration::from_secs(10), gate.started.notified())
+        .await
+        .expect("the command is being created");
     let revoke = serde_json::json!({"action": "revoke_credential", "id": "operator"});
     let manage = "/api/v1/auth/manage";
     assert_eq!(f.router.call(&token, "POST", manage, revoke).await.0, 200);
+    gate.release.notify_one();
     let mut outputs = Vec::new();
     while let Some(Ok(message)) = socket.next().await {
         if let Message::Binary(data) = message {

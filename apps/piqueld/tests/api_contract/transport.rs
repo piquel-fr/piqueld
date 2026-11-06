@@ -2,23 +2,33 @@
 
 use super::*;
 
+/// The typed client runs the whole lifecycle over both transports.
 #[tokio::test]
-async fn typed_client_exercises_polling_lifecycle_over_tcp() {
-    let temp = tempfile::tempdir().expect("temporary directory");
-    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
-    let client = server.client();
-
-    assert!(
-        client
-            .builds(None, None, None)
-            .await
-            .unwrap()
-            .items
-            .is_empty()
-    );
-    let missing = client.build_logs(999, None, None).await.unwrap_err();
-    assert_eq!(api_error(missing).status, 404);
-    assert_lifecycle(&client).await;
+async fn typed_client_exercises_the_lifecycle_over_tcp_and_a_unix_socket() {
+    for unix in [false, true] {
+        // Each transport gets a daemon of its own, so both create `notes`.
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let daemon = router(state(&temp).await, FakeAuth);
+        let server = if unix {
+            Server::unix(daemon, &temp.path().join("contract.sock"))
+        } else {
+            Server::tcp(daemon).await
+        };
+        let client = server.client();
+        let status = client.system_status().await.expect("status");
+        assert_eq!(status.api_version, "v1");
+        assert!(
+            client
+                .builds(None, None, None)
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        let missing = client.build_logs(999, None, None).await.unwrap_err();
+        assert_eq!(api_error(missing).status, 404);
+        assert_lifecycle(&client).await;
+    }
 }
 
 /// Plans, creates and inspects, replaces, and deletes the contract
@@ -73,6 +83,71 @@ async fn replace_and_plan(
         .await
         .expect("preview succeeds");
     replaced
+}
+
+async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> Deployed {
+    let mut request = ApplyApplicationRequest {
+        expected_generation: Some(0),
+        expected_application_id: None,
+        manifest: manifest.clone(),
+    };
+    let created = client
+        .apply_and_deploy(&request)
+        .await
+        .expect("apply succeeds");
+    request.expected_generation = Some(created.generation);
+    request.expected_application_id = Some(created.application_id.clone());
+    let replay = client
+        .apply_and_deploy(&request)
+        .await
+        .expect("apply retry succeeds");
+    assert_ne!(created.operation_id, replay.operation_id);
+    let summaries = client.applications().await.unwrap();
+    assert_eq!(summaries.items.len(), 1);
+    assert_eq!(
+        summaries.items[0].id,
+        created.application_id.parse().unwrap()
+    );
+    assert_eq!(summaries.items[0].name, "notes");
+    let summary_json = serde_json::to_value(&summaries.items[0]).unwrap();
+    assert!(summary_json.get("application").is_none());
+    let application = client
+        .application(&created.application_id)
+        .await
+        .expect("full application read succeeds");
+    assert_eq!(application.application.spec().services.len(), 1);
+    let detail = client
+        .environment_detail(&created.environment_id)
+        .await
+        .expect("detail succeeds");
+    assert_eq!(
+        detail.application.application.id().as_str(),
+        created.application_id
+    );
+    assert_eq!(detail.application.application.spec().services.len(), 1);
+    assert!(detail.observed.services.is_empty());
+    assert_eq!(detail.environment.resolved_generation, None);
+    assert!(detail.diagnostics.is_empty());
+    assert_eq!(
+        client.operation(&created.operation_id).await.unwrap().kind,
+        piqueld_core::OperationKind::Refresh
+    );
+    replay
+}
+
+async fn delete(client: &Client, created: &Deployed) {
+    let deleted = client
+        .delete_application_with_generation(&created.application_id, Some(created.generation))
+        .await
+        .expect("delete succeeds");
+    assert_eq!(
+        client
+            .operation(&deleted.operations[0].operation_id)
+            .await
+            .unwrap()
+            .kind,
+        piqueld_core::OperationKind::Delete
+    );
 }
 
 #[tokio::test]
@@ -517,18 +592,6 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
     let edited = client.application(&saved.application_id).await.unwrap();
     assert_eq!(edited.generation, saved.generation + 1);
     assert_eq!(edited.application.spec().services[0].replicas, 3.into());
-}
-
-#[tokio::test]
-async fn typed_client_exercises_the_lifecycle_over_a_unix_socket() {
-    let temp = tempfile::tempdir().expect("temporary directory");
-    let socket = temp.path().join("contract.sock");
-    let server = Server::unix(router(state(&temp).await, FakeAuth), &socket);
-    let client = server.client();
-
-    let status = client.system_status().await.expect("status over unix");
-    assert_eq!(status.api_version, "v1");
-    assert_lifecycle(&client).await;
 }
 
 #[tokio::test]

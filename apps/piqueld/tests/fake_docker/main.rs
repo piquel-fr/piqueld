@@ -88,6 +88,11 @@ fn manifest_with_jobs(jobs: &[&str], timeout_seconds: u32) -> ApplicationManifes
     input
 }
 
+/// The fixture manifest with one `migrate` job of `web`, run before rollout.
+fn migration() -> ApplicationManifest {
+    manifest_with_jobs(&["migrate"], 300)
+}
+
 /// A store, the prebuilt fixture, and a controller over a fake Docker
 /// backend.
 struct ControllerHarness {
@@ -504,9 +509,7 @@ impl ControllerHarness {
     async fn leave_job_cleanup_pending(&self) {
         self.docker.job_exit.store(3, Ordering::SeqCst);
         self.docker.fail_job_cleanup.store(true, Ordering::SeqCst);
-        let failed = self
-            .apply(manifest_with_jobs(&["migrate"], 300), None)
-            .await;
+        let failed = self.apply(migration(), None).await;
         assert_eq!(
             self.scan_result(&failed).await,
             (OperationState::Failed, Some("job_failed".into()))

@@ -93,48 +93,41 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
     assert_eq!(replacement_operation.state, OperationState::Succeeded);
 }
 
+/// A service, network or volume another installation created under the
+/// name the application's would take is refused, never replaced.
 #[tokio::test]
-async fn controller_refuses_a_foreign_same_name_service() {
-    let harness = ControllerHarness::new().await;
-    harness
-        .assert_refuses_foreign(|resolved, observed| {
+async fn controller_refuses_foreign_same_name_resources() {
+    let foreign: [fn(&ResolvedApplication, &mut ObservedApplication); 3] = [
+        |resolved, observed| {
             let mut labels = foreign_labels(&resolved.id);
             labels.insert(SERVICE_LABEL.into(), "web".into());
             observed.services.push(ObservedService {
                 labels,
                 ..observed_service(&resolved.services[0])
             });
-        })
-        .await;
-}
-
-#[tokio::test]
-async fn controller_refuses_a_foreign_same_name_network() {
-    let harness = ControllerHarness::new().await;
-    harness
-        .assert_refuses_foreign(|resolved, observed| {
+        },
+        |resolved, observed| {
             observed.networks.push(ObservedNetwork {
                 name: resolved.networks[0].name.to_string(),
                 runtime_configuration_matches: true,
                 labels: foreign_labels(&resolved.id),
                 in_use: false,
             });
-        })
-        .await;
-}
-
-#[tokio::test]
-async fn controller_refuses_a_foreign_same_name_volume() {
-    let harness = ControllerHarness::new().await;
-    harness
-        .assert_refuses_foreign(|resolved, observed| {
+        },
+        |resolved, observed| {
             observed.volumes.push(ObservedVolume {
                 name: resolved.volumes[0].name.to_string(),
                 runtime_configuration_matches: true,
                 labels: foreign_labels(&resolved.id),
             });
-        })
-        .await;
+        },
+    ];
+    for add in foreign {
+        ControllerHarness::new()
+            .await
+            .assert_refuses_foreign(add)
+            .await;
+    }
 }
 
 #[tokio::test]

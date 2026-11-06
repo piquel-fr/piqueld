@@ -4,7 +4,7 @@ use super::*;
 
 /// A migration whose database depends on storage, plus an unrelated service.
 fn manifest_with_job_dependencies() -> ApplicationManifest {
-    let mut input = manifest_with_jobs(&["migrate"], 300);
+    let mut input = migration();
     input.spec.services[0].depends_on = vec!["db".into()];
     for (name, dependencies) in [
         ("db", vec!["storage".into()]),
@@ -29,7 +29,7 @@ fn manifest_with_job_dependencies() -> ApplicationManifest {
 
 /// The fixture with one exclusive migration of `web`, which mounts `data`.
 fn manifest_with_exclusive_job() -> ApplicationManifest {
-    let mut input = manifest_with_jobs(&["migrate"], 300);
+    let mut input = migration();
     input.spec.jobs[0].volume_access = piqueld_core::manifest::JobVolumeAccess::Exclusive;
     input
 }
@@ -37,7 +37,7 @@ fn manifest_with_exclusive_job() -> ApplicationManifest {
 /// The fixture with one migration of `web` that stops `web` before it runs,
 /// once as an exclusive job and once by stopping its own service.
 fn manifests_with_web_stopping_job() -> [ApplicationManifest; 2] {
-    let mut own = manifest_with_jobs(&["migrate"], 300);
+    let mut own = migration();
     own.spec.jobs[0].stop_service = true;
     [manifest_with_exclusive_job(), own]
 }
@@ -399,9 +399,7 @@ async fn a_failed_job_restarts_web_once_its_run_stopped(replacement: Application
 async fn resumed_job_keeps_the_deadline_of_its_start() {
     let mut harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     let shutdown = CancellationToken::new();
     let (scanned, ()) = tokio::join!(harness.controller.scan(&shutdown), async {
         harness.wait_for_job_starts(1).await;
@@ -423,7 +421,7 @@ async fn resumed_job_keeps_the_deadline_of_its_start() {
 #[tokio::test]
 async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let harness = ControllerHarness::new().await;
-    let mut input = manifest_with_jobs(&["migrate"], 300);
+    let mut input = migration();
     let first = harness.apply(input.clone(), None).await;
     // A run of a job an earlier manifest declared is removed before jobs start.
     let stored = harness.store.get(&first.environment_id).await.unwrap();
@@ -501,7 +499,7 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
 async fn a_secret_only_a_job_mounts_is_generated_for_the_job_alone() {
     use piqueld_core::manifest::{SecretDeclaration, SecretEncoding, SecretGenerator, SecretMount};
     let harness = ControllerHarness::new().await;
-    let mut input = manifest_with_jobs(&["migrate"], 300);
+    let mut input = migration();
     input.spec.secrets.push(SecretDeclaration {
         name: "owner-password".into(),
         generate: SecretGenerator::Random {
@@ -532,9 +530,7 @@ async fn a_secret_only_a_job_mounts_is_generated_for_the_job_alone() {
 async fn failed_job_keeps_an_unchanged_application_degraded() {
     let harness = ControllerHarness::new().await;
     let applications = harness.applications();
-    let first = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let first = harness.apply(migration(), None).await;
     harness.finish(&first).await;
     harness.docker.job_exit.store(3, Ordering::SeqCst);
     let redeploy = applications
@@ -575,9 +571,7 @@ async fn retried_operation_skips_jobs_that_already_succeeded() {
 #[tokio::test]
 async fn waiting_for_job_runs_to_stop_leaves_docker_mutations_free() {
     let harness = ControllerHarness::new().await;
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     let held = harness.docker.hold_job_stop.lock().await;
     let shutdown = CancellationToken::new();
     let scan = harness.controller.scan(&shutdown);
@@ -608,9 +602,7 @@ async fn waiting_for_job_runs_to_stop_leaves_docker_mutations_free() {
 async fn shutdown_lets_a_running_job_record_its_interruption() {
     let harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     let shutdown = CancellationToken::new();
     let run = harness.controller.run(
         Arc::default(),
@@ -628,21 +620,8 @@ async fn shutdown_lets_a_running_job_record_its_interruption() {
             .await
             .expect("shutdown finishes within its grace period");
     result.unwrap();
-    let builds = harness
-        .store
-        .builds(
-            None,
-            Some(&operation.environment_id),
-            &piqueld_core::access::Scope::All,
-            None,
-            10,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        builds.items[0].state,
-        piqueld_core::api::BuildState::Interrupted
-    );
+    let (run, _) = harness.latest_run(&operation.environment_id).await;
+    assert_eq!(run.state, piqueld_core::api::BuildState::Interrupted);
     // The run is kept for the retried deployment to resume.
     assert_eq!(harness.docker.jobs.lock().await.len(), 1);
 }
@@ -655,9 +634,7 @@ async fn shutdown_lets_a_running_job_record_its_interruption() {
 async fn a_failed_job_keeps_its_failure_when_its_deployment_is_dropped() {
     let mut harness = ControllerHarness::new().await;
     harness.docker.job_exit.store(3, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     let held = harness.docker.hold_job_output.lock().await;
     let shutdown = CancellationToken::new();
     tokio::select! {
@@ -681,9 +658,7 @@ async fn a_failed_job_keeps_its_failure_when_its_deployment_is_dropped() {
 async fn job_run_accepted_before_a_lost_response_is_not_started_again() {
     let harness = ControllerHarness::new().await;
     harness.docker.lose_job_start.store(true, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     harness.finish(&operation).await;
     assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
@@ -692,9 +667,7 @@ async fn job_run_accepted_before_a_lost_response_is_not_started_again() {
 async fn restarted_daemon_resumes_a_running_job() {
     let mut harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     let shutdown = CancellationToken::new();
     let (scanned, ()) = tokio::join!(harness.controller.scan(&shutdown), async {
         harness.wait_for_job_starts(1).await;
@@ -718,9 +691,7 @@ async fn restarted_daemon_resumes_a_running_job() {
 async fn superseded_job_run_is_stopped() {
     let harness = ControllerHarness::new().await;
     harness.docker.hold_jobs.store(true, Ordering::SeqCst);
-    let first = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let first = harness.apply(migration(), None).await;
     let cancellation = CancellationToken::new();
     let (scanned, second) = tokio::join!(harness.controller.scan(&cancellation), async {
         harness.wait_for_job_starts(1).await;
@@ -902,9 +873,7 @@ async fn unknown_job_status_keeps_the_run_for_a_retry() {
 #[tokio::test]
 async fn recorded_success_survives_a_crash_before_cleanup() {
     let mut harness = ControllerHarness::new().await;
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     let held = harness.docker.hold_job_cleanup.lock().await;
     // The success is stored before the run is removed; dropping the scan
     // there is a crash.
@@ -952,9 +921,7 @@ async fn retry_reruns_a_failed_run_left_in_place() {
         .docker
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     assert_eq!(
         harness.scan_result(&operation).await,
         (OperationState::Failed, Some("job_failed".into()))
@@ -985,9 +952,7 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
         .docker
         .fail_job_cleanup
         .store(true, Ordering::SeqCst);
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     harness.finish(&operation).await;
     let (run, output) = harness.latest_run(&operation.environment_id).await;
     assert_eq!(
@@ -1013,9 +978,7 @@ async fn job_outcome_survives_output_and_cleanup_failures() {
 #[tokio::test]
 async fn blocked_deployment_runs_no_jobs() {
     let harness = ControllerHarness::new().await;
-    let operation = harness
-        .apply(manifest_with_jobs(&["migrate"], 300), None)
-        .await;
+    let operation = harness.apply(migration(), None).await;
     harness
         .docker
         .observed
