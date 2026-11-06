@@ -65,8 +65,7 @@ piquelctl audit --credential <credential-id>
 ```
 
 `piquelctl token list` shows your own tokens' IDs. A request about an
-environment names its ID, `env-…`, which `piquelctl env list <application>`
-shows.
+environment names its ID, which `piquelctl env list <application>` shows.
 
 The audit trail belongs to the whole installation, not to an application, so
 the manifest has no part in it.
