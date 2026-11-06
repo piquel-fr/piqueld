@@ -17,26 +17,6 @@ fn hostnames_render_per_environment_before_deployment() {
     assert_eq!(hostnames("production"), ["piquel.fr"]);
 }
 
-/// Saved configuration and replay fingerprints were stored as normalized
-/// applications; literal templates must serialize identically.
-#[test]
-fn literal_templates_serialize_like_normalized_applications() {
-    let normalized = parse_toml(include_str!(
-        "../../../tests/fixtures/manifests/prebuilt.toml"
-    ))
-    .unwrap()
-    .normalize(id());
-    let template = ApplicationTemplate::from(&normalized);
-    assert_eq!(
-        serde_json::to_string(&template).unwrap(),
-        normalized.canonical_json().unwrap()
-    );
-    assert_eq!(
-        serde_json::from_str::<ApplicationTemplate>(&normalized.canonical_json().unwrap()).unwrap(),
-        template
-    );
-}
-
 #[test]
 fn literal_rendering_conversion_hash_and_exports_match_the_domain_model() {
     for manifest in [base(), complete()] {
@@ -53,9 +33,14 @@ fn literal_rendering_conversion_hash_and_exports_match_the_domain_model() {
         assert_eq!(template.metadata(), normalized.metadata());
         assert_eq!(template.spec(), &manifest.spec);
         assert_eq!(ApplicationTemplate::from(&normalized), template);
+        // Saved configuration and replay fingerprints were stored as
+        // normalized applications; literal templates serialize identically.
+        let canonical = normalized.canonical_json().unwrap();
+        assert_eq!(template.canonical_json().unwrap(), canonical);
+        assert_eq!(serde_json::to_string(&template).unwrap(), canonical);
         assert_eq!(
-            template.canonical_json().unwrap(),
-            normalized.canonical_json().unwrap()
+            serde_json::from_str::<ApplicationTemplate>(&canonical).unwrap(),
+            template
         );
         assert_eq!(template.spec_hash(), normalized.spec_hash());
         assert_eq!(template.render(&saved()).unwrap().application, normalized);

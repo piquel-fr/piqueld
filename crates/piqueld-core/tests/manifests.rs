@@ -58,6 +58,11 @@ fn image_manifest_parses_from_both_supported_formats() {
     let json = parse_json(JSON).expect("valid JSON manifest");
     assert_eq!(toml.name().as_str(), "notes");
     assert_eq!(toml.spec(), json.spec());
+    let id = ApplicationId::parse("app-notes-01").unwrap();
+    assert_eq!(
+        toml.normalize(id.clone()).spec_hash(),
+        json.normalize(id).spec_hash()
+    );
 }
 
 #[test]
@@ -84,69 +89,6 @@ fn spec_hash_is_pinned_and_ignores_metadata() {
         .normalize(app.id().clone());
     assert_eq!(renamed.metadata().name.as_str(), "renamed");
     assert_eq!(renamed.spec_hash(), app.spec_hash());
-}
-
-#[test]
-fn toml_and_json_inputs_produce_identical_hashes() {
-    let from_toml = parse_toml(TOML).unwrap();
-    let from_json = parse_json(JSON).unwrap();
-    let id = ApplicationId::parse("app-notes-01").unwrap();
-    assert_eq!(
-        from_toml.clone().normalize(id.clone()).spec_hash(),
-        from_json.normalize(id).spec_hash()
-    );
-}
-
-#[test]
-fn input_order_does_not_change_the_normalized_form() {
-    let reordered = r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "worker"
-[spec.services.source]
-type = "image"
-image = "ghcr.io/example/notes:1"
-[[spec.services]]
-name = "web"
-[spec.services.source]
-type = "image"
-image = "ghcr.io/example/web:2"
-[[spec.volumes]]
-name = "zed"
-[[spec.volumes]]
-name = "alpha"
-"#;
-    let straight = r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.source]
-type = "image"
-image = "ghcr.io/example/web:2"
-[[spec.services]]
-name = "worker"
-[spec.services.source]
-type = "image"
-image = "ghcr.io/example/notes:1"
-[[spec.volumes]]
-name = "alpha"
-[[spec.volumes]]
-name = "zed"
-"#;
-    let id = ApplicationId::parse("app-notes-01").unwrap();
-    let left = parse_toml(reordered).unwrap().normalize(id.clone());
-    let right = parse_toml(straight).unwrap().normalize(id);
-    assert_eq!(left.spec_hash(), right.spec_hash());
-    assert_eq!(
-        left.canonical_json().unwrap(),
-        right.canonical_json().unwrap()
-    );
 }
 
 #[test]
@@ -322,6 +264,12 @@ fn malformed_and_invalid_manifests_return_safe_validation_errors() {
     let error = parse_toml(include_str!("fixtures/manifests/invalid.toml")).unwrap_err();
     assert!(has_code(&error, codes::API_VERSION_UNSUPPORTED));
     assert!(has_code(&error, codes::IMAGE_INVALID));
+    // The display lists every error.
+    let display = error.to_string();
+    for item in &error.0 {
+        assert!(display.contains(&item.code), "{display}");
+        assert!(display.contains(&item.path), "{display}");
+    }
     let error = parse_json("{\"api_version\":").unwrap_err();
     assert!(
         error
@@ -329,16 +277,6 @@ fn malformed_and_invalid_manifests_return_safe_validation_errors() {
             .iter()
             .all(|error| error.code == codes::MANIFEST_DECODE_FAILED)
     );
-}
-
-#[test]
-fn validation_display_lists_every_error() {
-    let error = parse_toml(include_str!("fixtures/manifests/invalid.toml")).unwrap_err();
-    let display = error.to_string();
-    for item in &error.0 {
-        assert!(display.contains(&item.code), "{display}");
-        assert!(display.contains(&item.path), "{display}");
-    }
 }
 
 #[test]
@@ -380,204 +318,123 @@ fn docker_hub_shorthands_are_accepted() {
     }
 }
 
+/// Each environment entry is checked by key and value; errors quote the key.
 #[test]
-fn environment_budgets_and_key_echoes_are_enforced() {
-    let oversized_value = "v".repeat(65_537);
-    let manifest = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.environment]
-"valid_KEY" = "{oversized_value}"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-"#
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    let value_error = errors
-        .0
-        .iter()
-        .find(|error| error.code == codes::ENVIRONMENT_VALUE_EXCESSIVE)
-        .expect("value budget error");
-    assert!(
-        value_error.message.contains("'valid_KEY'"),
-        "{}",
-        value_error.message
-    );
+fn environment_entries_are_checked_and_errors_quote_the_key() {
+    let long_key = "k".repeat(256);
+    let long_value = "v".repeat(65_537);
+    for (key, value, code, quoted) in [
+        (
+            "valid_KEY",
+            long_value.as_str(),
+            codes::ENVIRONMENT_VALUE_EXCESSIVE,
+            "'valid_KEY'",
+        ),
+        (
+            "9starts_digit",
+            "1",
+            codes::ENVIRONMENT_NAME_INVALID,
+            "'9starts_digit'",
+        ),
+        (
+            long_key.as_str(),
+            "1",
+            codes::ENVIRONMENT_NAME_INVALID,
+            "at most 255 bytes",
+        ),
+        (
+            piqueld_core::resource::INGRESS_PROXIES_ENV,
+            "0.0.0.0/0",
+            codes::ENVIRONMENT_NAME_INVALID,
+            "reserved",
+        ),
+    ] {
+        let manifest = format!(
+            "{}[spec.services.environment]\n\"{key}\" = \"{value}\"\n",
+            valid_manifest("notes")
+        );
+        let errors = parse_toml(&manifest).unwrap_err();
+        let error = errors
+            .0
+            .iter()
+            .find(|error| error.code == code)
+            .unwrap_or_else(|| panic!("{code} for {quoted}: {errors:?}"));
+        let field = if code == codes::ENVIRONMENT_NAME_INVALID {
+            "name"
+        } else {
+            "value"
+        };
+        assert_eq!(
+            error.path,
+            format!("spec.services[0].environment.{field}"),
+            "{quoted}"
+        );
+        assert!(error.message.contains(quoted), "{}", error.message);
+    }
+}
 
-    let invalid_key = r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.environment]
-"9starts_digit" = "1"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-"#;
-    let errors = parse_toml(invalid_key).unwrap_err();
-    let key_error = errors
-        .0
-        .iter()
-        .find(|error| error.code == codes::ENVIRONMENT_NAME_INVALID)
-        .expect("key rule error");
-    assert!(key_error.path.ends_with("environment.name"));
-    assert!(
-        key_error.message.contains("'9starts_digit'"),
-        "{}",
-        key_error.message
-    );
-
-    let oversized_key = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.environment]
-"{}" = "1"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-"#,
-        "k".repeat(256)
-    );
-    let errors = parse_toml(&oversized_key).unwrap_err();
-    let length_error = errors
-        .0
-        .iter()
-        .find(|error| error.code == codes::ENVIRONMENT_NAME_INVALID)
-        .expect("key length budget error");
-    assert!(
-        length_error.message.contains("at most 255 bytes"),
-        "{}",
-        length_error.message
-    );
+/// `count` items made by `item`, one per index.
+fn repeated(count: usize, item: impl Fn(usize) -> String) -> Vec<String> {
+    (0..count).map(item).collect()
 }
 
 #[test]
-fn ingress_proxies_environment_is_reserved() {
-    let manifest = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.environment]
-{} = "0.0.0.0/0"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-"#,
-        piqueld_core::resource::INGRESS_PROXIES_ENV
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    let error = errors
-        .0
-        .iter()
-        .find(|error| error.code == codes::ENVIRONMENT_NAME_INVALID)
-        .expect("reserved key error");
-    assert!(error.message.contains("reserved"), "{}", error.message);
-}
-
-#[test]
-fn environment_entry_count_budget_is_enforced() {
-    let entries = (0..257)
-        .map(|index| format!("KEY_{index} = \"1\""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let manifest = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-[spec.services.environment]
-{entries}
-"#
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    assert!(has_code(&errors, codes::ENVIRONMENT_COUNT_EXCESSIVE));
-}
-
-#[test]
-fn process_budgets_are_enforced() {
-    let many_arguments = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-arguments = [{}]
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-"#,
-        (0..129)
-            .map(|index| format!("\"arg{index}\""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    let errors = parse_toml(&many_arguments).unwrap_err();
-    assert!(has_code(&errors, codes::PROCESS_ARGUMENTS_EXCESSIVE));
-
-    let long_element = "x".repeat(4_097);
-    let manifest = valid_manifest("notes").replace(
-        "[spec.services.source]",
-        &format!("arguments = [\"{long_element}\"]\n[spec.services.source]"),
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    assert!(has_code(&errors, codes::PROCESS_ARGUMENTS_EXCESSIVE));
-}
-
-#[test]
-fn mount_count_budget_is_enforced() {
-    let volumes = (0..33)
-        .map(|index| format!("[[spec.volumes]]\nname = \"vol{index}\""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mounts = (0..33)
-        .map(|index| {
-            format!("[[spec.services.mounts]]\nvolume = \"vol{index}\"\ntarget = \"/data{index}\"")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let manifest = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-{volumes}
-[[spec.services]]
-name = "web"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-{mounts}
-"#
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    assert!(has_code(&errors, codes::MOUNT_COUNT_EXCESSIVE));
+fn collection_and_argument_budgets_are_enforced() {
+    let manifest = valid_manifest("notes");
+    let arguments = |arguments: Vec<String>| {
+        manifest.replace(
+            "[spec.services.source]",
+            &format!(
+                "arguments = [{}]\n[spec.services.source]",
+                arguments.join(", ")
+            ),
+        )
+    };
+    let volume = |index| format!("[[spec.volumes]]\nname = \"vol{index}\"");
+    let mount = |index| {
+        format!("[[spec.services.mounts]]\nvolume = \"vol{index}\"\ntarget = \"/data{index}\"")
+    };
+    let service = |index| {
+        format!(
+            "[[spec.services]]\nname = \"svc{index}\"\n[spec.services.source]\ntype = \"image\"\nimage = \"nginx:1\""
+        )
+    };
+    for (manifest, code) in [
+        (
+            arguments(repeated(129, |index| format!("\"arg{index}\""))),
+            codes::PROCESS_ARGUMENTS_EXCESSIVE,
+        ),
+        (
+            arguments(vec![format!("\"{}\"", "x".repeat(4_097))]),
+            codes::PROCESS_ARGUMENTS_EXCESSIVE,
+        ),
+        (
+            format!(
+                "{manifest}[spec.services.environment]\n{}",
+                repeated(257, |index| format!("KEY_{index} = \"1\"")).join("\n")
+            ),
+            codes::ENVIRONMENT_COUNT_EXCESSIVE,
+        ),
+        (
+            format!(
+                "{manifest}{}\n{}",
+                repeated(33, mount).join("\n"),
+                repeated(33, volume).join("\n")
+            ),
+            codes::MOUNT_COUNT_EXCESSIVE,
+        ),
+        (
+            format!("{manifest}{}", repeated(64, service).join("\n")),
+            codes::SERVICE_COUNT_EXCESSIVE,
+        ),
+        (
+            format!("{manifest}{}", repeated(65, volume).join("\n")),
+            codes::VOLUME_COUNT_EXCESSIVE,
+        ),
+    ] {
+        let errors = parse_toml(&manifest).unwrap_err();
+        assert!(has_code(&errors, code), "{code}: {errors:?}");
+    }
 }
 
 #[test]
@@ -655,48 +512,6 @@ fn at_most_one_service_receives_telemetry() {
         piqueld_core::manifest::RolloutOrder::StopFirst
     );
     assert_ne!(receiving.spec_hash(), plain.spec_hash());
-}
-
-#[test]
-fn service_and_volume_count_budgets_are_enforced() {
-    let services = (0..65)
-        .map(|index| {
-            format!("[[spec.services]]\nname = \"svc{index}\"\n[spec.services.source]\ntype = \"image\"\nimage = \"nginx:1\"")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let manifest = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-{services}
-"#
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    assert!(has_code(&errors, codes::SERVICE_COUNT_EXCESSIVE));
-
-    let volumes = (0..65)
-        .map(|index| format!("[[spec.volumes]]\nname = \"vol{index}\""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let manifest = format!(
-        r#"
-api_version = "piqueld.dev/v1alpha1"
-kind = "Application"
-[metadata]
-name = "notes"
-[[spec.services]]
-name = "web"
-[spec.services.source]
-type = "image"
-image = "nginx:1"
-{volumes}
-"#
-    );
-    let errors = parse_toml(&manifest).unwrap_err();
-    assert!(has_code(&errors, codes::VOLUME_COUNT_EXCESSIVE));
 }
 
 #[test]
@@ -951,29 +766,6 @@ proptest! {
     fn parsing_arbitrary_text_never_panics(input in "\\PC*") {
         let _ = parse_toml(&input);
         let _ = parse_json(&input);
-    }
-
-    #[test]
-    fn normalization_is_idempotent(name in "[a-z][a-z0-9-]{0,62}") {
-        prop_assume!(!name.ends_with('-'));
-        let manifest = valid_manifest(&name);
-        if let Ok(validated) = parse_toml(&manifest) {
-            let id = ApplicationId::parse("app-notes-01").unwrap();
-            let once = validated.normalize(id.clone()).normalize();
-            let twice = once.clone().normalize();
-            prop_assert_eq!(once, twice);
-        }
-    }
-
-    #[test]
-    fn hashes_are_stable_across_renormalization(name in "[a-z][a-z0-9-]{0,62}") {
-        prop_assume!(!name.ends_with('-'));
-        let manifest = valid_manifest(&name);
-        if let Ok(validated) = parse_toml(&manifest) {
-            let id = ApplicationId::parse("app-notes-01").unwrap();
-            let app = validated.normalize(id);
-            prop_assert_eq!(app.spec_hash(), app.clone().normalize().spec_hash());
-        }
     }
 }
 

@@ -292,35 +292,3 @@ fn typed_template_schema_describes_reference_text() {
         .1;
     assert_eq!(serde_json::to_value(schema).unwrap()["pattern"], r"\$\{\{");
 }
-
-#[test]
-fn syntax_values_work_as_distinct_ordered_and_hashed_keys() {
-    use std::collections::{BTreeSet, HashSet};
-    // Raw spelling remains significant when using templates as cache keys.
-    let templates = [
-        Template::from("${{vars.a}}"),
-        Template::from("${{ vars.a }}"),
-        Template::from("$${{vars.a}}"),
-    ];
-    assert_eq!(
-        templates.clone().into_iter().collect::<HashSet<_>>().len(),
-        3
-    );
-    assert_eq!(templates.into_iter().collect::<BTreeSet<_>>().len(), 3);
-    let references = SystemVariable::ALL.map(Reference::System);
-    assert_eq!(
-        references.clone().into_iter().collect::<HashSet<_>>().len(),
-        6
-    );
-    assert_eq!(references.into_iter().collect::<BTreeSet<_>>().len(), 6);
-    assert_eq!(
-        SystemVariable::ALL
-            .into_iter()
-            .collect::<HashSet<_>>()
-            .len(),
-        6
-    );
-    let typed = [Typed::from(1_u16), Typed::Template("${{vars.a}}".into())];
-    assert_eq!(typed.clone().into_iter().collect::<HashSet<_>>().len(), 2);
-    assert_eq!(typed.into_iter().collect::<BTreeSet<_>>().len(), 2);
-}

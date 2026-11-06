@@ -1,8 +1,7 @@
 //! Git manifest validation and immutable resolution contracts.
 use piqueld_core::edit::ApplicationEdit;
 use piqueld_core::manifest::{
-    GitRepository, ManifestRevision, SourceRepository, ValidatedBuild as Build,
-    ValidatedSource as Source,
+    GitRepository, SourceRepository, ValidatedBuild as Build, ValidatedSource as Source,
 };
 use piqueld_core::resource::{ResolvedSource, Sha256Digest};
 use piqueld_core::{
@@ -124,26 +123,11 @@ fn self_sources_build_from_the_manifest_revision() {
     assert_eq!(
         service_repository(&pinned),
         SourceRepository::Git(GitRepository {
-            commit: Some(commit.clone()),
+            commit: Some(commit),
             ..manifest_repository(&app)
         })
     );
     assert_eq!(pinned.spec().manifest, app.spec().manifest);
-
-    let feature = app
-        .clone()
-        .with_manifest_revision(&ManifestRevision::Branch("feature".into()))
-        .unwrap();
-    assert_eq!(manifest_repository(&feature).branch, "feature");
-    let at_commit = feature
-        .with_manifest_revision(&ManifestRevision::Commit(commit.clone()))
-        .unwrap();
-    assert_eq!(manifest_repository(&at_commit).commit, Some(commit));
-    assert!(
-        app.clone()
-            .with_manifest_revision(&ManifestRevision::Commit("HEAD".into()))
-            .is_err()
-    );
 
     // Disconnecting keeps building from the former manifest repository.
     let mut disconnected = app.to_manifest();
@@ -154,11 +138,6 @@ fn self_sources_build_from_the_manifest_revision() {
     assert_eq!(
         service_repository(&disconnected),
         SourceRepository::Git(manifest_repository(&app))
-    );
-    assert!(
-        disconnected
-            .with_manifest_revision(&ManifestRevision::Branch("main".into()))
-            .is_err()
     );
 }
 

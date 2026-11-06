@@ -177,17 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn deserialization_preserves_the_id_invariant() {
-        assert!(serde_json::from_str::<EnvironmentId>(r#""01jz8r7b4w-test""#).is_ok());
-        assert!(serde_json::from_str::<EnvironmentId>(r#""--------""#).is_err());
-        assert!(serde_json::from_str::<EnvironmentId>(r#""UPPERCASE""#).is_err());
-    }
-
-    #[test]
-    fn parsing_returns_a_typed_error() {
+    fn parsing_and_deserialization_preserve_the_id_invariant() {
         assert_eq!(
             EnvironmentId::parse("UPPERCASE").unwrap_err(),
             EnvironmentIdError
         );
+        assert!(serde_json::from_str::<EnvironmentId>(r#""01jz8r7b4w-test""#).is_ok());
+        assert!(serde_json::from_str::<EnvironmentId>(r#""--------""#).is_err());
+        assert!(serde_json::from_str::<EnvironmentId>(r#""UPPERCASE""#).is_err());
     }
 }
