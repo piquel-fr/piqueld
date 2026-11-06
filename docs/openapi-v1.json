@@ -6730,7 +6730,7 @@
         "type": "object"
       },
       "EnvironmentId": {
-        "description": "Stable internal environment identity, assigned by persistence. Docker names,\nownership labels, secret encryption context, and history all derive from it.\nEnvironments migrated from single-environment applications keep the\napplication ID they had before environments existed.",
+        "description": "Stable internal environment identity, assigned by persistence as\n`env-…`. Docker names, ownership labels, secret encryption context, and\nhistory all derive from it. Environments migrated from\nsingle-environment applications, and the `production` environments of\napplications created before every environment got its own ID, keep\ntheir application's `app-…` ID.",
         "type": "string"
       },
       "EnvironmentKind": {

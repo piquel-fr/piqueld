@@ -138,7 +138,9 @@ pub(super) async fn request_deployment(
     else {
         panic!("saved")
     };
-    let id = EnvironmentId::parse(saved.application_id).unwrap();
+    let id = store
+        .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+        .await;
     let operation = saved.operation_id.unwrap();
     (id, operation)
 }
@@ -672,7 +674,10 @@ impl Scenario {
         else {
             panic!("saved")
         };
-        let unavailable = EnvironmentId::parse(saved.application_id).unwrap();
+        let unavailable = self
+            .store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         (unavailable, app)
     }
 

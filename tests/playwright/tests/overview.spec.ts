@@ -1,10 +1,11 @@
-import { test, expect, call, rewrite, webManifest } from '../fixtures.js';
+import { test, expect, call, environmentId, rewrite, webManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
-/** Saves application `name`, returning its ID (also its first environment's) and generation. */
-async function apply(page: Page, name: string): Promise<{ id: string; generation: number }> {
+/** Saves application `name`, returning its ID, its `production` environment's, and its generation. */
+async function apply(page: Page, name: string): Promise<{ id: string; env: string; generation: number }> {
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest(name), expected_generation: 0 });
-  return { id: saved.application_id as string, generation: saved.generation as number };
+  const id = saved.application_id as string;
+  return { id, env: await environmentId(page, id), generation: saved.generation as number };
 }
 /** The value of the overview's `label` metric tile. */
 const metric = (page: Page, label: string) => page.locator('.metric', { hasText: label }).locator('strong');
@@ -16,18 +17,18 @@ test('the overview sums up applications by their least healthy environment', asy
   const shop = await apply(page, 'shop');
   const notes = await apply(page, 'notes');
   const blog = await apply(page, 'blog');
-  const deployed = await call(page, 'POST', `environments/${shop.id}/deploy?expected_generation=${shop.generation}`);
-  await call(page, 'POST', `environments/${notes.id}/deploy?expected_generation=${notes.generation}`);
+  const deployed = await call(page, 'POST', `environments/${shop.env}/deploy?expected_generation=${shop.generation}`);
+  await call(page, 'POST', `environments/${notes.env}/deploy?expected_generation=${notes.generation}`);
   const staging = await call(page, 'POST', `applications/${shop.id}/environments`, { name: 'staging', expected_generation: shop.generation });
   // The fixture never deploys: report each environment's state instead.
   const state = (id: string, value: string, message: string | null = null) =>
     rewrite(page, `/api/v1/environments/${id}/status`, data => { data.state = value; data.message = message; });
-  await state(shop.id, 'ready');
+  await state(shop.env, 'ready');
   await state(staging.id as string, 'failed', 'image pull failed');
-  await state(notes.id, 'ready');
-  await state(blog.id, 'degraded');
+  await state(notes.env, 'ready');
+  await state(blog.env, 'degraded');
   // One application's unreadable deployments leave the others listed.
-  await page.route(url => url.pathname === `/api/v1/environments/${blog.id}/deployments`,
+  await page.route(url => url.pathname === `/api/v1/environments/${blog.env}/deployments`,
     (route: Route) => route.fulfill(refusal('deployment history unavailable')));
 
   await page.goto('/dashboard/');
@@ -38,7 +39,7 @@ test('the overview sums up applications by their least healthy environment', asy
   await expect(recent.getByRole('alert')).toHaveText('blog: deployment history unavailable');
   await expect(recent.getByRole('row')).toHaveCount(3);
   await expect(recent.getByRole('link', { name: 'shop', exact: true }))
-    .toHaveAttribute('href', `/dashboard/applications/${shop.id}/environments/${shop.id}?deployment=${deployed.operation_id}`);
+    .toHaveAttribute('href', `/dashboard/applications/${shop.id}/environments/${shop.env}?deployment=${deployed.operation_id}`);
 
   await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
   const row = (name: string) => page.locator('a.list-row', { hasText: name });

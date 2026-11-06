@@ -609,7 +609,7 @@ mod tests {
         let (_temp, store) = Store::temporary().await;
         let blog = application(&store, "blog").await;
         let actor = store.seed_caller("alice", &Grants::admin()).await;
-        let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
+        let deploy = Mutation::deploy(store.production(&blog).await);
         let (MutationResponse::Operation(operation), _) =
             store.accept(actor, deploy, None, true, None).await.unwrap()
         else {
@@ -735,7 +735,7 @@ mod tests {
         let mut operations = Vec::new();
         for name in ["alice", "bob"] {
             let actor = store.seed_caller(name, &Grants::admin()).await;
-            let deploy = Mutation::deploy(EnvironmentId::default_for(&blog));
+            let deploy = Mutation::deploy(store.production(&blog).await);
             let (MutationResponse::Operation(operation), _) =
                 store.accept(actor, deploy, None, true, None).await.unwrap()
             else {

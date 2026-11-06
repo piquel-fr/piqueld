@@ -44,7 +44,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     assert!(
         harness
             .store
-            .get(&environment(&harness.application))
+            .get(&harness.environment().await)
             .await
             .unwrap()
             .delete_intent()
@@ -54,7 +54,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
         .deny_network_removal
         .store(false, Ordering::Relaxed);
     harness.scan().await;
-    harness.assert_deleted().await;
+    harness.assert_deleted(&deletion).await;
     assert!(matches!(
         harness.store.operation(&deletion.id).await,
         Err(piqueld::store::StoreError::NotFound)
@@ -71,7 +71,7 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
 
     let status = harness
         .store
-        .status(&environment(&harness.application))
+        .status(&harness.environment().await)
         .await
         .unwrap();
     assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
@@ -96,41 +96,44 @@ async fn superseded_operations_do_not_plan_stale_runtime_state() {
 #[tokio::test]
 async fn controller_refuses_a_foreign_same_name_service() {
     let harness = ControllerHarness::new().await;
-    let mut labels = foreign_labels(&environment(&harness.application));
-    labels.insert(SERVICE_LABEL.into(), "web".into());
-    let foreign = ObservedService {
-        labels,
-        ..observed_service(&harness.resolved.services[0])
-    };
     harness
-        .assert_refuses_foreign(|observed| observed.services.push(foreign))
+        .assert_refuses_foreign(|resolved, observed| {
+            let mut labels = foreign_labels(&resolved.id);
+            labels.insert(SERVICE_LABEL.into(), "web".into());
+            observed.services.push(ObservedService {
+                labels,
+                ..observed_service(&resolved.services[0])
+            });
+        })
         .await;
 }
 
 #[tokio::test]
 async fn controller_refuses_a_foreign_same_name_network() {
     let harness = ControllerHarness::new().await;
-    let foreign = ObservedNetwork {
-        name: harness.resolved.networks[0].name.to_string(),
-        runtime_configuration_matches: true,
-        labels: foreign_labels(&environment(&harness.application)),
-        in_use: false,
-    };
     harness
-        .assert_refuses_foreign(|observed| observed.networks.push(foreign))
+        .assert_refuses_foreign(|resolved, observed| {
+            observed.networks.push(ObservedNetwork {
+                name: resolved.networks[0].name.to_string(),
+                runtime_configuration_matches: true,
+                labels: foreign_labels(&resolved.id),
+                in_use: false,
+            });
+        })
         .await;
 }
 
 #[tokio::test]
 async fn controller_refuses_a_foreign_same_name_volume() {
     let harness = ControllerHarness::new().await;
-    let foreign = ObservedVolume {
-        name: harness.resolved.volumes[0].name.to_string(),
-        runtime_configuration_matches: true,
-        labels: foreign_labels(&environment(&harness.application)),
-    };
     harness
-        .assert_refuses_foreign(|observed| observed.volumes.push(foreign))
+        .assert_refuses_foreign(|resolved, observed| {
+            observed.volumes.push(ObservedVolume {
+                name: resolved.volumes[0].name.to_string(),
+                runtime_configuration_matches: true,
+                labels: foreign_labels(&resolved.id),
+            });
+        })
         .await;
 }
 
@@ -173,7 +176,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
     // Cargo runs these tests concurrently in one process. Install capture
     // globally and select this operation's events from the shared stream.
     tracing::subscriber::set_global_default(subscriber).unwrap();
-    let (application_id, operation_id) = {
+    let (environment_id, operation_id) = {
         let mut harness = ControllerHarness::new().await;
         let mut manifest = harness.application.to_manifest();
         manifest.spec.services[0]
@@ -186,7 +189,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
         harness.set_application(application);
         let operation = harness.create().await;
         harness.scan().await;
-        (harness.application.id().to_string(), operation.id)
+        (operation.environment_id.to_string(), operation.id)
     };
     let text = String::from_utf8(capture.0.lock().clone()).unwrap();
     assert!(!text.contains("must-not-appear-in-traces"));
@@ -201,7 +204,7 @@ async fn operation_traces_correlate_outcomes_without_configuration_values() {
                 && event["span"]["operation_id"] == operation_id
         })
         .unwrap_or_else(|| panic!("missing completion event in captured traces:\n{text}"));
-    assert_eq!(completed["span"]["environment_id"], application_id);
+    assert_eq!(completed["span"]["environment_id"], environment_id);
     assert_eq!(completed["span"]["operation_id"], operation_id);
     assert_eq!(completed["span"]["generation"], 1);
     assert_eq!(completed["fields"]["outcome"], "succeeded");
@@ -283,7 +286,7 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
             .store
             .filtered_events(
                 &piqueld_core::observability::EventFilter {
-                    environment_id: Some(harness.application.id().to_string()),
+                    environment_id: Some(operation.environment_id.to_string()),
                     kind: Some("diagnostic".into()),
                     error_code: Some("docker_unavailable".into()),
                     ..Default::default()

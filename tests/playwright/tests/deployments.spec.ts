@@ -1,4 +1,4 @@
-import { test, expect, call, deploymentCards, environmentTab, webManifest } from '../fixtures.js';
+import { test, expect, call, deploymentCards, environmentTab, environmentId, webManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 type Deployment = { operation: Record<string, unknown> } & Record<string, unknown>;
@@ -8,9 +8,10 @@ type Deployment = { operation: Record<string, unknown> } & Record<string, unknow
 async function deployed(page: Page) {
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
   const app = saved.application_id as string;
-  await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
-  const deployment = (await call(page, 'GET', `environments/${app}/deployments`)).items[0] as Deployment;
-  return { app, deployment };
+  const env = await environmentId(page, app);
+  await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
+  const deployment = (await call(page, 'GET', `environments/${env}/deployments`)).items[0] as Deployment;
+  return { app, env, deployment };
 }
 
 /** Serves `pages(cursor)` as `environment`'s deployment pages. */
@@ -23,7 +24,7 @@ async function serveDeployments(page: Page, environment: string, pages: (cursor:
 
 test('older deployments load once, and stay listed as the newest page is polled', async ({ page, account }) => {
   void account;
-  const { app, deployment } = await deployed(page);
+  const { app, env, deployment } = await deployed(page);
   // Deployment `n`, with time-ordered IDs as the daemon pages them.
   const numbered = (n: number, current = false) => ({
     ...deployment,
@@ -32,11 +33,11 @@ test('older deployments load once, and stay listed as the newest page is polled'
   });
   let newest = [numbered(3, true), numbered(2)];
   // The older page repeats deployment 2, which moved down meanwhile.
-  await serveDeployments(page, app, cursor => cursor === 'older'
+  await serveDeployments(page, env, cursor => cursor === 'older'
     ? { items: [numbered(2), numbered(1)], next_cursor: null }
     : { items: newest, next_cursor: 'older' });
 
-  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   await environmentTab(page, 'Deployments').click();
   const history = page.getByRole('region', { name: 'Deployment history' });
   const titles = history.locator('.expander-summary .tag', { hasText: /^Revision/ });
@@ -57,21 +58,21 @@ test('older deployments load once, and stay listed as the newest page is polled'
 
 test('a linked deployment opens with its attempts, the running one first, and older ones on request', async ({ page, account }) => {
   void account;
-  const { app, deployment } = await deployed(page);
+  const { app, env, deployment } = await deployed(page);
   const id = deployment.operation.id as string;
   const running = { ...deployment, operation: { ...deployment.operation, attempt: 3, state: 'running' }, succeeded_at_ms: null };
-  await serveDeployments(page, app, () => ({ items: [running], next_cursor: null }));
+  await serveDeployments(page, env, () => ({ items: [running], next_cursor: null }));
   // Retained outcomes of the attempts before it, one per page.
   const outcome = (attempt: number, error: Record<string, string | null>) =>
     ({ ...deployment.operation, attempt, state: 'failed', error_code: null, error_message: null, ...error });
-  await page.route(url => url.pathname === `/api/v1/environments/${app}/deployments/${id}/attempts`, async (route: Route) => {
+  await page.route(url => url.pathname === `/api/v1/environments/${env}/deployments/${id}/attempts`, async (route: Route) => {
     const older = new URL(route.request().url()).searchParams.get('cursor') === 'older';
     await route.fulfill({ json: { data: older
       ? { items: [outcome(1, { error_message: 'registry unreachable' })], next_cursor: null }
       : { items: [outcome(2, { error_code: 'image_pull_failed', error_message: 'pull access denied' })], next_cursor: 'older' } } });
   });
 
-  await page.goto(`/dashboard/applications/${app}/environments/${app}?tab=deployments&deployment=${id}`);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}?tab=deployments&deployment=${id}`);
   const card = deploymentCards(page);
   await expect(card.getByText('Operation ID', { exact: true })).toBeVisible();
   await card.getByRole('tab', { name: 'Attempts', exact: true }).click();

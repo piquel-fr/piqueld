@@ -601,9 +601,8 @@ async fn tailnet_bindings_are_rechecked_when_a_command_starts() {
         stdin: false,
         tty: None,
     };
-    // The default environment shares its application's ID.
-    let environment = saved.application_id.as_str();
-    let (mut output, _input) = client.exec(environment, &request).await.unwrap();
+    let environment = production(&state, &saved.application_id).await;
+    let (mut output, _input) = client.exec(environment.as_str(), &request).await.unwrap();
     assert!(matches!(
         output.next().await,
         Ok(Some(ExecOutput::Failed { status: 401, error }))

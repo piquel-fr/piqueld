@@ -210,7 +210,7 @@ async fn previews_need_a_repository_and_environment_changes_never_reach_them() {
         .await
         .unwrap()
         .preview;
-    let production = EnvironmentId::default_for(&application);
+    let production = store.production(&application).await;
     let environments = store.environments(&application).await.unwrap();
     assert_eq!(environments.len(), 1);
     assert_eq!(environments[0].id, production);

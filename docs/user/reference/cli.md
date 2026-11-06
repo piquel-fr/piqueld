@@ -52,7 +52,7 @@ own deployments, status, volumes, generated secrets, routes, and network. A
 manifest that [declares environments](manifest.md#declared-environments)
 gets exactly those when it is saved or fetched from the branch `spec.manifest`
 names; otherwise applications have an environment named `production` from
-creation (existing applications were migrated to one that kept their ID). `env` commands select an environment by name
+creation. `env` commands select an environment by name
 or stable ID; `ENV` may be omitted only when the application has exactly one.
 `app deploy`, `app reconcile`, `app stop`, `app start`, and `app logs` act on
 the application's only environment and fail with an "environment required"

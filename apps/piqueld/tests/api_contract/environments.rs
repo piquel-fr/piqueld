@@ -13,18 +13,18 @@ async fn environment_branches_are_validated_like_preview_branches() {
         .apply_and_deploy(&new_application())
         .await
         .unwrap();
-    let id = &saved.environment_id;
+    let (application, environment) = (&saved.application_id, &saved.environment_id);
     let json = [("content-type", "application/json")];
     for (method, path, body, code) in [
         (
             Method::POST,
-            format!("/api/v1/applications/{id}/environments"),
+            format!("/api/v1/applications/{application}/environments"),
             r#"{"name":"staging","branch":"bad..branch","expected_generation":1}"#,
             "git_branch_invalid",
         ),
         (
             Method::PUT,
-            format!("/api/v1/environments/{id}/branch"),
+            format!("/api/v1/environments/{environment}/branch"),
             r#"{"branch":"main","commit":"abc","expected_generation":1}"#,
             "git_commit_invalid",
         ),
@@ -46,7 +46,7 @@ async fn environments_deploy_independently_and_runtime_commands_never_pick_one()
     let view = service.application(&application).await.unwrap();
     assert_eq!(view.generation, saved.generation);
     let production = view.environment("production").unwrap().id.clone();
-    assert_eq!(production.as_str(), application.as_str());
+    assert!(production.as_str().starts_with("env-"), "{production}");
     assert_eq!(view.sole_environment().unwrap_err().len(), 2);
 
     // Saving with a deployment never picks one of several environments.
@@ -147,7 +147,7 @@ async fn application_history_spans_its_environments() {
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
     let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
-    let production = piqueld_core::EnvironmentId::default_for(&application);
+    let production = production(&service, &saved.application_id).await;
     service
         .accept(
             Daemon,
@@ -220,7 +220,7 @@ async fn previews_compare_with_the_selected_environment() {
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
-    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let production = production(&service, &saved.application_id).await;
     service
         .accept(
             Daemon,
@@ -298,7 +298,7 @@ async fn previews_render_variables_for_the_selected_environment() {
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
-    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let production = production(&service, &saved.application_id).await;
     let level = |value: &str| EnvironmentConfig {
         variables: [("level".into(), Variable::String(value.into()))].into(),
         ..EnvironmentConfig::default()

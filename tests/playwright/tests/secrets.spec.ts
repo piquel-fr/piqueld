@@ -1,4 +1,4 @@
-import { test, expect, call, card, webManifest, applicationTab, environmentTab } from '../fixtures.js';
+import { test, expect, call, card, environmentId, webManifest, applicationTab, environmentTab } from '../fixtures.js';
 import type { Page, Request } from '@playwright/test';
 
 /** Whether `request` is a `method` request for exactly `path`. */
@@ -18,7 +18,7 @@ test('replacing a stored value keeps an access list changed elsewhere, and acces
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('vault'), expected_generation: 0 });
   const app = saved.application_id as string;
   const path = `applications/${app}/secrets/api-token`;
-  await call(page, 'PUT', `${path}?environments=${app}`, 'first', { 'X-Expected-Generation': '0' });
+  await call(page, 'PUT', `${path}?environments=${await environmentId(page, app)}`, 'first', { 'X-Expected-Generation': '0' });
   await page.goto(`/dashboard/applications/${app}`);
   await applicationTab(page, 'Secrets').click();
   const store = card(page, 'Secret store');
@@ -123,11 +123,12 @@ test.describe('with deployments', () => {
     });
     const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
     const app = saved.application_id as string;
-    await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
+    const env = await environmentId(page, app);
+    await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
     // Its first deployment generates the value.
-    await expect.poll(async () => (await call(page, 'GET', `environments/${app}/secrets`)).length, { timeout: 20_000 }).toBe(1);
+    await expect.poll(async () => (await call(page, 'GET', `environments/${env}/secrets`)).length, { timeout: 20_000 }).toBe(1);
 
-    await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+    await page.goto(`/dashboard/applications/${app}/environments/${env}`);
     await environmentTab(page, 'Secrets').click();
     await expect(card(page, 'Mounted secrets').getByRole('row').filter({ hasText: 'session-key' })).toContainText('generated');
     const generated = card(page, 'Generated secrets');
@@ -141,7 +142,7 @@ test.describe('with deployments', () => {
 
     // The running deployment still mounts it.
     confirmNext(page, 'Delete the generated value of session-key');
-    const refused = page.waitForResponse(response => sent(response.request(), 'DELETE', `environments/${app}/secrets/session-key`));
+    const refused = page.waitForResponse(response => sent(response.request(), 'DELETE', `environments/${env}/secrets/session-key`));
     await row.getByRole('button', { name: 'Delete', exact: true }).click();
     expect((await refused).status()).toBe(409);
     await expect(page.getByText('Refresh, then retry if cleanup is pending.', { exact: false })).toBeVisible();

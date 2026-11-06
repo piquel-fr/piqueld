@@ -60,7 +60,7 @@ async fn save_with_staging(store: &Store) -> (ApplicationId, EnvironmentId, Envi
     else {
         panic!("environment")
     };
-    let production = EnvironmentId::default_for(&application);
+    let production = store.production(&application).await;
     (application, production, staging.id)
 }
 
@@ -158,9 +158,10 @@ async fn schema_21_with_prepared_deployments(dir: &std::path::Path) -> Applicati
             .await
             .unwrap();
     let application = prebuilt("app-migrated-01");
+    // Migrated environments keep their application's ID.
     let (id, production, staging) = (
         application.id().as_str(),
-        EnvironmentId::default_for(application.id()),
+        EnvironmentId::parse(application.id().as_str()).unwrap(),
         EnvironmentId::parse("env-staging-01").unwrap(),
     );
     let template = ApplicationTemplate::from(&application)
@@ -204,7 +205,7 @@ async fn migration_records_releases_for_prepared_deployments() {
         pulled('a')
     );
     let (production, staging) = (
-        EnvironmentId::default_for(&application),
+        store.production(&application).await,
         EnvironmentId::parse("env-staging-01").unwrap(),
     );
     assert_eq!(

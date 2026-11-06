@@ -41,14 +41,27 @@ pub fn resolutions(application: &NormalizedApplication) -> ResolutionSet {
     }
 }
 
-/// The runtime target of `application`'s default environment, owned by
+/// The runtime target of `application`'s environment `environment`, owned by
 /// installation `instance`, with [`resolutions`].
-pub fn resolve(application: &NormalizedApplication, instance: &InstanceId) -> ResolvedApplication {
+pub fn resolve(
+    application: &NormalizedApplication,
+    environment: &EnvironmentId,
+    instance: &InstanceId,
+) -> ResolvedApplication {
     compile_application(
         application,
-        &EnvironmentId::default_for(application.id()),
+        environment,
         instance.clone(),
         &resolutions(application),
     )
     .expect("fixture resolves")
+}
+
+/// [`resolve`] for whichever environment of `application` it is given, as
+/// `Store::save_application` imports a prepared target.
+pub fn resolver<'a>(
+    application: &'a NormalizedApplication,
+    instance: &'a InstanceId,
+) -> impl Fn(&EnvironmentId) -> ResolvedApplication + Sync + 'a {
+    move |environment| resolve(application, environment, instance)
 }

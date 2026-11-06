@@ -18,10 +18,12 @@ validated_string!(
 );
 
 validated_string!(
-    /// Stable internal environment identity, assigned by persistence. Docker names,
-    /// ownership labels, secret encryption context, and history all derive from it.
-    /// Environments migrated from single-environment applications keep the
-    /// application ID they had before environments existed.
+    /// Stable internal environment identity, assigned by persistence as
+    /// `env-…`. Docker names, ownership labels, secret encryption context, and
+    /// history all derive from it. Environments migrated from
+    /// single-environment applications, and the `production` environments of
+    /// applications created before every environment got its own ID, keep
+    /// their application's `app-…` ID.
     EnvironmentId, EnvironmentIdError,
     "environment IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
     |value: &str| is_lowercase_label(value, 8..=64)
@@ -34,16 +36,6 @@ validated_string!(
     "release IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
     |value: &str| is_lowercase_label(value, 8..=64)
 );
-
-impl EnvironmentId {
-    /// The ID of the environment created with an application. It reuses the
-    /// application's ID, as every environment migrated from a single-environment
-    /// application does; further environments receive their own IDs.
-    #[must_use]
-    pub fn default_for(application: &ApplicationId) -> Self {
-        Self(application.as_str().to_owned())
-    }
-}
 
 /// Managed Docker resource category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -620,14 +620,14 @@ async fn self_sources_build_the_manifest_commit_including_one_time_revisions() {
     let mut bootstrap = repository.manifest("app.json");
     bootstrap.spec.services.clear();
     let saved = harness.save(bootstrap, Some(0)).await;
-    let application_id = EnvironmentId::parse(saved.application_id).unwrap();
+    let environment = harness.production(&saved).await;
     // The override is not saved, and saved configuration keeps "self":
     // only the fetch of `main` itself becomes the saved manifest.
     let expected_spec = fetched
         .clone()
         .validate()
         .unwrap()
-        .normalize(ApplicationId::parse(application_id.as_str()).unwrap())
+        .normalize(ApplicationId::parse(&saved.application_id).unwrap())
         .to_manifest()
         .spec;
     let mut saved_main = false;
@@ -640,9 +640,9 @@ async fn self_sources_build_the_manifest_commit_including_one_time_revisions() {
         (Some(ManifestRevision::Branch("feature".into())), feature),
     ] {
         let one_off = revision.clone();
-        let deployment = harness.deploy_revision(&application_id, revision).await;
+        let deployment = harness.deploy_revision(&environment, revision).await;
         assert_eq!(deployment.state, OperationState::Succeeded);
-        let stored = harness.store.get(&application_id).await.unwrap();
+        let stored = harness.store.get(&environment).await.unwrap();
         assert!(
             matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &expected)
         );
@@ -658,9 +658,9 @@ async fn self_sources_build_the_manifest_commit_including_one_time_revisions() {
     moved.spec.manifest.as_mut().unwrap().repository.url = "/elsewhere".into();
     repository.write("app.json", &moved);
     let head = repository.commit(&[]);
-    let deployment = harness.deploy(&application_id).await;
+    let deployment = harness.deploy(&environment).await;
     assert_eq!(deployment.state, OperationState::Succeeded);
-    let stored = harness.store.get(&application_id).await.unwrap();
+    let stored = harness.store.get(&environment).await.unwrap();
     assert!(
         matches!(&stored.resolved.as_ref().unwrap().services[0].source, ResolvedSource::Git { commit, .. } if commit == &head)
     );
@@ -761,12 +761,12 @@ async fn retry_after_reopening_store_builds_self_sources_at_the_fetched_commit()
     let mut bootstrap = repository.manifest("app.json");
     bootstrap.spec.services.clear();
     let saved = harness.save(bootstrap, Some(0)).await;
-    let application_id = EnvironmentId::parse(saved.application_id).unwrap();
+    let environment = harness.production(&saved).await;
     // The image service fails preparation after the manifest is fetched.
     harness.docker.arm_tag_flips(100).await;
     let failed = harness
         .deploy_revision(
-            &application_id,
+            &environment,
             Some(ManifestRevision::Branch("feature".into())),
         )
         .await;
@@ -780,12 +780,12 @@ async fn retry_after_reopening_store_builds_self_sources_at_the_fetched_commit()
     harness.docker.arm_tag_flips(0).await;
     let retry = harness
         .applications()
-        .reconcile(&application_id, None)
+        .reconcile(&environment, None)
         .await
         .unwrap();
     assert_eq!(retry.id, failed.id);
     harness.finish(&retry).await;
-    let resolved = harness.target(&application_id).await;
+    let resolved = harness.target(&environment).await;
     let commit = resolved
         .services
         .iter()
@@ -825,12 +825,12 @@ async fn bootstrap_can_pin_manifest_revision_independently_from_git_build_revisi
     repository.write("app.json", &fetched);
     repository.commit(&[]);
     let saved = harness.save(bootstrap, Some(0)).await;
-    let application_id = EnvironmentId::parse(saved.application_id).unwrap();
-    let deployment = harness.deploy(&application_id).await;
+    let environment = harness.production(&saved).await;
+    let deployment = harness.deploy(&environment).await;
     assert_eq!(deployment.state, OperationState::Succeeded);
     let resolved = harness
         .store
-        .get(&application_id)
+        .get(&environment)
         .await
         .unwrap()
         .resolved

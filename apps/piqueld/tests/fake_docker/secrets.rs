@@ -8,7 +8,7 @@ async fn secret_rotation_requires_deploy_and_service_references_follow_pinned_ve
     let applications = harness.applications();
     let first = harness.apply(manifest(), Some(0)).await;
     harness.finish(&first).await;
-    let app = piqueld_core::ApplicationId::parse(first.environment_id.as_str()).unwrap();
+    let app = harness.application_of(&first.environment_id).await;
     harness
         .store_token(&first.environment_id, 0, b"version-one")
         .await;

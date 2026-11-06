@@ -116,7 +116,7 @@ $ piquelctl app show hello
 hello (app-f11d73eef37c18041cd376261d46daa1)
 
 Configuration revision: 3
-Environment: production (app-f11d73eef37c18041cd376261d46daa1): ready, deploys from saved
+Environment: production (env-f11d73eef37c18041cd376261d46daa2): ready, deploys from saved
 
 Service: web
   Replicas: 1

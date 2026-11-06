@@ -50,7 +50,7 @@ Both environments now run the application's manifest:
 ```console
 $ piquelctl env list hello
 NAME  STATE  SOURCE  RESOLVED  ID
-production  ready  saved  2  app-01a16d8f99567681ada904f809903066
+production  ready  saved  2  env-01a16d8f99567681ada904f809903067
 staging  ready  saved  2  env-01a16d902a9e7fa2a37914ff1fd0a3d6
 ```
 
@@ -335,7 +335,7 @@ first promotion:
 ```console
 $ piquelctl env list blog
 NAME  STATE  SOURCE  RESOLVED  ID
-production  not_deployed  promoted from staging  none  app-01a16d95dab27100a7df0f7acf4d907b
+production  not_deployed  promoted from staging  none  env-01a16d95dab27100a7df0f7acf4d907c
 staging  ready  main  1  env-01a16d95dac072e2beee6b3df0553b0c
 ```
 
@@ -395,7 +395,7 @@ With `piquelctl`:
    Promoting release rel-01a16d95e1627d5191c37f6cf0e8a041 into environment production: promoted from staging's deployment operation-01a16d95dac676919a2e9efe0dc3299b, deployment operation-01a16d964c787761b0128e7898e78122.
    Operation: operation-01a16d964c787761b0128e7898e78122
      State: succeeded
-     Environment: app-01a16d95dab27100a7df0f7acf4d907b
+     Environment: env-01a16d95dab27100a7df0f7acf4d907c
      Phase: routing
    ```
 
@@ -482,7 +482,7 @@ and source. With `piquelctl`:
 ```console
 $ piquelctl env list blog
 NAME  STATE  SOURCE  RESOLVED  ID
-production  ready  promoted from staging  1  app-01a16d95dab27100a7df0f7acf4d907b
+production  ready  promoted from staging  1  env-01a16d95dab27100a7df0f7acf4d907c
 staging  ready  main  1  env-01a16d95dac072e2beee6b3df0553b0c
 ```
 

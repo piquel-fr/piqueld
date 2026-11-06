@@ -1,18 +1,21 @@
-import { test, expect, call, card, head, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, call, card, head, environmentId, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page, Request } from '@playwright/test';
 
-/** `environments` with a second environment, `staging` or, to `collide`,
- * one named after the first environment's ID. */
+/** `environments`, its `production` environment `env`, and a second
+ * environment, `staging` or, to `collide`, one named after `env`'s ID. */
 async function createEnvironments(page: Page, collide = false) {
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('environments'), expected_generation: 0 });
-  const sibling = await call(page, 'POST', `applications/${saved.application_id}/environments`, {
-    name: collide ? saved.application_id : 'staging',
+  const app = saved.application_id as string;
+  const env = await environmentId(page, app);
+  const sibling = await call(page, 'POST', `applications/${app}/environments`, {
+    name: collide ? env : 'staging',
     expected_generation: saved.generation,
   });
-  return { app: saved.application_id as string, sibling: sibling.id as string };
+  return { app, env, sibling: sibling.id as string };
 }
 
-/** A repository-backed application following `main`. */
+/** A repository-backed application following `main`, and its `production`
+ * environment `env`. */
 async function createRepositoryApplication(page: Page) {
   const saved = await call(page, 'POST', 'applications/apply', {
     manifest: webManifest('notes', {
@@ -20,7 +23,8 @@ async function createRepositoryApplication(page: Page) {
     }),
     expected_generation: 0,
   });
-  return { app: saved.application_id as string, generation: saved.generation as number };
+  const app = saved.application_id as string;
+  return { app, env: await environmentId(page, app), generation: saved.generation as number };
 }
 
 test('the application page stays whole and each environment has its own page', async ({ page, account }) => {
@@ -64,7 +68,7 @@ test('the application page stays whole and each environment has its own page', a
 
 test('the dashboard creates, renames and deletes only the chosen environment', async ({ page, account }) => {
   void account;
-  const { app } = await createEnvironments(page);
+  const { app, env } = await createEnvironments(page);
   await page.goto(`/dashboard/applications/${app}?tab=environments`);
   await page.getByRole('button', { name: 'New environment', exact: true }).click();
   const creator = page.getByRole('dialog', { name: 'Create environment' });
@@ -73,7 +77,7 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   await expect(title(page)).toHaveText('qa');
   await expect(page.locator('.detail-head').getByRole('button', { name: 'Deploy', exact: true })).toBeEnabled();
   const qa = new URL(page.url()).pathname.split('/').pop()!;
-  expect(qa).not.toBe(app);
+  expect(qa).not.toBe(env);
 
   await page.getByLabel('Environment name', { exact: true }).fill('preview');
   await page.getByRole('button', { name: 'Rename environment', exact: true }).click();
@@ -108,13 +112,13 @@ test('the dashboard creates, renames and deletes only the chosen environment', a
   const { environments } = await call(page, 'GET', `applications/${app}`) as {
     environments: { id: string; name: string; delete_intent: boolean }[];
   };
-  expect(environments.find(env => env.id === qa)).toMatchObject({ name: 'preview', delete_intent: true });
-  expect(environments.find(env => env.id === app)).toMatchObject({ name: 'production', delete_intent: false });
+  expect(environments.find(environment => environment.id === qa)).toMatchObject({ name: 'preview', delete_intent: true });
+  expect(environments.find(environment => environment.id === env)).toMatchObject({ name: 'production', delete_intent: false });
 });
 
 test('an application with no environments can create one in the dashboard', async ({ page, account }) => {
   void account;
-  const { app, sibling } = await createEnvironments(page);
+  const { app, env, sibling } = await createEnvironments(page);
   // The fixture accepts deletions but does not execute Docker cleanup. Model
   // both application reads after its two original environments have been removed.
   await page.route('**/api/v1/applications**', async route => {
@@ -127,7 +131,7 @@ test('an application with no environments can create one in the dashboard', asyn
     const body = await response.json();
     const applications = path.endsWith(`/${app}`) ? [body.data] : body.data.items;
     for (const application of applications) {
-      application.environments = application.environments.filter((env: { id: string }) => ![app, sibling].includes(env.id));
+      application.environments = application.environments.filter((environment: { id: string }) => ![env, sibling].includes(environment.id));
     }
     await route.fulfill({ response, json: body });
   });
@@ -145,8 +149,8 @@ test('an application with no environments can create one in the dashboard', asyn
 
 test('a deleted environment page cannot resolve to another environment with that name', async ({ page, account }) => {
   void account;
-  const { app } = await createEnvironments(page, true);
-  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  const { app, env } = await createEnvironments(page, true);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   await expect(title(page)).toHaveText('production');
 
   // Model the application's response after deletion has finished. The sibling
@@ -154,7 +158,7 @@ test('a deleted environment page cannot resolve to another environment with that
   await page.route(`**/api/v1/applications/${app}`, async route => {
     const response = await route.fetch();
     const body = await response.json();
-    body.data.environments = body.data.environments.filter((environment: { id: string }) => environment.id !== app);
+    body.data.environments = body.data.environments.filter((environment: { id: string }) => environment.id !== env);
     await route.fulfill({ response, json: body });
   });
   await page.reload();
@@ -193,17 +197,18 @@ test('a service receives telemetry once its environment is granted it', async ({
   };
   expect(application.spec.services[0].receives_telemetry).toBe(true);
 
-  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  const env = await environmentId(page, app);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   const grant = page.getByRole('button', { name: 'Grant telemetry', exact: true });
   page.once('dialog', async dialog => {
     expect(dialog.message()).toContain('every application');
     await dialog.accept();
   });
-  const granted = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes(`/environments/${app}/telemetry`));
+  const granted = page.waitForResponse(response => response.request().method() === 'PUT' && response.url().includes(`/environments/${env}/telemetry`));
   await grant.click();
   expect((await granted).status()).toBe(200);
   await expect(page.getByRole('button', { name: 'Revoke telemetry', exact: true })).toBeEnabled();
-  const environment = await call(page, 'GET', `environments/${app}`) as { telemetry: boolean };
+  const environment = await call(page, 'GET', `environments/${env}`) as { telemetry: boolean };
   expect(environment.telemetry).toBe(true);
 });
 
@@ -211,31 +216,32 @@ test('a deployed environment stops and starts from its page', async ({ page, acc
   void account;
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('stopping'), expected_generation: 0 });
   const app = saved.application_id as string;
-  await call(page, 'POST', `environments/${app}/deploy?expected_generation=${saved.generation}`);
+  const env = await environmentId(page, app);
+  await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
   // Stop shows once the environment is deployed.
-  await resolveEnvironment(page, app, saved.generation);
-  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await resolveEnvironment(page, env, saved.generation);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
 
   page.once('dialog', async dialog => {
     expect(dialog.message()).toContain('routes are withdrawn');
     await dialog.accept();
   });
-  const stopped = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${app}/stop`));
+  const stopped = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${env}/stop`));
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   expect((await stopped).status()).toBe(202);
   await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeEnabled();
-  expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('stopped');
+  expect((await call(page, 'GET', `environments/${env}`)).run_state).toBe('stopped');
 
-  const started = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${app}/start`));
+  const started = page.waitForResponse(response => response.request().method() === 'POST' && response.url().includes(`/environments/${env}/start`));
   await page.getByRole('button', { name: 'Start', exact: true }).click();
   expect((await started).status()).toBe(202);
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeEnabled();
-  expect((await call(page, 'GET', `environments/${app}`)).run_state).toBe('running');
+  expect((await call(page, 'GET', `environments/${env}`)).run_state).toBe('running');
 });
 
 test('a new environment is promoted from a live environment chosen in the dialog', async ({ page, account }) => {
   void account;
-  const { app, generation } = await createRepositoryApplication(page);
+  const { app, env, generation } = await createRepositoryApplication(page);
   // Staging, being deleted, can no longer be promoted from.
   const staging = await call(page, 'POST', `applications/${app}/environments`, { name: 'staging', expected_generation: generation });
   await call(page, 'DELETE', `environments/${staging.id}?expected_generation=${generation + 1}`);
@@ -254,7 +260,7 @@ test('a new environment is promoted from a live environment chosen in the dialog
   const created = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === `/api/v1/applications/${app}/environments`);
   await creator.getByRole('button', { name: 'Create environment', exact: true }).click();
   const body = (await created).postDataJSON();
-  expect(body).toMatchObject({ name: 'canary', promote_from: app });
+  expect(body).toMatchObject({ name: 'canary', promote_from: env });
   expect(body.branch ?? null).toBeNull();
   await expect(title(page)).toHaveText('canary');
   await expect(card(page, 'Source')).toContainText('Receives releases promoted from production');
@@ -262,9 +268,9 @@ test('a new environment is promoted from a live environment chosen in the dialog
 
 test('an unsaved source blocks deploying, and an invalid commit is refused before it is sent', async ({ page, account }) => {
   void account;
-  const { app } = await createRepositoryApplication(page);
+  const { app, env } = await createRepositoryApplication(page);
   await page.clock.install();
-  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   const source = card(page, 'Source');
   const deploy = head(page).getByRole('button', { name: 'Deploy', exact: true });
   const save = source.getByRole('button', { name: 'Save source', exact: true });
@@ -272,7 +278,7 @@ test('an unsaved source blocks deploying, and an invalid commit is refused befor
   await expect(deploy).toBeEnabled();
   const changes: string[] = [];
   const record = (request: Request) => {
-    if (request.method() === 'PUT' && request.url().includes(`/environments/${app}/branch`)) changes.push(request.url());
+    if (request.method() === 'PUT' && request.url().includes(`/environments/${env}/branch`)) changes.push(request.url());
   };
   page.on('request', record);
 
@@ -286,7 +292,7 @@ test('an unsaved source blocks deploying, and an invalid commit is refused befor
 
   // A source changed elsewhere keeps the typed draft.
   const { generation } = await call(page, 'GET', `applications/${app}`);
-  await call(page, 'PUT', `environments/${app}/branch`, { branch: 'next', expected_generation: generation });
+  await call(page, 'PUT', `environments/${env}/branch`, { branch: 'next', expected_generation: generation });
   // The next dashboard refresh shows it.
   await page.clock.runFor(16_000);
   await expect(source).toContainText('on branch next');
@@ -303,7 +309,7 @@ test('an unsaved source blocks deploying, and an invalid commit is refused befor
 
 test('a dashboard listing requested before a save does not undo it', async ({ page, account }) => {
   void account;
-  const { app } = await createEnvironments(page);
+  const { app, env } = await createEnvironments(page);
   await page.clock.install();
   // Every listing is the one from before the rename, as a poll in flight
   // during the save would return.
@@ -316,10 +322,10 @@ test('a dashboard listing requested before a save does not undo it', async ({ pa
     await route.fulfill({ json: before });
   });
   const listed = () => page.waitForRequest(request => new URL(request.url()).pathname === '/api/v1/applications');
-  await page.goto(`/dashboard/applications/${app}/environments/${app}`);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   await expect(title(page)).toHaveText('production');
   await capture;
-  const renamed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/v1/environments/${app}/rename`);
+  const renamed = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/v1/environments/${env}/rename`);
   await page.getByLabel('Environment name', { exact: true }).fill('live');
   await page.getByRole('button', { name: 'Rename environment', exact: true }).click();
   expect((await renamed).status()).toBe(200);

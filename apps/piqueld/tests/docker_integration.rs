@@ -1076,7 +1076,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     let app = piqueld_core::parse_json(&manifest.to_string())
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
-    let environment = EnvironmentId::default_for(app.id());
+    let environment = EnvironmentId::parse("env-git-local-build").unwrap();
     // The store gives the build its owner and its checkout admission.
     let state = tempfile::tempdir().unwrap();
     let store = piqueld::store::Store::open(state.path().join("state.db"))
@@ -1243,7 +1243,7 @@ fn compile_images(
         .collect();
     piqueld_core::compile_application(
         &app,
-        &EnvironmentId::default_for(&id),
+        &EnvironmentId::parse(format!("env-{name}")).unwrap(),
         InstanceId::parse("integration-instance").unwrap(),
         &piqueld_core::ResolutionSet {
             sources,

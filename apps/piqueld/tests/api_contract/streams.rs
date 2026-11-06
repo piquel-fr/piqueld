@@ -15,7 +15,7 @@ async fn exec_rechecks_grants_when_the_command_starts() {
     let database = database(&temp);
     let grant = [("apps:exec", Some(saved.application_id.as_str()))];
     seed_account(&database, "operator", &grant).await;
-    let environment = piqueld_core::EnvironmentId::parse(saved.application_id.as_str()).unwrap();
+    let environment = production(&state, &saved.application_id).await;
     let request = piqueld_core::exec::ExecRequest {
         service: "web".parse().unwrap(),
         command: piqueld_core::exec::ExecCommand::parse(vec!["true".into()]).unwrap(),
@@ -232,7 +232,7 @@ async fn exec_refusals_after_the_upgrade_are_audited() {
     let url = format!(
         "ws://{}/api/v1/environments/{}/exec",
         server.address(),
-        f.blog
+        f.blog_production
     );
     let (mut socket, _) = connect_exec(server.address(), url, Some(&operator)).await;
     execute(
@@ -349,7 +349,8 @@ async fn exec_sessions_end_once_access_is_lost() {
     ];
     for (name, command, change, status) in changes {
         let token = seed_account(&database, name, &grants).await;
-        let mut socket = open_exec(server.address(), &f.blog, Some(&token), command).await;
+        let mut socket =
+            open_exec(server.address(), &f.blog_production, Some(&token), command).await;
         let echo = ExecInput::Stdin(b"hi".to_vec()).encode();
         socket.send(Message::binary(echo)).await.unwrap();
         let mut next = async || loop {
@@ -388,7 +389,7 @@ async fn exec_rechecks_access_once_the_command_is_created() {
     let grants = [("apps:exec", Some(f.blog.as_str()))];
     let token = seed_account(&database(&f.temp), "operator", &grants).await;
     let server = f.serve().await;
-    let mut socket = open_exec(server.address(), &f.blog, Some(&token), "slow").await;
+    let mut socket = open_exec(server.address(), &f.blog_production, Some(&token), "slow").await;
     // Input that would let the command finish as soon as it runs.
     for input in [ExecInput::Stdin(b"hi".to_vec()), ExecInput::CloseStdin] {
         socket.send(Message::binary(input.encode())).await.unwrap();
@@ -430,9 +431,10 @@ async fn exec_notices_a_client_that_left_behind_unread_input() {
     use tokio_tungstenite::tungstenite::Message;
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
-    let app = save(&state, manifest()).await.application_id;
+    let saved = save(&state, manifest()).await;
+    let environment = production(&state, &saved.application_id).await;
     let server = Server::tcp(router(state.clone(), FakeAuth)).await;
-    let mut socket = open_exec(server.address(), app.as_str(), None, "block").await;
+    let mut socket = open_exec(server.address(), environment.as_str(), None, "block").await;
     // More input than the relay buffers, so it stops reading the connection.
     for _ in 0..32 {
         let input = ExecInput::Stdin(vec![0; 1024]).encode();

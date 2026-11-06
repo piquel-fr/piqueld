@@ -51,7 +51,7 @@ With `piquelctl`:
 
 ```console
 $ piquelctl audit --limit 3
-1792797893351  allowed  200 GET /api/v1/environments/{id}/logs on environment app-01a16b1282cf755287920502b5793cd1  host operator (uid 1000)  unix socket
+1792797893351  allowed  200 GET /api/v1/environments/{id}/logs on environment env-01a16b1282cf755287920502b5793cd2  host operator (uid 1000)  unix socket
 1792797804727  allowed  200 POST /api/v1/auth/login/operator  host operator (uid 1000)  ::1
 1792797775115  denied  401 GET /api/v1/auth/me  anonymous  ::1
 Next cursor: v1:5
@@ -64,9 +64,8 @@ piquelctl audit --outcome denied
 piquelctl audit --credential <credential-id>
 ```
 
-`piquelctl token list` shows your own tokens' IDs. An application's first
-environment shares the application's ID, so a request about `production` names
-`app-…`.
+`piquelctl token list` shows your own tokens' IDs. A request about an
+environment names its ID, which `piquelctl env list <application>` shows.
 
 The audit trail belongs to the whole installation, not to an application, so
 the manifest has no part in it.

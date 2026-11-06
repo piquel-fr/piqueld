@@ -78,7 +78,7 @@ async fn fixture() -> (tempfile::TempDir, Store, EnvironmentId, EnvironmentId) {
     else {
         panic!("environment")
     };
-    let production = EnvironmentId::default_for(template.id());
+    let production = store.production(template.id()).await;
     (temp, store, production, staging.id)
 }
 
@@ -434,9 +434,10 @@ async fn schema_20_with_manual_secrets(
         .validate()
         .unwrap()
         .normalize(ApplicationId::parse("app-migrated-01").unwrap());
+    // Migrated environments keep their application's ID.
     let (id, production, staging) = (
         application.id().as_str(),
-        EnvironmentId::default_for(application.id()),
+        EnvironmentId::parse(application.id().as_str()).unwrap(),
         EnvironmentId::parse("env-staging-01").unwrap(),
     );
     let declared = |manifest: &ApplicationManifest, id: &str, names: &[&str]| {

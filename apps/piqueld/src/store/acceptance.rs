@@ -1436,7 +1436,7 @@ mod tests {
         assert_eq!(save("").await.operation_ids.len(), 2);
         let saved = save("promote_from='staging'\n").await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         assert!(
             store
                 .get(&production)

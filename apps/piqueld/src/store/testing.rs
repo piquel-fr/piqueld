@@ -5,8 +5,8 @@ use super::{
 };
 use crate::api::{Mutation, MutationResponse};
 use piqueld_core::{
-    NormalizedApplication, access::Grants, api::SavedApplication, auth::User,
-    manifest::ValidatedTemplate,
+    EnvironmentId, EnvironmentName, NormalizedApplication, access::Grants, api::SavedApplication,
+    auth::User, manifest::ValidatedTemplate,
 };
 use sqlx::{
     SqlitePool,
@@ -34,6 +34,17 @@ pub(super) fn prebuilt(id: &str) -> NormalizedApplication {
 }
 
 impl Store {
+    /// The ID of `application`'s `production` environment.
+    pub(crate) async fn production(&self, application: &ApplicationId) -> EnvironmentId {
+        self.environments(application)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|environment| environment.name == EnvironmentName::default_name())
+            .expect("a production environment")
+            .id
+    }
+
     /// Creates the destination `name` with `settings`.
     pub(crate) async fn add_destination(
         &self,

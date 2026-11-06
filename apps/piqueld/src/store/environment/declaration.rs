@@ -61,9 +61,7 @@ impl Store {
     /// can't apply yet waits for the next convergence: making an environment
     /// promoted while a deployment of it is in progress (except `accepting`'s,
     /// past fetching and building), and creating one whose name or promotion
-    /// source is still held by an environment being deleted. When `creating`
-    /// the application, its `production` shares its ID, as the one created
-    /// for applications that declare none does. Never advances the
+    /// source is still held by an environment being deleted. Never advances the
     /// application revision; returns whether it changed the source of an
     /// environment with a deployment in progress, for which the caller must
     /// (see `write_source_on`). Saving the manifest always does.
@@ -71,7 +69,7 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationId,
         declarations: &[Declaration],
-        (creating, accepting): (bool, Option<&EnvironmentId>),
+        accepting: Option<&EnvironmentId>,
         now: i64,
     ) -> Result<bool, StoreError> {
         let mut deploying = false;
@@ -96,12 +94,8 @@ impl Store {
                     if Self::named(&environments, &environment).is_some() {
                         continue;
                     }
-                    let id = if creating && environment == EnvironmentName::default_name() {
-                        EnvironmentId::default_for(application)
-                    } else {
-                        EnvironmentId::parse(crate::store::new_id("env"))
-                            .map_err(StoreError::corrupt)?
-                    };
+                    let id = EnvironmentId::parse(crate::store::new_id("env"))
+                        .map_err(StoreError::corrupt)?;
                     Self::insert_environment_on(
                         tx,
                         application,

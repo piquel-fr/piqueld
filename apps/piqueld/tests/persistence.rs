@@ -24,17 +24,12 @@ fn application_named(id: &str, name: &str) -> NormalizedApplication {
         .normalize(piqueld_core::ApplicationId::parse(id).expect("fixture ID is valid"))
 }
 
-/// The environment created with `application`, which shares its ID.
-fn environment(application: &NormalizedApplication) -> EnvironmentId {
-    EnvironmentId::default_for(application.id())
-}
-
 /// Saves `application` with its resolved target, without a revision check.
 async fn save(store: &Store, application: &NormalizedApplication) -> Operation {
     store
         .save_application(
             &ApplicationTemplate::from(application),
-            Some(&prebuilt::resolve(application, store.instance_id())),
+            Some(&prebuilt::resolver(application, store.instance_id())),
             None,
         )
         .await
@@ -61,9 +56,9 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let database = directory.path().join("control-plane.db");
     let store = Store::open(&database).await.expect("fresh database opens");
     let application = application();
-    let environment = environment(&application);
     let created = save(&store, &application).await;
-    let desired = prebuilt::resolve(&application, store.instance_id());
+    let environment = created.environment_id.clone();
+    let desired = prebuilt::resolve(&application, &environment, store.instance_id());
     let stored = store.get(&environment).await.expect("application readable");
     assert_eq!(stored.resolved, Some(desired.clone()));
     assert!(!stored.delete_intent());
@@ -142,7 +137,7 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
     );
     assert_eq!(
         store
-            .get(&environment(&application))
+            .get(&first.environment_id)
             .await
             .unwrap()
             .application
@@ -188,8 +183,8 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let store = Store::open(&database).await.expect("fresh database opens");
     let corrupt = application();
     let healthy = application_named("app-persist-02", "archive");
-    save(&store, &corrupt).await;
-    save(&store, &healthy).await;
+    let corrupt_environment = save(&store, &corrupt).await.environment_id;
+    let healthy_environment = save(&store, &healthy).await.environment_id;
 
     sqlx::query("UPDATE applications SET desired_json='{}' WHERE id=?1")
         .bind(corrupt.id().as_str())
@@ -210,17 +205,17 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .await
         .expect("listing tolerates a corrupt row");
     assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].id(), &environment(&healthy));
+    assert_eq!(page.items[0].id(), &healthy_environment);
     assert_eq!(page.next_cursor, None);
-    assert!(store.get(&environment(&corrupt)).await.is_err());
+    assert!(store.get(&corrupt_environment).await.is_err());
 
     // A corrupt row inside a full page must not suppress the pagination
     // cursor: quarantined rows still consume page slots, so the surviving
     // applications stay reachable on later pages.
     let third = application_named("app-persist-03", "gallery");
-    save(&store, &third).await;
+    let third = save(&store, &third).await.environment_id;
     let fourth = application_named("app-persist-04", "wiki");
-    save(&store, &fourth).await;
+    let fourth = save(&store, &fourth).await.environment_id;
 
     // The corrupt row consumes one slot, but must not hide later applications.
     let ids = |page: &piqueld::store::EnvironmentPage| {
@@ -235,7 +230,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .expect("first page tolerates a corrupt row");
     assert_eq!(
         ids(&first_page),
-        [healthy.id().as_str()],
+        [healthy_environment.as_str()],
         "the corrupt row is quarantined inside the full page"
     );
     let next_cursor = first_page.next_cursor.expect("full page reports a cursor");
@@ -246,7 +241,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
         .expect("second page tolerates a corrupt row");
     assert_eq!(
         ids(&second_page),
-        [third.id().as_str(), fourth.id().as_str()],
+        [third.as_str(), fourth.as_str()],
         "the remaining healthy application follows the quarantined page"
     );
 }
@@ -258,24 +253,22 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
         .await
         .unwrap();
     let app = application();
-    let desired = prebuilt::resolve(&app, store.instance_id());
     let first = store
-        .save_application(&ApplicationTemplate::from(&app), Some(&desired), Some(0))
+        .save_application(
+            &ApplicationTemplate::from(&app),
+            Some(&prebuilt::resolver(&app, store.instance_id())),
+            Some(0),
+        )
         .await
         .unwrap();
-    let second = store
-        .request_deploy(&environment(&app), Some(1))
-        .await
-        .unwrap();
+    let environment = first.environment_id.clone();
+    let second = store.request_deploy(&environment, Some(1)).await.unwrap();
     store.prune_finished_operations(i64::MAX).await.unwrap();
     assert!(store.operation(&first.id).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
     assert!(store.prepared_target(&first.id).await.unwrap().is_some());
     assert!(store.prepared_target(&second.id).await.unwrap().is_none());
-    let events = store
-        .events(Some(&environment(&app)), None, 100)
-        .await
-        .unwrap();
+    let events = store.events(Some(&environment), None, 100).await.unwrap();
     assert!(
         events
             .items
@@ -292,7 +285,7 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
             .items
             .is_empty()
     );
-    assert!(store.get(&environment(&app)).await.is_ok());
+    assert!(store.get(&environment).await.is_ok());
     assert!(store.operation(&second.id).await.is_ok());
 }
 
@@ -302,23 +295,21 @@ async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     let database = directory.path().join("history.db");
     let store = Store::open(&database).await.unwrap();
     let app = application();
-    let env = environment(&app);
     let other = application_named("app-other", "other");
     let initial = store
         .save_application(&ApplicationTemplate::from(&app), None, Some(0))
         .await
         .unwrap();
-    store
+    let env = initial.environment_id.clone();
+    let other = store
         .save_application(&ApplicationTemplate::from(&other), None, Some(0))
         .await
-        .unwrap();
+        .unwrap()
+        .environment_id;
     let mut expected_deployments = vec![initial.id];
     for _ in 0..3 {
         expected_deployments.push(store.request_deploy(&env, Some(1)).await.unwrap().id);
-        store
-            .request_deploy(&environment(&other), Some(1))
-            .await
-            .unwrap();
+        store.request_deploy(&other, Some(1)).await.unwrap();
     }
     expected_deployments.sort_unstable_by(|left, right| right.cmp(left));
 

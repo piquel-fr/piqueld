@@ -161,6 +161,12 @@ export async function call(page: Page, method: string, path: string, body?: unkn
   }, { method, path, body, headers });
 }
 
+/** The ID of application `app`'s environment `name`. */
+export async function environmentId(page: Page, app: string, name = 'production'): Promise<string> {
+  const { environments } = await call(page, 'GET', `applications/${app}`);
+  return environments.find((environment: { name: string }) => environment.name === name).id;
+}
+
 /** Rewrites the JSON `data` of GET responses whose path is exactly `path`. */
 export async function rewrite(page: Page, path: string, edit: (data: Record<string, any>) => void) {
   await page.route(url => url.pathname === path, async (route: Route) => {

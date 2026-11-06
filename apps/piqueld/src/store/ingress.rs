@@ -514,7 +514,9 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let early = app("early", Some("app.piqueld.example.com"));
         let saved = save(&store, early.clone(), true).await.unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         store
             .stage_routes(&id, &early.spec().routes, true, None)
             .await
@@ -622,7 +624,7 @@ mod tests {
             .into_iter()
             .find(|environment| environment.name.as_str() == "staging")
             .unwrap();
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let mut deployed = Vec::new();
         for environment in [&production, &staging.id] {
             let (MutationResponse::Operation(operation), _) = store
@@ -696,7 +698,9 @@ mod tests {
             .await
             .unwrap();
         let saved = save(&store, app("two", None), false).await.unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         let result = store
             .accept(
                 crate::api::Actor::Daemon,
@@ -779,7 +783,9 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), true).await.unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         let routes = &input.spec().routes;
         store.stage_routes(&id, routes, true, None).await.unwrap();
         let accept = async |mutation| {
@@ -808,7 +814,9 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         store
             .stage_routes(&id, &input.spec().routes, true, None)
             .await
@@ -877,7 +885,9 @@ mod tests {
         save(&store, app("one", Some("new.example.com")), true)
             .await
             .unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         assert!(matches!(
             store
                 .stage_routes(&id, &input.spec().routes, true, Some(&operation))
@@ -892,7 +902,9 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         store
             .stage_routes(&id, &input.spec().routes, true, None)
             .await
@@ -929,7 +941,9 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = EnvironmentId::parse(saved.application_id).unwrap();
+        let id = store
+            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
+            .await;
         let mut public = input.spec().routes.clone();
         public[0].visibility = piqueld_core::manifest::Visibility::Public;
         store.stage_routes(&id, &public, true, None).await.unwrap();
@@ -956,10 +970,11 @@ mod tests {
         for (name, hostname) in [("one", "one.example.com"), ("two", "two.example.com")] {
             let input = app(name, Some(hostname));
             let saved = save(&store, input.clone(), false).await.unwrap();
+            let application = piqueld_core::ApplicationId::parse(saved.application_id).unwrap();
             let route = &input.spec().routes[0];
             statuses.push(RouteStatus {
                 name: None,
-                environment_id: saved.application_id.clone(),
+                environment_id: store.production(&application).await.to_string(),
                 hostname: hostname.into(),
                 visibility: route.visibility,
                 dns: piqueld_core::api::DnsRecords::ServerAddresses {
@@ -970,7 +985,7 @@ mod tests {
                 state: "ready".into(),
                 message: String::new(),
             });
-            applications.push(piqueld_core::ApplicationId::parse(saved.application_id).unwrap());
+            applications.push(application);
         }
         let hostnames = |routes: Vec<RouteStatus>| {
             routes

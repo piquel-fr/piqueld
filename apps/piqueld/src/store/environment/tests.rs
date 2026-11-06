@@ -42,7 +42,7 @@ impl LegacyApplication {
                 .unwrap();
         let resolved = piqueld_core::compile_application(
             &manifest,
-            &EnvironmentId::default_for(&id),
+            &EnvironmentId::parse(id.as_str()).unwrap(),
             piqueld_core::InstanceId::parse(instance).unwrap(),
             &piqueld_core::ResolutionSet {
                 sources: [(
@@ -91,7 +91,9 @@ impl LegacyApplication {
         let cipher = crate::secrets::SecretCipher::load(key_path, false).unwrap();
         let encrypted = cipher
             .encrypt(
-                crate::secrets::SecretOwner::Environment(&EnvironmentId::default_for(id)),
+                crate::secrets::SecretOwner::Environment(
+                    &EnvironmentId::parse(id.as_str()).unwrap(),
+                ),
                 "token",
                 1,
                 b"legacy secret",
@@ -212,7 +214,7 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
     let environments = store.environments(&id).await.unwrap();
     assert_eq!(environments.len(), 1);
     let environment = &environments[0];
-    assert_eq!(environment.id, EnvironmentId::default_for(&id));
+    assert_eq!(environment.id.as_str(), id.as_str());
     assert_eq!(environment.name.as_str(), "production");
     assert_eq!(environment.source, EnvironmentSource::Saved);
     assert_eq!(
