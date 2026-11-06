@@ -1,4 +1,4 @@
-import { test, expect, call, card, production, webManifest, applicationTab, environmentTab } from '../fixtures.js';
+import { test, expect, call, card, environmentId, webManifest, applicationTab, environmentTab } from '../fixtures.js';
 import type { Page, Request } from '@playwright/test';
 
 /** Whether `request` is a `method` request for exactly `path`. */
@@ -18,7 +18,7 @@ test('replacing a stored value keeps an access list changed elsewhere, and acces
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('vault'), expected_generation: 0 });
   const app = saved.application_id as string;
   const path = `applications/${app}/secrets/api-token`;
-  await call(page, 'PUT', `${path}?environments=${await production(page, app)}`, 'first', { 'X-Expected-Generation': '0' });
+  await call(page, 'PUT', `${path}?environments=${await environmentId(page, app)}`, 'first', { 'X-Expected-Generation': '0' });
   await page.goto(`/dashboard/applications/${app}`);
   await applicationTab(page, 'Secrets').click();
   const store = card(page, 'Secret store');
@@ -123,7 +123,7 @@ test.describe('with deployments', () => {
     });
     const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
     const app = saved.application_id as string;
-    const env = await production(page, app);
+    const env = await environmentId(page, app);
     await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
     // Its first deployment generates the value.
     await expect.poll(async () => (await call(page, 'GET', `environments/${env}/secrets`)).length, { timeout: 20_000 }).toBe(1);

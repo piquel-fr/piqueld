@@ -1,11 +1,11 @@
-import { test, expect, call, production, rewrite, webManifest } from '../fixtures.js';
+import { test, expect, call, environmentId, rewrite, webManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 /** Saves application `name`, returning its ID, its `production` environment's, and its generation. */
 async function apply(page: Page, name: string): Promise<{ id: string; env: string; generation: number }> {
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest(name), expected_generation: 0 });
   const id = saved.application_id as string;
-  return { id, env: await production(page, id), generation: saved.generation as number };
+  return { id, env: await environmentId(page, id), generation: saved.generation as number };
 }
 /** The value of the overview's `label` metric tile. */
 const metric = (page: Page, label: string) => page.locator('.metric', { hasText: label }).locator('strong');

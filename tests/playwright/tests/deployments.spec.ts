@@ -1,4 +1,4 @@
-import { test, expect, call, deploymentCards, environmentTab, production, webManifest } from '../fixtures.js';
+import { test, expect, call, deploymentCards, environmentTab, environmentId, webManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 type Deployment = { operation: Record<string, unknown> } & Record<string, unknown>;
@@ -8,7 +8,7 @@ type Deployment = { operation: Record<string, unknown> } & Record<string, unknow
 async function deployed(page: Page) {
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
   const app = saved.application_id as string;
-  const env = await production(page, app);
+  const env = await environmentId(page, app);
   await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
   const deployment = (await call(page, 'GET', `environments/${env}/deployments`)).items[0] as Deployment;
   return { app, env, deployment };

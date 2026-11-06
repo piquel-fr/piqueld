@@ -333,7 +333,7 @@ run to see its output.
 
 ```console
 $ piquelctl builds list
-1  app-01a16da791427563adb574452b389f92  job migrate (web)  Succeeded  1792841094238
+1  env-01a16da791427563adb574452b389f93  job migrate (web)  Succeeded  1792841094238
 ```
 
 The first column is the run's ID. Read its output:

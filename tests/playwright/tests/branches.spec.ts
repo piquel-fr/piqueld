@@ -1,4 +1,4 @@
-import { test, expect, call, deploymentCards, rewrite, toggleDeployment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, call, deploymentCards, environmentId, rewrite, toggleDeployment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** A repository-backed application following `main`, optionally with a `staging` environment on `release`. */
@@ -144,7 +144,7 @@ test('an environment following the connection branch previews the saved manifest
   });
   const saved = await call(page, 'GET', `applications/${app}`);
   await call(page, 'POST', `applications/${app}/volumes?expected_generation=${saved.generation}`, { name: 'cache' });
-  const production = saved.environments.find((environment: { name: string }) => environment.name === 'production').id;
+  const production = await environmentId(page, app);
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
   const preview = page.getByRole('button', { name: 'Preview', exact: true });
   await expect(preview).toBeEnabled();

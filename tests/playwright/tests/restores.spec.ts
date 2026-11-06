@@ -1,11 +1,11 @@
-import { test, expect, auth, call, deploymentCards, environmentTab, production, register, toggleDeployment, webManifest, type Managed } from '../fixtures.js';
+import { test, expect, auth, call, deploymentCards, environmentTab, environmentId, register, toggleDeployment, webManifest, type Managed } from '../fixtures.js';
 import type { Route } from '@playwright/test';
 
 test('an earlier deployment is restored from the deployment history', async ({ page, account }) => {
   void account;
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
   const app = saved.application_id as string;
-  const env = await production(page, app);
+  const env = await environmentId(page, app);
   const accepted = await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
   const earlier = accepted.operation_id as string;
   // The fixture never deploys: show that deployment as succeeded, and a
@@ -65,7 +65,7 @@ test('the current deployment is offered for restore after a newer one failed', a
   void account;
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('notes'), expected_generation: 0 });
   const app = saved.application_id as string;
-  const env = await production(page, app);
+  const env = await environmentId(page, app);
   const accepted = await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
   const earlier = accepted.operation_id as string;
   // A newer deployment failed before replacing the earlier one, which stays

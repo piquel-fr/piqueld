@@ -1,4 +1,4 @@
-import { test, expect, call, card, head, production, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
+import { test, expect, call, card, head, environmentId, resolveEnvironment, webManifest, applicationTab, environmentTab, title } from '../fixtures.js';
 import type { Page, Request } from '@playwright/test';
 
 /** `environments`, its `production` environment `env`, and a second
@@ -6,7 +6,7 @@ import type { Page, Request } from '@playwright/test';
 async function createEnvironments(page: Page, collide = false) {
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('environments'), expected_generation: 0 });
   const app = saved.application_id as string;
-  const env = await production(page, app);
+  const env = await environmentId(page, app);
   const sibling = await call(page, 'POST', `applications/${app}/environments`, {
     name: collide ? env : 'staging',
     expected_generation: saved.generation,
@@ -24,7 +24,7 @@ async function createRepositoryApplication(page: Page) {
     expected_generation: 0,
   });
   const app = saved.application_id as string;
-  return { app, env: await production(page, app), generation: saved.generation as number };
+  return { app, env: await environmentId(page, app), generation: saved.generation as number };
 }
 
 test('the application page stays whole and each environment has its own page', async ({ page, account }) => {
@@ -197,7 +197,7 @@ test('a service receives telemetry once its environment is granted it', async ({
   };
   expect(application.spec.services[0].receives_telemetry).toBe(true);
 
-  const env = await production(page, app);
+  const env = await environmentId(page, app);
   await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   const grant = page.getByRole('button', { name: 'Grant telemetry', exact: true });
   page.once('dialog', async dialog => {
@@ -216,7 +216,7 @@ test('a deployed environment stops and starts from its page', async ({ page, acc
   void account;
   const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('stopping'), expected_generation: 0 });
   const app = saved.application_id as string;
-  const env = await production(page, app);
+  const env = await environmentId(page, app);
   await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
   // Stop shows once the environment is deployed.
   await resolveEnvironment(page, env, saved.generation);
