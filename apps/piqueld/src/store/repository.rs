@@ -286,7 +286,7 @@ impl Store {
             &saved
                 .spec()
                 .declared_environments_since(Some(application.spec()))?,
-            (false, Some(&operation.environment_id)),
+            Some(&operation.environment_id),
             now,
         )
         .await?;
@@ -449,7 +449,7 @@ mod tests {
                 crate::api::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(edited.clone()),
-                    expected_application_id: Some(op.environment_id.to_string()),
+                    expected_application_id: Some(captured.id().to_string()),
                     deploy: false,
                 },
                 Some(1),
@@ -601,7 +601,7 @@ mod tests {
     async fn rejected_fetches_store_no_generated_secrets() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let deploy = async || {
             let (MutationResponse::Operation(accepted), _) = store
                 .accept(
@@ -641,7 +641,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let saved = store.save_template(connection(), false).await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
         let (op, target) = fetched(&store, &production, service).await;
         store
@@ -689,7 +689,7 @@ mod tests {
     async fn fetches_requested_before_a_save_keep_the_saved_configuration() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let (op, target) = fetched(&store, &production, &token_spec(false)).await;
         store
             .force(Mutation::Edit {
@@ -718,7 +718,7 @@ mod tests {
     async fn fetches_are_saved_across_environment_changes() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let (op, target) = fetched(&store, &production, &token_spec(false)).await;
         store
             .force(Mutation::CreateEnvironment {
@@ -741,7 +741,7 @@ mod tests {
     async fn unchanged_fetches_keep_newer_edits() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         fetch(&store, &production, &token_spec(false)).await;
         let MutationResponse::Environment(staging) = store
             .force(Mutation::CreateEnvironment {
@@ -798,7 +798,7 @@ mod tests {
     async fn captured_files_are_not_a_push() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let spec = token_spec(false);
         fetch(&store, &production, &spec).await;
         store
@@ -858,7 +858,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let saved = store.save_template(connection(), false).await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let (MutationResponse::Environment(staging), _) = store
             .accept(
                 crate::api::Actor::Daemon,
@@ -951,7 +951,7 @@ mod tests {
         );
         let saved = store.save_template(polled, false).await;
         let application = ApplicationId::parse(&saved.application_id).unwrap();
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let declared = format!(
             "[spec.environments.staging]\nsync=true\n[spec.environments.production]\npromote_from='staging'\n[spec.environments.canary]\nbranch='next'\n{}",
             token_spec(false)
@@ -1044,7 +1044,7 @@ mod tests {
     async fn fetches_resolve_their_environment_at_the_revision_they_save() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let (op, target) = fetched(&store, &production, &token_spec(false)).await;
         store.save_prepared(&op, &target).await.unwrap();
         store.publish_prepared(&op).await.unwrap();
@@ -1077,7 +1077,7 @@ mod tests {
     async fn fetched_source_changes_leave_environments_unresolved() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let canary = |branch: &str| {
             format!(
                 "[spec.environments.canary]\nbranch='{branch}'\n{}",
@@ -1125,7 +1125,7 @@ mod tests {
     async fn declared_environments_keep_their_names() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         fetch(
             &store,
             &production,
@@ -1160,7 +1160,7 @@ mod tests {
     async fn accepting_a_fetched_manifest_rejects_declarations_stored_meanwhile() {
         let (_directory, store) = Store::temporary().await;
         let application = saved_connection(&store).await;
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         let (op, target) = fetched(&store, &production, &token_spec(true)).await;
         // The saved manifest does not declare `token` yet, so storing it succeeds.
         store
@@ -1199,7 +1199,7 @@ mod tests {
         else {
             panic!("environment")
         };
-        let production = EnvironmentId::default_for(&application);
+        let production = store.production(&application).await;
         fetch(&store, &production, &token_spec(true)).await;
         fetch(&store, &staging.id, &token_spec(false)).await;
         let Err(StoreError::Validation(errors)) = store

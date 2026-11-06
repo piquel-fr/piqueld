@@ -11,6 +11,11 @@ use piqueld_core::observability::{
 async fn application(store: &Store) -> Operation {
     named_application(store, "observable").await
 }
+/// The application whose environment `operation` runs on.
+async fn application_of(store: &Store, operation: &Operation) -> ApplicationId {
+    let environment = store.get(&operation.environment_id).await.unwrap();
+    environment.environment.application_id
+}
 /// Saves and deploys an empty application, returning its running operation.
 async fn named_application(store: &Store, name: &str) -> Operation {
     let saved = store.save_template(template(name, "[spec]"), true).await;
@@ -94,7 +99,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         .accept(
             crate::api::Actor::Daemon,
             Mutation::DeleteApplication {
-                id: ApplicationId::parse(op.environment_id.as_str()).unwrap(),
+                id: application_of(&store, &op).await,
                 environments: Vec::new(),
             },
             None,
@@ -599,9 +604,8 @@ async fn destinations_receive_their_applications_and_daemon_notifications() {
     let other = named_application(&store, "other").await;
     let mut settings = settings();
     settings.previews = false;
-    settings.applications = ApplicationSelection::Only(
-        [ApplicationId::parse(watched.environment_id.as_str()).unwrap()].into(),
-    );
+    settings.applications =
+        ApplicationSelection::Only([application_of(&store, &watched).await].into());
     fail(&store, &other).await;
     // Narrowing the applications cancels what is pending about the others.
     put(&store, &settings, None).await;
@@ -1040,7 +1044,7 @@ async fn visibility_limits_history_builds_and_analytics() {
             .start_build(&op.environment_id, &op.id, "web", &source, None)
             .await
             .unwrap();
-        ids.push(ApplicationId::parse(op.environment_id.as_str()).unwrap());
+        ids.push((application_of(&store, &op).await, op.environment_id));
     }
     let daemon = Diagnostic::from_recorded_code(
         "diagnostic-daemon".into(),
@@ -1051,9 +1055,9 @@ async fn visibility_limits_history_builds_and_analytics() {
         .record_diagnostic(&daemon, None, None, Attribution::default())
         .await
         .unwrap();
-    let blog = Scope::one(ids[0].clone());
+    let blog = Scope::one(ids[0].0.clone());
     let only_blog = |event: &piqueld_core::Event| {
-        event.scope == EventScope::Application && event.application_id.as_ref() == Some(&ids[0])
+        event.scope == EventScope::Application && event.application_id.as_ref() == Some(&ids[0].0)
     };
     for daemon in [false, true] {
         let visible = Visibility {
@@ -1088,7 +1092,7 @@ async fn visibility_limits_history_builds_and_analytics() {
         .unwrap()
         .items;
     assert_eq!(builds.len(), 1);
-    assert_eq!(builds[0].environment_id, ids[0].as_str());
+    assert_eq!(builds[0].environment_id, ids[0].1.as_str());
     // Analytics also leave out hidden applications' events and, without
     // daemon visibility, daemon failures.
     let analytics = |applications: Scope, daemon: bool| {

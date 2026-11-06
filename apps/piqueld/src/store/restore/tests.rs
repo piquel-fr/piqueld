@@ -45,7 +45,7 @@ async fn save(store: &Store, app: &NormalizedApplication) -> EnvironmentId {
         .put_stored_secret(Daemon, app.id(), "stripe", 0, b"key".to_vec(), None)
         .await
         .unwrap();
-    EnvironmentId::default_for(app.id())
+    store.production(app.id()).await
 }
 
 /// Deploys `app` with `web` running the digest of `byte` and the current
@@ -56,7 +56,7 @@ async fn deploy(
     byte: char,
     succeed: bool,
 ) -> Operation {
-    let environment = EnvironmentId::default_for(app.id());
+    let environment = store.production(app.id()).await;
     let operation = store.request_deploy(&environment, None).await.unwrap();
     store.mark_running(&operation.id).await;
     let digest = format!(

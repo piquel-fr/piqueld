@@ -52,13 +52,13 @@ async fn assert_create_plan(client: &Client, manifest: &ApplicationManifest) {
 
 async fn replace_and_plan(
     client: &Client,
-    created: &AcceptedOperation,
+    created: &Deployed,
     mut manifest: ApplicationManifest,
-) -> AcceptedOperation {
+) -> Deployed {
     manifest.spec.services[0].replicas = 2.into();
     let request = ApplyApplicationRequest {
         expected_generation: Some(created.generation),
-        expected_application_id: Some(created.environment_id.clone()),
+        expected_application_id: Some(created.application_id.clone()),
         manifest,
     };
     let replaced = client
@@ -443,9 +443,10 @@ async fn tcp_rejects_cross_site_mutations_without_creating_deployments() {
             .await;
         response.assert_error(StatusCode::FORBIDDEN, "browser_access_denied");
     }
+    let production = production_through(&client, &saved.application_id).await;
     assert!(
         client
-            .deployments(&saved.application_id, None, None)
+            .deployments(&production, None, None)
             .await
             .unwrap()
             .items
@@ -487,9 +488,10 @@ async fn typed_edits_enforce_the_tcp_browser_policy() {
     let unchanged = client.application(&saved.application_id).await.unwrap();
     assert_eq!(unchanged.generation, saved.generation);
     assert_eq!(unchanged.application.spec().services.len(), 1);
+    let production = production_through(client, &saved.application_id).await;
     assert!(
         client
-            .deployments(&saved.application_id, None, None)
+            .deployments(&production, None, None)
             .await
             .unwrap()
             .items

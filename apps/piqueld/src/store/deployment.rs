@@ -151,8 +151,7 @@ impl Store {
             Self::create_default_environment_on(tx, app, now).await?;
         }
         Self::follow_connection_on(tx, app, previous_url.as_deref()).await?;
-        Self::converge_environments_on(tx, app.id(), &declarations, (previous == 0, None), now)
-            .await?;
+        Self::converge_environments_on(tx, app.id(), &declarations, None, now).await?;
         Ok(SavedApplication {
             application_id: id.into(),
             generation: u64::try_from(generation).map_err(StoreError::corrupt)?,
@@ -402,9 +401,11 @@ mod tests {
             .normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
     }
 
-    /// The environment created with a saved application, which shares its ID.
-    fn environment(saved: &SavedApplication) -> EnvironmentId {
-        EnvironmentId::parse(saved.application_id.as_str()).unwrap()
+    /// The environment created with a saved application.
+    async fn environment(store: &Store, saved: &SavedApplication) -> EnvironmentId {
+        store
+            .production(&piqueld_core::ApplicationId::parse(&saved.application_id).unwrap())
+            .await
     }
 
     async fn save(store: &Store, app: ApplicationTemplate, generation: u64) -> SavedApplication {
@@ -456,7 +457,7 @@ mod tests {
     async fn save_and_deploy_accepts_saved_only_configuration_but_cannot_reverse_deletion() {
         let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
-        let id = environment(&saved);
+        let id = environment(&store, &saved).await;
         let application = store.get(&id).await.unwrap().application.application;
         let (MutationResponse::Saved(deployed), wake) = store
             .accept(
@@ -545,7 +546,7 @@ mod tests {
         let path = temp.path().join("db");
         let store = Store::open(&path).await.unwrap();
         let saved = save(&store, empty(), 0).await;
-        let id = environment(&saved);
+        let id = environment(&store, &saved).await;
         assert_eq!(
             store.status(&id).await.unwrap().state,
             ApplicationState::NotDeployed
@@ -610,7 +611,7 @@ mod tests {
     async fn failure_survives_success_and_empty_target_has_no_resources() {
         let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
-        let id = environment(&saved);
+        let id = environment(&store, &saved).await;
         let op = store.request_deploy(&id, Some(1)).await.unwrap();
         let target = piqueld_core::compile_application(
             &store

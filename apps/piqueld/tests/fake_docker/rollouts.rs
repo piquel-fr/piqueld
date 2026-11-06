@@ -454,7 +454,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
         .accept(
             Daemon,
             piqueld::api::Mutation::Rename {
-                id: ApplicationId::parse(first.environment_id.as_str()).unwrap(),
+                id: harness.application_of(&first.environment_id).await,
                 name: "renamed".into(),
             },
             Some(2),
@@ -521,7 +521,12 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
             Daemon,
             piqueld::api::Mutation::save(
                 input.validate_template().unwrap(),
-                Some(first.environment_id.to_string()),
+                Some(
+                    harness
+                        .application_of(&first.environment_id)
+                        .await
+                        .to_string(),
+                ),
                 false,
             ),
             Some(failed.generation),
@@ -923,9 +928,9 @@ async fn deletion_proceeds_after_another_node_joins() {
         .docker
         .incompatible_swarm
         .store(true, Ordering::SeqCst);
-    harness.delete().await;
+    let deletion = harness.delete().await;
     harness.scan().await;
-    harness.assert_deleted().await;
+    harness.assert_deleted(&deletion).await;
 }
 
 /// Restoring an earlier deployment rolls out its image again, pulled again

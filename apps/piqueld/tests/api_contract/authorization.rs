@@ -28,8 +28,8 @@ async fn grants_hide_applications_and_name_missing_permissions() {
     assert_eq!(listed, [f.blog.as_str()]);
     for uri in [
         format!("/api/v1/applications/{}", f.shop),
-        format!("/api/v1/environments/{}", f.shop),
-        format!("/api/v1/environments/{}/exec", f.shop),
+        format!("/api/v1/environments/{}", f.shop_production),
+        format!("/api/v1/environments/{}/exec", f.shop_production),
         "/api/v1/environments/env-unknown".to_owned(),
     ] {
         assert_eq!(
@@ -38,7 +38,10 @@ async fn grants_hide_applications_and_name_missing_permissions() {
             "{uri}"
         );
     }
-    let deploy = format!("/api/v1/environments/{}/deploy?force=true", f.blog);
+    let deploy = format!(
+        "/api/v1/environments/{}/deploy?force=true",
+        f.blog_production
+    );
     assert_eq!(f.router.status(&f.deployer, "POST", &deploy).await, 202);
     let staging = serde_json::json!({"name": "staging"});
     for (uri, method, body, permission) in [
@@ -49,7 +52,7 @@ async fn grants_hide_applications_and_name_missing_permissions() {
             "apps:delete",
         ),
         (
-            format!("/api/v1/environments/{}?force=true", f.blog),
+            format!("/api/v1/environments/{}?force=true", f.blog_production),
             "DELETE",
             none.clone(),
             "apps:delete",
@@ -61,7 +64,7 @@ async fn grants_hide_applications_and_name_missing_permissions() {
             "apps:write",
         ),
         (
-            format!("/api/v1/environments/{}/exec", f.blog),
+            format!("/api/v1/environments/{}/exec", f.blog_production),
             "GET",
             none.clone(),
             "apps:exec",
@@ -192,7 +195,7 @@ async fn audit_trail_records_callers_and_outcomes() {
 #[tokio::test]
 async fn own_audit_trails_reveal_nothing_hidden() {
     let f = GrantFixture::new().await;
-    let hidden = format!("/api/v1/environments/{}", f.shop);
+    let hidden = format!("/api/v1/environments/{}", f.shop_production);
     assert_eq!(f.router.status(&f.deployer, "GET", &hidden).await, 404);
     // Refusals before authorization, like a cross-site request, are no hint.
     let foreign = Request::delete(&hidden)
@@ -203,7 +206,7 @@ async fn own_audit_trails_reveal_nothing_hidden() {
     assert_eq!(f.router.send(foreign).await.status, 403);
     let body = f.audit(&f.deployer, "/api/v1/audit", 2).await;
     for event in body["data"]["items"].as_array().unwrap() {
-        assert_eq!(event["environment_id"], f.shop.as_str());
+        assert_eq!(event["environment_id"], f.shop_production.as_str());
         assert!(event["application_id"].is_null(), "{event}");
     }
     // Usernames match regardless of case, like accounts' own.
@@ -249,7 +252,10 @@ async fn own_audit_trails_reveal_nothing_hidden() {
 async fn verifying_the_audit_chain_needs_audit_read() {
     let f = GrantFixture::new().await;
     let none = serde_json::Value::Null;
-    let deploy = format!("/api/v1/environments/{}/deploy?force=true", f.blog);
+    let deploy = format!(
+        "/api/v1/environments/{}/deploy?force=true",
+        f.blog_production
+    );
     assert_eq!(f.router.status(&f.deployer, "POST", &deploy).await, 202);
     f.audit(&f.auditor, "/api/v1/audit", 1).await;
     let verify = "/api/v1/audit/verify";
@@ -310,7 +316,7 @@ async fn telemetry_grants_need_the_telemetry_grant_permission() {
     let state = state(&temp).await;
     let database = database(&temp);
     let saved = save(&state, manifest()).await;
-    let id = piqueld_core::EnvironmentId::parse(saved.application_id).unwrap();
+    let id = production(&state, &saved.application_id).await;
     let account = |name| {
         Actor::Account(Caller {
             credential_id: name,

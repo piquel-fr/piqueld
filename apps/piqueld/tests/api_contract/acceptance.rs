@@ -13,7 +13,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     let stale = client.apply_and_deploy(&request).await.unwrap_err();
     assert_eq!(api_error(stale).status, 409);
     request.expected_generation = Some(1);
-    request.expected_application_id = Some(first.environment_id.clone());
+    request.expected_application_id = Some(first.application_id.clone());
     request.manifest.spec.services[0].replicas = 2.into();
     let changed = client.apply_and_deploy(&request).await.unwrap();
     assert_eq!(changed.generation, 2);
@@ -61,7 +61,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
             .all(|event| event.id > first_page.items.last().unwrap().id)
     );
     let deletion = client
-        .delete_application_with_generation(&first.environment_id, Some(2))
+        .delete_application_with_generation(&first.application_id, Some(2))
         .await
         .unwrap();
     assert_eq!(deletion.generation, 3);
@@ -72,7 +72,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
             .is_err()
     );
     let repeated = client
-        .delete_application_with_generation(&first.environment_id, Some(deletion.generation))
+        .delete_application_with_generation(&first.application_id, Some(deletion.generation))
         .await
         .unwrap();
     assert_eq!(
@@ -90,7 +90,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     let mut replacement = request.clone();
     replacement.expected_generation = Some(1);
-    replacement.expected_application_id = Some(accepted.environment_id.clone());
+    replacement.expected_application_id = Some(accepted.application_id.clone());
     replacement.manifest.spec.services[0].replicas = 2.into();
     api.client.apply_and_deploy(&replacement).await.unwrap();
     drop(api);
@@ -101,7 +101,7 @@ async fn acceptance_receipts_survive_restart_and_supersession() {
     assert_eq!(replayed.generation, 1);
     assert_eq!(
         api.client
-            .application(&accepted.environment_id)
+            .application(&accepted.application_id)
             .await
             .unwrap()
             .generation,
@@ -139,7 +139,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     };
     let keyed = api.client.clone().with_request_id("rename-command");
     let error = keyed
-        .rename_application(&accepted.environment_id, &request)
+        .rename_application(&accepted.application_id, &request)
         .await
         .unwrap_err();
     assert_eq!(api_error(error).code, "application_busy");
@@ -149,19 +149,19 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     )
     .await;
     let renamed = keyed
-        .rename_application(&accepted.environment_id, &request)
+        .rename_application(&accepted.application_id, &request)
         .await
         .unwrap();
-    assert_eq!(renamed.application_id, accepted.environment_id);
+    assert_eq!(renamed.application_id, accepted.application_id);
     assert_eq!(renamed.generation, 2);
     let replay = keyed
-        .rename_application(&accepted.environment_id, &request)
+        .rename_application(&accepted.application_id, &request)
         .await
         .unwrap();
     assert_eq!(replay.generation, 2);
     let app = api
         .client
-        .application(&accepted.environment_id)
+        .application(&accepted.application_id)
         .await
         .unwrap();
     assert_eq!(app.application.metadata().name.as_str(), "renamed");
@@ -176,7 +176,7 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let mut identical = new_application();
     identical.manifest.metadata.name = "renamed".into();
     identical.expected_generation = Some(2);
-    identical.expected_application_id = Some(accepted.environment_id.clone());
+    identical.expected_application_id = Some(accepted.application_id.clone());
     let no_op = api.client.apply_and_deploy(&identical).await.unwrap();
     assert_ne!(no_op.operation_id, accepted.operation_id);
     assert_eq!(no_op.generation, 3);
@@ -192,13 +192,13 @@ async fn rename_is_conditioned_idle_only_and_replayable_without_deployment() {
     let old_name = api.deploy().await;
     let mut stale = new_application();
     stale.expected_generation = Some(1);
-    stale.expected_application_id = Some(accepted.environment_id);
+    stale.expected_application_id = Some(accepted.application_id);
     stale.manifest.spec.services[0].replicas = 3.into();
     let error = api.client.apply_and_deploy(&stale).await.unwrap_err();
     assert_eq!(api_error(error).code, "identity_conflict");
     assert_eq!(
         api.client
-            .application(&old_name.environment_id)
+            .application(&old_name.application_id)
             .await
             .unwrap()
             .application
@@ -246,19 +246,13 @@ async fn preview_resolves_images_again_and_redacts_manifest_and_runtime_configur
         .validate()
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-preview-01").unwrap());
-    let target = api
-        .runtime
-        .prepare(
-            &piqueld_core::EnvironmentId::default_for(normalized.id()),
-            &normalized,
-            &ResolutionSet::default(),
-        )
-        .await
-        .unwrap();
+    let resolve = |environment: &piqueld_core::EnvironmentId| {
+        api.runtime.resolve(environment, &normalized).unwrap()
+    };
     api.store
         .save_application(
             &ApplicationTemplate::from(&normalized),
-            Some(&target),
+            Some(&resolve),
             Some(0),
         )
         .await
@@ -329,7 +323,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
         api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
         "precondition_required"
     );
-    request.expected_application_id = Some(accepted.environment_id.clone());
+    request.expected_application_id = Some(accepted.application_id.clone());
     request.manifest.spec.services[0].replicas = 2.into();
     let mut competing = request.clone();
     competing.manifest.spec.services[0].replicas = 3.into();
@@ -345,7 +339,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     assert_eq!(
         api_error(
             api.client
-                .delete_application_with_generation(&accepted.environment_id, None)
+                .delete_application_with_generation(&accepted.application_id, None)
                 .await
                 .unwrap_err()
         )
@@ -355,7 +349,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     assert_eq!(
         api_error(
             api.client
-                .delete_application_with_generation(&accepted.environment_id, Some(1))
+                .delete_application_with_generation(&accepted.application_id, Some(1))
                 .await
                 .unwrap_err()
         )
@@ -370,7 +364,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     assert_eq!(refreshed.generation, 2);
     let deletion = api
         .client
-        .delete_application_with_preconditions(&accepted.environment_id, Some(1), true, &[])
+        .delete_application_with_preconditions(&accepted.application_id, Some(1), true, &[])
         .await
         .unwrap();
     assert_eq!(deletion.generation, 3);
@@ -395,7 +389,8 @@ async fn environments_stay_stopped_until_started_or_deployed() {
     let temp = tempfile::tempdir().unwrap();
     let api = AcceptanceApi::start(&temp).await;
     let saved = api.save().await;
-    let (client, id) = (&api.client, saved.application_id.as_str());
+    let client = &api.client;
+    let id = &production_through(client, &saved.application_id).await;
     let stopped = async || client.environment(id).await.unwrap().stopped();
     assert_eq!(
         api_error(client.stop_environment(id, None).await.unwrap_err()).code,
@@ -435,14 +430,14 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
         .unwrap();
     let deletion = api
         .client
-        .delete_application_with_generation(&original.environment_id, Some(1))
+        .delete_application_with_generation(&original.application_id, Some(1))
         .await
         .unwrap();
     api.finish_deletion(&deletion).await;
     let replacement = api.deploy().await;
     assert_ne!(replacement.environment_id, original.environment_id);
     request.expected_generation = Some(1);
-    request.expected_application_id = Some(original.environment_id);
+    request.expected_application_id = Some(original.application_id);
     request.manifest.spec.services[0].replicas = 4.into();
     assert_eq!(
         api_error(api.client.apply_and_deploy(&request).await.unwrap_err()).code,
@@ -457,7 +452,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     assert_eq!(forced.generation, 2);
     assert_eq!(
         api.client
-            .application(&forced.environment_id)
+            .application(&forced.application_id)
             .await
             .unwrap()
             .application
@@ -476,7 +471,7 @@ async fn forced_apply_retargets_reused_names_and_creates_absent_names() {
     );
     assert_eq!(
         api.client
-            .application(&forced.environment_id)
+            .application(&forced.application_id)
             .await
             .unwrap()
             .generation,
@@ -520,7 +515,7 @@ async fn forced_receipts_replay_after_restart_without_overwriting_newer_intent()
     );
     let current = api
         .client
-        .application(&accepted.environment_id)
+        .application(&accepted.application_id)
         .await
         .unwrap();
     assert_eq!(current.generation, newer.generation);
@@ -549,7 +544,7 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     assert_eq!(
         api_error(
             api.client
-                .rename_application(&accepted.environment_id, &rename)
+                .rename_application(&accepted.application_id, &rename)
                 .await
                 .unwrap_err()
         )
@@ -559,7 +554,7 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     assert_eq!(
         api_error(
             api.client
-                .rename_application_with_force(&accepted.environment_id, &rename, true)
+                .rename_application_with_force(&accepted.application_id, &rename, true)
                 .await
                 .unwrap_err()
         )
@@ -570,17 +565,17 @@ async fn forced_rename_bypasses_revision_but_preserves_busy_and_name_checks() {
     rename.expected_generation = Some(99);
     let renamed = api
         .client
-        .rename_application_with_force(&accepted.environment_id, &rename, true)
+        .rename_application_with_force(&accepted.application_id, &rename, true)
         .await
         .unwrap();
     assert_eq!(renamed.generation, 2);
-    assert_eq!(renamed.application_id, accepted.environment_id);
+    assert_eq!(renamed.application_id, accepted.application_id);
     api.deploy().await;
     rename.name = "notes".into();
     assert_eq!(
         api_error(
             api.client
-                .rename_application_with_force(&accepted.environment_id, &rename, true)
+                .rename_application_with_force(&accepted.application_id, &rename, true)
                 .await
                 .unwrap_err()
         )
@@ -603,7 +598,7 @@ async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
     );
     let mut changed = request.clone();
     changed.expected_generation = Some(accepted.generation);
-    changed.expected_application_id = Some(accepted.environment_id.clone());
+    changed.expected_application_id = Some(accepted.application_id.clone());
     changed.manifest.spec.services[0].replicas = 2.into();
     let unavailable = api.client.plan_application(&changed, None).await;
     assert_eq!(api_error(unavailable.unwrap_err()).status, 503);

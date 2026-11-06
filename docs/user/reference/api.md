@@ -43,11 +43,11 @@ An application owns the saved manifest and its configuration revision
 history, operations, status, volumes, generated secrets, routes, and Docker
 network; manually set secrets live in the application's secret store.
 Environment IDs are the IDs Docker names, ownership labels, and history derive
-from. Applications that existed before environments have one environment named
-`production` that kept their ID; new applications get the environments their
+from. New applications get the environments their
 manifest [declares](manifest.md#declared-environments), or a
-`production` environment when it declares none. A new application's
-`production` shares the application ID; other environments get their own IDs.
+`production` environment when it declares none, each with its own `env-…` ID.
+An application created before environments had their own IDs keeps a
+`production` environment that shares the application's `app-…` ID.
 An environment's `source` is `{ "type": "saved" }` for applications without a
 manifest repository, or `{ "type": "branch", "branch": "main" }` for
 repository-backed ones: each such environment follows its own branch of the

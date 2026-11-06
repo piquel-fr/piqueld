@@ -286,7 +286,7 @@ impl ApplicationService {
     ) -> Result<PlanView, ApplicationError> {
         let current = self.store.find_by_name(manifest.name().as_str()).await?;
         Self::check_plan(grants, current.as_ref(), expected, expected_id)?;
-        // New applications are previewed under a placeholder ID.
+        // New applications and their environment are previewed under placeholder IDs.
         let id = current.as_ref().map_or_else(
             || ApplicationId::parse("preview-application").expect("valid preview ID"),
             |app| app.application.id().clone(),
@@ -347,7 +347,7 @@ impl ApplicationService {
             // What `apply --deploy` deploys first.
             let first = Declaration::first_building(&declarations);
             let rendering = render(RenderTarget::Environment(first), None)?;
-            let environment = EnvironmentId::default_for(&id);
+            let environment = EnvironmentId::parse("preview-environment").expect("valid ID");
             let plan = self
                 .preview_plan(&rendering.application, &environment, None)
                 .await?;

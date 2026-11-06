@@ -63,7 +63,7 @@ fn cycle(result: Result<(), StoreError>) -> Vec<String> {
 async fn sources_are_other_live_environments_without_cycles() {
     let (_directory, store) = Store::temporary().await;
     let notes = application(&store, "notes").await;
-    let production = EnvironmentId::default_for(&notes);
+    let production = store.production(&notes).await;
     let staging = create(&store, &notes, "staging", None).await.unwrap();
     let canary = create(&store, &notes, "canary", Some(&staging))
         .await
@@ -103,7 +103,7 @@ async fn sources_are_other_live_environments_without_cycles() {
     else {
         panic!("preview")
     };
-    let other = EnvironmentId::default_for(&application(&store, "shop").await);
+    let other = store.production(&application(&store, "shop").await).await;
     let unknown = EnvironmentId::parse("env-unknown-0001").unwrap();
     for source in [&preview.preview.id, &other, &unknown] {
         assert!(matches!(
@@ -141,7 +141,7 @@ async fn sources_are_other_live_environments_without_cycles() {
 async fn a_promoted_environment_never_builds_until_it_tracks_again() {
     let (_directory, store) = Store::temporary().await;
     let notes = application(&store, "notes").await;
-    let production = EnvironmentId::default_for(&notes);
+    let production = store.production(&notes).await;
     let staging = create(&store, &notes, "staging", None).await.unwrap();
     set_source(&store, &production, Some(&staging))
         .await

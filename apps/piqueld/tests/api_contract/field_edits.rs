@@ -205,6 +205,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     api.runtime.set_unavailable(true);
     let saved = api.save().await;
     let id = &saved.application_id;
+    let production = production_through(&api.client, id).await;
     let edit = ApplicationEdit::Service {
         name: "web".into(),
         edit: ServiceEdit::Replicas(3.into()),
@@ -219,7 +220,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
     assert_eq!(receipt.operation_id, None);
     assert!(
         api.client
-            .deployments(id, None, None)
+            .deployments(&production, None, None)
             .await
             .unwrap()
             .items
@@ -269,7 +270,7 @@ async fn field_edits_save_without_docker_and_deploy_only_the_captured_revision()
         .edit_application(id, &pending, &options)
         .await
         .unwrap();
-    let snapshot = api.deployed(id, &operation).await;
+    let snapshot = api.deployed(&production, &operation).await;
     assert_eq!(snapshot.spec().services[0].replicas, 3);
     assert_eq!(
         snapshot.spec().services[0].environment["MESSAGE"],

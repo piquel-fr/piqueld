@@ -20,9 +20,7 @@ use piqueld::api::http::{
 };
 use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::store::{Store, StoredEnvironment};
-use piqueld_client::{
-    AcceptedOperation, ApplyApplicationRequest, ApplyOptions, Client, ClientError,
-};
+use piqueld_client::{ApplyApplicationRequest, ApplyOptions, Client, ClientError};
 use piqueld_core::api::SavedApplication;
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -98,6 +96,44 @@ impl FakeRuntime {
             instance: store.instance_id().clone(),
             unavailable: AtomicBool::new(false),
         }
+    }
+
+    /// Resolves every image of `application` to a digest of `a`s and
+    /// compiles it for `environment`, as preparing it does.
+    fn resolve(
+        &self,
+        environment: &piqueld_core::EnvironmentId,
+        application: &NormalizedApplication,
+    ) -> Result<piqueld_core::ResolvedApplication, Vec<piqueld_core::resource::CompileError>> {
+        let sources = application
+            .spec()
+            .services
+            .iter()
+            .map(|service| {
+                let ValidatedSource::Image { image } = &service.source else {
+                    panic!("expected image fixture")
+                };
+                let repository =
+                    image_repository(image).expect("validated fixture image has a repository");
+                (
+                    service.name.clone(),
+                    ResolvedSource::parse_image(
+                        image.clone(),
+                        format!("{repository}@sha256:{}", "a".repeat(64)),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        compile_application(
+            application,
+            environment,
+            self.instance.clone(),
+            &ResolutionSet {
+                sources,
+                secret_names: BTreeMap::default(),
+            },
+        )
     }
 
     /// Makes Docker unreachable, or reachable again.
@@ -230,37 +266,8 @@ impl RuntimeBoundary for FakeRuntime {
         application: &NormalizedApplication,
         _reusable: &piqueld_core::ResolutionSet,
     ) -> Result<piqueld_core::ResolvedApplication, BoundaryError> {
-        let sources = application
-            .spec()
-            .services
-            .iter()
-            .map(|service| {
-                let ValidatedSource::Image { image } = &service.source else {
-                    panic!("expected image fixture")
-                };
-                let repository =
-                    image_repository(image).expect("validated fixture image has a repository");
-                (
-                    service.name.clone(),
-                    ResolvedSource::parse_image(
-                        image.clone(),
-                        format!("{repository}@sha256:{}", "a".repeat(64)),
-                    )
-                    .unwrap(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let resolved = compile_application(
-            application,
-            environment,
-            self.instance.clone(),
-            &ResolutionSet {
-                sources,
-                secret_names: BTreeMap::default(),
-            },
-        )
-        .map_err(BoundaryError::Compilation)?;
-        Ok(resolved)
+        self.resolve(environment, application)
+            .map_err(BoundaryError::Compilation)
     }
 
     /// Image availability is unknown: no engine.
@@ -378,6 +385,19 @@ async fn save(state: &ApiState, manifest: ApplicationManifest) -> SavedApplicati
         panic!("save response");
     };
     saved
+}
+
+/// The ID of the `production` environment of application `application`.
+async fn production(state: &ApiState, application: &str) -> piqueld_core::EnvironmentId {
+    let application = piqueld_core::ApplicationId::parse(application).unwrap();
+    let view = state.application(&application).await.unwrap();
+    view.environment("production").unwrap().id.clone()
+}
+
+/// [`production`], read through `client`.
+async fn production_through(client: &Client, application: &str) -> String {
+    let view = client.application(application).await.unwrap();
+    view.environment("production").unwrap().id.to_string()
 }
 
 /// Seeds an account holding `grants` (permission, optional application ID)
@@ -730,7 +750,7 @@ impl Drop for Server {
     }
 }
 
-async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> AcceptedOperation {
+async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> Deployed {
     let mut request = ApplyApplicationRequest {
         expected_generation: Some(0),
         expected_application_id: None,
@@ -741,7 +761,7 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         .await
         .expect("apply succeeds");
     request.expected_generation = Some(created.generation);
-    request.expected_application_id = Some(created.environment_id.clone());
+    request.expected_application_id = Some(created.application_id.clone());
     let replay = client
         .apply_and_deploy(&request)
         .await
@@ -751,13 +771,13 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
     assert_eq!(summaries.items.len(), 1);
     assert_eq!(
         summaries.items[0].id,
-        created.environment_id.parse().unwrap()
+        created.application_id.parse().unwrap()
     );
     assert_eq!(summaries.items[0].name, "notes");
     let summary_json = serde_json::to_value(&summaries.items[0]).unwrap();
     assert!(summary_json.get("application").is_none());
     let application = client
-        .application(&created.environment_id)
+        .application(&created.application_id)
         .await
         .expect("full application read succeeds");
     assert_eq!(application.application.spec().services.len(), 1);
@@ -767,7 +787,7 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
         .expect("detail succeeds");
     assert_eq!(
         detail.application.application.id().as_str(),
-        created.environment_id
+        created.application_id
     );
     assert_eq!(detail.application.application.spec().services.len(), 1);
     assert!(detail.observed.services.is_empty());
@@ -780,9 +800,9 @@ async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> 
     replay
 }
 
-async fn delete(client: &Client, created: &AcceptedOperation) {
+async fn delete(client: &Client, created: &Deployed) {
     let deleted = client
-        .delete_application_with_generation(&created.environment_id, Some(created.generation))
+        .delete_application_with_generation(&created.application_id, Some(created.generation))
         .await
         .expect("delete succeeds");
     assert_eq!(
@@ -825,7 +845,7 @@ impl AcceptanceApi {
     }
 
     /// Saves and deploys the contract manifest as a new application.
-    async fn deploy(&self) -> AcceptedOperation {
+    async fn deploy(&self) -> Deployed {
         self.client
             .apply_and_deploy(&new_application())
             .await
@@ -947,25 +967,25 @@ trait DeployFixture {
     async fn apply_and_deploy(
         &self,
         request: &ApplyApplicationRequest,
-    ) -> Result<AcceptedOperation, ClientError>;
+    ) -> Result<Deployed, ClientError>;
     async fn apply_and_deploy_with_force(
         &self,
         request: &ApplyApplicationRequest,
         force: bool,
-    ) -> Result<AcceptedOperation, ClientError>;
+    ) -> Result<Deployed, ClientError>;
 }
 impl DeployFixture for Client {
     async fn apply_and_deploy(
         &self,
         request: &ApplyApplicationRequest,
-    ) -> Result<AcceptedOperation, ClientError> {
+    ) -> Result<Deployed, ClientError> {
         self.apply_and_deploy_with_force(request, false).await
     }
     async fn apply_and_deploy_with_force(
         &self,
         request: &ApplyApplicationRequest,
         force: bool,
-    ) -> Result<AcceptedOperation, ClientError> {
+    ) -> Result<Deployed, ClientError> {
         let saved = self
             .apply_application_with_options(
                 request,
@@ -975,12 +995,28 @@ impl DeployFixture for Client {
                 },
             )
             .await?;
-        Ok(AcceptedOperation {
-            environment_id: saved.application_id,
+        let operation_id = saved.operation_id.expect("deployment requested");
+        Ok(Deployed {
+            environment_id: self
+                .operation(&operation_id)
+                .await?
+                .environment_id
+                .to_string(),
+            application_id: saved.application_id,
             generation: saved.generation,
-            operation_id: saved.operation_id.expect("deployment requested"),
+            operation_id,
         })
     }
+}
+
+/// What [`DeployFixture`] accepted: the operation deploying an application's
+/// sole environment.
+#[derive(Debug)]
+struct Deployed {
+    application_id: String,
+    environment_id: String,
+    operation_id: String,
+    generation: u64,
 }
 
 /// Two applications, `blog` and `shop`, served by the real authenticator, with
@@ -994,6 +1030,9 @@ struct GrantFixture {
     router: axum::Router,
     blog: String,
     shop: String,
+    /// The `production` environments of `blog` and `shop`.
+    blog_production: String,
+    shop_production: String,
     deployer: String,
     creator: String,
     lead: String,
@@ -1022,6 +1061,8 @@ impl GrantFixture {
         let auditor = seed_account(&database, "auditor", &[("audit:read", None)]).await;
         let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
         let [blog, shop] = <[String; 2]>::try_from(ids).unwrap();
+        let blog_production = production(&state, &blog).await.to_string();
+        let shop_production = production(&state, &shop).await.to_string();
         Self {
             temp,
             router: api_router(state.clone(), auth.clone()),
@@ -1029,6 +1070,8 @@ impl GrantFixture {
             auth,
             blog,
             shop,
+            blog_production,
+            shop_production,
             deployer,
             creator,
             lead,

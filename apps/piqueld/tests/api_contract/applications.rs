@@ -21,7 +21,7 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
 
     runtime
         .prepare(
-            &piqueld_core::EnvironmentId::default_for(application.id()),
+            &piqueld_core::EnvironmentId::parse("env-digest-fixture").unwrap(),
             &application,
             &ResolutionSet::default(),
         )
@@ -99,11 +99,8 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     request.manifest.spec.services.clear();
     let saved = api.client.apply_application(&request).await.unwrap();
     assert!(saved.operation_id.is_none());
-    let detail = api
-        .client
-        .environment_detail(&saved.application_id)
-        .await
-        .unwrap();
+    let production = production_through(&api.client, &saved.application_id).await;
+    let detail = api.client.environment_detail(&production).await.unwrap();
     assert_eq!(
         detail.status.state,
         piqueld_core::ApplicationState::NotDeployed
@@ -111,18 +108,18 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(detail.latest_operation.is_none());
     let first = api
         .client
-        .deploy_environment(&saved.application_id, saved.generation, None)
+        .deploy_environment(&production, saved.generation, None)
         .await
         .unwrap();
     let second = api
         .client
-        .deploy_environment(&saved.application_id, saved.generation, None)
+        .deploy_environment(&production, saved.generation, None)
         .await
         .unwrap();
     assert_ne!(first.operation_id, second.operation_id);
     let history = api
         .client
-        .deployments(&saved.application_id, None, None)
+        .deployments(&production, None, None)
         .await
         .unwrap();
     assert_eq!(history.items.len(), 2);
@@ -133,7 +130,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     // `limit` sizes the page: one per page here, and 0 is refused.
     let page = api
         .client
-        .deployments(&saved.application_id, None, Some(1))
+        .deployments(&production, None, Some(1))
         .await
         .unwrap();
     assert_eq!(page.items.len(), 1);
@@ -141,7 +138,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(page.next_cursor.is_some());
     let refused = api
         .client
-        .deployments(&saved.application_id, None, Some(0))
+        .deployments(&production, None, Some(0))
         .await
         .unwrap_err();
     assert_eq!(api_error(refused).code, "pagination_invalid");
@@ -156,7 +153,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
         });
     let saved = api.client.apply_application(&request).await.unwrap();
     assert_eq!(
-        api.deployed(&saved.application_id, &second.operation_id)
+        api.deployed(&production, &second.operation_id)
             .await
             .spec()
             .volumes
@@ -165,7 +162,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     );
     assert!(
         api.client
-            .deploy_environment(&saved.application_id, 1, None)
+            .deploy_environment(&production, 1, None)
             .await
             .is_err()
     );
@@ -184,7 +181,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
     api.finish_operation(&accepted.operation_id, None).await;
     api.client
         .rename_application(
-            &accepted.environment_id,
+            &accepted.application_id,
             &piqueld_client::RenameApplicationRequest {
                 name: "renamed".into(),
                 expected_generation: Some(1),
@@ -196,7 +193,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
     edited.manifest.metadata.name = "renamed".into();
     edited.manifest.spec.services[0].replicas = 2.into();
     edited.expected_generation = Some(2);
-    edited.expected_application_id = Some(accepted.environment_id.clone());
+    edited.expected_application_id = Some(accepted.application_id.clone());
     api.client.apply_application(&edited).await.unwrap();
     let refreshed = api
         .client
@@ -302,9 +299,10 @@ async fn downloaded_manifest_round_trips_saved_configuration_without_docker() {
     );
     let downloaded: ApplicationManifest = toml::from_str(response.text()).unwrap();
     assert_eq!(downloaded, apply.manifest);
+    let production = production_through(&api.client, &saved.application_id).await;
     assert!(
         api.client
-            .deployments(&saved.application_id, None, None)
+            .deployments(&production, None, None)
             .await
             .unwrap()
             .items
@@ -408,7 +406,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
         .unwrap();
     assert_eq!(saved.operation_id, Some(replay.operation_id));
     assert_eq!(saved.generation, replay.generation);
-    let id = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let id = production(&service, &saved.application_id).await;
     let direct = service
         .clone()
         .environment_detail(&id, &piqueld_core::access::Scope::All)
@@ -454,7 +452,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     assert_eq!(replay.generation, saved.generation);
     assert_eq!(
         service
-            .application(&piqueld_core::ApplicationId::parse(id.as_str()).unwrap())
+            .application(&piqueld_core::ApplicationId::parse(&saved.application_id).unwrap())
             .await
             .unwrap()
             .generation,
@@ -517,7 +515,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
             .await,
         Err(ApplicationError::PreconditionRequired)
     ));
-    let id = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let id = production(&service, &saved.application_id).await;
     assert!(matches!(
         service
             .accept(
@@ -601,7 +599,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
             piqueld::store::StoreError::NotFound
         ))
     ));
-    let id = piqueld_core::EnvironmentId::parse(saved.application_id).unwrap();
+    let id = production(&service, &saved.application_id).await;
     service
         .deployment_attempts(&id, &deployment, None)
         .await

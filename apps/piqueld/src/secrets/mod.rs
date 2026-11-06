@@ -73,8 +73,8 @@ impl KeyFailure {
 }
 
 /// What a ciphertext belongs to. Its encryption context binds the owner, so a
-/// value cannot be moved to another owner. A `production` environment shares
-/// its application's ID, so the two stores use distinct contexts.
+/// value cannot be moved to another owner. Older `production` environments
+/// share their application's ID, so the two stores use distinct contexts.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SecretOwner<'a> {
     /// An environment's generated secret.
@@ -285,7 +285,7 @@ mod tests {
             EnvironmentId::parse("app-aaaaaaaa").unwrap(),
             EnvironmentId::parse("app-bbbbbbbb").unwrap(),
         );
-        // A production environment shares its application's ID.
+        // Older production environments share their application's ID.
         let application = ApplicationId::parse("app-aaaaaaaa").unwrap();
         let owner = SecretOwner::Environment(&environment);
         let mut encrypted = cipher

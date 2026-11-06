@@ -437,7 +437,7 @@ mod tests {
                 .unwrap();
             let id = store
                 .start_build(
-                    &EnvironmentId::default_for(app.id()),
+                    &store.production(app.id()).await,
                     &operation.id,
                     "web",
                     &app.spec().services[0].source,
@@ -490,7 +490,7 @@ mod tests {
         } = Fixture::new().await;
         let other = store
             .start_build(
-                &EnvironmentId::default_for(app.id()),
+                &store.production(app.id()).await,
                 &operation,
                 "web",
                 &app.spec().services[0].source,
@@ -524,7 +524,7 @@ mod tests {
         let records = store
             .builds(
                 None,
-                Some(&EnvironmentId::default_for(app.id())),
+                Some(&store.production(app.id()).await),
                 &Scope::All,
                 None,
                 50,
@@ -557,7 +557,7 @@ mod tests {
             .unwrap();
         let latest = store
             .start_build(
-                &EnvironmentId::default_for(app.id()),
+                &store.production(app.id()).await,
                 &operation,
                 "web",
                 &app.spec().services[0].source,
@@ -568,7 +568,7 @@ mod tests {
         for _ in 0..3 {
             store
                 .start_build(
-                    &EnvironmentId::default_for(other.id()),
+                    &store.production(other.id()).await,
                     &other_operation.id,
                     "web",
                     &other.spec().services[0].source,
@@ -580,7 +580,7 @@ mod tests {
         let first = store
             .builds(
                 None,
-                Some(&EnvironmentId::default_for(app.id())),
+                Some(&store.production(app.id()).await),
                 &Scope::All,
                 None,
                 1,
@@ -591,7 +591,7 @@ mod tests {
         let second = store
             .builds(
                 None,
-                Some(&EnvironmentId::default_for(app.id())),
+                Some(&store.production(app.id()).await),
                 &Scope::All,
                 first.next_cursor.as_deref(),
                 1,
@@ -604,13 +604,16 @@ mod tests {
             .builds(None, None, &Scope::All, None, 1)
             .await
             .unwrap();
-        assert_eq!(global.items[0].environment_id, other.id().as_str());
+        assert_eq!(
+            global.items[0].environment_id,
+            other_operation.environment_id.as_str()
+        );
         let application = store
             .builds(Some(app.id()), None, &Scope::All, None, 1)
             .await
             .unwrap();
         assert_eq!(application.items[0].id, latest);
-        let absent = EnvironmentId::parse("app-absent").unwrap();
+        let absent = EnvironmentId::parse("env-absent").unwrap();
         assert!(
             store
                 .builds(None, Some(&absent), &Scope::All, None, 1)
@@ -669,7 +672,7 @@ mod tests {
             store
                 .builds(
                     None,
-                    Some(&EnvironmentId::default_for(app.id())),
+                    Some(&store.production(app.id()).await),
                     &Scope::All,
                     None,
                     50
@@ -694,7 +697,7 @@ mod tests {
         assert_eq!(records.items[0].state, BuildState::Succeeded);
         let interrupted = store
             .start_build(
-                &EnvironmentId::default_for(app.id()),
+                &store.production(app.id()).await,
                 &operation,
                 "web",
                 &app.spec().services[0].source,

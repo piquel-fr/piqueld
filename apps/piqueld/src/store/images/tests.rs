@@ -40,7 +40,7 @@ async fn production_and_preview(store: &Store) -> (EnvironmentId, EnvironmentId)
     else {
         panic!("preview")
     };
-    (EnvironmentId::default_for(&application), preview.preview.id)
+    (store.production(&application).await, preview.preview.id)
 }
 
 /// Deploys `environment` and saves its prepared target, running `web` from

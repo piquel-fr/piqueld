@@ -426,11 +426,13 @@ async fn before_rollout_jobs_gate_service_changes_and_record_output() {
     let mut input = manifest_with_jobs(&["migrate"], 300);
     let first = harness.apply(input.clone(), None).await;
     // A run of a job an earlier manifest declared is removed before jobs start.
+    let stored = harness.store.get(&first.environment_id).await.unwrap();
     let earlier = manifest_with_jobs(&["seed"], 300)
         .validate()
         .unwrap()
-        .normalize(ApplicationId::parse(first.environment_id.to_string()).unwrap());
-    let leftover = prebuilt::resolve(&earlier, harness.store.instance_id()).jobs[0]
+        .normalize(stored.application.application.id().clone());
+    let leftover = prebuilt::resolve(&earlier, &first.environment_id, harness.store.instance_id())
+        .jobs[0]
         .for_operation("earlier-operation");
     harness.docker.jobs.lock().await.insert(
         leftover.container.name.to_string(),

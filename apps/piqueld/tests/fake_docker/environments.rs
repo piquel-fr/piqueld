@@ -26,7 +26,7 @@ impl EnvironmentHarness {
             .save_application(&ApplicationTemplate::from(&harness.application), None, None)
             .await
             .unwrap();
-        let production = environment(&harness.application);
+        let production = harness.environment().await;
         // Boxed: accepting a mutation holds a whole manifest across awaits.
         let MutationResponse::Environment(staging) = Box::pin(applications.accept(
             Daemon,
@@ -194,18 +194,17 @@ async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
             .validate()
             .unwrap()
             .normalize(ApplicationId::parse(format!("app-{name}-0001")).unwrap());
-        let resolved = prebuilt::resolve(&application, harness.store.instance_id());
         let store = Arc::clone(&harness.store);
         async move {
             store
                 .save_application(
                     &ApplicationTemplate::from(&application),
-                    Some(&resolved),
+                    Some(&prebuilt::resolver(&application, store.instance_id())),
                     None,
                 )
                 .await
-                .unwrap();
-            resolved.id
+                .unwrap()
+                .environment_id
         }
     };
     let auth = deploy("auth", |manifest| {
@@ -380,7 +379,7 @@ async fn telemetry_sockets_are_mounted_while_the_environment_is_granted() {
     harness.set_application(manifest.clone().validate().unwrap().normalize(id.clone()));
     let created = harness.create().await;
     harness.finish(&created).await;
-    let environment = environment(&harness.application);
+    let environment = harness.environment().await;
     let mounted = async |harness: &ControllerHarness| {
         harness.docker.observe(&environment).await.unwrap().services[0]
             .telemetry

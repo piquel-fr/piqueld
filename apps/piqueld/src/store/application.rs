@@ -65,14 +65,15 @@ impl Store {
 
     /// Stores changed intent and requests an apply operation for the
     /// application's only environment, creating it when the application is new.
-    /// Optional resolved state supports importing an already prepared target.
+    /// Optional `resolve` supports importing an already prepared target: it
+    /// compiles the target for the environment, whose ID is only known here.
     /// # Errors
     /// Returns storage, revision, name collision, environment selection, or
     /// pending-deletion errors.
     pub async fn save_application(
         &self,
         app: &ApplicationTemplate,
-        resolved: Option<&ResolvedApplication>,
+        resolve: Option<&(dyn Fn(&EnvironmentId) -> ResolvedApplication + Sync)>,
         expected: Option<u64>,
     ) -> Result<Operation, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -81,7 +82,7 @@ impl Store {
         let now = now_ms();
         let operation =
             Self::insert_operation(&mut tx, &environment, OperationKind::Apply, now).await?;
-        let mut resolved = resolved.cloned();
+        let mut resolved = resolve.map(|resolve| resolve(&environment));
         if let Some(resolved) = &mut resolved {
             Self::bind_links_on(&mut tx, resolved).await?;
         }
@@ -289,13 +290,13 @@ impl Store {
     }
 
     /// Creates the application's first environment, named `production`, which
-    /// shares the application's ID and follows the branch `spec.manifest` names.
+    /// follows the branch `spec.manifest` names.
     pub(super) async fn create_default_environment_on(
         tx: &mut Transaction<'_, Sqlite>,
         application: &ApplicationTemplate,
         now: i64,
     ) -> Result<EnvironmentId, StoreError> {
-        let id = EnvironmentId::default_for(application.id());
+        let id = EnvironmentId::parse(super::new_id("env")).map_err(StoreError::corrupt)?;
         let source = EnvironmentSource::select(application.spec().manifest.as_ref(), None)?;
         let name = EnvironmentName::default_name();
         Self::insert_environment_on(tx, application.id(), (&id, &name), &source, false, now)

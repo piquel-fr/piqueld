@@ -47,11 +47,6 @@ use tokio_util::sync::CancellationToken;
 /// How often tests poll for work the controller finishes in the background.
 const POLL: Duration = Duration::from_millis(10);
 
-/// The environment created with `application`, which shares its ID.
-fn environment(application: &NormalizedApplication) -> EnvironmentId {
-    EnvironmentId::default_for(application.id())
-}
-
 /// Labels of the same application that another installation owns.
 fn foreign_labels(application_id: &EnvironmentId) -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -93,14 +88,13 @@ fn manifest_with_jobs(jobs: &[&str], timeout_seconds: u32) -> ApplicationManifes
     input
 }
 
-/// A store, the prebuilt fixture resolved for it, and a controller over a
-/// fake Docker backend.
+/// A store, the prebuilt fixture, and a controller over a fake Docker
+/// backend.
 struct ControllerHarness {
     _directory: tempfile::TempDir,
     database_path: PathBuf,
     store: Arc<Store>,
     application: NormalizedApplication,
-    resolved: ResolvedApplication,
     docker: Arc<FakeDocker>,
     controller: Controller<FakeDocker>,
 }
@@ -119,7 +113,6 @@ impl ControllerHarness {
                 .expect("fresh database opens"),
         );
         let application = prebuilt::application("app-fake-docker-01");
-        let resolved = prebuilt::resolve(&application, store.instance_id());
         let docker = Arc::new(docker);
         let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
         Self {
@@ -127,16 +120,48 @@ impl ControllerHarness {
             database_path,
             store,
             application,
-            resolved,
             docker,
             controller,
         }
     }
 
-    /// Replaces the application, resolving it again.
+    /// Replaces the application.
     fn set_application(&mut self, application: NormalizedApplication) {
-        self.resolved = prebuilt::resolve(&application, self.store.instance_id());
         self.application = application;
+    }
+
+    /// The application's `production` environment, once created.
+    async fn environment(&self) -> EnvironmentId {
+        self.production_of(self.application.id()).await
+    }
+
+    /// The `production` environment of the application `saved` saved.
+    async fn production(&self, saved: &piqueld_core::api::SavedApplication) -> EnvironmentId {
+        self.production_of(&ApplicationId::parse(&saved.application_id).unwrap())
+            .await
+    }
+
+    /// The application environment `environment` belongs to.
+    async fn application_of(&self, environment: &EnvironmentId) -> ApplicationId {
+        let stored = self.store.get(environment).await.unwrap();
+        stored.environment.application_id
+    }
+
+    /// The ID of `application`'s `production` environment.
+    async fn production_of(&self, application: &ApplicationId) -> EnvironmentId {
+        self.store
+            .environments(application)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|environment| environment.name.as_str() == "production")
+            .expect("a production environment")
+            .id
+    }
+
+    /// The target the application's environment runs.
+    async fn resolved(&self) -> ResolvedApplication {
+        self.target(&self.environment().await).await
     }
 
     /// Gives the controller `timeout` to wait for each convergence.
@@ -186,7 +211,10 @@ impl ControllerHarness {
         self.store
             .save_application(
                 &ApplicationTemplate::from(&self.application),
-                Some(&self.resolved),
+                Some(&prebuilt::resolver(
+                    &self.application,
+                    self.store.instance_id(),
+                )),
                 None,
             )
             .await
@@ -195,11 +223,11 @@ impl ControllerHarness {
 
     /// Stores a value for the application's secret `token`, replacing
     /// version `generation`.
-    async fn store_token(&self, application: &EnvironmentId, generation: i64, value: &[u8]) {
+    async fn store_token(&self, environment: &EnvironmentId, generation: i64, value: &[u8]) {
         self.store
             .put_stored_secret(
                 Daemon,
-                &ApplicationId::parse(application.as_str()).unwrap(),
+                &self.application_of(environment).await,
                 "token",
                 generation,
                 value.to_vec(),
@@ -297,7 +325,7 @@ impl ControllerHarness {
     async fn assert_recovered(&self, operation_id: &str) {
         let status = self
             .store
-            .status(&environment(&self.application))
+            .status(&self.environment().await)
             .await
             .expect("status is readable");
         assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
@@ -305,7 +333,7 @@ impl ControllerHarness {
         assert_eq!(operation.state, OperationState::Succeeded);
         let observed = self
             .docker
-            .observe(&environment(&self.application))
+            .observe(&self.environment().await)
             .await
             .expect("fake observation");
         assert_eq!(observed.volumes.len(), 1);
@@ -323,7 +351,7 @@ impl ControllerHarness {
         self.store
             .save_application(
                 &ApplicationTemplate::from(&replacement),
-                Some(&prebuilt::resolve(&replacement, self.store.instance_id())),
+                Some(&prebuilt::resolver(&replacement, self.store.instance_id())),
                 None,
             )
             .await
@@ -332,7 +360,7 @@ impl ControllerHarness {
 
     /// The replicas Docker runs of the first service.
     async fn replicas(&self) -> u16 {
-        self.replicas_of(&environment(&self.application)).await
+        self.replicas_of(&self.environment().await).await
     }
 
     /// The replicas Docker runs of environment `id`'s first service.
@@ -352,19 +380,21 @@ impl ControllerHarness {
 
     async fn delete(&self) -> Operation {
         self.store
-            .request_delete(&environment(&self.application))
+            .request_delete(&self.environment().await)
             .await
             .expect("delete is durable")
     }
 
-    async fn assert_deleted(&self) {
+    /// Asserts `deletion` removed the application's environment and its
+    /// resources, except its volume.
+    async fn assert_deleted(&self, deletion: &Operation) {
         assert!(matches!(
-            self.store.get(&environment(&self.application)).await,
+            self.store.get(&deletion.environment_id).await,
             Err(piqueld::store::StoreError::NotFound)
         ));
         let observed = self
             .docker
-            .observe(&environment(&self.application))
+            .observe(&deletion.environment_id)
             .await
             .expect("final observation");
         assert_eq!(observed.services, [] as [ObservedService; 0]);
@@ -372,47 +402,52 @@ impl ControllerHarness {
         assert_eq!(observed.volumes.len(), 1);
     }
 
-    /// Seeds the application's resources as Docker would run them, checks
-    /// planning then finds nothing to do, and journals the application.
+    /// Journals the application, seeds its resources as Docker would run
+    /// them, and checks planning then finds nothing to do. Nothing reconciles
+    /// before the next scan.
     async fn seed_matching_runtime(&self) -> Operation {
+        let created = self.create().await;
+        let resolved = self.resolved().await;
         self.docker
-            .ensure_network(&self.resolved.networks[0])
+            .ensure_network(&resolved.networks[0])
             .await
             .expect("network is seeded");
         self.docker
-            .ensure_volume(&self.resolved.volumes[0])
+            .ensure_volume(&resolved.volumes[0])
             .await
             .expect("volume is seeded");
         self.docker
-            .ensure_service(&self.resolved.services[0])
+            .ensure_service(&resolved.services[0])
             .await
             .expect("service is seeded");
         let observed = self
             .docker
-            .observe(&environment(&self.application))
+            .observe(&resolved.id)
             .await
             .expect("matching observation");
-        let plan = Plan::from_request(
-            &PlanRequest::Reconcile {
-                desired: self.resolved.clone(),
-            },
-            &observed,
-        );
+        let plan = Plan::from_request(&PlanRequest::Reconcile { desired: resolved }, &observed);
         assert_eq!(plan.actions, [] as [piqueld_core::PlanAction; 0]);
-        self.create().await
+        created
     }
 
     /// Journals the application over Docker resources another installation
-    /// already created, as `foreign` adds them, and asserts one scan journals
-    /// the conflict as a degraded, failed operation, leaving them untouched.
-    async fn assert_refuses_foreign(&self, foreign: impl FnOnce(&mut ObservedApplication)) {
-        foreign(&mut *self.docker.observed.lock().await);
-        let foreign = self.docker.observed.lock().await.clone();
+    /// already created, as `foreign` adds them from the application's target,
+    /// and asserts one scan journals the conflict as a degraded, failed
+    /// operation, leaving them untouched.
+    async fn assert_refuses_foreign(
+        &self,
+        foreign: impl FnOnce(&ResolvedApplication, &mut ObservedApplication),
+    ) {
         let created = self.create().await;
+        foreign(
+            &self.resolved().await,
+            &mut *self.docker.observed.lock().await,
+        );
+        let foreign = self.docker.observed.lock().await.clone();
         self.scan().await;
         let status = self
             .store
-            .status(&environment(&self.application))
+            .status(&self.environment().await)
             .await
             .expect("status is readable");
         assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);

@@ -49,7 +49,7 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
     };
     client
         .put_stored_secret(
-            &app.environment_id,
+            &app.application_id,
             "token",
             0,
             b"one".to_vec(),
@@ -57,18 +57,18 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
         )
         .await
         .unwrap();
-    let put = |query: &str| api.send(put_stored_token(&app.environment_id, query, 1, "two"));
+    let put = |query: &str| api.send(put_stored_token(&app.application_id, query, 1, "two"));
     put("previews=true")
         .await
         .assert_error(StatusCode::BAD_REQUEST, "query_invalid");
-    let stored = client.stored_secrets(&app.environment_id).await.unwrap();
+    let stored = client.stored_secrets(&app.application_id).await.unwrap();
     assert_eq!(
         (stored[0].metadata.generation, &stored[0].access),
         (1, &none)
     );
     let response = put("environments=all&previews=true").await;
     assert_eq!(response.status, StatusCode::OK);
-    let stored = client.stored_secrets(&app.environment_id).await.unwrap();
+    let stored = client.stored_secrets(&app.application_id).await.unwrap();
     assert_eq!(
         stored[0].access,
         SecretAccess {
@@ -108,13 +108,13 @@ async fn stored_secret_uploads_check_their_headers_first() {
     let api = router(state(&temp).await, FakeAuth);
     let server = Server::tcp(api.clone()).await;
     let app = create_and_inspect(&server.client(), &manifest()).await;
-    let mut repeated = put_stored_token(&app.environment_id, "", 0, "value");
+    let mut repeated = put_stored_token(&app.application_id, "", 0, "value");
     let headers = repeated.headers_mut();
     headers.append("x-expected-generation", "1".parse().unwrap());
     let response = api.send(repeated).await;
     response.assert_error(StatusCode::BAD_REQUEST, "secret_generation_required");
     // A body over the request limit would fail with 413 once read.
-    let mut text = put_stored_token(&app.environment_id, "", 0, "value");
+    let mut text = put_stored_token(&app.application_id, "", 0, "value");
     text.headers_mut()
         .insert("content-type", "text/plain".parse().unwrap());
     let oversized = vec![b'x'; piqueld_core::api::MAX_REQUEST_BODY_BYTES + 1];
@@ -133,7 +133,7 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     let app = create_and_inspect(&client, &manifest()).await;
     let response = api
         .send(put_stored_token(
-            &app.environment_id,
+            &app.application_id,
             "",
             0,
             "private-token-value",
@@ -147,13 +147,13 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     assert_eq!(body["data"]["access"]["previews"], false);
     assert_eq!(
         client
-            .stored_secrets(&app.environment_id)
+            .stored_secrets(&app.application_id)
             .await
             .unwrap()
             .len(),
         1
     );
-    let (client_ref, id) = (&client, &app.environment_id);
+    let (client_ref, id) = (&client, &app.application_id);
     let reference = |secrets, generation| async move {
         let edit = ApplicationEdit::Service {
             name: "web".into(),
@@ -175,7 +175,7 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     let saved = reference(vec![mount.clone()], app.generation).await;
     assert_eq!(
         client
-            .application(&app.environment_id)
+            .application(&app.application_id)
             .await
             .unwrap()
             .application
@@ -185,25 +185,25 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
             .secrets,
         vec![mount]
     );
-    let referenced = client.delete_stored_secret(&app.environment_id, "token", 1);
+    let referenced = client.delete_stored_secret(&app.application_id, "token", 1);
     assert_eq!(api_error(referenced.await.unwrap_err()).status, 409);
     reference(Vec::new(), saved.generation).await;
-    let stale = client.put_stored_secret(&app.environment_id, "token", 0, b"stale".to_vec(), None);
+    let stale = client.put_stored_secret(&app.application_id, "token", 0, b"stale".to_vec(), None);
     assert_eq!(api_error(stale.await.unwrap_err()).status, 409);
     let absent = client.stored_secrets("app-absent").await;
     assert_eq!(api_error(absent.unwrap_err()).status, 404);
     client
-        .delete_stored_secret(&app.environment_id, "token", 1)
+        .delete_stored_secret(&app.application_id, "token", 1)
         .await
         .unwrap();
     assert!(
         client
-            .stored_secrets(&app.environment_id)
+            .stored_secrets(&app.application_id)
             .await
             .unwrap()
             .is_empty()
     );
-    assert_secret_history(&client, &app.environment_id).await;
+    assert_secret_history(&client, &app.application_id).await;
 }
 
 #[tokio::test]
@@ -213,13 +213,13 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let client = server.client();
     let app = create_and_inspect(&client, &manifest()).await;
     client
-        .put_stored_secret(&app.environment_id, "token", 0, b"value".to_vec(), None)
+        .put_stored_secret(&app.application_id, "token", 0, b"value".to_vec(), None)
         .await
         .unwrap();
     std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
     let error = client
         .put_stored_secret(
-            &app.environment_id,
+            &app.application_id,
             "token",
             1,
             b"replacement".to_vec(),
@@ -260,7 +260,6 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .validate_template()
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-cleanup").unwrap());
-    let environment = piqueld_core::EnvironmentId::default_for(app.id());
     store.save_application(&app, None, None).await.unwrap();
     let gate = Arc::new(CleanupGate::default());
     let runtime = Arc::new(FakeRuntime {
@@ -269,6 +268,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     });
     runtime.set_unavailable(true);
     let service = ApiState::new(store.clone(), runtime.clone()).unwrap();
+    let environment = production(&service, app.id().as_str()).await;
     store
         .put_secret(Daemon, &environment, "token", 0, b"value".to_vec())
         .await
@@ -419,7 +419,7 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
-    let production = piqueld_core::EnvironmentId::parse(&saved.application_id).unwrap();
+    let production = production(&service, &saved.application_id).await;
     let server = Server::tcp(router(service, FakeAuth)).await;
     let client = server.client();
     let production_only = SecretAccess {

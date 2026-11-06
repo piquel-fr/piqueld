@@ -56,7 +56,7 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock app deploy basic-website --y
 just run --socket /tmp/piqueld-dev-run/piqueld.sock events --application <application-id>
 ```
 
-The application got one environment, `production`, which shares its ID. Add
+The application got one environment, `production`, with its own `env-…` ID. Add
 another with `piquelctl env create basic-website staging`; `app deploy`,
 `app reconcile`, and `app logs` then need an environment, so use
 `piquelctl env deploy basic-website staging`. A manifest can also
