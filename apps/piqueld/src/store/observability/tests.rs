@@ -136,28 +136,12 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
 }
 #[tokio::test]
 async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("db");
-    let store = Store::open(path).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     notify(&store).await;
-    let mut op = application(&store).await;
+    let op = application(&store).await;
     for _ in 0..2 {
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Running,
-                OperationState::Failed,
-                Some((
-                    "service_update_failed",
-                    "Update paused; inspect service logs",
-                )),
-            )
-            .await
-            .unwrap();
-        store.process_notifications().await.unwrap();
-        op = store.operation(&op.id).await.unwrap();
-        store.retry_operation(&op).await.unwrap();
-        store.mark_running(&op.id).await;
+        fail(&store, &op).await;
+        rerun(&store, &op).await;
     }
     assert_eq!(store.deliveries(None, 100).await.unwrap().items.len(), 1);
     let failed = store
@@ -174,16 +158,7 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
         .unwrap();
     assert_eq!(failed.items.len(), 2);
     assert!(failed.items.iter().all(|event| event.diagnostic.is_some()));
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    succeed(&store, &op).await;
     let deliveries = store.deliveries(None, 100).await.unwrap();
     assert_eq!(deliveries.items.len(), 2);
     assert_eq!(deliveries.items[0].category, NotificationCategory::Recovery);
@@ -204,20 +179,10 @@ async fn retries_keep_cause_and_outbox_deduplicates_until_recovery() {
 #[tokio::test]
 async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
     for failed_before_close in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let (_temp, store) = Store::temporary().await;
         notify(&store).await;
         let op = application(&store).await;
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Running,
-                OperationState::Failed,
-                Some(("service_update_failed", "Service failed")),
-            )
-            .await
-            .unwrap();
-        store.process_notifications().await.unwrap();
+        fail(&store, &op).await;
         let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
         let state = if failed_before_close {
             DeliveryState::Failed
@@ -239,21 +204,8 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
                 .await
                 .unwrap();
         }
-        store
-            .retry_operation(&store.operation(&op.id).await.unwrap())
-            .await
-            .unwrap();
-        store.mark_running(&op.id).await;
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Running,
-                OperationState::Succeeded,
-                None,
-            )
-            .await
-            .unwrap();
-        store.process_notifications().await.unwrap();
+        rerun(&store, &op).await;
+        succeed(&store, &op).await;
         if !failed_before_close {
             store
                 .complete_delivery(&failure.id, DeliveryState::Failed, Some("Rejected"), 0)
@@ -272,34 +224,27 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
 
 #[tokio::test]
 async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     notify(&store).await;
     let op = application(&store).await;
-    let rerun = async |to: OperationState, error: Option<(&str, &str)>| {
-        store
-            .transition_operation(&op.id, OperationState::Running, to, error)
-            .await
-            .unwrap();
-        store.process_notifications().await.unwrap();
+    // Finishes the deployment, failed unless `succeeded`, claims the
+    // delivery it raised, and retries it.
+    let finish = async |succeeded: bool| {
+        if succeeded {
+            succeed(&store, &op).await;
+        } else {
+            fail(&store, &op).await;
+        }
         let (delivery, _) = store.claim_delivery().await.unwrap().unwrap();
-        store
-            .retry_operation(&store.operation(&op.id).await.unwrap())
-            .await
-            .unwrap();
-        store.mark_running(&op.id).await;
+        rerun(&store, &op).await;
         delivery
     };
-    let failure = rerun(
-        OperationState::Failed,
-        Some(("service_update_failed", "Service failed")),
-    )
-    .await;
+    let failure = finish(false).await;
     store
         .complete_delivery(&failure.id, DeliveryState::Delivered, None, 0)
         .await
         .unwrap();
-    let recovery = rerun(OperationState::Succeeded, None).await;
+    let recovery = finish(true).await;
     assert_eq!(recovery.category, NotificationCategory::Recovery);
     store
         .complete_delivery(&recovery.id, DeliveryState::Failed, Some("Rejected"), 0)
@@ -314,11 +259,7 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
         .complete_delivery(&recovery.id, DeliveryState::Failed, Some("Rejected"), 0)
         .await
         .unwrap();
-    rerun(
-        OperationState::Failed,
-        Some(("service_update_failed", "Service failed")),
-    )
-    .await;
+    finish(false).await;
     assert!(matches!(
         store
             .retry_delivery(crate::api::Actor::Daemon, &recovery.id)
@@ -348,26 +289,12 @@ async fn failed_daemon_delivery(store: &Store) -> String {
         .unwrap();
     delivery.id
 }
-#[tokio::test]
-async fn open_daemon_incidents_remain_manually_retryable() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
-    let delivery = failed_daemon_delivery(&store).await;
-    store
-        .retry_delivery(crate::api::Actor::Daemon, &delivery)
-        .await
-        .unwrap();
-    assert_eq!(
-        store.deliveries(None, 100).await.unwrap().items[0].state,
-        DeliveryState::Pending
-    );
-}
-/// Retry names why it refuses a delivery: one that has not failed, or whose
-/// destination no longer receives it.
+/// An open daemon incident's failed delivery can be retried; retry names why
+/// it refuses one that has not failed, or whose destination no longer
+/// receives it.
 #[tokio::test]
 async fn retry_refusals_name_their_reason() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let delivery = failed_daemon_delivery(&store).await;
     let retry = || store.retry_delivery(crate::api::Actor::Daemon, &delivery);
     assert!(matches!(
@@ -496,6 +423,25 @@ async fn fail(store: &Store, op: &Operation) {
         .unwrap();
     store.process_notifications().await.unwrap();
 }
+/// Succeeds `op`'s deployment and processes the success's notifications.
+async fn succeed(store: &Store, op: &Operation) {
+    store
+        .transition_operation(
+            &op.id,
+            OperationState::Running,
+            OperationState::Succeeded,
+            None,
+        )
+        .await
+        .unwrap();
+    store.process_notifications().await.unwrap();
+}
+/// Retries `op` once it finished, marking the retry running.
+async fn rerun(store: &Store, op: &Operation) {
+    let finished = store.operation(&op.id).await.unwrap();
+    store.retry_operation(&finished).await.unwrap();
+    store.mark_running(&op.id).await;
+}
 #[tokio::test]
 async fn disabling_cancels_pending_and_reenabling_never_replays() {
     let (_temp, store) = Store::temporary().await;
@@ -535,21 +481,8 @@ async fn new_urls_receive_no_recovery_of_earlier_failures() {
         "unchanged URL"
     );
     put(&store, &settings, Some("https://example.com/new-token")).await;
-    store
-        .retry_operation(&store.operation(&op.id).await.unwrap())
-        .await
-        .unwrap();
-    store.mark_running(&op.id).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    rerun(&store, &op).await;
+    succeed(&store, &op).await;
     assert!(store.claim_delivery().await.unwrap().is_none());
     let history = store.deliveries(None, 100).await.unwrap().items;
     assert!(
@@ -576,21 +509,8 @@ async fn reenabled_destinations_still_receive_recoveries() {
     put(&store, &settings, None).await;
     settings.enabled = true;
     put(&store, &settings, None).await;
-    store
-        .retry_operation(&store.operation(&op.id).await.unwrap())
-        .await
-        .unwrap();
-    store.mark_running(&op.id).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    rerun(&store, &op).await;
+    succeed(&store, &op).await;
     let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
     assert_eq!(recovery.category, NotificationCategory::Recovery);
 }
@@ -634,8 +554,7 @@ async fn destinations_receive_their_applications_and_daemon_notifications() {
 }
 #[tokio::test]
 async fn sustained_observation_requires_continuity_and_emits_one_recovery() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     notify(&store).await;
     for timestamp in [1000, 31_000, 61_000, 91_000] {
         store
@@ -742,15 +661,7 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
 async fn pruning_marks_stream_gaps_and_analytics_coverage() {
     let (_temp, store) = Store::temporary().await;
     let op = application(&store).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
+    succeed(&store, &op).await;
     let last = store
         .filtered_events(
             &EventFilter {
@@ -806,16 +717,7 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
     let url = "https://example.com/second";
     store.add_destination("second", url, settings()).await;
     let op = application(&store).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Failed,
-            Some(("service_update_failed", "Service failed")),
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    fail(&store, &op).await;
     let (delayed, _) = store.claim_delivery().await.unwrap().unwrap();
     store
         .complete_delivery(
@@ -839,21 +741,8 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
     store
         .add_destination("new-destination", url, settings())
         .await;
-    store
-        .retry_operation(&store.operation(&op.id).await.unwrap())
-        .await
-        .unwrap();
-    store.mark_running(&op.id).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    rerun(&store, &op).await;
+    succeed(&store, &op).await;
     let (recovery, _) = store.claim_delivery().await.unwrap().unwrap();
     assert_eq!(recovery.category, NotificationCategory::Recovery);
     assert_eq!(recovery.destination, acknowledged.destination);
@@ -883,20 +772,10 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
 
 #[tokio::test]
 async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_due() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     notify(&store).await;
     let op = application(&store).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Failed,
-            Some(("service_update_failed", "Service failed")),
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    fail(&store, &op).await;
     let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
     store
         .complete_delivery(
@@ -907,21 +786,8 @@ async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_du
         )
         .await
         .unwrap();
-    store
-        .retry_operation(&store.operation(&op.id).await.unwrap())
-        .await
-        .unwrap();
-    store.mark_running(&op.id).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    rerun(&store, &op).await;
+    succeed(&store, &op).await;
     sqlx::query!(
         "UPDATE notification_deliveries SET retry_started_at_ms=0 WHERE id=?1",
         failure.id
@@ -952,8 +818,7 @@ async fn undelivered_failures_expire_and_cancel_recovery_even_when_nothing_is_du
 
 #[tokio::test]
 async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destination() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     notify(&store).await;
     let op = application(&store).await;
     for code in ["git_build_failed", "service_update_failed"] {
@@ -967,11 +832,7 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
             .await
             .unwrap();
         store.process_notifications().await.unwrap();
-        store
-            .retry_operation(&store.operation(&op.id).await.unwrap())
-            .await
-            .unwrap();
-        store.mark_running(&op.id).await;
+        rerun(&store, &op).await;
     }
     let (first, _) = store.claim_delivery().await.unwrap().unwrap();
     store
@@ -988,16 +849,7 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
         )
         .await
         .unwrap();
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    succeed(&store, &op).await;
     assert!(store.claim_delivery().await.unwrap().is_none());
     // An unacknowledged terminal failure doesn't suppress recovery for an acknowledged one.
     store
@@ -1028,15 +880,7 @@ async fn visibility_limits_history_builds_and_analytics() {
     let mut ids = Vec::new();
     for name in ["blog", "shop"] {
         let op = named_application(&store, name).await;
-        store
-            .transition_operation(
-                &op.id,
-                OperationState::Running,
-                OperationState::Succeeded,
-                None,
-            )
-            .await
-            .unwrap();
+        succeed(&store, &op).await;
         let source = piqueld_core::manifest::ValidatedSource::Image {
             image: "example/web:1".into(),
         };
@@ -1157,6 +1001,7 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
         "UPDATE events SET created_at_ms=created_at_ms-660000 WHERE kind='access_denial_burst'";
     sqlx::query(rearm).execute(&store.pool).await.unwrap();
     store.record_audit(&refused("203.0.113.9")).await.unwrap();
+    // Distinct user, credential and name, so the notice names the right one.
     let user = piqueld_core::auth::User {
         id: "alice".into(),
         username: "alice".into(),
@@ -1217,8 +1062,7 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
 /// version only when it changed.
 #[tokio::test]
 async fn daemon_starts_notify_with_version_changes() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     notify(&store).await;
     for version in ["0.1.0", "0.1.0", "0.2.0"] {
         store.record_daemon_started(version).await.unwrap();
@@ -1280,8 +1124,7 @@ async fn operator_and_anonymous_refusals_burst_separately() {
 /// clock stepped back keeps it, rather than taking it along.
 #[tokio::test]
 async fn audit_pruning_keeps_records_after_a_retained_one() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, mut store) = Store::temporary().await;
     store.audit_days = 1;
     for (peer, at) in [("a", 0), ("b", now_ms()), ("c", 0)] {
         store.record_audit_at(&refused(peer), at).await.unwrap();
@@ -1300,8 +1143,7 @@ async fn audit_pruning_keeps_records_after_a_retained_one() {
 /// and pruning keeps it verifiable without ever erasing a broken part.
 #[tokio::test]
 async fn the_audit_chain_detects_alteration_and_survives_pruning() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, mut store) = Store::temporary().await;
     store.audit_days = 1;
     let now = now_ms();
     for (peer, at) in [("a", 0), ("b", 0), ("c", now), ("d", now)] {
@@ -1391,16 +1233,7 @@ async fn successful_deployments_notify_with_their_names() {
     let url = "https://example.com/deployments";
     store.add_destination("deployments", url, deployments).await;
     let op = named_application(&store, "shop").await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    succeed(&store, &op).await;
     let (delivery, _) = store.claim_delivery().await.unwrap().unwrap();
     assert_eq!(delivery.destination, "deployments");
     assert_eq!(delivery.category, NotificationCategory::DeploymentSucceeded);
@@ -1426,34 +1259,12 @@ async fn successful_deployments_notify_with_their_names() {
         NotificationCategory::DeploymentSucceeded,
         piqueld_core::observability::CategoryRule::default(),
     );
-    let name = DestinationName::parse("deployments").unwrap();
-    let request = DestinationRequest {
-        settings: both,
-        url: None,
-    };
-    store
-        .put_notification_destination(Actor::Daemon, &name, request)
-        .await
-        .unwrap();
-    store.retry_operation(&op).await.unwrap();
-    store.mark_running(&op.id).await;
+    store.add_destination("deployments", url, both).await;
+    rerun(&store, &op).await;
     fail(&store, &op).await;
     drain(&store).await;
-    store
-        .retry_operation(&store.operation(&op.id).await.unwrap())
-        .await
-        .unwrap();
-    store.mark_running(&op.id).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    rerun(&store, &op).await;
+    succeed(&store, &op).await;
     let mut delivered = drain(&store).await;
     delivered.sort();
     let recovery = NotificationCategory::Recovery;
@@ -1479,21 +1290,8 @@ async fn deployments_follow_cancelled_recoveries_and_stay_retryable() {
         .await;
     let op = application(&store).await;
     fail(&store, &op).await;
-    store
-        .retry_operation(&store.operation(&op.id).await.unwrap())
-        .await
-        .unwrap();
-    store.mark_running(&op.id).await;
-    store
-        .transition_operation(
-            &op.id,
-            OperationState::Running,
-            OperationState::Succeeded,
-            None,
-        )
-        .await
-        .unwrap();
-    store.process_notifications().await.unwrap();
+    rerun(&store, &op).await;
+    succeed(&store, &op).await;
     // The failure, still unacknowledged, holds the recovery, which holds the deployment.
     let (failure, _) = store.claim_delivery().await.unwrap().unwrap();
     assert_eq!(failure.category, NotificationCategory::DeploymentFailures);

@@ -91,14 +91,11 @@ async fn creating_a_preview_is_idempotent_on_branch_and_slot_and_leaves_the_revi
 
 #[tokio::test]
 async fn concurrent_creations_never_pass_a_preview_limit_and_repeats_never_count() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_previews(PreviewLimits {
-            max_per_application: 2,
-            ..PreviewLimits::default()
-        });
+    let (_temp, store) = Store::temporary().await;
+    let store = store.with_previews(PreviewLimits {
+        max_per_application: 2,
+        ..PreviewLimits::default()
+    });
     let application = save(&store, false).await;
 
     let slots = (0..5)
@@ -196,15 +193,14 @@ async fn concurrent_creations_never_pass_a_preview_limit_and_repeats_never_count
 
 #[tokio::test]
 async fn previews_need_a_repository_and_environment_changes_never_reach_them() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("saved")).await.unwrap();
+    let (_saved, store) = Store::temporary().await;
     let saved = save(&store, true).await;
     assert!(matches!(
         create(&store, &saved, "feat/login", None).await,
         Err(StoreError::PreviewRequiresRepository)
     ));
 
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (_temp, store) = Store::temporary().await;
     let application = save(&store, false).await;
     let preview = create(&store, &application, "feat/login", None)
         .await
@@ -392,14 +388,11 @@ async fn local(
 /// history. A snapshot received for another repository is refused.
 #[tokio::test]
 async fn local_snapshots_create_previews_within_limits_and_record_their_provenance() {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db"))
-        .await
-        .unwrap()
-        .with_previews(PreviewLimits {
-            max_per_application: 1,
-            ..PreviewLimits::default()
-        });
+    let (_temp, store) = Store::temporary().await;
+    let store = store.with_previews(PreviewLimits {
+        max_per_application: 1,
+        ..PreviewLimits::default()
+    });
     let application = save(&store, false).await;
     let notes = "https://example.com/notes.git";
     let (first, second) = ("1".repeat(40), "2".repeat(40));

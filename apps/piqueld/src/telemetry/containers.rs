@@ -535,21 +535,23 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Telemetry exporting to a collector socket in `directory` that
+    /// nothing listens on.
+    fn unreachable(directory: &std::path::Path) -> Telemetry {
+        let endpoint = directory.join("absent.sock");
+        let config = crate::config::TelemetryConfig {
+            endpoint: Some(crate::config::OtlpEndpoint::Unix(endpoint)),
+            ..Default::default()
+        };
+        Telemetry::new(&config, crate::telemetry::Sockets::new(directory)).unwrap()
+    }
+
     /// A follower skips lines before where it resumes, keeps the one at it,
     /// and the cursor saved for restarts stays put until lines are sent.
     #[tokio::test]
     async fn container_logs_resume_at_the_read_cursor() {
         let directory = tempfile::tempdir().unwrap();
-        let telemetry = Telemetry::new(
-            &crate::config::TelemetryConfig {
-                endpoint: Some(crate::config::OtlpEndpoint::Unix(
-                    directory.path().join("absent.sock"),
-                )),
-                ..Default::default()
-            },
-            crate::telemetry::Sockets::new(directory.path()),
-        )
-        .unwrap();
+        let telemetry = unreachable(directory.path());
         let container = ContainerExport::new(vec![], 2_000_000_000, false);
         let lines = crate::docker::LogLines {
             stream: Some(LogStream::Stdout),
@@ -571,16 +573,7 @@ mod tests {
     #[tokio::test]
     async fn receivers_output_reaches_no_receiver() {
         let directory = tempfile::tempdir().unwrap();
-        let telemetry = Telemetry::new(
-            &crate::config::TelemetryConfig {
-                endpoint: Some(crate::config::OtlpEndpoint::Unix(
-                    directory.path().join("absent.sock"),
-                )),
-                ..Default::default()
-            },
-            crate::telemetry::Sockets::new(directory.path()),
-        )
-        .unwrap();
+        let telemetry = unreachable(directory.path());
         let receiver = piqueld_core::EnvironmentId::parse("app-otel").unwrap();
         let service = piqueld_core::ServiceName::parse("collector").unwrap();
         let listed = std::future::ready(Ok::<_, std::convert::Infallible>(vec![(

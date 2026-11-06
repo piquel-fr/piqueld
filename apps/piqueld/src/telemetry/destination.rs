@@ -706,7 +706,10 @@ mod tests {
         let stale = StaleSocket::default();
         assert!(connect_unix(&socket, Some(&stale)).await.is_err());
         assert!(socket.exists(), "a single refusal keeps it");
-        std::thread::sleep(StaleSocket::AFTER);
+        // As if the first refusal were `AFTER` ago.
+        if let Some((_, since)) = stale.0.lock().as_mut() {
+            *since = since.checked_sub(StaleSocket::AFTER).unwrap();
+        }
         assert!(connect_unix(&socket, Some(&stale)).await.is_err());
         assert!(!socket.exists());
     }

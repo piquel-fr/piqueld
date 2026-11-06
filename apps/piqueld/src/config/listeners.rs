@@ -187,7 +187,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discovery_reports_missing_command_and_failed_exit() {
+    async fn discovery_reads_cli_output_and_reports_failures() {
+        let mut command = Command::new("sh");
+        command.args(["-c", r#"printf '%s' '{"BackendState":"Running","TailscaleIPs":["100.100.1.2","fd7a:115c:a1e0::2"]}'"#]);
+        let addresses = TailscaleStatus::discover(command).await.unwrap();
+        assert_eq!(
+            addresses,
+            vec![
+                "100.100.1.2".parse::<IpAddr>().unwrap(),
+                "fd7a:115c:a1e0::2".parse().unwrap()
+            ]
+        );
         assert!(
             TailscaleStatus::discover(Command::new("/nonexistent/piqueld-tailscale"))
                 .await
@@ -203,20 +213,6 @@ mod tests {
             .to_string();
         assert!(error.contains("unavailable"));
         assert!(error.contains("exit status"));
-    }
-
-    #[tokio::test]
-    async fn discovery_reads_cli_output() {
-        let mut command = Command::new("sh");
-        command.args(["-c", r#"printf '%s' '{"BackendState":"Running","TailscaleIPs":["100.100.1.2","fd7a:115c:a1e0::2"]}'"#]);
-        let addresses = TailscaleStatus::discover(command).await.unwrap();
-        assert_eq!(
-            addresses,
-            vec![
-                "100.100.1.2".parse::<IpAddr>().unwrap(),
-                "fd7a:115c:a1e0::2".parse().unwrap()
-            ]
-        );
     }
 
     #[tokio::test(start_paused = true)]

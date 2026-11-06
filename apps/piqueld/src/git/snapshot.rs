@@ -675,7 +675,8 @@ mod tests {
 
     /// A thin bundle needs its base, which is fetched from the repository;
     /// a complete one needs nothing. Either is checked out from its own
-    /// repository once kept.
+    /// repository once kept, and holds its upload permit until then, so
+    /// uploads waiting to be accepted never pile up on disk.
     #[tokio::test]
     async fn receives_thin_and_complete_bundles() {
         let root = tempfile::tempdir().unwrap();
@@ -688,11 +689,14 @@ mod tests {
         for (bytes, expected) in [(thin, Some(base)), (complete, None)] {
             let received = receive(&snapshots, bytes, 1 << 20, &remote).await.unwrap();
             assert_eq!((&received.commit, &received.base), (&commit, &expected));
+            let permits = || snapshots.receiving.available_permits();
+            assert_eq!(permits(), Snapshots::RECEIVING - 1);
             let commit = received.commit.clone();
             let kept = snapshots
                 .keep(received, async { Ok::<_, SnapshotError>(()) })
                 .await;
             assert!(kept.is_ok());
+            assert_eq!(permits(), Snapshots::RECEIVING);
             assert!(snapshots.path(&commit).exists());
         }
         let source = snapshots.source(&remote.display().to_string(), &commit);
@@ -820,30 +824,6 @@ mod tests {
         let unrelated = bundle(root.path(), "^HEAD^1 ^HEAD^2");
         let refused = receive(&snapshots, unrelated, 1 << 20, &remote).await;
         assert!(matches!(refused, Err(SnapshotError::Invalid(_))));
-    }
-
-    /// A received upload holds its permit until it is kept, so uploads
-    /// waiting to be accepted never pile up on disk.
-    #[tokio::test]
-    async fn received_uploads_hold_their_permit_until_kept() {
-        let root = tempfile::tempdir().unwrap();
-        let (base, _) = fixture(root.path());
-        let remote = root.path().join("remote");
-        let snapshots = snapshots(root.path()).await;
-        let thin = bundle(root.path(), &format!("^{base}"));
-        let received = receive(&snapshots, thin, 1 << 20, &remote).await.unwrap();
-        assert_eq!(
-            snapshots.receiving.available_permits(),
-            Snapshots::RECEIVING - 1
-        );
-        let kept = snapshots
-            .keep(received, async { Ok::<_, SnapshotError>(()) })
-            .await;
-        assert!(kept.is_ok());
-        assert_eq!(
-            snapshots.receiving.available_permits(),
-            Snapshots::RECEIVING
-        );
     }
 
     /// A body that stops sending gives up its permit.

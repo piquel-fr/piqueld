@@ -691,13 +691,11 @@ mod tests {
         }
     }
 
-    /// Accepts a routed environment and starts executing its operation.
-    async fn running_operation(store: &Store) -> Operation {
+    /// Saves and deploys application `name` with `spec`, a TOML `[spec]`
+    /// table, returning its requested operation.
+    async fn deploy(store: &Store, name: &str, spec: &str) -> Operation {
         let manifest = piqueld_core::manifest::parse_template_toml(&format!(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='routed'\n\
-             [[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='{}'\n\
-             [[spec.routes]]\nhostname='routed.example.com'\nservice='web'\nport=80",
-            crate::ingress::CADDY_IMAGE
+            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n{spec}"
         ))
         .unwrap();
         let (MutationResponse::Saved(saved), _) = store
@@ -713,17 +711,27 @@ mod tests {
         else {
             panic!("saved deployment")
         };
-        let operation_id = saved.operation_id.unwrap();
+        store.operation(&saved.operation_id.unwrap()).await.unwrap()
+    }
+
+    /// Accepts a routed environment and starts executing its operation.
+    async fn running_operation(store: &Store) -> Operation {
+        let spec = format!(
+            "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='{}'\n\
+             [[spec.routes]]\nhostname='routed.example.com'\nservice='web'\nport=80",
+            crate::ingress::CADDY_IMAGE
+        );
+        let operation = deploy(store, "routed", &spec).await;
         store
             .transition_operation(
-                &operation_id,
+                &operation.id,
                 OperationState::Requested,
                 OperationState::Running,
                 None,
             )
             .await
             .unwrap();
-        store.operation(&operation_id).await.unwrap()
+        store.operation(&operation.id).await.unwrap()
     }
 
     #[tokio::test]
@@ -837,23 +845,7 @@ mod tests {
     async fn secret_deletion_waits_for_docker_mutations() {
         let harness = Harness::new().await;
         let store = &harness.store;
-        let manifest = piqueld_core::manifest::parse_template_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='secrets'\n[spec]",
-        ).unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                crate::api::Actor::Daemon,
-                Mutation::save(manifest, None, true),
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved deployment")
-        };
-        let operation = store.operation(&saved.operation_id.unwrap()).await.unwrap();
+        let operation = deploy(store, "secrets", "[spec]").await;
         let environment = &operation.environment_id;
         let daemon = crate::api::Actor::Daemon;
         store
@@ -883,24 +875,7 @@ mod tests {
     async fn execution_cleanup_waits_for_live_repair_to_commit() {
         let harness = Harness::new().await;
         let store = &harness.store;
-        let manifest = piqueld_core::manifest::parse_template_toml(
-            "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='repair'\n[spec]",
-        ).unwrap();
-        let (MutationResponse::Saved(saved), _) = store
-            .accept(
-                crate::api::Actor::Daemon,
-                Mutation::save(manifest, None, true),
-                Some(0),
-                false,
-                None,
-            )
-            .await
-            .unwrap()
-        else {
-            panic!("saved deployment")
-        };
-        let operation_id = saved.operation_id.unwrap();
-        let operation = store.operation(&operation_id).await.unwrap();
+        let operation = deploy(store, "repair", "[spec]").await;
         // A stale execution takes its normal early-exit path without calling Docker.
         store
             .transition_operation(

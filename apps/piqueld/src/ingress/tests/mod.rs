@@ -1433,21 +1433,25 @@ async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
     );
 }
 
+/// Whether ingress or only private ingress is disabled, the apps node is
+/// unconfirmed until Docker confirms it is gone, even when the gateway
+/// failed first.
 #[tokio::test]
-async fn disabled_private_ingress_is_unconfirmed_until_the_node_is_removed() {
-    let engine = Engine::failing().await;
-    let ingress = engine.ingress(true);
-    ingress.synchronize().await.unwrap_err();
-    // The gateway failed, but removing the node was still attempted.
-    let private = ingress.status().await.private;
-    assert!(!private.enabled && !private.healthy);
-    assert!(
-        private
-            .message
-            .starts_with("Removing the apps node is not confirmed"),
-        "{}",
-        private.message
-    );
+async fn a_disabled_apps_node_is_unconfirmed_until_it_is_removed() {
+    for (ingress, private, message) in [
+        (true, false, "Removing the apps node is not confirmed"),
+        (false, true, "Stopping the apps node is not confirmed"),
+    ] {
+        let engine = Engine::failing().await;
+        let mut ingress = engine.ingress(ingress);
+        if private {
+            ingress = ingress.with_private(&private_config());
+        }
+        ingress.synchronize().await.unwrap_err();
+        let status = ingress.status().await.private;
+        assert_eq!((status.enabled, status.healthy), (private, false));
+        assert!(status.message.starts_with(message), "{}", status.message);
+    }
 }
 
 #[tokio::test]
@@ -1467,22 +1471,6 @@ async fn an_unhealthy_apps_node_alone_makes_ingress_unavailable() {
     };
     assert_eq!(health.kind, "dependency_health_changed");
     assert_eq!(health.error_code.as_deref(), Some("ingress_unavailable"));
-}
-
-#[tokio::test]
-async fn disabled_ingress_confirms_the_node_stopped_only_once_removed() {
-    let engine = Engine::failing().await;
-    let disabled = engine.ingress(false).with_private(&private_config());
-    disabled.synchronize().await.unwrap_err();
-    let private = disabled.status().await.private;
-    assert!(!private.healthy);
-    assert!(
-        private
-            .message
-            .starts_with("Stopping the apps node is not confirmed"),
-        "{}",
-        private.message
-    );
 }
 
 /// Whether the private listener is configured on an engine whose Swarm

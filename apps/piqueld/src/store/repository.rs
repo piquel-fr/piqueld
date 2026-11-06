@@ -639,11 +639,9 @@ mod tests {
     #[tokio::test]
     async fn fetched_manifests_keep_the_current_name() {
         let (_directory, store) = Store::temporary().await;
-        let saved = store.save_template(connection(), false).await;
-        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let application = saved_connection(&store).await;
         let production = store.production(&application).await;
-        let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
-        let (op, target) = fetched(&store, &production, service).await;
+        let (op, target) = fetched(&store, &production, &token_spec(false)).await;
         store
             .transition_operation(
                 &op.id,
@@ -856,8 +854,7 @@ mod tests {
     #[tokio::test]
     async fn environments_reserve_and_rename_by_their_own_fetched_manifest() {
         let (_directory, store) = Store::temporary().await;
-        let saved = store.save_template(connection(), false).await;
-        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        let application = saved_connection(&store).await;
         let production = store.production(&application).await;
         let (MutationResponse::Environment(staging), _) = store
             .accept(
@@ -888,7 +885,7 @@ mod tests {
             .await
             .unwrap()
         };
-        let service = "[[spec.services]]\nname='web'\n[spec.services.source]\ntype='image'\nimage='ghcr.io/example/notes:1.4.0'";
+        let service = token_spec(false);
         fetch(
             &store,
             &production,

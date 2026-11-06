@@ -692,38 +692,34 @@ mod tests {
         );
     }
 
+    /// A malformed or truncated response fails the request with its decode
+    /// or transport cause.
     #[tokio::test]
-    async fn malformed_service_response_retains_decode_cause() {
+    async fn bad_service_responses_retain_their_cause() {
         use std::error::Error;
-        let engine = EngineStub::respond("not JSON", 8);
-        let error = engine
-            .docker
-            .inspect_service_wire("test")
-            .await
-            .unwrap_err();
-        engine.task.await.unwrap();
-        assert!(error.source().unwrap().is::<serde_json::Error>());
-        assert_eq!(
-            error.to_string(),
-            "Docker request failed while decode service response"
-        );
-    }
-
-    #[tokio::test]
-    async fn truncated_service_body_retains_transport_cause() {
-        use std::error::Error;
-        let engine = EngineStub::respond("{", 20);
-        let error = engine
-            .docker
-            .inspect_service_wire("test")
-            .await
-            .unwrap_err();
-        engine.task.await.unwrap();
-        assert!(error.source().unwrap().is::<hyper::Error>());
-        assert_eq!(
-            crate::operations::OperationError::from(error).code(),
-            "docker_request_failed"
-        );
+        for (body, declared_length, decoding) in [("not JSON", 8, true), ("{", 20, false)] {
+            let engine = EngineStub::respond(body, declared_length);
+            let error = engine
+                .docker
+                .inspect_service_wire("test")
+                .await
+                .unwrap_err();
+            engine.task.await.unwrap();
+            let source = error.source().unwrap();
+            if decoding {
+                assert!(source.is::<serde_json::Error>(), "{error:?}");
+                assert_eq!(
+                    error.to_string(),
+                    "Docker request failed while decode service response"
+                );
+            } else {
+                assert!(source.is::<hyper::Error>(), "{error:?}");
+            }
+            assert_eq!(
+                crate::operations::OperationError::from(error).code(),
+                "docker_request_failed"
+            );
+        }
     }
 
     /// A secret that another request created, then removed before the

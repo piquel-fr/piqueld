@@ -482,53 +482,47 @@ mod tests {
         }
     }
 
+    /// A running node with a valid certificate is healthy, even when the
+    /// public URL is another origin, which is only reported; login and
+    /// certificate problems make it unhealthy.
     #[test]
-    fn running_node_with_valid_certificate_is_healthy() {
-        let status = observe("Running", false, 2_000).report(
-            "piqueld.tail.ts.net",
-            "https://piqueld.tail.ts.net:8443",
-            true,
-            1_000,
-        );
-        assert!(status.enabled && status.healthy);
-        assert_eq!(
-            status.message,
-            "Serving HTTPS at https://piqueld.tail.ts.net:8443"
-        );
-        assert_eq!(status.certificate_expires_at_ms, Some(2_000));
-    }
-
-    #[test]
-    fn login_and_certificate_problems_are_unhealthy() {
-        for (observation, expected) in [
+    fn reports_follow_login_certificate_and_public_url() {
+        let url = "https://piqueld.tail.ts.net:8443";
+        for (observation, public_url_matches, healthy, message) in [
+            (
+                observe("Running", false, 2_000),
+                true,
+                true,
+                "Serving HTTPS at https://piqueld.tail.ts.net:8443",
+            ),
+            (observe("Running", false, 2_000), false, true, url),
             (
                 observe("NeedsLogin", false, 2_000),
+                true,
+                false,
                 "Tailscale is NeedsLogin",
             ),
-            (observe("Running", false, 1_000), "certificate has expired"),
-            (observe("Running", true, 2_000), "refresh failed"),
-        ] {
-            let status = observation.report(
-                "piqueld.tail.ts.net",
-                "https://piqueld.tail.ts.net",
+            (
+                observe("Running", false, 1_000),
                 true,
-                1_000,
-            );
-            assert!(!status.healthy);
-            assert!(status.message.contains(expected), "{}", status.message);
+                false,
+                "certificate has expired",
+            ),
+            (
+                observe("Running", true, 2_000),
+                true,
+                false,
+                "refresh failed",
+            ),
+        ] {
+            let status = observation.report("piqueld.tail.ts.net", url, public_url_matches, 1_000);
+            assert!(status.enabled);
+            assert_eq!(status.healthy, healthy, "{}", status.message);
+            assert_eq!(status.public_url_matches, public_url_matches);
+            assert!(status.message.contains(message), "{}", status.message);
         }
-    }
-
-    #[test]
-    fn public_url_mismatch_is_reported_without_failing_the_node() {
-        let status = observe("Running", false, 2_000).report(
-            "piqueld.tail.ts.net",
-            "https://piqueld.tail.ts.net",
-            false,
-            1_000,
-        );
-        assert!(status.healthy);
-        assert!(!status.public_url_matches);
-        assert!(status.message.contains("https://piqueld.tail.ts.net"));
+        let status =
+            observe("Running", false, 2_000).report("piqueld.tail.ts.net", url, true, 1_000);
+        assert_eq!(status.certificate_expires_at_ms, Some(2_000));
     }
 }

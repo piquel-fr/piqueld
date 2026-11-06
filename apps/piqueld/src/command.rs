@@ -138,10 +138,6 @@ impl LoggedCommand {
         Ok(stdout)
     }
 
-    #[cfg(test)]
-    async fn tail(stream: impl AsyncRead + Unpin) -> anyhow::Result<Vec<u8>> {
-        Self::tail_recorded(stream, None, piqueld_core::api::LogStream::Stdout).await
-    }
     /// Reads a stream to the end, returning its last `TAIL_BYTES`.
     ///
     /// When `log` is supplied, output is appended as it arrives, holding back an
@@ -179,14 +175,7 @@ impl LoggedCommand {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn retains_only_the_tail() {
-        let mut output = vec![b'x'; LoggedCommand::TAIL_BYTES * 4];
-        output.extend_from_slice(b"final diagnostic");
-        let tail = LoggedCommand::tail(output.as_slice()).await.unwrap();
-        assert_eq!(tail, output[output.len() - LoggedCommand::TAIL_BYTES..]);
-    }
-
+    /// Failures report only the end of each stream, read to completion.
     #[tokio::test]
     async fn drains_both_streams_and_preserves_non_utf8_failures() {
         let error = LoggedCommand::run(
