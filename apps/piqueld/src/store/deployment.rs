@@ -537,7 +537,7 @@ mod tests {
     async fn saved_changes_cannot_enter_deployments_or_retries_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("db");
-        let store = Store::open(&path).await.unwrap();
+        let store = Store::open_unsynced(&path).await.unwrap();
         let saved = save(&store, empty(), 0).await;
         let id = store.saved_production(&saved).await;
         assert_eq!(
@@ -570,7 +570,7 @@ mod tests {
         let changed = save(&store, edited, 1).await;
         assert_eq!(changed.generation, 2);
         drop(store);
-        let store = Store::open(&path).await.unwrap();
+        let store = Store::open_unsynced(&path).await.unwrap();
         store.recover_interrupted().await.unwrap();
         let op = store.operation(&first.operation_id).await.unwrap();
         let attempts = store.deployment_attempts(&op.id, None, 100).await.unwrap();

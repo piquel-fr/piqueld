@@ -26,7 +26,11 @@ pub(super) struct Engine {
 impl Engine {
     async fn open() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+        let store = Arc::new(
+            Store::open_unsynced(directory.path().join("db"))
+                .await
+                .unwrap(),
+        );
         Self {
             directory,
             store,
@@ -199,7 +203,11 @@ impl Scenario {
         );
         let root = PathBuf::from(std::env::var("PIQUELD_DOCKER_DATA_DIR").unwrap());
         let directory = tempfile::tempdir_in(root).unwrap();
-        let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+        let store = Arc::new(
+            Store::open_unsynced(directory.path().join("db"))
+                .await
+                .unwrap(),
+        );
         let docker = Arc::new(BollardDocker::connect(&socket).unwrap());
         docker.ensure_swarm(true).await.unwrap();
         let mut gateway =

@@ -20,7 +20,7 @@ async fn every_documented_operation_requires_authentication() {
         "/api/v1/auth/device/poll",
     ];
     let temp = TempDir::new().unwrap();
-    let store = Arc::new(Store::open(database(&temp)).await.unwrap());
+    let store = Arc::new(Store::open_unsynced(database(&temp)).await.unwrap());
     let auth = piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap();
     let runtime = Arc::new(FakeRuntime::new(&store));
     let state = ApiState::new(store, runtime).unwrap();
@@ -443,7 +443,7 @@ async fn tailnet_bound_token(temp: &TempDir) -> (ApiState, piqueld::auth::Auth, 
     let state = state(temp).await;
     let database = database(temp);
     let admin = seed_account(&database, "admin", &[("admin", None)]).await;
-    let store = Store::open(&database).await.unwrap();
+    let store = Store::open_unsynced(&database).await.unwrap();
     let tokens = TokenPolicy {
         max_days: None,
         tailnet: true,
@@ -629,7 +629,7 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
 
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(database(&temp)).await.unwrap();
+    let store = Store::open_unsynced(database(&temp)).await.unwrap();
     let mut connection = sqlite::connect(&database(&temp)).await;
     // Leave the observability tables healthy, but break authentication reads.
     sqlx::query("ALTER TABLE auth_credentials RENAME TO unavailable_credentials")

@@ -54,7 +54,9 @@ async fn all_pages<T>(mut page: impl AsyncFnMut(Option<String>) -> Page<T>) -> V
 async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("control-plane.db");
-    let store = Store::open(&database).await.expect("fresh database opens");
+    let store = Store::open_unsynced(&database)
+        .await
+        .expect("fresh database opens");
     let application = application();
     let created = save(&store, &application).await;
     let environment = created.environment_id.clone();
@@ -79,7 +81,9 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
     assert!(store.get(&environment).await.unwrap().delete_intent());
     drop(store);
 
-    let reopened = Store::open(&database).await.expect("database reopens");
+    let reopened = Store::open_unsynced(&database)
+        .await
+        .expect("database reopens");
     let stored = reopened.get(&environment).await.unwrap();
     assert!(stored.delete_intent());
     assert_eq!(stored.resolved.unwrap(), desired);
@@ -118,7 +122,7 @@ async fn fresh_database_persists_resolved_state_and_deletion_intent() {
 #[tokio::test]
 async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation() {
     let directory = tempfile::tempdir().expect("temporary directory");
-    let store = Store::open(directory.path().join("state.db"))
+    let store = Store::open_unsynced(directory.path().join("state.db"))
         .await
         .unwrap();
     let application = application();
@@ -180,7 +184,9 @@ async fn replacement_cancels_previous_work_and_retry_reuses_the_failed_operation
 async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("control-plane.db");
-    let store = Store::open(&database).await.expect("fresh database opens");
+    let store = Store::open_unsynced(&database)
+        .await
+        .expect("fresh database opens");
     let corrupt = application();
     let healthy = application_named("app-persist-02", "archive");
     let corrupt_environment = save(&store, &corrupt).await.environment_id;
@@ -249,7 +255,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
 #[tokio::test]
 async fn deployment_history_survives_pruning_and_events_have_independent_retention() {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path().join("state.db"))
+    let store = Store::open_unsynced(directory.path().join("state.db"))
         .await
         .unwrap();
     let app = application();
@@ -293,7 +299,7 @@ async fn deployment_history_survives_pruning_and_events_have_independent_retenti
 async fn history_pages_remain_application_scoped_and_follow_id_cursors() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("history.db");
-    let store = Store::open(&database).await.unwrap();
+    let store = Store::open_unsynced(&database).await.unwrap();
     let app = application();
     let other = application_named("app-other", "other");
     let initial = store

@@ -322,7 +322,7 @@ mod tests {
     async fn failed_address_notes_are_retried() {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("db");
-        let store = Arc::new(Store::open(&database).await.unwrap());
+        let store = Arc::new(Store::open_unsynced(&database).await.unwrap());
         let user = piqueld_core::auth::User {
             id: "alice".into(),
             username: "alice".into(),
@@ -370,7 +370,7 @@ mod tests {
     async fn lost_audit_records_leave_a_marker() {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("db");
-        let store = Arc::new(Store::open(&database).await.unwrap());
+        let store = Arc::new(Store::open_unsynced(&database).await.unwrap());
         let service = ApplicationService::unconnected(Arc::clone(&store), temp.path());
         let url = format!("sqlite:{}", database.display());
         let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();

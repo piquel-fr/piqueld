@@ -62,7 +62,7 @@ mod tests {
     async fn terminal_job_failure_keeps_cleanup_atomic_and_retained() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("db");
-        let store = Store::open(&path).await.unwrap();
+        let store = Store::open_unsynced(&path).await.unwrap();
         let application = piqueld_core::parse_toml(
             "api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='jobs'\n[spec]",
         )
@@ -108,7 +108,7 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let store = Store::open(&path).await.unwrap();
+        let store = Store::open_unsynced(&path).await.unwrap();
         assert_eq!(
             store
                 .pending_job_cleanup(&operation.environment_id)

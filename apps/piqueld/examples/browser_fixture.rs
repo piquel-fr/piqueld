@@ -211,7 +211,7 @@ impl Backend {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let dir = std::path::PathBuf::from(std::env::var("PIQUELD_PLAYWRIGHT_DATA_DIR")?);
-    let store = Arc::new(Store::open(dir.join("db")).await?);
+    let store = Arc::new(Store::open_unsynced(dir.join("db")).await?);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://localhost:{}", listener.local_addr()?.port());
     let auth = piqueld::auth::Auth::new(&store, &origin)?;

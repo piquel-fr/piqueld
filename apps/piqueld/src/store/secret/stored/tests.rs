@@ -526,7 +526,7 @@ async fn migration_moves_manual_secrets_to_the_application_store_and_keeps_pins(
     let temp = tempfile::tempdir().unwrap();
     let (application, production, staging) = schema_20_with_manual_secrets(temp.path()).await;
 
-    let store = Store::open(&temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(&temp.path().join("db")).await.unwrap();
     // Production's manual secrets moved with access limited to production.
     let stored = store.stored_secrets(application.id()).await.unwrap();
     assert_eq!(

@@ -76,7 +76,7 @@ async fn captured_deployment_protects_secrets_before_pinning() {
 async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let app = application();
     let op = store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -99,7 +99,7 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
     .unwrap()
     .unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     assert!(
         store
             .secrets(&env)
@@ -158,7 +158,7 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");
     let key = temp.path().join("secrets.key");
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let app = application();
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -173,7 +173,7 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
     let versions = store.secret_names(&env).await.unwrap();
     drop(store);
     std::fs::write(&key, [42; 32]).unwrap();
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     assert!(matches!(
         store
             .put_secret(Daemon, &env, "token", 1, b"wrong key".to_vec())
@@ -256,7 +256,7 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
 async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let op = store
         .save_application(&ApplicationTemplate::from(&application()), None, None)
         .await
@@ -302,7 +302,7 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
             .is_err()
     );
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     assert_eq!(
         store.pin_secrets(&op, &app).await.unwrap(),
         pins,
@@ -347,7 +347,7 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
 async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
     let temp = tempfile::tempdir().unwrap();
     let key = temp.path().join("secrets.key");
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let app = with_secret(&application());
     let deployed = store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -433,7 +433,7 @@ async fn key_recovery_keeps_values_of_a_key_that_is_not_lost() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let key = temp.path().join("secrets.key");
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let app = with_secret(&application());
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -460,7 +460,7 @@ async fn key_recovery_keeps_values_behind_a_corrupt_verifier() {
     for webhook in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let key = temp.path().join("secrets.key");
-        let store = Store::open(temp.path().join("db")).await.unwrap();
+        let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
         let app = with_secret(&application());
         store
             .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -504,7 +504,7 @@ async fn key_recovery_keeps_values_behind_a_corrupt_verifier() {
 #[tokio::test]
 async fn key_recovery_needs_no_verifier() {
     let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let app = with_secret(&application());
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -531,7 +531,7 @@ async fn writes_bind_only_the_key_of_values_without_a_verifier() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let key = temp.path().join("secrets.key");
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let app = with_secret(&application());
     store
         .save_application(&ApplicationTemplate::from(&app), None, None)
@@ -652,7 +652,7 @@ async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
 #[tokio::test]
 async fn deployments_replace_generated_values_discarded_by_key_recovery() {
     let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let accepted = ApplicationTemplate::from(&application());
     let first = store.save_application(&accepted, None, None).await.unwrap();
     let (app, env) = (with_generated_secret(&application()), &first.environment_id);
@@ -904,7 +904,7 @@ async fn secret_key_check_reports_the_key_without_changing_it() {
     use piqueld_core::api::CheckStatus;
     let temp = tempfile::tempdir().unwrap();
     let key = temp.path().join("secrets.key");
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let status = async || store.secret_key_check().await.status;
     // A new installation has no key yet, and checking does not create one.
     assert_eq!(status().await, CheckStatus::Pass);

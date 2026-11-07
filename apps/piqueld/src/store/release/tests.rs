@@ -194,7 +194,7 @@ async fn schema_21_with_prepared_deployments(dir: &std::path::Path) -> Applicati
 async fn migration_records_releases_for_prepared_deployments() {
     let temp = tempfile::tempdir().unwrap();
     let application = schema_21_with_prepared_deployments(temp.path()).await;
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
 
     let releases = store.releases(&application, None, 10).await.unwrap().items;
     let [release] = releases.as_slice() else {
@@ -225,7 +225,7 @@ async fn migration_records_releases_for_prepared_deployments() {
     );
     // Recording is idempotent across restarts.
     drop(store);
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     assert_eq!(
         store
             .releases(&application, None, 10)

@@ -671,7 +671,11 @@ mod tests {
     impl Harness {
         async fn new() -> Self {
             let directory = tempfile::tempdir().unwrap();
-            let store = Arc::new(Store::open(directory.path().join("db")).await.unwrap());
+            let store = Arc::new(
+                Store::open_unsynced(directory.path().join("db"))
+                    .await
+                    .unwrap(),
+            );
             let socket = directory.path().join("unused.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             Self {
