@@ -50,6 +50,7 @@ pub use webhooks::webhook_router;
 pub use crate::api::ApplicationService as ApiState;
 use error::ApiError;
 use extract::{ApiJson, ApiPath, ApiQuery, QueryParams};
+pub use lease::ConnectionTiming;
 pub use openapi::openapi_document;
 pub use ui::{EmbeddedBundle, UiAssets};
 
