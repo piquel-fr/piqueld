@@ -61,7 +61,7 @@ use sqlx::{
     query::Query,
     sqlite::{
         SqliteArguments, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions,
-        SqliteQueryResult,
+        SqliteQueryResult, SqliteSynchronous,
     },
 };
 use std::{
@@ -620,6 +620,26 @@ impl Store {
         Ok(())
     }
 
+    /// How every connection opens the database at `path`, creating it if
+    /// missing.
+    fn connect_options(path: &Path) -> SqliteConnectOptions {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        // The daemon keeps SQLite's default, `FULL`, so a commit survives a
+        // power loss. Test builds throw their stores away, so they never wait
+        // on the disk: a commit still reaches the operating system, which
+        // keeps it across the process exiting.
+        if cfg!(any(test, feature = "fake-docker")) {
+            options.synchronous(SqliteSynchronous::Off)
+        } else {
+            options
+        }
+    }
+
     /// Opens a local `SQLite` database, applies forward migrations, and creates or loads its instance ID.
     ///
     /// 1. Refuses symlinks and non-regular files at `path`.
@@ -636,12 +656,6 @@ impl Store {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
         ensure_database_target(path)?;
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .foreign_keys(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .acquire_timeout(Duration::from_secs(5))
@@ -660,7 +674,7 @@ impl Store {
                     Ok(!connection.is_in_transaction())
                 })
             })
-            .connect_with(options)
+            .connect_with(Self::connect_options(path))
             .await
             .map_err(StoreError::database)?;
 
