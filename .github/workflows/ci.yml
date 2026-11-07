@@ -19,8 +19,9 @@
 # ones (Docker, Playwright, macOS, Nix, packaging) wait until the pull request is marked
 # ready, so iterating on a draft stays cheap. `docs` runs on every pull
 # request, as its links point all over the repository and any change can
-# break one. Pushes to main and manual runs run everything, and build every
-# Nix package.
+# break one. Merge queue entries, pushes to main and manual runs run
+# everything, and build every Nix package: the queue tests each pull request on
+# top of the latest main before it merges.
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
@@ -34,6 +35,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -336,7 +338,7 @@ jobs:
   # out-links so the cache action's garbage collection keeps them; without
   # roots it deletes them, and every run rebuilds every dependency. Pull
   # requests only evaluate the other packages, which share these sources;
-  # main builds them too.
+  # main and the merge queue build them too.
   nix:
     name: nix packages
     needs: changes
