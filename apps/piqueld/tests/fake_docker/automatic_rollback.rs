@@ -4,7 +4,7 @@ use piqueld_core::{api::DeploymentOrigin, manifest::Rollback};
 /// An application with a job whose `production` environment has
 /// `rollback`.
 fn manifest(rollback: Option<Rollback>) -> ApplicationManifest {
-    let mut manifest = manifest_with_jobs(&["migrate"], 300);
+    let mut manifest = migration();
     manifest
         .spec
         .set_environment_rollback("production", rollback);

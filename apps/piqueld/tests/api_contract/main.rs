@@ -75,15 +75,18 @@ fn admin_token() -> String {
     format!("{:x<43}", "contract-admin")
 }
 
-/// Holds secret removal once it starts, until released.
+/// Holds a fake runtime call once it starts, until released.
 #[derive(Default)]
-struct CleanupGate {
+struct Gate {
     started: tokio::sync::Notify,
     release: tokio::sync::Notify,
 }
 
 struct FakeRuntime {
-    cleanup_gate: Option<Arc<CleanupGate>>,
+    /// Holds secret removal, when given.
+    cleanup_gate: Option<Arc<Gate>>,
+    /// Holds creating a command named `held`.
+    exec_gate: Gate,
     instance: InstanceId,
     unavailable: AtomicBool,
 }
@@ -93,6 +96,7 @@ impl FakeRuntime {
     fn new(store: &Store) -> Self {
         Self {
             cleanup_gate: None,
+            exec_gate: Gate::default(),
             instance: store.instance_id().clone(),
             unavailable: AtomicBool::new(false),
         }
@@ -171,14 +175,15 @@ impl RuntimeBoundary for FakeRuntime {
 
     /// Only `web` has a running task. A command named `block` never reads
     /// its input, one named `hang` echoes it but never stops or exits, and one named
-    /// `slow` takes two seconds to create.
+    /// `held` is created once [`Self::exec_gate`] releases it.
     async fn create_exec(
         &self,
         _environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
     ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
-        if request.command.as_slice()[0] == "slow" {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+        if request.command.as_slice()[0] == "held" {
+            self.exec_gate.started.notify_one();
+            self.exec_gate.release.notified().await;
         }
         let id = match request.command.as_slice()[0].as_str() {
             "block" => "exec-blocked",
@@ -750,71 +755,6 @@ impl Drop for Server {
     }
 }
 
-async fn create_and_inspect(client: &Client, manifest: &ApplicationManifest) -> Deployed {
-    let mut request = ApplyApplicationRequest {
-        expected_generation: Some(0),
-        expected_application_id: None,
-        manifest: manifest.clone(),
-    };
-    let created = client
-        .apply_and_deploy(&request)
-        .await
-        .expect("apply succeeds");
-    request.expected_generation = Some(created.generation);
-    request.expected_application_id = Some(created.application_id.clone());
-    let replay = client
-        .apply_and_deploy(&request)
-        .await
-        .expect("apply retry succeeds");
-    assert_ne!(created.operation_id, replay.operation_id);
-    let summaries = client.applications().await.unwrap();
-    assert_eq!(summaries.items.len(), 1);
-    assert_eq!(
-        summaries.items[0].id,
-        created.application_id.parse().unwrap()
-    );
-    assert_eq!(summaries.items[0].name, "notes");
-    let summary_json = serde_json::to_value(&summaries.items[0]).unwrap();
-    assert!(summary_json.get("application").is_none());
-    let application = client
-        .application(&created.application_id)
-        .await
-        .expect("full application read succeeds");
-    assert_eq!(application.application.spec().services.len(), 1);
-    let detail = client
-        .environment_detail(&created.environment_id)
-        .await
-        .expect("detail succeeds");
-    assert_eq!(
-        detail.application.application.id().as_str(),
-        created.application_id
-    );
-    assert_eq!(detail.application.application.spec().services.len(), 1);
-    assert!(detail.observed.services.is_empty());
-    assert_eq!(detail.environment.resolved_generation, None);
-    assert!(detail.diagnostics.is_empty());
-    assert_eq!(
-        client.operation(&created.operation_id).await.unwrap().kind,
-        piqueld_core::OperationKind::Refresh
-    );
-    replay
-}
-
-async fn delete(client: &Client, created: &Deployed) {
-    let deleted = client
-        .delete_application_with_generation(&created.application_id, Some(created.generation))
-        .await
-        .expect("delete succeeds");
-    assert_eq!(
-        client
-            .operation(&deleted.operations[0].operation_id)
-            .await
-            .unwrap()
-            .kind,
-        piqueld_core::OperationKind::Delete
-    );
-}
-
 /// The contract daemon served over TCP, with a client, until dropped.
 struct AcceptanceApi {
     client: Client,
@@ -1025,6 +965,7 @@ struct Deployed {
 /// `accounts:manage`, and an `auditor` holding only `audit:read`.
 struct GrantFixture {
     temp: TempDir,
+    runtime: Arc<FakeRuntime>,
     state: ApiState,
     auth: piqueld::auth::Auth,
     router: axum::Router,
@@ -1046,7 +987,7 @@ impl GrantFixture {
         // Authentication shares the store, which tells connections that
         // access changed.
         let store = Arc::new(Store::open(&database).await.unwrap());
-        let (_, state) = contract_state(&temp, Arc::clone(&store)).await;
+        let (runtime, state) = contract_state(&temp, Arc::clone(&store)).await;
         let mut ids = Vec::new();
         for name in ["blog", "shop"] {
             let mut input = manifest();
@@ -1066,6 +1007,7 @@ impl GrantFixture {
         Self {
             temp,
             router: api_router(state.clone(), auth.clone()),
+            runtime,
             state,
             auth,
             blog,

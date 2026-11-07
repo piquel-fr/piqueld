@@ -1,8 +1,8 @@
 //! Scenarios every [`DockerApi`] adapter passes, so `FakeDocker`, which the
 //! controller tests run against, behaves like the real Engine where the
-//! controller relies on it. `fake_docker.rs` runs them against the fake and
-//! `docker_integration.rs` against an isolated Engine: each declares one test
-//! per scenario through [`scenarios`].
+//! controller relies on it. `fake_docker/main.rs` runs them against the fake
+//! and `docker_integration.rs` against an isolated Engine: each declares one
+//! test per scenario through [`scenarios`].
 
 use crate::poll::eventually;
 use piqueld::docker::{DockerApi, DockerError, Exec, ExecIo, JobOutput, JobRuns, JobStatus};

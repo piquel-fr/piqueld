@@ -2,8 +2,10 @@
 
 use super::*;
 
+/// A requested image pinned by digest parses, passes the resolution check
+/// and compiles: the only compile-path test of a digest-pinned request.
 #[tokio::test]
-async fn fake_runtime_accepts_digest_pinned_requested_images() {
+async fn digest_pinned_requested_images_compile() {
     let mut input = manifest();
     let Source::Image { image } = &mut input.spec.services[0].source else {
         panic!("expected image fixture")
@@ -15,6 +17,7 @@ async fn fake_runtime_accepts_digest_pinned_requested_images() {
         .normalize(piqueld_core::ApplicationId::parse("app-digest-fixture").unwrap());
     let runtime = FakeRuntime {
         cleanup_gate: None,
+        exec_gate: Gate::default(),
         instance: InstanceId::parse("test").unwrap(),
         unavailable: AtomicBool::new(false),
     };
@@ -315,7 +318,7 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
     let temp = tempfile::tempdir().unwrap();
     let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
     let client = server.client();
-    let app = create_and_inspect(&client, &manifest()).await;
+    let app = client.apply_and_deploy(&new_application()).await.unwrap();
     let logs = client
         .environment_logs(&app.environment_id, Some("web"), 5, 60)
         .await
@@ -334,13 +337,12 @@ async fn application_log_snapshot_validates_bounds_and_preserves_task_identity()
         .await
         .unwrap();
     assert!(stderr.items.is_empty());
-    for (tail, since) in [(0, 60), (1001, 60), (5, 0), (5, 86401)] {
-        let error = client
-            .environment_logs(&app.environment_id, Some("web"), tail, since)
-            .await
-            .unwrap_err();
-        assert_eq!(api_error(error).status, 400);
-    }
+    // The service checks every bound; HTTP answers a refused one with 400.
+    let error = client
+        .environment_logs(&app.environment_id, Some("web"), 0, 60)
+        .await
+        .unwrap_err();
+    assert_eq!(api_error(error).status, 400);
 }
 
 #[tokio::test]

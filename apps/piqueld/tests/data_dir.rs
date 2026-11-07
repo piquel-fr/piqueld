@@ -4,7 +4,7 @@
 mod fixture_dir;
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
     piqueld::prepare_data_dir(fixture_dir::relative(path)).await
@@ -19,11 +19,15 @@ fn fixture() -> tempfile::TempDir {
 /// Asserts `path` is refused as a data directory with `kind`, and an error
 /// message containing `message`, which may be empty.
 async fn assert_refused(path: &Path, kind: ErrorKind, message: &str) {
-    let error = prepare_data_dir(path)
-        .await
-        .expect_err("the data directory is refused");
-    assert_eq!(error.kind(), kind);
-    assert!(error.to_string().contains(message), "{error}");
+    let Err(error) = prepare_data_dir(path).await else {
+        panic!("{} is accepted as a data directory", path.display());
+    };
+    assert_eq!(error.kind(), kind, "{}: {error}", path.display());
+    assert!(
+        error.to_string().contains(message),
+        "{}: {error}",
+        path.display()
+    );
 }
 
 #[tokio::test]
@@ -79,68 +83,65 @@ async fn permissive_data_dir_is_rejected_without_chmodding_it() {
     assert_eq!(fixture_dir::mode(&data_dir), 0o755);
 }
 
+/// Data directories that could be replaced, shared or are no directory of
+/// their own are refused with their reason, if it is specific.
 #[tokio::test]
-async fn unsafe_writable_ancestor_is_rejected() {
-    let directory = fixture();
-    let shared = directory.path().join("shared");
-    let data_dir = shared.join("piqueld");
-    std::fs::create_dir_all(&data_dir).expect("data directory tree is created");
-    fixture_dir::set_mode(&shared, 0o777);
-    fixture_dir::set_mode(&data_dir, 0o700);
-
-    assert_refused(&data_dir, ErrorKind::PermissionDenied, "ancestor").await;
-}
-
-#[tokio::test]
-async fn symlinked_data_dir_is_rejected() {
-    let directory = fixture();
-    let target = directory.path().join("target");
-    std::fs::create_dir(&target).expect("target directory is created");
-    let link = directory.path().join("link");
-    std::os::unix::fs::symlink(&target, &link).expect("data dir symlink is created");
-
-    assert_refused(&link, ErrorKind::InvalidInput, "not a real directory").await;
-}
-
-#[tokio::test]
-async fn symlinked_intermediate_component_is_rejected() {
-    let directory = fixture();
-    let real = directory.path().join("real");
-    std::fs::create_dir_all(real.join("piqueld")).expect("real directory tree is created");
-    let link = directory.path().join("link");
-    std::os::unix::fs::symlink(&real, &link).expect("intermediate symlink is created");
-
-    assert_refused(&link.join("piqueld"), ErrorKind::InvalidInput, "").await;
-}
-
-#[tokio::test]
-async fn parent_component_paths_are_rejected() {
-    let directory = fixture();
-    let path = directory.path().join("state").join("..").join("piqueld");
-
-    assert_refused(&path, ErrorKind::InvalidInput, "parent component").await;
-}
-
-#[tokio::test]
-async fn non_directory_data_path_is_rejected() {
-    let directory = fixture();
-    let file = directory.path().join("file");
-    std::fs::write(&file, b"not a directory").expect("file is written");
-
-    assert_refused(&file, ErrorKind::InvalidInput, "").await;
-}
-
-#[tokio::test]
-async fn paths_without_a_dedicated_directory_are_rejected() {
-    for path in ["", ".", "./"] {
-        let error = piqueld::prepare_data_dir(Path::new(path))
-            .await
-            .expect_err("path without a dedicated directory is rejected");
-        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+async fn unsafe_data_dirs_are_rejected() {
+    type Case = (fn(&Path) -> PathBuf, ErrorKind, &'static str);
+    let cases: [Case; 9] = [
+        (
+            |directory| {
+                let shared = directory.join("shared");
+                std::fs::create_dir_all(shared.join("piqueld")).expect("tree is created");
+                fixture_dir::set_mode(&shared, 0o777);
+                fixture_dir::set_mode(&shared.join("piqueld"), 0o700);
+                shared.join("piqueld")
+            },
+            ErrorKind::PermissionDenied,
+            "ancestor",
+        ),
+        (
+            |directory| {
+                let target = directory.join("target");
+                std::fs::create_dir(&target).expect("target directory is created");
+                std::os::unix::fs::symlink(&target, directory.join("link")).expect("symlink");
+                directory.join("link")
+            },
+            ErrorKind::InvalidInput,
+            "not a real directory",
+        ),
+        (
+            |directory| {
+                let real = directory.join("real");
+                std::fs::create_dir_all(real.join("piqueld")).expect("tree is created");
+                std::os::unix::fs::symlink(&real, directory.join("link")).expect("symlink");
+                directory.join("link").join("piqueld")
+            },
+            ErrorKind::InvalidInput,
+            "",
+        ),
+        (
+            |directory| directory.join("state").join("..").join("piqueld"),
+            ErrorKind::InvalidInput,
+            "parent component",
+        ),
+        (
+            |directory| {
+                std::fs::write(directory.join("file"), b"not a directory").expect("file");
+                directory.join("file")
+            },
+            ErrorKind::InvalidInput,
+            "",
+        ),
+        // Paths without a dedicated directory.
+        (|_| PathBuf::from("/"), ErrorKind::InvalidInput, ""),
+        (|_| PathBuf::new(), ErrorKind::InvalidInput, ""),
+        (|_| PathBuf::from("."), ErrorKind::InvalidInput, ""),
+        (|_| PathBuf::from("./"), ErrorKind::InvalidInput, ""),
+    ];
+    for (setup, kind, message) in cases {
+        let directory = fixture();
+        let path = setup(directory.path());
+        assert_refused(&path, kind, message).await;
     }
-}
-
-#[tokio::test]
-async fn root_directory_is_rejected() {
-    assert_refused(Path::new("/"), ErrorKind::InvalidInput, "").await;
 }

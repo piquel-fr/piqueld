@@ -42,7 +42,7 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
     let api = router(state(&temp).await, FakeAuth);
     let server = Server::tcp(api.clone()).await;
     let client = server.client();
-    let app = create_and_inspect(&client, &manifest()).await;
+    let app = client.apply_and_deploy(&new_application()).await.unwrap();
     let none = SecretAccess {
         environments: EnvironmentAccess::Only([].into()),
         previews: false,
@@ -107,7 +107,11 @@ async fn stored_secret_uploads_check_their_headers_first() {
     let temp = tempfile::tempdir().unwrap();
     let api = router(state(&temp).await, FakeAuth);
     let server = Server::tcp(api.clone()).await;
-    let app = create_and_inspect(&server.client(), &manifest()).await;
+    let app = server
+        .client()
+        .apply_and_deploy(&new_application())
+        .await
+        .unwrap();
     let mut repeated = put_stored_token(&app.application_id, "", 0, "value");
     let headers = repeated.headers_mut();
     headers.append("x-expected-generation", "1".parse().unwrap());
@@ -130,7 +134,7 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     let api = router(state(&temp).await, FakeAuth);
     let server = Server::tcp(api.clone()).await;
     let client = server.client();
-    let app = create_and_inspect(&client, &manifest()).await;
+    let app = client.apply_and_deploy(&new_application()).await.unwrap();
     let response = api
         .send(put_stored_token(
             &app.application_id,
@@ -211,7 +215,7 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let temp = tempfile::tempdir().unwrap();
     let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
     let client = server.client();
-    let app = create_and_inspect(&client, &manifest()).await;
+    let app = client.apply_and_deploy(&new_application()).await.unwrap();
     client
         .put_stored_secret(&app.application_id, "token", 0, b"value".to_vec(), None)
         .await
@@ -261,7 +265,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
         .unwrap()
         .normalize(piqueld_core::ApplicationId::parse("app-cleanup").unwrap());
     store.save_application(&app, None, None).await.unwrap();
-    let gate = Arc::new(CleanupGate::default());
+    let gate = Arc::new(Gate::default());
     let runtime = Arc::new(FakeRuntime {
         cleanup_gate: Some(gate.clone()),
         ..FakeRuntime::new(&store)
