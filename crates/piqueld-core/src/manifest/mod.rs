@@ -202,19 +202,6 @@ impl NormalizedApplication {
         self
     }
 
-    /// Fetches the manifest from another branch or commit for one deployment.
-    ///
-    /// # Errors
-    ///
-    /// Rejects applications without a manifest repository and invalid revisions.
-    pub fn with_manifest_revision(
-        mut self,
-        revision: &ManifestRevision,
-    ) -> Result<Self, ValidationErrors> {
-        revision.apply(&mut self.spec.manifest)?;
-        Ok(self)
-    }
-
     /// Pins `"self"` Git sources to `commit`, the revision this manifest was read
     /// from. Deployments prepare the pinned application; saved configuration
     /// keeps `"self"`.
