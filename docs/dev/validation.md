@@ -5,14 +5,15 @@ code, so each job builds the workspace once, and run in parallel. Pull requests
 run only the jobs whose inputs changed, and drafts only the quick ones: Docker,
 Playwright, macOS, Nix, and packaging jobs wait until a pull request is marked
 ready.
-The `docs` job runs on every pull request. Pushes to main run every job. The
-`ci` job summarizes them: it fails if any job failed. Failed checks do not
-cancel unrelated jobs.
+The `docs` job runs on every pull request. Pull requests merge through a merge
+queue, which tests each one on top of the latest main; merge queue entries and
+pushes to main run every job. The `ci` job summarizes them: it fails if any job
+failed. Failed checks do not cancel unrelated jobs.
 
 Rust build caches are scoped to jobs and saved from main only; pull requests
 restore them. The Nix job caches the store, including crane's dependency builds
-and the dashboard. Pull requests build the combined package; main builds every
-package. Dashboard tools are cached by version.
+and the dashboard. Pull requests build the combined package; main and the merge
+queue build every package. Dashboard tools are cached by version.
 
 | Capability | Local recipe | CI job |
 | --- | --- | --- |

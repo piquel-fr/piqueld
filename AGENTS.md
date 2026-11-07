@@ -20,6 +20,9 @@ done. Drafts run only the quick CI jobs; marking a pull request ready runs the
 slow ones (Docker, Playwright, macOS, Nix, packaging), which it must pass
 before merging.
 
+`main` merges through a merge queue: `gh pr merge` adds a pull request to it,
+and the queue reruns CI on top of the latest main. Never merge with `--admin`.
+
 `docs/dev/releasing.md` describes versions and releases.
 
 ## Adding features
