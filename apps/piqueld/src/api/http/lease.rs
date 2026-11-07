@@ -14,8 +14,29 @@ use tokio::{sync::watch, time::Instant};
 /// binding. Revocations and grant changes are rechecked at once.
 pub(super) const RECHECK: Duration = Duration::from_secs(30);
 
-/// How often a lease looks for a due recheck or shutdown.
-const TICK: Duration = Duration::from_secs(1);
+/// How long-lived connections are paced. The daemon uses the defaults;
+/// tests shorten them to see a connection end without waiting seconds.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectionTiming {
+    /// How often a lease looks for a due recheck or shutdown.
+    pub tick: Duration,
+    /// How often a command's client is pinged, which notices one that left
+    /// within two intervals even while its input is not read.
+    pub ping: Duration,
+    /// How long a stopped command gets to wind down, and then to deliver its
+    /// final message and close.
+    pub close: Duration,
+}
+
+impl Default for ConnectionTiming {
+    fn default() -> Self {
+        Self {
+            tick: Duration::from_secs(1),
+            ping: Duration::from_secs(5),
+            close: Duration::from_secs(5),
+        }
+    }
+}
 
 /// Why a long-lived connection ended early.
 pub(super) enum Ended {
@@ -88,7 +109,7 @@ impl Lease {
         mut check: impl FnMut(ApiState, Identity) -> F,
     ) -> Ended {
         loop {
-            tokio::time::sleep(TICK).await;
+            tokio::time::sleep(self.state.connection_timing().tick).await;
             if self.due()
                 && let Err(ended) = self.recheck(&mut check).await
             {

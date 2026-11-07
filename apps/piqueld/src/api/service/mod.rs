@@ -605,6 +605,8 @@ pub struct ApplicationService {
     webhook_hostname: Option<piqueld_core::manifest::Hostname>,
     /// Cancelled when the daemon shuts down, ending long-lived connections.
     shutdown: tokio_util::sync::CancellationToken,
+    /// How those long-lived connections are paced.
+    connection_timing: crate::api::http::ConnectionTiming,
     /// Branch listings shared by concurrent preview reads.
     listings: Arc<crate::git::Listings>,
     /// Budgets of expensive work (see [`Self::admit`]).
@@ -651,6 +653,7 @@ impl ApplicationService {
             hints: Arc::default(),
             webhook_hostname: None,
             shutdown: tokio_util::sync::CancellationToken::new(),
+            connection_timing: crate::api::http::ConnectionTiming::default(),
             listings: Arc::default(),
             admission: Arc::default(),
             notifier: notification_worker::Notifier::new()
@@ -680,6 +683,19 @@ impl ApplicationService {
     #[must_use]
     pub fn shutdown(&self) -> &tokio_util::sync::CancellationToken {
         &self.shutdown
+    }
+
+    /// Paces long-lived connections with `timing` instead of the defaults.
+    #[must_use]
+    pub fn with_connection_timing(mut self, timing: crate::api::http::ConnectionTiming) -> Self {
+        self.connection_timing = timing;
+        self
+    }
+
+    /// How long-lived connections are paced.
+    #[must_use]
+    pub fn connection_timing(&self) -> crate::api::http::ConnectionTiming {
+        self.connection_timing
     }
 
     /// Notifies after every change to accounts, credentials, or grants.

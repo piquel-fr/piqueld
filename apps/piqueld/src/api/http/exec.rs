@@ -1,6 +1,6 @@
 //! `WebSocket` connections streaming one-off commands. See `piqueld_core::exec`.
 use super::{
-    ApiError, ApiPath, ApiState,
+    ApiError, ApiPath, ApiState, ConnectionTiming,
     access::Audit,
     auth::{FreshTailnet, TailnetSource},
     extract::decode_json,
@@ -34,14 +34,9 @@ use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-/// How long the daemon waits to deliver the final message and close.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a client may take to send its `ExecRequest` once connected, so
 /// a connection that sends nothing never keeps its exec slot.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// How often the daemon pings a client, which notices one that left within
-/// two intervals even while it is not reading the client's input.
-const PING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A WebSocket upgrade whose rejections use the API's JSON errors.
 pub(super) struct ExecUpgrade(WebSocketUpgrade);
@@ -80,6 +75,7 @@ pub(super) async fn exec(
     let id = EnvironmentId::parse(id)?;
     let request_id = audit.request_id().map(str::to_owned);
     let admitted = state.admit(Expensive::Exec)?;
+    let timing = state.connection_timing();
     Ok(upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .on_failed_upgrade(|error| tracing::warn!(?error, "exec connection upgrade failed"))
@@ -111,7 +107,8 @@ pub(super) async fn exec(
                     Err(Ended::Refused(error)) => return Err(error),
                     Err(Ended::Shutdown) => return Ok(None),
                 }
-                Ok(relay(session, reader, &mut writer, lease.ended(check)).await)
+                let ended = lease.ended(check);
+                Ok(relay(session, reader, &mut writer, ended, timing).await)
             }
             .await;
             // `None` means the client left, so there is nothing to report.
@@ -154,7 +151,7 @@ pub(super) async fn exec(
                 }
                 let _ = writer.close().await;
             };
-            let _ = tokio::time::timeout(CLOSE_TIMEOUT, finish).await;
+            let _ = tokio::time::timeout(timing.close, finish).await;
         }))
 }
 
@@ -188,7 +185,7 @@ async fn read_request(reader: &mut SplitStream<WebSocket>) -> Result<ExecRequest
 }
 
 /// Relays messages between the client and the running command until it
-/// exits, the client leaves, or `ended` resolves. Returns `None` when the
+/// exits, the client leaves, or `ended` resolves, paced by `timing`. Returns `None` when the
 /// command failed because the client left, since that is neither a failure to
 /// record nor one anybody can receive, and when the daemon shuts down.
 async fn relay(
@@ -196,6 +193,7 @@ async fn relay(
     mut reader: SplitStream<WebSocket>,
     writer: &mut SplitSink<WebSocket, Message>,
     ended: impl Future<Output = Ended>,
+    timing: ConnectionTiming,
 ) -> Option<Result<i64, ApiError>> {
     let (input, input_rx) = mpsc::channel(16);
     let (output_tx, mut output) = mpsc::channel::<ExecOutput>(16);
@@ -218,7 +216,7 @@ async fn relay(
     // notice a client that left while it waits. Returns whether every frame
     // was delivered.
     let writing = async {
-        let mut ping = tokio::time::interval_at(Instant::now() + PING_INTERVAL, PING_INTERVAL);
+        let mut ping = tokio::time::interval_at(Instant::now() + timing.ping, timing.ping);
         loop {
             let message = tokio::select! {
                 frame = output.recv() => match frame {
@@ -261,7 +259,7 @@ async fn relay(
     reading.abort();
     if finished.is_none() {
         stop.cancel();
-        finished = tokio::time::timeout(CLOSE_TIMEOUT, &mut running).await.ok();
+        finished = tokio::time::timeout(timing.close, &mut running).await.ok();
     }
     match early {
         Some(Ended::Refused(error)) => return Some(Err(error)),

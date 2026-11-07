@@ -322,7 +322,15 @@ async fn exec_sessions_end_once_access_is_lost() {
     use tokio_tungstenite::tungstenite::Message;
     let f = GrantFixture::new().await;
     let database = database(&f.temp);
-    let server = f.serve().await;
+    // Access changes are noticed, and a runtime that never stops is given
+    // up on, within milliseconds.
+    let timing = piqueld::api::http::ConnectionTiming {
+        tick: Duration::from_millis(10),
+        close: Duration::from_millis(100),
+        ..Default::default()
+    };
+    let state = f.state.clone().with_connection_timing(timing);
+    let server = Server::tcp(api_router(state, f.auth.clone())).await;
     let admin = admin_token();
     // Deleting an account needs another administrator able to sign in.
     execute(&database, "INSERT INTO auth_passkeys(id,user_id,name,credential,created_at) VALUES('key','contract-admin','key','{}',1)").await;
@@ -371,7 +379,7 @@ async fn exec_sessions_end_once_access_is_lost() {
             200,
             "{name}"
         );
-        // A runtime that never stops gets five seconds to wind down.
+        // A runtime that never stops gets `timing.close` to wind down.
         let last = tokio::time::timeout(Duration::from_secs(10), next())
             .await
             .expect("the session ends promptly");
@@ -441,7 +449,13 @@ async fn exec_notices_a_client_that_left_behind_unread_input() {
     let state = state(&temp).await;
     let saved = save(&state, manifest()).await;
     let environment = production(&state, &saved.application_id).await;
-    let server = Server::tcp(router(state.clone(), FakeAuth)).await;
+    // Pings notice the client is gone within milliseconds.
+    let timing = piqueld::api::http::ConnectionTiming {
+        ping: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let paced = state.clone().with_connection_timing(timing);
+    let server = Server::tcp(router(paced, FakeAuth)).await;
     let mut socket = open_exec(server.address(), environment.as_str(), None, "block").await;
     // More input than the relay buffers, so it stops reading the connection.
     for _ in 0..32 {
