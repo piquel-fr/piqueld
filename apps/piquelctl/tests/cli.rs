@@ -3478,29 +3478,30 @@ fn wait_server(states: Vec<&'static str>, details: Vec<Value>) -> TestServer {
     })
 }
 
+/// By default `env wait` returns once the runtime is healthy, with its URL
+/// still pending; `--ready routes` also waits for the URL.
 #[test]
-fn wait_follows_one_deployment_until_its_routes_are_ready() {
-    let server = wait_server(
-        vec!["running", "succeeded"],
-        vec![
-            detail("operation-01", false, "pending"),
-            detail("operation-01", true, "pending"),
-            detail("operation-01", true, "ready"),
-        ],
-    );
-    let output = run_with_timeout(
-        &server,
-        &["env", "wait", "app-notes-01", "--ready", "routes"],
-        "10s",
-    );
-    let result = assert_json_success(&output);
-    server.stop();
-    assert_eq!(result["deployment_id"], "operation-01");
-    assert_eq!(result["outcome"], "succeeded");
-    assert_eq!(result["urls"][0]["state"], "ready");
-    // Every stderr line is a progress event while waiting.
-    for line in String::from_utf8_lossy(&output.stderr).lines() {
-        assert!(serde_json::from_str::<Value>(line).unwrap()["progress"].is_object());
+fn wait_follows_one_deployment_until_it_is_ready() {
+    for (ready, url_state) in [(&[][..], "pending"), (&["--ready", "routes"], "ready")] {
+        let server = wait_server(
+            vec!["running", "succeeded"],
+            vec![
+                detail("operation-01", false, "pending"),
+                detail("operation-01", true, "pending"),
+                detail("operation-01", true, "ready"),
+            ],
+        );
+        let arguments = [&["env", "wait", "app-notes-01"][..], ready].concat();
+        let output = run_with_timeout(&server, &arguments, "10s");
+        let result = assert_json_success(&output);
+        server.stop();
+        assert_eq!(result["deployment_id"], "operation-01");
+        assert_eq!(result["outcome"], "succeeded");
+        assert_eq!(result["urls"][0]["state"], url_state, "{ready:?}");
+        // Every stderr line is a progress event while waiting.
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            assert!(serde_json::from_str::<Value>(line).unwrap()["progress"].is_object());
+        }
     }
 }
 
