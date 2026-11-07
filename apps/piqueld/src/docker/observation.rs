@@ -500,49 +500,32 @@ mod tests {
         assert!(!observe(None));
     }
 
+    /// Running tasks converge once healthy when a health check is
+    /// configured, and a service scaled to zero once its tasks stopped.
     #[test]
-    fn disabled_healthcheck_counts_running_tasks_as_healthy() {
-        let health = HealthConfig {
-            test: Some(vec!["NONE".into()]),
-            ..Default::default()
-        };
-        let configured = BollardDocker::healthcheck_configured(&health);
-        assert!(!configured);
-        assert_eq!(
-            BollardDocker::convergence(&[running(None)], 1, None, configured),
-            Convergence::Converged
-        );
-    }
-
-    #[test]
-    fn services_scaled_to_zero_converge_once_their_tasks_stopped() {
+    fn convergence_follows_task_states_and_health() {
         let stopping = ObservedTask {
             desired_running: false,
             ..running(None)
         };
-        assert_eq!(
-            BollardDocker::convergence(&[stopping], 0, None, false),
-            Convergence::Updating
-        );
-        assert_eq!(
-            BollardDocker::convergence(&[], 0, None, false),
-            Convergence::Converged
-        );
-    }
-
-    #[test]
-    fn pending_healthcheck_does_not_count_as_converged() {
-        assert_eq!(
-            BollardDocker::convergence(&[running(None)], 1, None, true),
-            Convergence::Updating
-        );
-        assert_eq!(
-            BollardDocker::convergence(&[running(Some(true))], 1, None, true),
-            Convergence::Converged
-        );
-        assert_eq!(
-            BollardDocker::convergence(&[running(None)], 1, None, false),
-            Convergence::Converged
-        );
+        for (tasks, replicas, healthcheck, expected) in [
+            (vec![running(None)], 1, true, Convergence::Updating),
+            (vec![running(Some(true))], 1, true, Convergence::Converged),
+            (vec![running(None)], 1, false, Convergence::Converged),
+            (vec![stopping], 0, false, Convergence::Updating),
+            (vec![], 0, false, Convergence::Converged),
+        ] {
+            assert_eq!(
+                BollardDocker::convergence(&tasks, replicas, None, healthcheck),
+                expected,
+                "{tasks:?} {healthcheck}"
+            );
+        }
+        // `NONE` disables the image's health check.
+        let disabled = HealthConfig {
+            test: Some(vec!["NONE".into()]),
+            ..Default::default()
+        };
+        assert!(!BollardDocker::healthcheck_configured(&disabled));
     }
 }

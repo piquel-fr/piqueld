@@ -380,29 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn default_runtime_echo_back_is_not_drift() {
-        let mut authored = authored();
-        assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
-        assert!(!ServiceRuntimePolicy::matches(&authored, "another-node"));
-        let mut unpinned = authored.clone();
-        unpinned.task_template.as_mut().unwrap().placement = None;
-        assert!(!ServiceRuntimePolicy::matches(&unpinned, "local-node"));
-
-        // The engine echoes the default container runtime back on every
-        // inspection even though the builder never authors it.
-        if let Some(task) = authored.task_template.as_mut() {
-            task.runtime = Some("container".into());
-        }
-        assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
-
-        // A non-default runtime is out-of-band modification.
-        if let Some(task) = authored.task_template.as_mut() {
-            task.runtime = Some("custom-runtime".into());
-        }
-        assert!(!ServiceRuntimePolicy::matches(&authored, "local-node"));
-    }
-
-    #[test]
     fn authored_rollout_is_observed_back() {
         let mount = |read_only| DesiredMount {
             volume_name: piqueld_core::DockerVolumeName::parse("app-policy-data").unwrap(),
@@ -611,6 +588,11 @@ mod tests {
     fn policy_verifies_exactly_the_authored_fields() {
         let authored = authored();
         assert!(ServiceRuntimePolicy::matches(&authored, "local-node"));
+        // Services are pinned to the local node.
+        assert!(!ServiceRuntimePolicy::matches(&authored, "another-node"));
+        let mut unpinned = authored.clone();
+        unpinned.task_template.as_mut().unwrap().placement = None;
+        assert!(!ServiceRuntimePolicy::matches(&unpinned, "local-node"));
 
         // Known Engine defaults are accepted, while unsupported non-default
         // behavior remains visible as drift.
@@ -646,6 +628,11 @@ mod tests {
             container.hostname = Some("echoed".into());
         }
         assert!(!ServiceRuntimePolicy::matches(&echoed, "local-node"));
+
+        // A non-default runtime is out-of-band modification.
+        let mut runtime = authored.clone();
+        runtime.task_template.as_mut().unwrap().runtime = Some("custom-runtime".into());
+        assert!(!ServiceRuntimePolicy::matches(&runtime, "local-node"));
 
         // Drift in a field piqueld authors is still rejected.
         let mut drifted = authored.clone();

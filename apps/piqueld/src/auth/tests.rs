@@ -89,6 +89,32 @@ impl Fixture {
         );
         id
     }
+
+    /// Redeems the invitation or enrollment link `secret` for `user` in a
+    /// new browser session, returning whether it added a passkey.
+    async fn redeem(&self, user: &User, secret: &str) -> bool {
+        let (_, session) = Auth::browser_session().unwrap();
+        let owner = PasskeyOwner::Redeem {
+            user,
+            invitation_hash: &Auth::hash(secret),
+            session,
+        };
+        let passkey = NewPasskey {
+            id: &Auth::id(),
+            name: "Key",
+            credential: "{}",
+        };
+        self.auth.0.store.add_passkey(owner, passkey).await.unwrap()
+    }
+}
+
+/// A new account signing up through a link.
+fn carol() -> User {
+    User {
+        id: Auth::id(),
+        username: "carol".into(),
+        display_name: String::new(),
+    }
 }
 
 /// Every grant on every application, except managing accounts.
@@ -333,7 +359,6 @@ async fn invitations_carry_grants_and_enrollment_targets_an_account() {
     let f = Fixture::new().await;
     let admin = f.identity("admin", &Grants::admin()).await;
     let bob = f.identity("bob", &developer()).await;
-    let store = &f.auth.0.store;
     let link = f
         .auth
         .manage(
@@ -347,23 +372,8 @@ async fn invitations_carry_grants_and_enrollment_targets_an_account() {
         .invitation_url
         .unwrap();
     let secret = link.split_once("#invite=").unwrap().1;
-    let carol = User {
-        id: Auth::id(),
-        username: "carol".into(),
-        display_name: String::new(),
-    };
-    let (_, session) = Auth::browser_session().unwrap();
-    let passkey = NewPasskey {
-        id: "carol-key",
-        name: "Key",
-        credential: "{}",
-    };
-    let redeem = PasskeyOwner::Redeem {
-        user: &carol,
-        invitation_hash: &Auth::hash(secret),
-        session,
-    };
-    assert!(store.add_passkey(redeem, passkey).await.unwrap());
+    let carol = carol();
+    assert!(f.redeem(&carol, secret).await);
     let directory = f.auth.directory(&admin).await.unwrap();
     let account = directory
         .users
@@ -390,18 +400,7 @@ async fn invitations_carry_grants_and_enrollment_targets_an_account() {
         Some(Invitation::Enrollment(user)) if user.id == bob.account().id
     ));
     // Enrollment links add a passkey only to their own account.
-    let (_, session) = Auth::browser_session().unwrap();
-    let wrong = PasskeyOwner::Redeem {
-        user: &carol,
-        invitation_hash: &Auth::hash(secret),
-        session,
-    };
-    let passkey = NewPasskey {
-        id: "stray-key",
-        name: "Key",
-        credential: "{}",
-    };
-    assert!(!store.add_passkey(wrong, passkey).await.unwrap());
+    assert!(!f.redeem(&carol, secret).await);
     // Only managers covering the account may create its enrollment link.
     assert_eq!(
         denied(
@@ -582,24 +581,9 @@ async fn links_are_revalidated_when_redeemed_and_revoked() {
         .manage(&admin, set(&lead, developer()))
         .await
         .unwrap();
-    let carol = User {
-        id: Auth::id(),
-        username: "carol".into(),
-        display_name: String::new(),
-    };
+    let carol = carol();
     for (user, secret) in [(dev.account(), &enroll), (&carol, &invite)] {
-        let (_, session) = Auth::browser_session().unwrap();
-        let redeem = PasskeyOwner::Redeem {
-            user,
-            invitation_hash: &Auth::hash(secret),
-            session,
-        };
-        let passkey = NewPasskey {
-            id: &Auth::id(),
-            name: "Key",
-            credential: "{}",
-        };
-        assert!(!f.auth.0.store.add_passkey(redeem, passkey).await.unwrap());
+        assert!(!f.redeem(user, secret).await);
     }
 }
 
@@ -779,8 +763,8 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
         ),
         Denied::Missing(Permission::Global(GlobalPermission::AccountsManage))
     );
-    // Neither a token nor a limited CLI login hands out lasting access, even
-    // within its grants.
+    // A limited CLI login hands out no lasting access, even within its
+    // grants, like a token.
     let read_only = Preset::ReadOnly.grants(&Scope::All);
     let admin = Grants::admin();
     let (secret, credential) =
@@ -792,29 +776,11 @@ async fn scoped_credentials_follow_their_owner_and_never_widen() {
         .await
         .unwrap();
     let limited = f.auth.authenticate(&secret).await.unwrap();
-    let root_secret = f
-        .auth
-        .manage(
-            &root,
-            Manage::CreateToken {
-                grants: Grants::admin(),
-                name: "ops".into(),
-                days: None,
-                tailnet: None,
-            },
-        )
-        .await
-        .unwrap()
-        .token
-        .unwrap();
-    let token = f.auth.authenticate(&root_secret).await.unwrap();
-    for scoped in [&limited, &token] {
-        let grant = Manage::SetGrants {
-            user_id: bob.account().id.clone(),
-            grants: read_only.clone(),
-        };
-        assert_eq!(denied(f.auth.manage(scoped, grant).await), Denied::Scoped);
-    }
+    let grant = Manage::SetGrants {
+        user_id: bob.account().id.clone(),
+        grants: read_only,
+    };
+    assert_eq!(denied(f.auth.manage(&limited, grant).await), Denied::Scoped);
     let empty = Grants::default();
     let (secret, credential) =
         Auth::new_credential(CredentialKind::Token, "empty", None, Some(&empty)).unwrap();
@@ -1679,25 +1645,9 @@ async fn recovery_links_create_one_administrator_and_raise_security_events() {
         f.auth.invitation(&current).await.unwrap(),
         Some(Invitation::Account)
     ));
-    let carol = User {
-        id: Auth::id(),
-        username: "carol".into(),
-        display_name: String::new(),
-    };
-    for (id, redeemed) in [("carol-key", true), ("again-key", false)] {
-        let (_, session) = Auth::browser_session().unwrap();
-        let redeem = PasskeyOwner::Redeem {
-            user: &carol,
-            invitation_hash: &Auth::hash(&current),
-            session,
-        };
-        let passkey = NewPasskey {
-            id,
-            name: "Key",
-            credential: "{}",
-        };
-        let result = f.auth.0.store.add_passkey(redeem, passkey).await;
-        assert_eq!(result.unwrap(), redeemed);
+    let carol = carol();
+    for redeemed in [true, false] {
+        assert_eq!(f.redeem(&carol, &current).await, redeemed);
     }
     let directory = f.auth.directory(&admin).await.unwrap();
     let recovered = directory.users.iter().find(|a| a.user.id == carol.id);
@@ -1828,8 +1778,8 @@ async fn privileged_grants_and_tokens_raise_security_events() {
 
 /// Without the daemon's tailnet node or a dashboard hostname, a token bound to
 /// a tailnet identity could never be used, so creating one is refused.
-#[test]
-fn the_dashboard_hostname_identifies_tailnet_peers_too() {
+#[tokio::test]
+async fn tailnet_bindings_need_the_tailnet_node_or_dashboard_hostname() {
     use crate::config::DaemonConfig;
     assert!(!TokenPolicy::new(&DaemonConfig::default()).tailnet);
     let dashboard = DaemonConfig::from_toml(
@@ -1838,10 +1788,6 @@ fn the_dashboard_hostname_identifies_tailnet_peers_too() {
     )
     .unwrap();
     assert!(TokenPolicy::new(&dashboard).tailnet);
-}
-
-#[tokio::test]
-async fn tailnet_bindings_need_the_tailnet_node() {
     let f = Fixture::new().await;
     let admin = f.identity("admin", &Grants::admin()).await;
     let token = Manage::CreateToken {

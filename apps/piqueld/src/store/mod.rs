@@ -1194,10 +1194,23 @@ mod tests {
 
     #[tokio::test]
     async fn every_committed_migration_reopens_after_a_later_migration_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        // Migrated one version further each round, then copied as an older
+        // daemon left it, rather than migrated again from scratch.
+        let base = Store::migrated(&directory.path().join("base.db"), 0).await;
         for committed in 0..=MIGRATIONS.len() {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("migration.db");
-            let pool = Store::migrated(&path, committed).await;
+            if let Some(migration) = committed.checked_sub(1).map(|index| MIGRATIONS[index]) {
+                Store::apply_migration(&base, committed, migration)
+                    .await
+                    .unwrap();
+            }
+            let path = directory.path().join(format!("migration-{committed}.db"));
+            sqlx::query("VACUUM INTO ?1")
+                .bind(path.to_str().unwrap())
+                .execute(&base)
+                .await
+                .unwrap();
+            let pool = Store::migrated(&path, 0).await;
             assert!(
                 Store::apply_migration(
                     &pool,

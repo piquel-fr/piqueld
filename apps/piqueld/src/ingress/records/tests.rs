@@ -100,6 +100,15 @@ impl Harness {
             .unwrap();
     }
 
+    /// Saves an application routing `host` publicly, and stages and applies
+    /// the route as a deployment and the gateway do.
+    async fn applied(&self, host: &str) -> EnvironmentId {
+        let (id, route) = self.route(host, "public").await;
+        self.stage(&id, &[route], true).await;
+        self.apply().await;
+        id
+    }
+
     /// Acknowledges the desired table, as the gateway does once applied.
     async fn apply(&self) {
         let table = self.store.routing_table().await.unwrap();
@@ -146,6 +155,14 @@ impl Harness {
             "_piqueld.{host} TXT {:?}",
             self.store.instance_id().as_str()
         )
+    }
+}
+
+/// The credentials of the tunnel `TUNNEL`.
+fn tunnel() -> TunnelCredentials {
+    TunnelCredentials {
+        id: TUNNEL.parse().unwrap(),
+        file: "{}".into(),
     }
 }
 
@@ -280,9 +297,7 @@ async fn records_are_written_once_applied_and_never_on_foreign_names() {
 #[tokio::test]
 async fn wildcards_get_records_with_ownership_beside_their_parent() {
     let harness = Harness::new(true).await;
-    let (id, wildcard) = harness.route("*.tenants.example.com", "public").await;
-    harness.stage(&id, &[wildcard], true).await;
-    harness.apply().await;
+    harness.applied("*.tenants.example.com").await;
     assert!(harness.pass().await);
     // Providers accept `*` only as a name's first label.
     assert_eq!(
@@ -385,16 +400,9 @@ async fn visibility_changes_withdraw_before_repointing() {
 #[tokio::test]
 async fn tunnel_mode_replaces_addresses_with_a_proxied_cname() {
     let harness = Harness::new(true).await;
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, &[route], true).await;
-    harness.apply().await;
+    harness.applied("www.example.com").await;
     assert!(harness.pass().await);
-    let tunnel = harness
-        .restart(Some(TunnelCredentials {
-            id: TUNNEL.parse().unwrap(),
-            file: "{}".into(),
-        }))
-        .await;
+    let tunnel = harness.restart(Some(tunnel())).await;
     // Until the gateway runs in tunnel mode, the records stay.
     harness.provider.changes();
     assert!(Harness::pass_of(&tunnel).await);
@@ -413,9 +421,7 @@ async fn tunnel_mode_replaces_addresses_with_a_proxied_cname() {
 #[tokio::test]
 async fn failures_keep_records_and_unmanaged_zones_stay_manual() {
     let harness = Harness::new(true).await;
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, std::slice::from_ref(&route), true).await;
-    harness.apply().await;
+    harness.applied("www.example.com").await;
     harness.provider.fail(Some(Outage::All));
     assert!(!harness.pass().await, "a failed pass is retried sooner");
     let failed = harness.state("www.example.com");
@@ -430,9 +436,7 @@ async fn failures_keep_records_and_unmanaged_zones_stay_manual() {
 
     // Without `manage_records`, the provider is never called.
     let manual = Harness::new(false).await;
-    let (id, route) = manual.route("www.example.com", "public").await;
-    manual.stage(&id, &[route], true).await;
-    manual.apply().await;
+    manual.applied("www.example.com").await;
     assert!(manual.pass().await);
     manual.unchanged();
     assert_eq!(
@@ -444,9 +448,7 @@ async fn failures_keep_records_and_unmanaged_zones_stay_manual() {
 #[tokio::test]
 async fn disabled_ingress_deletes_records_once_the_gateway_stopped() {
     let harness = Harness::new(true).await;
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, &[route], true).await;
-    harness.apply().await;
+    harness.applied("www.example.com").await;
     assert!(harness.pass().await);
     harness.provider.changes();
     let mut disabled = harness.restart(None).await;
@@ -462,9 +464,7 @@ async fn disabled_ingress_deletes_records_once_the_gateway_stopped() {
 #[tokio::test]
 async fn names_another_installation_claims_are_never_changed() {
     let harness = Harness::new(true).await;
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, &[route], true).await;
-    harness.apply().await;
+    let id = harness.applied("www.example.com").await;
     assert!(harness.pass().await);
     // Another installation also claims the name, and its address drifts.
     harness
@@ -507,9 +507,7 @@ async fn names_another_installation_claims_are_never_changed() {
 async fn staged_changes_are_published_after_a_failed_publish() {
     let harness = Harness::new(true).await;
     harness.provider.mimic(Mimics::Ovh);
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, &[route], true).await;
-    harness.apply().await;
+    let id = harness.applied("www.example.com").await;
     assert!(harness.pass().await);
     harness.provider.changes();
     // The route is removed, but publishing its deletion fails.
@@ -530,9 +528,7 @@ async fn staged_changes_are_published_after_a_failed_publish() {
 #[tokio::test]
 async fn a_route_changed_during_a_pass_waits_for_the_next_one() {
     let harness = Harness::new(true).await;
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, &[route], true).await;
-    harness.apply().await;
+    let id = harness.applied("www.example.com").await;
     // The pass was planned while the route was applied, then the gateway
     // withdrew it: the stale plan writes nothing.
     let plan = harness.ingress.plan_records().await.unwrap();
@@ -553,15 +549,8 @@ async fn a_route_changed_during_a_pass_waits_for_the_next_one() {
 async fn tunnel_routes_wait_in_zones_that_cannot_proxy() {
     let harness = Harness::new(true).await;
     harness.provider.mimic(Mimics::Ovh);
-    let (id, route) = harness.route("www.example.com", "public").await;
-    harness.stage(&id, &[route], true).await;
-    harness.apply().await;
-    let tunnel = harness
-        .restart(Some(TunnelCredentials {
-            id: TUNNEL.parse().unwrap(),
-            file: "{}".into(),
-        }))
-        .await;
+    harness.applied("www.example.com").await;
+    let tunnel = harness.restart(Some(tunnel())).await;
     tunnel.converged();
     // Nothing is claimed or written, and the pass does not fail.
     assert!(Harness::pass_of(&tunnel).await);
@@ -589,12 +578,8 @@ async fn the_webhook_hostname_gets_a_public_routes_records() {
         ]
     );
     // In tunnel mode, the proxied CNAME to the tunnel replaces it.
-    let tunnel = TunnelCredentials {
-        id: TUNNEL.parse().unwrap(),
-        file: "{}".into(),
-    };
     let tunneled = harness
-        .restart(Some(tunnel))
+        .restart(Some(tunnel()))
         .await
         .with_webhooks(Some(hooks));
     tunneled.converged();

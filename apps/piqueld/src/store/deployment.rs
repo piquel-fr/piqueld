@@ -401,13 +401,6 @@ mod tests {
             .normalize(piqueld_core::ApplicationId::parse("app-empty-test").unwrap())
     }
 
-    /// The environment created with a saved application.
-    async fn environment(store: &Store, saved: &SavedApplication) -> EnvironmentId {
-        store
-            .production(&piqueld_core::ApplicationId::parse(&saved.application_id).unwrap())
-            .await
-    }
-
     async fn save(store: &Store, app: ApplicationTemplate, generation: u64) -> SavedApplication {
         let (MutationResponse::Saved(saved), wake) = store
             .accept(
@@ -457,7 +450,7 @@ mod tests {
     async fn save_and_deploy_accepts_saved_only_configuration_but_cannot_reverse_deletion() {
         let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
-        let id = environment(&store, &saved).await;
+        let id = store.saved_production(&saved).await;
         let application = store.get(&id).await.unwrap().application.application;
         let (MutationResponse::Saved(deployed), wake) = store
             .accept(
@@ -546,7 +539,7 @@ mod tests {
         let path = temp.path().join("db");
         let store = Store::open(&path).await.unwrap();
         let saved = save(&store, empty(), 0).await;
-        let id = environment(&store, &saved).await;
+        let id = store.saved_production(&saved).await;
         assert_eq!(
             store.status(&id).await.unwrap().state,
             ApplicationState::NotDeployed
@@ -611,7 +604,7 @@ mod tests {
     async fn failure_survives_success_and_empty_target_has_no_resources() {
         let (_temp, store) = Store::temporary().await;
         let saved = save(&store, empty(), 0).await;
-        let id = environment(&store, &saved).await;
+        let id = store.saved_production(&saved).await;
         let op = store.request_deploy(&id, Some(1)).await.unwrap();
         let target = piqueld_core::compile_application(
             &store

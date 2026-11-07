@@ -417,10 +417,14 @@ mod tests {
         _temp: tempfile::TempDir,
         store: Store,
         app: piqueld_core::NormalizedApplication,
+        /// The application's production environment.
+        environment: EnvironmentId,
         operation: String,
         id: i64,
     }
     impl Fixture {
+        /// Saves the prebuilt application and starts a build of its `web`
+        /// service, keeping 70,000 bytes of output for a day.
         async fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
             let store = Store::open(temp.path().join("state.db"))
@@ -435,23 +439,31 @@ mod tests {
                 .save_application(&ApplicationTemplate::from(&app), None, None)
                 .await
                 .unwrap();
-            let id = store
-                .start_build(
-                    &store.production(app.id()).await,
-                    &operation.id,
-                    "web",
-                    &app.spec().services[0].source,
-                    None,
-                )
-                .await
-                .unwrap();
-            Self {
+            let environment = store.production(app.id()).await;
+            let mut fixture = Self {
                 _temp: temp,
                 store,
                 app,
+                environment,
                 operation: operation.id,
-                id,
-            }
+                id: 0,
+            };
+            fixture.id = fixture.start().await;
+            fixture
+        }
+
+        /// Starts another build of the application's `web` service.
+        async fn start(&self) -> i64 {
+            self.store
+                .start_build(
+                    &self.environment,
+                    &self.operation,
+                    "web",
+                    &self.app.spec().services[0].source,
+                    None,
+                )
+                .await
+                .unwrap()
         }
     }
 
@@ -481,23 +493,15 @@ mod tests {
 
     #[tokio::test]
     async fn output_survives_concurrent_metadata_writes_for_another_build() {
+        let fixture = Fixture::new().await;
+        let other = fixture.start().await;
         let Fixture {
-            _temp,
             store,
-            app,
-            operation,
+            environment,
             id,
-        } = Fixture::new().await;
-        let other = store
-            .start_build(
-                &store.production(app.id()).await,
-                &operation,
-                "web",
-                &app.spec().services[0].source,
-                None,
-            )
-            .await
-            .unwrap();
+            ..
+        } = &fixture;
+        let id = *id;
         let output = async {
             for _ in 0..8 {
                 store
@@ -522,13 +526,7 @@ mod tests {
             assert_eq!(chunk.text, "a".repeat(4096));
         }
         let records = store
-            .builds(
-                None,
-                Some(&store.production(app.id()).await),
-                &Scope::All,
-                None,
-                50,
-            )
+            .builds(None, Some(environment), &Scope::All, None, 50)
             .await
             .unwrap();
         assert_eq!(records.items[0].state, BuildState::Succeeded);
@@ -538,13 +536,14 @@ mod tests {
 
     #[tokio::test]
     async fn build_pages_filter_before_applying_the_limit() {
+        let fixture = Fixture::new().await;
         let Fixture {
-            _temp,
             store,
             app,
-            operation,
+            environment,
             id,
-        } = Fixture::new().await;
+            ..
+        } = &fixture;
         let mut manifest = app.to_manifest();
         manifest.metadata.name = "other".into();
         let other = manifest
@@ -555,16 +554,7 @@ mod tests {
             .save_application(&ApplicationTemplate::from(&other), None, Some(0))
             .await
             .unwrap();
-        let latest = store
-            .start_build(
-                &store.production(app.id()).await,
-                &operation,
-                "web",
-                &app.spec().services[0].source,
-                None,
-            )
-            .await
-            .unwrap();
+        let latest = fixture.start().await;
         for _ in 0..3 {
             store
                 .start_build(
@@ -578,27 +568,16 @@ mod tests {
                 .unwrap();
         }
         let first = store
-            .builds(
-                None,
-                Some(&store.production(app.id()).await),
-                &Scope::All,
-                None,
-                1,
-            )
+            .builds(None, Some(environment), &Scope::All, None, 1)
             .await
             .unwrap();
         assert_eq!(first.items[0].id, latest);
+        let cursor = first.next_cursor.as_deref();
         let second = store
-            .builds(
-                None,
-                Some(&store.production(app.id()).await),
-                &Scope::All,
-                first.next_cursor.as_deref(),
-                1,
-            )
+            .builds(None, Some(environment), &Scope::All, cursor, 1)
             .await
             .unwrap();
-        assert_eq!(second.items[0].id, id);
+        assert_eq!(second.items[0].id, *id);
         assert!(second.next_cursor.is_none());
         let global = store
             .builds(None, None, &Scope::All, None, 1)
@@ -626,13 +605,14 @@ mod tests {
 
     #[tokio::test]
     async fn output_is_bounded_paged_and_expired_without_losing_metadata() {
+        let fixture = Fixture::new().await;
         let Fixture {
-            _temp,
             store,
-            app,
-            operation,
+            environment,
             id,
-        } = Fixture::new().await;
+            ..
+        } = &fixture;
+        let id = *id;
         store
             .append_build_log(id, &vec![b'a'; 80_000], LogStream::Stdout)
             .await
@@ -670,13 +650,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .builds(
-                    None,
-                    Some(&store.production(app.id()).await),
-                    &Scope::All,
-                    None,
-                    50
-                )
+                .builds(None, Some(environment), &Scope::All, None, 50)
                 .await
                 .unwrap()
                 .items[0]
@@ -695,16 +669,7 @@ mod tests {
             .unwrap();
         assert_eq!(records.items.len(), 1);
         assert_eq!(records.items[0].state, BuildState::Succeeded);
-        let interrupted = store
-            .start_build(
-                &store.production(app.id()).await,
-                &operation,
-                "web",
-                &app.spec().services[0].source,
-                None,
-            )
-            .await
-            .unwrap();
+        let interrupted = fixture.start().await;
         store.recover_builds().await.unwrap();
         let page = store
             .builds(None, None, &Scope::All, None, 1)
@@ -724,9 +689,8 @@ mod tests {
     }
     #[tokio::test]
     async fn output_filters_before_paging_backwards() {
-        let Fixture {
-            _temp, store, id, ..
-        } = Fixture::new().await;
+        let fixture = Fixture::new().await;
+        let (store, id) = (&fixture.store, fixture.id);
         store
             .append_build_log(id, &vec![b'a'; 80_000], LogStream::Stdout)
             .await
@@ -766,13 +730,8 @@ mod tests {
                 .is_empty()
         );
 
-        let Fixture {
-            _temp: _other_temp,
-            store,
-            id,
-            ..
-        } = Fixture::new().await;
         // A sparse stream must be filtered before the 16-chunk page limit.
+        let id = fixture.start().await;
         store
             .append_build_log(id, b"error output", LogStream::Stderr)
             .await
@@ -790,10 +749,11 @@ mod tests {
     }
     #[tokio::test]
     async fn structured_chunks_preserve_multibyte_output() {
+        let fixture = Fixture::new().await;
+        let store = &fixture.store;
         for (repeats, retained, truncated) in [(3000, 9000, false), (25000, 69999, true)] {
-            let Fixture {
-                _temp, store, id, ..
-            } = Fixture::new().await;
+            // Each case writes a build of its own.
+            let id = fixture.start().await;
             let text = "€".repeat(repeats);
             store
                 .append_build_log(id, text.as_bytes(), LogStream::Stdout)

@@ -57,8 +57,7 @@ fn only<'a>(environments: impl IntoIterator<Item = &'a EnvironmentId>) -> Secret
 /// Saves `template()` with a `staging` environment next to `production`.
 /// Returns the store's directory, the store, and both environment IDs.
 async fn fixture() -> (tempfile::TempDir, Store, EnvironmentId, EnvironmentId) {
-    let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let (temp, store) = Store::temporary().await;
     let template = template();
     store.save_application(&template, None, None).await.unwrap();
     let (MutationResponse::Environment(staging), _) = store

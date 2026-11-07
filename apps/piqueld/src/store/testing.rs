@@ -45,6 +45,12 @@ impl Store {
             .id
     }
 
+    /// The ID of the `production` environment of the application `saved`.
+    pub(crate) async fn saved_production(&self, saved: &SavedApplication) -> EnvironmentId {
+        let application = ApplicationId::parse(&saved.application_id).unwrap();
+        self.production(&application).await
+    }
+
     /// Creates the destination `name` with `settings`.
     pub(crate) async fn add_destination(
         &self,

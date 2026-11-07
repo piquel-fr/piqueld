@@ -1231,12 +1231,10 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// Authentication reads never wait for writers; refreshes queue behind
-    /// them without holding a pool connection, and a revocation that lands
-    /// first wins.
-    #[tokio::test]
-    async fn credential_reads_skip_the_writer_queue_and_refreshes_respect_revocation() {
-        let (_dir, store) = Store::temporary().await;
+    /// Opens a store whose admin `alice` holds the browser session
+    /// `credential`, with secret hash `hash`.
+    async fn browser_session() -> (tempfile::TempDir, Store) {
+        let (dir, store) = Store::temporary().await;
         let user = User {
             id: "alice".into(),
             username: "alice".into(),
@@ -1255,6 +1253,15 @@ mod tests {
             .insert_credential(&user.id, &credential)
             .await
             .unwrap();
+        (dir, store)
+    }
+
+    /// Authentication reads never wait for writers; refreshes queue behind
+    /// them without holding a pool connection, and a revocation that lands
+    /// first wins.
+    #[tokio::test]
+    async fn credential_reads_skip_the_writer_queue_and_refreshes_respect_revocation() {
+        let (_dir, store) = browser_session().await;
 
         let (writer, tx) = store.begin_immediate().await.unwrap();
         tokio::time::timeout(Duration::from_secs(1), store.credential_owner("hash"))
@@ -1295,33 +1302,15 @@ mod tests {
     /// that expires while the refresh waits is not revived.
     #[tokio::test]
     async fn refreshes_waiting_for_writers_respect_idle_expiry() {
-        let (_dir, store) = Store::temporary().await;
-        let user = User {
-            id: "alice".into(),
-            username: "alice".into(),
-            display_name: String::new(),
-        };
-        store.seed_auth_user(&user, &Grants::admin()).await;
-        let credential = NewCredential {
-            id: "credential".into(),
-            secret_hash: "hash".into(),
-            kind: CredentialKind::Browser,
-            name: "Browser",
-            expires_at: Some(now_secs() + SESSION_IDLE_SECS),
-            grants: None,
-        };
-        store
-            .insert_credential(&user.id, &credential)
-            .await
-            .unwrap();
-        // One second of idle time remains; the refresh waits two.
+        let (_dir, store) = browser_session().await;
+        // One second of idle time remains, and passes while the refresh waits.
         store.age_auth_credentials(SESSION_IDLE_SECS - 1).await;
         let (writer, tx) = store.begin_immediate().await.unwrap();
         let refresh = tokio::spawn({
             let store = store.clone();
             async move { store.touch_credential("credential").await }
         });
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         tx.rollback().await.unwrap();
         drop(writer);
         assert!(!refresh.await.unwrap().unwrap());

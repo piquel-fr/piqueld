@@ -514,9 +514,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let early = app("early", Some("app.piqueld.example.com"));
         let saved = save(&store, early.clone(), true).await.unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
+        let id = store.saved_production(&saved).await;
         store
             .stage_routes(&id, &early.spec().routes, true, None)
             .await
@@ -698,9 +696,7 @@ mod tests {
             .await
             .unwrap();
         let saved = save(&store, app("two", None), false).await.unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
+        let id = store.saved_production(&saved).await;
         let result = store
             .accept(
                 crate::api::Actor::Daemon,
@@ -783,9 +779,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), true).await.unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
+        let id = store.saved_production(&saved).await;
         let routes = &input.spec().routes;
         store.stage_routes(&id, routes, true, None).await.unwrap();
         let accept = async |mutation| {
@@ -814,9 +808,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
+        let id = store.saved_production(&saved).await;
         store
             .stage_routes(&id, &input.spec().routes, true, None)
             .await
@@ -880,14 +872,12 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), true).await.unwrap();
+        let id = store.saved_production(&saved).await;
         let operation = saved.operation_id.unwrap();
         store.mark_running(&operation).await;
         save(&store, app("one", Some("new.example.com")), true)
             .await
             .unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
         assert!(matches!(
             store
                 .stage_routes(&id, &input.spec().routes, true, Some(&operation))
@@ -902,9 +892,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
+        let id = store.saved_production(&saved).await;
         store
             .stage_routes(&id, &input.spec().routes, true, None)
             .await
@@ -941,9 +929,7 @@ mod tests {
         let (_directory, store) = Store::temporary().await;
         let input = app("one", Some("site.example.com"));
         let saved = save(&store, input.clone(), false).await.unwrap();
-        let id = store
-            .production(&piqueld_core::ApplicationId::parse(saved.application_id).unwrap())
-            .await;
+        let id = store.saved_production(&saved).await;
         let mut public = input.spec().routes.clone();
         public[0].visibility = piqueld_core::manifest::Visibility::Public;
         store.stage_routes(&id, &public, true, None).await.unwrap();

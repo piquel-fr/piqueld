@@ -150,7 +150,7 @@ async fn deletion_reservations_survive_restart_and_do_not_block_other_writes() {
         2,
         "late cleanup must preserve the recreated secret"
     );
-    assert!(!names.contains(&deletion.versions[&store.production(app.id()).await][0]));
+    assert!(!names.contains(&deletion.versions[&env][0]));
 }
 
 #[tokio::test]
@@ -164,85 +164,44 @@ async fn wrong_master_key_blocks_writes_and_original_key_restores_them() {
         .save_application(&ApplicationTemplate::from(&app), None, None)
         .await
         .unwrap();
+    let env = store.production(app.id()).await;
     store
-        .put_secret(
-            Daemon,
-            &store.production(app.id()).await,
-            "token",
-            0,
-            b"original".to_vec(),
-        )
+        .put_secret(Daemon, &env, "token", 0, b"original".to_vec())
         .await
         .unwrap();
     let original = Zeroizing::new(std::fs::read(&key).unwrap());
-    let versions = store
-        .secret_names(&store.production(app.id()).await)
-        .await
-        .unwrap();
+    let versions = store.secret_names(&env).await.unwrap();
     drop(store);
     std::fs::write(&key, [42; 32]).unwrap();
     let store = Store::open(&path).await.unwrap();
     assert!(matches!(
         store
-            .put_secret(
-                Daemon,
-                &store.production(app.id()).await,
-                "token",
-                1,
-                b"wrong key".to_vec()
-            )
+            .put_secret(Daemon, &env, "token", 1, b"wrong key".to_vec())
             .await,
         Err(StoreError::SecretSource(_))
     ));
-    assert_eq!(
-        store
-            .secrets(&store.production(app.id()).await)
-            .await
-            .unwrap()[0]
-            .generation,
-        1
-    );
+    assert_eq!(store.secrets(&env).await.unwrap()[0].generation, 1);
     std::fs::write(&key, &*original).unwrap();
     store
-        .put_secret(
-            Daemon,
-            &store.production(app.id()).await,
-            "token",
-            1,
-            b"restored".to_vec(),
-        )
+        .put_secret(Daemon, &env, "token", 1, b"restored".to_vec())
         .await
         .unwrap();
     assert_eq!(
-        &*store
-            .secret_plaintext(&store.production(app.id()).await, &versions[0])
-            .await
-            .unwrap(),
+        &*store.secret_plaintext(&env, &versions[0]).await.unwrap(),
         b"original"
     );
     let deletion = store
-        .begin_secret_deletion(Daemon, &store.production(app.id()).await, "token", 2)
+        .begin_secret_deletion(Daemon, &env, "token", 2)
         .await
         .unwrap();
     store
-        .finish_secret_deletion(
-            Attribution::default(),
-            &store.production(app.id()).await,
-            "token",
-            &deletion.id,
-        )
+        .finish_secret_deletion(Attribution::default(), &env, "token", &deletion.id)
         .await
         .unwrap();
     std::fs::remove_file(&key).unwrap();
     assert!(matches!(
         store
-            .put_secret(
-                Daemon,
-                &store.production(app.id()).await,
-                "new",
-                0,
-                b"value".to_vec()
-            )
+            .put_secret(Daemon, &env, "new", 0, b"value".to_vec())
             .await,
         Err(StoreError::SecretSource(_))
     ));
@@ -260,14 +219,9 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
         .save_application(&ApplicationTemplate::from(&app), None, None)
         .await
         .unwrap();
+    let env = store.production(app.id()).await;
     store
-        .put_secret(
-            Daemon,
-            &store.production(app.id()).await,
-            "token",
-            0,
-            b"x".to_vec(),
-        )
+        .put_secret(Daemon, &env, "token", 0, b"x".to_vec())
         .await
         .unwrap();
     // Existing ciphertext is 17 bytes; the incoming value adds its own 16-byte tag.
@@ -279,53 +233,22 @@ async fn retained_version_quota_rejects_writes_without_removing_values() {
     sqlx::query!("WITH RECURSIVE versions(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM versions WHERE n<1000) INSERT INTO secret_versions(environment_id,name,generation,swarm_name,nonce,ciphertext) SELECT s.environment_id,s.name,v.n,'fixture-'||v.n,s.nonce,s.ciphertext FROM versions v CROSS JOIN secret_versions s WHERE s.generation=1").execute(&store.pool).await.unwrap();
     assert!(matches!(
         store
-            .put_secret(
-                Daemon,
-                &store.production(app.id()).await,
-                "token",
-                1,
-                b"blocked".to_vec()
-            )
+            .put_secret(Daemon, &env, "token", 1, b"blocked".to_vec())
             .await,
         Err(StoreError::SecretQuota)
     ));
-    assert_eq!(
-        store
-            .secrets(&store.production(app.id()).await)
-            .await
-            .unwrap()[0]
-            .generation,
-        1
-    );
-    assert_eq!(
-        store
-            .secret_names(&store.production(app.id()).await)
-            .await
-            .unwrap()
-            .len(),
-        1000
-    );
+    assert_eq!(store.secrets(&env).await.unwrap()[0].generation, 1);
+    assert_eq!(store.secret_names(&env).await.unwrap().len(), 1000);
     let deletion = store
-        .begin_secret_deletion(Daemon, &store.production(app.id()).await, "token", 1)
+        .begin_secret_deletion(Daemon, &env, "token", 1)
         .await
         .unwrap();
     store
-        .finish_secret_deletion(
-            Attribution::default(),
-            &store.production(app.id()).await,
-            "token",
-            &deletion.id,
-        )
+        .finish_secret_deletion(Attribution::default(), &env, "token", &deletion.id)
         .await
         .unwrap();
     store
-        .put_secret(
-            Daemon,
-            &store.production(app.id()).await,
-            "fresh",
-            0,
-            b"space freed".to_vec(),
-        )
+        .put_secret(Daemon, &env, "fresh", 0, b"space freed".to_vec())
         .await
         .unwrap();
 }
@@ -334,24 +257,16 @@ async fn rotation_preserves_retry_pins_and_secret_values_never_enter_snapshots()
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.db");
     let store = Store::open(&path).await.unwrap();
-    let mut app = application();
     let op = store
-        .save_application(&ApplicationTemplate::from(&app), None, None)
+        .save_application(&ApplicationTemplate::from(&application()), None, None)
         .await
         .unwrap();
+    let app = with_secret(&application());
     let env = store.production(app.id()).await;
     store
         .put_stored_secret(Daemon, app.id(), "token", 0, b"first-value".to_vec(), None)
         .await
         .unwrap();
-    let mut input = app.to_manifest();
-    input.spec.services[0]
-        .secrets
-        .push(piqueld_core::manifest::SecretMount {
-            name: "token".into(),
-            target: "/run/secrets/token".into(),
-        });
-    app = input.validate().unwrap().normalize(app.id().clone());
     let pins = store.pin_secrets(&op, &app).await.unwrap();
     store
         .put_stored_secret(Daemon, app.id(), "token", 1, b"second-value".to_vec(), None)
@@ -443,15 +358,13 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
         .await
         .unwrap();
     let pinned = store.pin_secrets(&deployed, &app).await.unwrap();
+    let env = &deployed.environment_id;
     assert!(matches!(
-        store.recover_secret_key(Daemon,).await,
+        store.recover_secret_key(Daemon).await,
         Err(StoreError::SecretKeyUsable)
     ));
     assert_eq!(
-        &*store
-            .secret_plaintext(&store.production(app.id()).await, &pinned["token"])
-            .await
-            .unwrap(),
+        &*store.secret_plaintext(env, &pinned["token"]).await.unwrap(),
         b"original"
     );
 
@@ -485,7 +398,7 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
             .unavailable
     );
     assert!(matches!(
-        store.secret_plaintext(&store.production(app.id()).await, &pinned["token"]).await,
+        store.secret_plaintext(env, &pinned["token"]).await,
         Err(StoreError::SecretUnavailable { names }) if names == "token"
     ));
     assert!(matches!(
@@ -504,14 +417,11 @@ async fn lost_key_recovery_discards_values_until_replacements_are_deployed() {
         .unwrap();
     let pins = store.pin_secrets(&redeployed, &app).await.unwrap();
     assert_eq!(
-        &*store
-            .secret_plaintext(&store.production(app.id()).await, &pins["token"])
-            .await
-            .unwrap(),
+        &*store.secret_plaintext(env, &pins["token"]).await.unwrap(),
         b"replacement"
     );
     assert!(matches!(
-        store.recover_secret_key(Daemon,).await,
+        store.recover_secret_key(Daemon).await,
         Err(StoreError::SecretKeyUsable)
     ));
 }
@@ -688,21 +598,13 @@ async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
         .save_application(&ApplicationTemplate::from(&app), None, None)
         .await
         .unwrap();
+    let env = store.production(app.id()).await;
     store
-        .put_secret(
-            Daemon,
-            &store.production(app.id()).await,
-            "manual",
-            0,
-            b"chosen".to_vec(),
-        )
+        .put_secret(Daemon, &env, "manual", 0, b"chosen".to_vec())
         .await
         .unwrap();
     let pins = store.pin_secrets(&first, &app).await.unwrap();
-    let value = store
-        .secret_plaintext(&store.production(app.id()).await, &pins["token"])
-        .await
-        .unwrap();
+    let value = store.secret_plaintext(&env, &pins["token"]).await.unwrap();
     assert_eq!(value.len(), 32);
 
     let second = store
@@ -711,7 +613,7 @@ async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
         .unwrap();
     assert_eq!(store.pin_secrets(&second, &app).await.unwrap(), pins);
     let generations = store
-        .secrets(&store.production(app.id()).await)
+        .secrets(&env)
         .await
         .unwrap()
         .into_iter()
@@ -721,7 +623,7 @@ async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
 
     // Regenerating adds a version for later deployments; pins keep theirs.
     let token = store
-        .regenerate_secret(Daemon, &store.production(app.id()).await, "token", 1)
+        .regenerate_secret(Daemon, &env, "token", 1)
         .await
         .unwrap();
     assert_eq!(token.generation, 2);
@@ -732,15 +634,13 @@ async fn mounted_declared_secrets_are_generated_once_until_regenerated() {
         .unwrap();
     let regenerated = store.pin_secrets(&third, &app).await.unwrap();
     let new_value = store
-        .secret_plaintext(&store.production(app.id()).await, &regenerated["token"])
+        .secret_plaintext(&env, &regenerated["token"])
         .await
         .unwrap();
     assert_ne!(&*new_value, &*value);
     // Only secrets the saved manifest declares can be regenerated.
     assert!(matches!(
-        store
-            .regenerate_secret(Daemon, &store.production(app.id()).await, "undeclared", 0)
-            .await,
+        store.regenerate_secret(Daemon, &env, "undeclared", 0).await,
         Err(StoreError::NotFound)
     ));
 }

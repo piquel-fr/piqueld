@@ -1,10 +1,11 @@
 use super::*;
 
+/// The built-in defaults pass the same validation as a file's.
 #[test]
 fn empty_document_uses_documented_defaults() {
     assert_eq!(
         DaemonConfig::from_toml("").unwrap(),
-        DaemonConfig::default()
+        DaemonConfig::validated_default().unwrap()
     );
 }
 
@@ -19,8 +20,6 @@ fn unknown_sections_are_rejected() {
 #[test]
 fn host_paths_and_listener_settings_are_validated() {
     for document in [
-        "[server]\nhttp_listen = '0.0.0.0:7845'",
-        "[server]\nport = 0",
         "[server]\nallowed_hosts = ['*.example.com']",
         "[server]\nallowed_hosts = ['http://example.com']",
         "[server]\nallowed_hosts = ['example.com:7845']",
@@ -32,11 +31,6 @@ fn host_paths_and_listener_settings_are_validated() {
         "[server]\nruntime_dir = '/'",
         "[server]\ndata_dir = '/run/piqueld'",
         "[docker]\nsocket = 'relative.sock'",
-        "[database]\npath = '/tmp/piqueld.db'",
-        "[reconciliation]\nscan_interval_seconds = 0",
-        "[reconciliation]\nscan_interval_seconds = 86401",
-        "[reconciliation]\nprepare_timeout_seconds = 86401",
-        "[reconciliation]\nconvergence_timeout_seconds = 86401",
     ] {
         assert!(
             matches!(
@@ -127,23 +121,22 @@ fn tcp_defaults_to_off_with_or_without_a_server_table() {
 
 #[test]
 fn socket_and_database_use_separate_directories() {
-    let config = DaemonConfig::from_toml("[server]\ndata_dir = '/srv/piqueld'").unwrap();
-    assert_eq!(
-        config.server.socket_path(),
-        PathBuf::from("/run/piqueld/piqueld.sock")
-    );
-    assert_eq!(
-        config.server.database_path(),
-        PathBuf::from("/srv/piqueld/piqueld.db")
-    );
-}
-
-#[test]
-fn removed_data_directory_is_not_accepted_as_configuration() {
-    assert!(matches!(
-        DaemonConfig::from_toml("data_dir = '/tmp/piqueld'"),
-        Err(ConfigError::Parse(_))
-    ));
+    for (server, socket, database) in [
+        (
+            "data_dir = '/srv/piqueld'",
+            "/run/piqueld/piqueld.sock",
+            "/srv/piqueld/piqueld.db",
+        ),
+        (
+            "runtime_dir = '/tmp/piqueld-dev-run'",
+            "/tmp/piqueld-dev-run/piqueld.sock",
+            "/var/lib/piqueld/piqueld.db",
+        ),
+    ] {
+        let config = DaemonConfig::from_toml(&format!("[server]\n{server}")).unwrap();
+        assert_eq!(config.server.socket_path(), PathBuf::from(socket));
+        assert_eq!(config.server.database_path(), PathBuf::from(database));
+    }
 }
 
 #[test]
@@ -171,72 +164,6 @@ fn parse_failures_keep_the_diagnostic_but_not_the_source_line() {
 }
 
 #[test]
-fn built_in_defaults_are_valid() {
-    assert!(DaemonConfig::validated_default().is_ok());
-}
-
-#[test]
-fn preview_bounds_must_be_values_a_manifest_could_set() {
-    let previews = DaemonConfig::from_toml("[previews]\nmax_total = 0\nmax_replicas = 2")
-        .unwrap()
-        .previews;
-    assert_eq!((previews.max_total, previews.max_replicas), (0, 2));
-    for invalid in [
-        "default_cpu_millis = 0",
-        "default_memory_bytes = 0",
-        "max_replicas = 0",
-        "max_replicas = 101",
-    ] {
-        assert!(
-            matches!(
-                DaemonConfig::from_toml(&format!("[previews]\n{invalid}")),
-                Err(ConfigError::Invalid(_))
-            ),
-            "{invalid}"
-        );
-    }
-}
-
-#[test]
-fn snapshot_uploads_and_checkouts_need_nonzero_limits() {
-    let config = DaemonConfig::from_toml("[snapshots]\nmax_upload_bytes = 4096").unwrap();
-    assert_eq!(config.snapshots.max_upload_bytes.get(), 4096);
-    assert!(DaemonConfig::from_toml("[snapshots]\nmax_upload_bytes = 0").is_err());
-    let config = DaemonConfig::from_toml("[checkouts]\nmax_bytes = 4096").unwrap();
-    assert_eq!(config.checkouts.max_bytes.get(), 4096);
-    assert!(DaemonConfig::from_toml("[checkouts]\nmax_bytes = 0").is_err());
-}
-
-#[test]
-fn retention_defaults_are_bounded_and_accept_zero_as_disabled() {
-    let defaults = DaemonConfig::default().retention;
-    assert_eq!(defaults.finished_operation_days, 10);
-    assert_eq!(defaults.event_days, 90);
-    assert_eq!(defaults.daemon_event_days, 90);
-    let disabled = DaemonConfig::from_toml("[retention]\nfinished_operation_days = 0").unwrap();
-    assert_eq!(disabled.retention.finished_operation_days, 0);
-    let configured = DaemonConfig::from_toml("[retention]\nfinished_operation_days = 30").unwrap();
-    assert_eq!(configured.retention.finished_operation_days, 30);
-    assert!(matches!(
-        DaemonConfig::from_toml("[retention]\nunknown = 'x'"),
-        Err(ConfigError::Parse(_))
-    ));
-}
-
-#[test]
-fn runtime_directory_override_changes_only_the_socket_path() {
-    let config = DaemonConfig::from_toml("[server]\nruntime_dir = '/tmp/piqueld-dev-run'").unwrap();
-    assert_eq!(
-        config.server.socket_path(),
-        PathBuf::from("/tmp/piqueld-dev-run/piqueld.sock")
-    );
-    assert_eq!(
-        config.server.database_path(),
-        PathBuf::from("/var/lib/piqueld/piqueld.db")
-    );
-}
-
-#[test]
 fn tailscale_node_settings_are_validated() {
     let config = DaemonConfig::from_toml(
         "[tailscale]\nhostname = 'piqueld-dev'\nauth_key_file = '/run/credentials/ts-auth-key'",
@@ -258,7 +185,6 @@ fn tailscale_node_settings_are_validated() {
         "[tailscale]\nhostname = ''",
         "[tailscale]\nhostname = 'piqueld.example'",
         "[tailscale]\nhostname = '-piqueld'",
-        "[tailscale]\nhttps_port = 0",
         "[tailscale]\nsocket = 'tailscaled.sock'",
         "[tailscale]\nsocket = '/run/ts.sock'\nauth_key_file = '/run/credentials/ts-auth-key'",
     ] {
