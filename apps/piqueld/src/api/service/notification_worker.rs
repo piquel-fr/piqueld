@@ -323,7 +323,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, receiver).into_future());
         let temp = tempfile::tempdir().unwrap();
-        let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+        let store = Arc::new(Store::open_unsynced(temp.path().join("db")).await.unwrap());
         let url = format!("http://{address}/secret");
         store
             .add_destination(

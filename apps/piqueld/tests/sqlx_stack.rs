@@ -44,11 +44,11 @@ async fn scalar(connection: &mut SqliteConnection, query: &str) -> i64 {
 async fn sqlx_applies_migrations_and_preserves_instance_identity() {
     let directory = tempfile::tempdir().unwrap();
     let database_path = directory.path().join("sqlx-validation.db");
-    let store = Store::open(&database_path).await.unwrap();
+    let store = Store::open_unsynced(&database_path).await.unwrap();
     let instance_id = store.instance_id().to_owned();
     drop(store);
 
-    let reopened = Store::open(&database_path).await.unwrap();
+    let reopened = Store::open_unsynced(&database_path).await.unwrap();
     assert_eq!(reopened.instance_id(), &instance_id);
 
     let mut connection = sqlite::connect(&database_path).await;
@@ -100,7 +100,7 @@ async fn upgrades_legacy_configuration_to_latest_recoverable_deployment() {
         .unwrap();
     connection.close().await.unwrap();
 
-    let store = Store::open(&database_path).await.unwrap();
+    let store = Store::open_unsynced(&database_path).await.unwrap();
     assert_eq!(store.instance_id().as_str(), "instance-legacy");
     let deployments = store
         .deployments(
@@ -181,7 +181,7 @@ async fn observability_upgrade_preserves_populated_history_and_restorable_backup
         .await
         .unwrap();
     connection.close().await.unwrap();
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     assert_eq!(store.instance_id().as_str(), "instance-upgrade");
     let events = store.events(None, None, 100).await.unwrap().items;
     assert_eq!(events.len(), 1);
@@ -269,7 +269,7 @@ async fn authorization_upgrade_makes_existing_accounts_administrators() {
     .await;
     connection.close().await.unwrap();
 
-    Store::open(&path).await.unwrap();
+    Store::open_unsynced(&path).await.unwrap();
     let mut connection = sqlite::connect(&path).await;
     let grants: Vec<(Option<String>, String, Option<String>)> = sqlx::query_as(
         "SELECT user_id,permission,application_id FROM auth_grants ORDER BY user_id",

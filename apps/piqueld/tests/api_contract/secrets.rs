@@ -259,7 +259,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     };
     use piqueld_core::edit::{ApplicationEdit, ServiceEdit};
     let temp = tempfile::tempdir().unwrap();
-    let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+    let store = Arc::new(Store::open_unsynced(temp.path().join("db")).await.unwrap());
     let app = manifest()
         .validate_template()
         .unwrap()
@@ -356,7 +356,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
 #[tokio::test]
 async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
     let temp = tempfile::tempdir().unwrap();
-    let store = Arc::new(Store::open(temp.path().join("db")).await.unwrap());
+    let store = Arc::new(Store::open_unsynced(temp.path().join("db")).await.unwrap());
     seed_account(
         &temp.path().join("db"),
         "contract-admin",

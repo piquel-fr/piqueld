@@ -8,10 +8,7 @@ use piqueld_core::{
     EnvironmentId, EnvironmentName, NormalizedApplication, access::Grants, api::SavedApplication,
     auth::User, manifest::ValidatedTemplate,
 };
-use sqlx::{
-    SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-};
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use std::path::Path;
 
 /// Parses the application manifest named `name`, with `spec`, TOML following
@@ -75,20 +72,18 @@ impl Store {
     /// Opens a store in a new temporary directory, which must outlive it.
     pub(super) async fn temporary() -> (tempfile::TempDir, Self) {
         let directory = tempfile::tempdir().unwrap();
-        let store = Self::open(directory.path().join("db")).await.unwrap();
+        let store = Self::open_unsynced(directory.path().join("db"))
+            .await
+            .unwrap();
         (directory, store)
     }
 
     /// Opens the database at `path` migrated to schema `version`, as an
     /// older daemon left it.
     pub(super) async fn migrated(path: &Path, version: usize) -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(options)
+            .connect_with(Self::connect_options(path, super::Durability::Unsynced))
             .await
             .unwrap();
         for (index, migration) in MIGRATIONS.iter().take(version).enumerate() {

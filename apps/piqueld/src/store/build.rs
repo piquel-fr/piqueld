@@ -427,7 +427,7 @@ mod tests {
         /// service, keeping 70,000 bytes of output for a day.
         async fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let store = Store::open(temp.path().join("state.db"))
+            let store = Store::open_unsynced(temp.path().join("state.db"))
                 .await
                 .unwrap()
                 .with_build_history(crate::config::BuildHistoryConfig {

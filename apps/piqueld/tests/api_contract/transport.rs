@@ -365,7 +365,7 @@ async fn tcp_rejects_untrusted_authorities() {
 async fn tcp_login_uses_canonical_origin_behind_https_proxy() {
     let temp = TempDir::new().unwrap();
     let state = state(&temp).await;
-    let store = Store::open(database(&temp)).await.unwrap();
+    let store = Store::open_unsynced(database(&temp)).await.unwrap();
     let origin = "https://daemon.example.ts.net:8443";
     let auth = piqueld::auth::Auth::new(&store, origin).unwrap();
     let server = Server::tcp(piqueld::api::http::web_router_with_hosts(

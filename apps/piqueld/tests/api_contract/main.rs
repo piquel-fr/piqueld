@@ -355,7 +355,7 @@ async fn state(temp: &TempDir) -> ApiState {
 
 /// [`state`] with the daemon's `[snapshots] max_upload_bytes`, if given.
 async fn state_with(temp: &TempDir, max_upload_bytes: Option<std::num::NonZeroU64>) -> ApiState {
-    let store = Store::open(database(temp))
+    let store = Store::open_unsynced(database(temp))
         .await
         .expect("fresh database opens");
     let store = match max_upload_bytes {
@@ -377,7 +377,7 @@ async fn contract_state(temp: &TempDir, store: Arc<Store>) -> (Arc<FakeRuntime>,
 
 /// The real authenticator of the contract daemon in `temp`.
 async fn auth(temp: &TempDir) -> piqueld::auth::Auth {
-    let store = Store::open(database(temp)).await.unwrap();
+    let store = Store::open_unsynced(database(temp)).await.unwrap();
     piqueld::auth::Auth::new(&store, "https://piqueld.example").unwrap()
 }
 
@@ -765,7 +765,7 @@ struct AcceptanceApi {
 
 impl AcceptanceApi {
     async fn start(temp: &TempDir) -> Self {
-        let store = Arc::new(Store::open(database(temp)).await.unwrap());
+        let store = Arc::new(Store::open_unsynced(database(temp)).await.unwrap());
         let (runtime, state) = contract_state(temp, Arc::clone(&store)).await;
         let server = Server::tcp(router(state, FakeAuth)).await;
         Self {
@@ -986,7 +986,7 @@ impl GrantFixture {
         let database = database(&temp);
         // Authentication shares the store, which tells connections that
         // access changed.
-        let store = Arc::new(Store::open(&database).await.unwrap());
+        let store = Arc::new(Store::open_unsynced(&database).await.unwrap());
         let (runtime, state) = contract_state(&temp, Arc::clone(&store)).await;
         let mut ids = Vec::new();
         for name in ["blog", "shop"] {

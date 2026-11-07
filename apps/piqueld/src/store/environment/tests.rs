@@ -204,7 +204,7 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
     let manifest = legacy.manifest.clone();
     pool.close().await;
 
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let application = store.application(&id).await.unwrap();
     assert_eq!(
         application.application,
@@ -320,7 +320,7 @@ async fn repository_backed_environments_take_their_branch_from_the_connection() 
     }
     pool.close().await;
 
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let release = TrackedBranch::new("release".into(), Some(commit)).unwrap();
     let replayed = async |request: &str| {
         let response: String = sqlx::query_scalar(

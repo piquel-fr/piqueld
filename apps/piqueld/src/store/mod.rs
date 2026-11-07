@@ -608,6 +608,18 @@ pub struct Store {
     checkouts: std::sync::Arc<crate::git::Checkouts>,
 }
 
+/// Whether a commit waits for the disk to sync it.
+#[derive(Clone, Copy)]
+enum Durability {
+    /// `SQLite`'s default, `synchronous = FULL`: a commit survives a power
+    /// loss. The daemon's store is always synced.
+    Synced,
+    /// `synchronous = OFF`: a commit survives the process exiting, not a
+    /// power loss (see [`Store::open_unsynced`]).
+    #[cfg(any(test, feature = "fake-docker"))]
+    Unsynced,
+}
+
 impl Store {
     /// Checks whether the database can serve a read, without changing state.
     /// # Errors
@@ -618,6 +630,34 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         Ok(())
+    }
+
+    /// How every connection opens the database at `path`, creating it if
+    /// missing, with `durability`.
+    fn connect_options(path: &Path, durability: Durability) -> SqliteConnectOptions {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        match durability {
+            Durability::Synced => options,
+            #[cfg(any(test, feature = "fake-docker"))]
+            Durability::Unsynced => options.synchronous(sqlx::sqlite::SqliteSynchronous::Off),
+        }
+    }
+
+    /// Opens the database at `path` like [`Store::open`], but never waits
+    /// on the disk to sync a commit: a commit survives the process exiting,
+    /// not a power loss. Only for the throwaway stores of tests and the
+    /// browser fixture, which would otherwise spend most of their time in
+    /// syncs.
+    /// # Errors
+    /// Returns the errors of [`Store::open`].
+    #[cfg(any(test, feature = "fake-docker"))]
+    pub async fn open_unsynced(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path.as_ref(), Durability::Unsynced).await
     }
 
     /// Opens a local `SQLite` database, applies forward migrations, and creates or loads its instance ID.
@@ -634,14 +674,12 @@ impl Store {
     /// # Errors
     /// Returns a sanitized storage or schema compatibility error.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref();
+        Self::open_with(path.as_ref(), Durability::Synced).await
+    }
+
+    /// [`Store::open`] with `durability`.
+    async fn open_with(path: &Path, durability: Durability) -> Result<Self, StoreError> {
         ensure_database_target(path)?;
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .foreign_keys(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
             .acquire_timeout(Duration::from_secs(5))
@@ -660,7 +698,7 @@ impl Store {
                     Ok(!connection.is_in_transaction())
                 })
             })
-            .connect_with(options)
+            .connect_with(Self::connect_options(path, durability))
             .await
             .map_err(StoreError::database)?;
 
@@ -1184,7 +1222,9 @@ mod tests {
     #[tokio::test]
     async fn released_connections_never_keep_a_transaction_open() {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path().join("db")).await.unwrap();
+        let store = Store::open_unsynced(directory.path().join("db"))
+            .await
+            .unwrap();
         let mut connection = store.pool.acquire().await.unwrap();
         std::mem::forget(connection.begin_with("BEGIN IMMEDIATE").await.unwrap());
         drop(connection);
@@ -1246,7 +1286,7 @@ mod tests {
             };
             pool.close().await;
 
-            let reopened = Store::open(&path).await.unwrap();
+            let reopened = Store::open_unsynced(&path).await.unwrap();
             if let Some(identity) = identity {
                 assert_eq!(reopened.instance_id().as_str(), identity);
             }

@@ -193,7 +193,7 @@ async fn restores_exactly_what_the_deployment_ran() {
 #[tokio::test]
 async fn refuses_what_cannot_run_again() {
     let temp = tempfile::tempdir().unwrap();
-    let store = Store::open(temp.path().join("db")).await.unwrap();
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
     let app = notes();
     let environment = save(&store, &app).await;
     let succeeded = deploy(&store, &app, 'a', true).await;

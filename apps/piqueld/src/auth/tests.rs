@@ -18,7 +18,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::Store::open(dir.path().join("state.db"))
+        let store = crate::store::Store::open_unsynced(dir.path().join("state.db"))
             .await
             .unwrap();
         Self {
@@ -165,7 +165,7 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
             .unwrap()
             .is_none()
     );
-    let store = crate::store::Store::open(f.dir.path().join("state.db"))
+    let store = crate::store::Store::open_unsynced(f.dir.path().join("state.db"))
         .await
         .unwrap();
     let restarted = Auth::new(&store, "http://localhost:7845").unwrap();

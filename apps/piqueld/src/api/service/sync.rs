@@ -312,7 +312,7 @@ pub(crate) mod tests {
         pub(crate) async fn new(sync: &str) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let store = Arc::new(
-                crate::store::Store::open(temp.path().join("db"))
+                crate::store::Store::open_unsynced(temp.path().join("db"))
                     .await
                     .unwrap(),
             );

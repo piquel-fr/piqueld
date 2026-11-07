@@ -113,7 +113,7 @@ impl ControllerHarness {
         let directory = tempfile::tempdir().expect("temporary directory");
         let database_path = directory.path().join("control-plane.db");
         let store = Arc::new(
-            Store::open(&database_path)
+            Store::open_unsynced(&database_path)
                 .await
                 .expect("fresh database opens"),
         );
@@ -323,7 +323,7 @@ impl ControllerHarness {
 
     /// Simulates a daemon restart: reopens the database behind a fresh controller.
     async fn reopen(&mut self) {
-        self.store = Arc::new(Store::open(&self.database_path).await.unwrap());
+        self.store = Arc::new(Store::open_unsynced(&self.database_path).await.unwrap());
         self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store));
     }
 

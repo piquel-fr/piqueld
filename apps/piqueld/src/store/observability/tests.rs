@@ -42,7 +42,7 @@ async fn notify(store: &Store) {
 async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_deletion() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let op = application(&store).await;
     let action = store
         .begin_action(Some(&op.id), "ensure_service", Some("web"))
@@ -50,7 +50,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
         .unwrap();
     store.action_request(&action, 1).await.unwrap();
     drop(store);
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     store.interrupt_actions(None).await.unwrap();
     let history = store
         .filtered_events(
@@ -588,7 +588,7 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
         let path = temp.path().join("db");
         let mut config = DaemonConfig::default();
         config.retention.daemon_event_days = 1;
-        let store = Store::open(&path)
+        let store = Store::open_unsynced(&path)
             .await
             .unwrap()
             .with_observability(&config);
@@ -621,7 +621,7 @@ async fn open_incidents_survive_retention_until_recovery_is_delivered() {
         assert!(store.event(failure.event_id).await.is_ok());
         drop(store);
 
-        let store = Store::open(&path)
+        let store = Store::open_unsynced(&path)
             .await
             .unwrap()
             .with_observability(&config);
@@ -712,7 +712,7 @@ async fn pruning_marks_stream_gaps_and_analytics_coverage() {
 async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     notify(&store).await;
     let url = "https://example.com/second";
     store.add_destination("second", url, settings()).await;
@@ -736,7 +736,7 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
     drop(store);
 
     // A new destination did not receive the failure and must not receive recovery.
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     let url = "https://example.com/new";
     store
         .add_destination("new-destination", url, settings())
@@ -754,7 +754,7 @@ async fn recovery_waits_for_its_destination_failure_across_restart_and_pruning()
     assert_eq!(store.deliveries(None, 100).await.unwrap().items.len(), 4);
     drop(store);
 
-    let store = Store::open(&path).await.unwrap();
+    let store = Store::open_unsynced(&path).await.unwrap();
     store.restart_failure_windows().await.unwrap();
     assert!(store.claim_delivery().await.unwrap().is_none());
     // The delayed failure's acknowledgement makes only its own recovery eligible.
