@@ -74,19 +74,6 @@ fn whole_references_keep_their_type_and_mixed_text_renders_to_a_string() {
             .replicas,
         2
     );
-    // Strings are never parsed into numbers, even when they look like one.
-    for (replicas, value) in [
-        ("\"${{ vars.web_replicas }}\"", "\"2\""),
-        ("\"${{ vars.web_replicas }}\"", "true"),
-        ("\"1${{ vars.web_replicas }}\"", "2"),
-    ] {
-        let errors = render(&typed(replicas, value), "production").unwrap_err();
-        assert_eq!(
-            codes_and_paths(&errors),
-            [(codes::VARIABLE_TYPE_INVALID, "spec.services[0].replicas")],
-            "{replicas} with {value}"
-        );
-    }
     // A rendered value still passes the field's own validation.
     let errors = render(&typed("\"${{ vars.web_replicas }}\"", "0"), "production").unwrap_err();
     assert_eq!(
@@ -445,6 +432,13 @@ fn typed_fields_reject_wrong_types_ranges_and_mixed_text() {
             "spec.services[0].replicas",
             "${{vars.n}}",
             json!(true),
+        ),
+        // Strings are never parsed into numbers, even when they look like one.
+        (
+            "/spec/services/0/replicas",
+            "spec.services[0].replicas",
+            "${{vars.n}}",
+            json!("2"),
         ),
         (
             "/spec/services/0/resources/cpu_millis",

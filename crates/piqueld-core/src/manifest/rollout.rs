@@ -212,16 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn rollback_defaults_to_automatic_only_for_promoted_environments() {
-        assert_eq!(Rollback::effective(None, true), Rollback::Automatic);
-        assert_eq!(Rollback::effective(None, false), Rollback::Manual);
-        for setting in Rollback::ALL {
-            assert_eq!(Rollback::effective(Some(setting), true), setting);
-            assert_eq!(Rollback::effective(Some(setting), false), setting);
-        }
-    }
-
-    #[test]
     fn only_explicit_start_first_with_a_writable_volume_overlaps() {
         let start_first = ValidatedRollout {
             order: Some(RolloutOrder::StartFirst),

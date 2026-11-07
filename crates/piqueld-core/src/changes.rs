@@ -367,9 +367,18 @@ TOKEN="old-secret"
             .map(|change| change.field)
             .collect::<Vec<_>>();
         assert_eq!(fields, ["environments.production.branch", "secrets.token"]);
+        // Plans show a generated secret's declaration, never a value.
         let planned = ManifestChange::between(Some(&read), &saved);
-        assert_eq!(planned[0].field, "secrets.token");
-        assert_eq!(planned.len(), 1);
+        assert_eq!(
+            planned
+                .iter()
+                .map(|change| (change.field.as_str(), change.after.as_deref()))
+                .collect::<Vec<_>>(),
+            [(
+                "secrets.token",
+                Some(r#"{"generate":{"bytes":16,"encoding":"hex","type":"random"}}"#)
+            )]
+        );
         let rollback = spec("[spec.environments.production]\nrollback='manual'\n");
         let changes = ManifestChange::edits(&read, &rollback);
         assert_eq!(
@@ -378,45 +387,6 @@ TOKEN="old-secret"
                 .map(|change| (change.field.as_str(), change.after.as_deref()))
                 .collect::<Vec<_>>(),
             [("environments.production.rollback", Some("manual"))]
-        );
-    }
-
-    #[test]
-    fn changes_show_generated_secret_declarations() {
-        let input = r#"api_version="piqueld.dev/v1alpha1"
-kind="Application"
-[metadata]
-name="example"
-[[spec.services]]
-name="web"
-[spec.services.source]
-type="image"
-image="example:1"
-"#;
-        let id = crate::ApplicationId::parse("app-example-01").unwrap();
-        let original = crate::parse_toml(input).unwrap().normalize(id.clone());
-        let mut declared = original.to_manifest();
-        declared.spec.secrets = vec![crate::manifest::SecretDeclaration {
-            name: "session".into(),
-            generate: crate::manifest::SecretGenerator::Random {
-                bytes: 16,
-                encoding: crate::manifest::SecretEncoding::Hex,
-            },
-        }];
-        let declared = declared.validate().unwrap().normalize(id);
-        let changes = ManifestChange::between(
-            Some(&original.spec().to_input()),
-            &declared.spec().to_input(),
-        );
-        assert_eq!(
-            changes
-                .iter()
-                .map(|change| (change.field.as_str(), change.after.as_deref()))
-                .collect::<Vec<_>>(),
-            [(
-                "secrets.session",
-                Some(r#"{"generate":{"bytes":16,"encoding":"hex","type":"random"}}"#)
-            )]
         );
     }
 
