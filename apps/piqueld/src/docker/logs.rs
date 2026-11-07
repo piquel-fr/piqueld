@@ -24,8 +24,9 @@ impl BollardDocker {
     /// 3. Stop early past 256 tasks or about 1 MiB of accounted output.
     /// 4. Sort by timestamp then task ID and keep the newest `tail` records.
     ///
-    /// `truncated` is set whenever records were skipped: tasks without a
-    /// container or known service, vanished containers, or any limit hit.
+    /// Tasks that never got a container are skipped: they have no output.
+    /// `truncated` is set whenever records were skipped: tasks without an ID
+    /// or known service, vanished containers, or any limit hit.
     pub(super) async fn read_logs(
         &self,
         instance: &InstanceId,
@@ -59,13 +60,8 @@ impl BollardDocker {
                 result.truncated = true;
                 continue;
             };
-            let Some(container) = task
-                .status
-                .as_ref()
-                .and_then(|s| s.container_status.as_ref())
-                .and_then(|s| s.container_id.as_ref())
-            else {
-                result.truncated = true;
+            // Tasks that never got a container have no output to read.
+            let Some(container) = Self::task_container(task) else {
                 continue;
             };
             let Some(service) = task.service_id.as_ref().and_then(|id| services.get(id)) else {

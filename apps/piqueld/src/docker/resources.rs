@@ -302,14 +302,9 @@ impl BollardDocker {
                     .iter()
                     .filter(|task| task.service_id.as_deref() == Some(&id))
                     .map(|task| {
-                        let healthy = task
-                            .status
-                            .as_ref()
-                            .and_then(|status| status.container_status.as_ref())
-                            .and_then(|container| container.container_id.as_deref())
-                            .and_then(|container| {
-                                health_by_container.get(container).copied().flatten()
-                            });
+                        let healthy = Self::task_container(task).and_then(|container| {
+                            health_by_container.get(container).copied().flatten()
+                        });
                         Self::observe_task(task, healthy)
                     })
                     .collect::<Vec<_>>();
@@ -1105,12 +1100,7 @@ impl BollardDocker {
                     .is_some_and(|id| healthchecked.contains(id));
                 running && desired && healthchecked
             })
-            .filter_map(|task| {
-                task.status
-                    .as_ref()
-                    .and_then(|status| status.container_status.as_ref())
-                    .and_then(|container| container.container_id.clone())
-            })
+            .filter_map(|task| Self::task_container(task).map(str::to_owned))
             .collect::<Vec<_>>();
         stream::iter(containers)
             .map(|container_id| async {
