@@ -694,7 +694,7 @@ impl ApplicationService {
 
     /// How long-lived connections are paced.
     #[must_use]
-    pub fn connection_timing(&self) -> crate::api::http::ConnectionTiming {
+    pub(crate) fn connection_timing(&self) -> crate::api::http::ConnectionTiming {
         self.connection_timing
     }
 
