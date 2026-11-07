@@ -767,6 +767,26 @@ fn exec_fails_instead_of_closing_stdin_when_it_cannot_be_read() {
     let _ = server.finish();
 }
 
+/// `--tty` needs a terminal on standard input, so it fails before the daemon
+/// is contacted rather than running the command without one.
+#[test]
+fn exec_tty_refuses_without_a_terminal() {
+    let server = start_server(false, 0, |_| panic!("--tty must fail locally"));
+    for tty in ["--tty", "-t"] {
+        let output = run(
+            &server,
+            &["app", "exec", "app-notes-01", "web", tty, "--", "sh"],
+        );
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error = support::json_error(&output);
+        assert_eq!(
+            error["message"],
+            "--tty requires standard input to be a terminal"
+        );
+    }
+    let _ = server.finish();
+}
+
 #[test]
 fn show_resolves_name_across_pages_and_id_directly() {
     let first_server = start_server(false, 4, move |request| match request.path.as_str() {
@@ -1653,6 +1673,32 @@ fn events_cli_reads_a_filtered_page() {
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["items"][0]["attempt"], 2);
+    assert_eq!(server.finish().len(), 1);
+}
+
+#[test]
+fn builds_list_sends_its_filters() {
+    let server = start_server(false, 1, |request| {
+        assert_eq!(
+            request.path,
+            "/api/v1/builds?application_id=app-notes&cursor=v1%3A7&environment_id=app-notes-01"
+        );
+        Reply::json(page(Vec::new(), None))
+    });
+    let output = run(
+        &server,
+        &[
+            "builds",
+            "list",
+            "--application",
+            "app-notes",
+            "--environment",
+            "app-notes-01",
+            "--cursor",
+            "v1:7",
+        ],
+    );
+    assert_json_success(&output);
     assert_eq!(server.finish().len(), 1);
 }
 
@@ -3432,29 +3478,30 @@ fn wait_server(states: Vec<&'static str>, details: Vec<Value>) -> TestServer {
     })
 }
 
+/// By default `env wait` returns once the runtime is healthy, with its URL
+/// still pending; `--ready routes` also waits for the URL.
 #[test]
-fn wait_follows_one_deployment_until_its_routes_are_ready() {
-    let server = wait_server(
-        vec!["running", "succeeded"],
-        vec![
-            detail("operation-01", false, "pending"),
-            detail("operation-01", true, "pending"),
-            detail("operation-01", true, "ready"),
-        ],
-    );
-    let output = run_with_timeout(
-        &server,
-        &["env", "wait", "app-notes-01", "--ready", "routes"],
-        "10s",
-    );
-    let result = assert_json_success(&output);
-    server.stop();
-    assert_eq!(result["deployment_id"], "operation-01");
-    assert_eq!(result["outcome"], "succeeded");
-    assert_eq!(result["urls"][0]["state"], "ready");
-    // Every stderr line is a progress event while waiting.
-    for line in String::from_utf8_lossy(&output.stderr).lines() {
-        assert!(serde_json::from_str::<Value>(line).unwrap()["progress"].is_object());
+fn wait_follows_one_deployment_until_it_is_ready() {
+    for (ready, url_state) in [(&[][..], "pending"), (&["--ready", "routes"], "ready")] {
+        let server = wait_server(
+            vec!["running", "succeeded"],
+            vec![
+                detail("operation-01", false, "pending"),
+                detail("operation-01", true, "pending"),
+                detail("operation-01", true, "ready"),
+            ],
+        );
+        let arguments = [&["env", "wait", "app-notes-01"][..], ready].concat();
+        let output = run_with_timeout(&server, &arguments, "10s");
+        let result = assert_json_success(&output);
+        server.stop();
+        assert_eq!(result["deployment_id"], "operation-01");
+        assert_eq!(result["outcome"], "succeeded");
+        assert_eq!(result["urls"][0]["state"], url_state, "{ready:?}");
+        // Every stderr line is a progress event while waiting.
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            assert!(serde_json::from_str::<Value>(line).unwrap()["progress"].is_object());
+        }
     }
 }
 
@@ -3538,7 +3585,7 @@ fn wait_never_follows_a_newer_deployment_and_fails_or_times_out_with_its_code() 
 }
 
 /// A runtime the daemon could not observe is not ready, even for a target
-/// with no services to wait for.
+/// with no services to wait for and at every readiness level.
 #[test]
 fn wait_needs_the_runtime_observed() {
     let mut unobserved = detail("operation-01", true, "ready");
@@ -3546,11 +3593,14 @@ fn wait_needs_the_runtime_observed() {
     unobserved["diagnostics"] = json!([{
         "code": "runtime_unavailable", "message": "Runtime observation is unavailable."
     }]);
-    let server = wait_server(vec!["succeeded"], vec![unobserved]);
-    let output = run_with_timeout(&server, &["env", "wait", "app-notes-01"], "500ms");
-    server.stop();
-    assert_eq!(output.status.code(), Some(4), "{output:?}");
-    assert_eq!(support::json_error(&output)["code"], "timeout");
+    for ready in [&[][..], &["--ready", "routes"]] {
+        let server = wait_server(vec!["succeeded"], vec![unobserved.clone()]);
+        let arguments = [&["env", "wait", "app-notes-01"][..], ready].concat();
+        let output = run_with_timeout(&server, &arguments, "500ms");
+        server.stop();
+        assert_eq!(output.status.code(), Some(4), "{ready:?}: {output:?}");
+        assert_eq!(support::json_error(&output)["code"], "timeout");
+    }
 }
 
 #[test]
