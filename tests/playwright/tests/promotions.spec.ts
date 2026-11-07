@@ -1,4 +1,4 @@
-import { test, expect, call, applicationTab, environmentTab, head, environmentId } from '../fixtures.js';
+import { test, expect, apply, call, card, applicationTab, environmentTab, head, environmentId, repositoryManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
 
 /** The manifest of `shop`, which declares `staging` and `production`
@@ -22,9 +22,8 @@ const manifest = {
 /** `shop`, whose manifest creates `staging` building the saved manifest and
  * `production` promoted from it. */
 async function createPromotion(page: Page) {
-  const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
-  const app = saved.application_id as string;
-  return { app, production: await environmentId(page, app), staging: await environmentId(page, app, 'staging') };
+  const { app, env } = await apply(page, manifest);
+  return { app, production: env, staging: await environmentId(page, app, 'staging') };
 }
 
 /** `shop` without environment blocks, whose `staging` and promotion are
@@ -34,14 +33,11 @@ async function createUndeclaredPromotion(page: Page) {
     ...manifest,
     spec: { services: [{ name: 'web', source: { type: 'image', image: 'nginx:alpine' } }] },
   };
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: undeclared, expected_generation: 0 });
-  const app = saved.application_id as string;
+  const { app, env, generation } = await apply(page, undeclared);
   const staging = (await call(page, 'POST', `applications/${app}/environments`, {
-    name: 'staging', expected_generation: saved.generation,
+    name: 'staging', expected_generation: generation,
   })).id as string;
-  const { generation } = await call(page, 'GET', `applications/${app}`);
-  const env = await environmentId(page, app);
-  await call(page, 'PUT', `environments/${env}/source`, { promote_from: staging, expected_generation: generation });
+  await call(page, 'PUT', `environments/${env}/source`, { promote_from: staging, expected_generation: generation + 1 });
   return { app, production: env, staging };
 }
 
@@ -180,9 +176,9 @@ test('an environment builds its own source or receives promoted releases, as one
   void account;
   const { app, production } = await createUndeclaredPromotion(page);
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source', exact: true }) });
-  await expect(card).toContainText('Receives releases promoted from staging');
-  const save = card.getByRole('button', { name: 'Save source', exact: true });
+  const source = card(page, 'Source');
+  await expect(source).toContainText('Receives releases promoted from staging');
+  const save = source.getByRole('button', { name: 'Save source', exact: true });
   await expect(save).toBeDisabled();
 
   const changes: unknown[] = [];
@@ -191,60 +187,66 @@ test('an environment builds its own source or receives promoted releases, as one
       changes.push(request.postDataJSON().promote_from);
     }
   });
-  await card.getByRole('combobox', { name: 'Deploys', exact: true }).selectOption({ label: 'Builds its own source' });
-  await expect(card).toContainText('each deployment builds the application\'s saved manifest');
+  await source.getByRole('combobox', { name: 'Deploys', exact: true }).selectOption({ label: 'Builds its own source' });
+  await expect(source).toContainText('each deployment builds the application\'s saved manifest');
   await save.click();
-  await expect(card).toContainText('Builds the application\'s saved manifest.');
+  await expect(source).toContainText('Builds the application\'s saved manifest.');
   await expect(save).toBeDisabled();
 
-  await card.getByRole('combobox', { name: 'Deploys', exact: true }).selectOption({ label: 'Releases promoted from staging' });
+  await source.getByRole('combobox', { name: 'Deploys', exact: true }).selectOption({ label: 'Releases promoted from staging' });
   await save.click();
-  await expect(card).toContainText('Receives releases promoted from staging');
+  await expect(source).toContainText('Receives releases promoted from staging');
   expect(changes).toEqual([null, expect.stringMatching(/^env-/)]);
 });
 
 test('an untouched Source card follows a source changed elsewhere', async ({ page, account }) => {
   void account;
   const { app, production } = await createUndeclaredPromotion(page);
+  await page.clock.install();
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source', exact: true }) });
-  const deploys = card.getByRole('combobox', { name: 'Deploys', exact: true });
+  const source = card(page, 'Source');
+  const deploys = source.getByRole('combobox', { name: 'Deploys', exact: true });
   await expect(deploys).not.toHaveValue('');
   const { generation } = await call(page, 'GET', `applications/${app}`);
   await call(page, 'PUT', `environments/${production}/source`, { promote_from: null, expected_generation: generation });
-  await expect(card).toContainText('Builds the application\'s saved manifest.', { timeout: 20_000 });
+  // The next dashboard refresh shows it.
+  await page.clock.runFor(16_000);
+  await expect(source).toContainText('Builds the application\'s saved manifest.');
   await expect(deploys).toHaveValue('');
-  await expect(card.getByRole('button', { name: 'Save source', exact: true })).toBeDisabled();
+  await expect(source.getByRole('button', { name: 'Save source', exact: true })).toBeDisabled();
 });
 
 test('a promoted environment\'s visibility keeps unsaved edits and shows what was saved', async ({ page, account }) => {
   void account;
   const { app, production } = await createUndeclaredPromotion(page);
+  await page.clock.install();
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Visibility', exact: true }) });
-  const select = card.getByRole('combobox', { name: 'Route visibility', exact: true });
-  const save = card.getByRole('button', { name: 'Save visibility', exact: true });
+  const visibility = card(page, 'Visibility');
+  const select = visibility.getByRole('combobox', { name: 'Route visibility', exact: true });
+  const save = visibility.getByRole('button', { name: 'Save visibility', exact: true });
   await expect(select).toHaveValue('public');
   await select.selectOption('private');
   // The unsaved choice blocks promotion and survives the next refresh.
   await expect(head(page).getByRole('button', { name: 'Promote from staging', exact: true })).toBeDisabled();
-  await page.waitForResponse(response => response.url().includes(`/environments/${production}/detail`));
+  const refreshed = page.waitForResponse(response => response.url().includes(`/environments/${production}/detail`));
+  await page.clock.runFor(16_000);
+  await refreshed;
   await expect(select).toHaveValue('private');
   await save.click();
   await expect(save).toBeDisabled();
   await expect(head(page).getByRole('button', { name: 'Promote from staging', exact: true })).toBeEnabled();
   await page.reload();
   await expect(select).toHaveValue('private');
-  await expect(card).toContainText('applies once its source records a new release');
+  await expect(visibility).toContainText('applies once its source records a new release');
 });
 
 test('a promoted environment rolls back automatically by default, and saves another choice', async ({ page, account }) => {
   void account;
   const { app, production } = await createUndeclaredPromotion(page);
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Rollback', exact: true }) });
-  const select = card.getByRole('combobox', { name: 'When a rollout fails', exact: true });
-  const save = card.getByRole('button', { name: 'Save rollback', exact: true });
+  const rollback = card(page, 'Rollback');
+  const select = rollback.getByRole('combobox', { name: 'When a rollout fails', exact: true });
+  const save = rollback.getByRole('button', { name: 'Save rollback', exact: true });
   await expect(select).toHaveValue('default');
   await expect(select.locator('option[value="default"]')).toHaveText(/automatic/);
   await expect(save).toBeDisabled();
@@ -273,10 +275,10 @@ test('the manifest owns the environments it declares, and reports the ones it dr
   void account;
   const { app, production } = await createPromotion(page);
   await page.goto(`/dashboard/applications/${app}/environments/${production}`);
-  const card = page.locator('section.card', { has: page.getByRole('heading', { name: 'Source', exact: true }) });
-  await expect(card).toContainText('Receives releases promoted from staging');
-  await expect(card).toContainText('[spec.environments.production]');
-  await expect(card.getByRole('combobox', { name: 'Deploys', exact: true })).toBeDisabled();
+  const source = card(page, 'Source');
+  await expect(source).toContainText('Receives releases promoted from staging');
+  await expect(source).toContainText('[spec.environments.production]');
+  await expect(source.getByRole('combobox', { name: 'Deploys', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Delete environment', exact: true })).toBeDisabled();
 
   // Without staging's block, production builds again and staging keeps
@@ -305,9 +307,9 @@ test('an environment\'s Secrets tab edits the stored secrets it may mount', asyn
 
   await page.goto(`/dashboard/applications/${app}/environments/${staging}`);
   await environmentTab(page, 'Secrets').click();
-  const mounted = page.locator('section.card', { has: page.getByRole('heading', { name: 'Mounted secrets', exact: true }) });
+  const mounted = card(page, 'Mounted secrets');
   await expect(mounted.getByRole('row').filter({ hasText: 'staging-api-key' })).toContainText('not set');
-  const store = page.locator('section.card', { has: page.getByRole('heading', { name: 'Secret store', exact: true }) });
+  const store = card(page, 'Secret store');
   await expect(store.getByRole('row').filter({ hasText: 'shared' })).toBeVisible();
   await expect(store).not.toContainText('production-api-key');
 
@@ -329,19 +331,11 @@ test('an environment\'s Secrets tab edits the stored secrets it may mount', asyn
 
 test('a preview\'s Secrets tab gives new stored secrets to previews', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', {
-    manifest: {
-      ...manifest,
-      metadata: { name: 'notes' },
-      spec: { ...manifest.spec, manifest: { path: 'app.toml', repository: { url: 'https://example.com/notes.git', branch: 'main' } } },
-    },
-    expected_generation: 0,
-  });
-  const app = saved.application_id as string;
+  const { app } = await apply(page, { ...manifest, metadata: { name: 'notes' }, spec: { ...manifest.spec, manifest: repositoryManifest } });
   const preview = (await call(page, 'POST', `applications/${app}/previews`, { branch: 'feat/login' })).preview.id as string;
   await page.goto(`/dashboard/applications/${app}/environments/${preview}`);
   await environmentTab(page, 'Secrets').click();
-  const store = page.locator('section.card', { has: page.getByRole('heading', { name: 'Secret store', exact: true }) });
+  const store = card(page, 'Secret store');
   const request = page.waitForRequest(request => request.method() === 'PUT' && request.url().includes(`/applications/${app}/secrets/preview-key`));
   await store.getByLabel('Secret name', { exact: true }).fill('preview-key');
   await store.getByLabel('Value', { exact: true }).fill('preview');

@@ -1,4 +1,7 @@
-import { test, expect, auth, call, deploymentCards, proof, toggleDeployment, webManifest, applicationTab, environmentTab, title, type Ceremony, type Managed } from '../fixtures.js';
+import {
+  test, expect, apply, auth, call, card, confirmNext, deploymentCards, head, proof, toggleDeployment, webManifest,
+  applicationTab, environmentTab, serviceTab, title, type Ceremony, type Managed,
+} from '../fixtures.js';
 import type { Page } from '@playwright/test';
 
 /** Save buttons exist for every settings group; only the edited group's is shown. */
@@ -60,20 +63,19 @@ test('adds a service and edits it on the service page', async ({ page, account }
   await expect(page.getByRole('button', { name: 'Remove service', exact: true })).toBeEnabled();
   await page.reload();
   await expect(page.getByLabel('Replicas', { exact: true })).toHaveValue('3');
-  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Environment', exact: true }).click();
+  await serviceTab(page, 'Environment').click();
   await page.getByRole('button', { name: 'Add variable', exact: true }).click();
   await page.getByLabel('Key', { exact: true }).fill('PORT');
   await page.getByLabel('Value', { exact: true }).fill('8080');
   await save(page);
   // A section's draft compares only its own fields, also after another section saved.
-  const sections = page.getByRole('tablist', { name: 'Service sections' });
-  await sections.getByRole('tab', { name: 'Source & scaling', exact: true }).click();
+  await serviceTab(page, 'Source & scaling').click();
   await page.getByLabel('Replicas', { exact: true }).fill('4');
-  await sections.getByRole('tab', { name: 'Environment', exact: true }).click();
+  await serviceTab(page, 'Environment').click();
   await page.getByLabel('Value', { exact: true }).fill('9090');
   await visible(page, 'Save changes').click();
   await expect(visible(page, 'Save changes')).toHaveCount(0);
-  await sections.getByRole('tab', { name: 'Source & scaling', exact: true }).click();
+  await serviceTab(page, 'Source & scaling').click();
   await page.getByLabel('Replicas', { exact: true }).fill('3');
   await expect(visible(page, 'Save changes')).toHaveCount(0);
   await page.locator('.breadcrumb').getByRole('link', { name: 'browser-test', exact: true }).click();
@@ -104,14 +106,14 @@ test('mounts an inline file whose content is kept verbatim', async ({ page, acco
   await createApplication(page);
   await addService(page, 'web', 'nginx:1.27');
   await page.locator('a.list-row', { hasText: 'web' }).click();
-  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Files', exact: true }).click();
+  await serviceTab(page, 'Files').click();
   await page.getByRole('button', { name: 'Add file', exact: true }).click();
   await page.getByLabel('Container path', { exact: true }).fill('/etc/prometheus/prometheus.yml');
   await page.getByLabel('Mode', { exact: true }).fill('0640');
   await page.getByLabel('Content', { exact: true }).fill('target: ${{ vars.missing }} {{ .x }}');
   await save(page);
   await page.reload();
-  await page.getByRole('tablist', { name: 'Service sections' }).getByRole('tab', { name: 'Files', exact: true }).click();
+  await serviceTab(page, 'Files').click();
   await expect(page.getByLabel('Mode', { exact: true })).toHaveValue('0640');
   await expect(page.getByLabel('Content', { exact: true })).toHaveValue('target: ${{ vars.missing }} {{ .x }}');
 });
@@ -180,7 +182,7 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
 
-  await page.locator('.detail-head').getByRole('button', { name: 'Deploy to production', exact: true }).click();
+  await head(page).getByRole('button', { name: 'Deploy to production', exact: true }).click();
   await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
   const deployment = deploymentCards(page);
   await expect(deployment).toBeVisible();
@@ -288,20 +290,6 @@ test('declares, changes, and removes generated secrets', async ({ page, account 
   await expect(secret(1)).toHaveCount(0);
 });
 
-test('unsaved edits block deployment and navigation until discarded', async ({ page, account }) => {
-  void account;
-  await createApplication(page);
-  await applicationTab(page, 'Volumes').click();
-  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();
-  page.once('dialog', dialog => dialog.dismiss());
-  await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
-  await expect(page).toHaveURL(/\/dashboard\/applications\/[^/]+$/);
-  await visible(page, 'Discard').click();
-  await expect(page.getByRole('button', { name: 'Deploy to production', exact: true })).toBeEnabled();
-});
-
 test('a save whose response was lost is retried once and applied once', async ({ page, account }) => {
   void account;
   await createApplication(page);
@@ -326,26 +314,40 @@ test('a save whose response was lost is retried once and applied once', async ({
   expect(await call(page, 'GET', `applications/${id}`)).toMatchObject({ generation: generation + 1 });
 });
 
-test('unsaved edits guard back navigation, but not downloading the manifest', async ({ page, account }) => {
+test('unsaved edits gate Deploy, links and Back until discarded, but not downloading the manifest', async ({ page, account }) => {
   void account;
   await createApplication(page);
   const editor = page.url();
+  const deploy = page.getByRole('button', { name: 'Deploy to production', exact: true });
+  const addVolume = async () => {
+    await page.getByRole('button', { name: 'Add volume', exact: true }).click();
+    await page.getByLabel('Volume name', { exact: true }).fill('kept');
+  };
   await applicationTab(page, 'Volumes').click();
-  await page.getByRole('button', { name: 'Add volume', exact: true }).click();
-  await page.getByLabel('Volume name', { exact: true }).fill('kept');
+  await addVolume();
+  await expect(deploy).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled();
   const dialogs: string[] = [];
   page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
   const download = page.waitForEvent('download');
   await page.getByRole('link', { name: 'Manifest', exact: true }).click();
   await download;
   expect(dialogs).toEqual([]);
-  // Cancelling Back restores the editor's address, with its tab and edits.
+  // Cancelling a link, or Back, keeps the editor's address, with its tab and edits.
+  const asked = expect.stringContaining('discard unsaved form edits');
+  await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
+  await expect.poll(() => dialogs).toEqual([asked]);
+  await expect(page).toHaveURL(`${editor}?tab=volumes`);
   await page.goBack();
-  await expect.poll(() => dialogs).toEqual([expect.stringContaining('discard unsaved form edits')]);
+  await expect.poll(() => dialogs).toEqual([asked, asked]);
   await expect(page).toHaveURL(`${editor}?tab=volumes`);
   await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('kept');
+  await visible(page, 'Discard').click();
+  await expect(deploy).toBeEnabled();
+  // Confirming leaves.
+  await addVolume();
   page.removeAllListeners('dialog');
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   await page.goBack();
   await expect(page).toHaveURL(/\/dashboard\/applications$/);
 });
@@ -368,11 +370,8 @@ test('creating rejects an invalid name, and deleting needs confirmation', async 
   page.once('dialog', dialog => dialog.dismiss());
   await remove.click();
   await expect(remove).toBeEnabled();
-  page.once('dialog', async dialog => {
-    // Its environments are named, and confirmed with the request.
-    expect(dialog.message()).toContain('all its environments (production)');
-    await dialog.accept();
-  });
+  // Its environments are named, and confirmed with the request.
+  confirmNext(page, 'all its environments (production)');
   const deleted = page.waitForResponse(response => response.request().method() === 'DELETE' && response.url().includes(`/applications/${id}?`));
   await remove.click();
   expect((await deleted).status()).toBe(202);
@@ -383,18 +382,15 @@ test('creating rejects an invalid name, and deleting needs confirmation', async 
 test('removes a service from its page, whose address then reports it gone', async ({ page, account }) => {
   void account;
   const image = { type: 'image', image: 'nginx:alpine' };
-  const saved = await call(page, 'POST', 'applications/apply', {
-    manifest: webManifest('services', { services: [{ name: 'web', source: image }, { name: 'worker', source: image }] }),
-    expected_generation: 0,
-  });
-  await page.goto(`/dashboard/applications/${saved.application_id}/services/web`);
+  const { app } = await apply(page, webManifest('services', { services: [{ name: 'web', source: image }, { name: 'worker', source: image }] }));
+  await page.goto(`/dashboard/applications/${app}/services/web`);
   const remove = page.getByRole('button', { name: 'Remove service', exact: true });
   page.once('dialog', dialog => dialog.dismiss());
   await remove.click();
   await expect(title(page)).toHaveText('web');
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   await remove.click();
-  await expect(page).toHaveURL(url => url.pathname.endsWith(`/applications/${saved.application_id}`) && url.searchParams.get('tab') === 'services');
+  await expect(page).toHaveURL(url => url.pathname.endsWith(`/applications/${app}`) && url.searchParams.get('tab') === 'services');
   await expect(page.locator('a.list-row')).toHaveText([/^worker/]);
   await page.goBack();
   await expect(page.getByText('Service web is not part of the saved configuration.', { exact: true })).toBeVisible();
@@ -404,10 +400,8 @@ test('removes a service from its page, whose address then reports it gone', asyn
 
 test('saves exports and imports from the Links tab, each card on its own', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('links'), expected_generation: 0 });
-  const id = saved.application_id as string;
+  const { app: id } = await apply(page, webManifest('links'));
   await page.goto(`/dashboard/applications/${id}?tab=links`);
-  const card = (name: string) => page.locator('section.card').filter({ has: page.getByRole('heading', { name, exact: true }) });
   await page.getByRole('button', { name: 'Add export', exact: true }).click();
   const exporting = page.getByRole('dialog', { name: 'Add export' });
   await exporting.getByRole('combobox', { name: 'Service', exact: true }).selectOption('web');
@@ -415,7 +409,7 @@ test('saves exports and imports from the Links tab, each card on its own', async
   await exporting.getByLabel('Previews too', { exact: true }).check();
   await exporting.getByRole('button', { name: 'Add export', exact: true }).click();
   await expect(exporting).toBeHidden();
-  const exported = card('Exports').getByRole('listitem');
+  const exported = card(page, 'Exports').getByRole('listitem');
   await expect(exported).toContainText('to notes, billing, and their previews');
 
   await page.getByRole('button', { name: 'Add import', exact: true }).click();
@@ -424,7 +418,7 @@ test('saves exports and imports from the Links tab, each card on its own', async
   await importing.getByLabel('Service', { exact: true }).fill('api');
   await importing.getByRole('button', { name: 'Add import', exact: true }).click();
   await expect(importing).toBeHidden();
-  const imported = card('Imports').getByRole('listitem');
+  const imported = card(page, 'Imports').getByRole('listitem');
   await expect(imported).toContainText('api.auth');
   await expect(imported).toContainText('from the same-named environment');
 
@@ -441,7 +435,7 @@ test('saves exports and imports from the Links tab, each card on its own', async
   await editing.getByRole('button', { name: 'Save export', exact: true }).click();
   await expect(editing).toBeHidden();
   await expect(exported).toContainText('to notes, and their previews');
-  page.once('dialog', dialog => dialog.accept());
+  confirmNext(page);
   await imported.getByRole('button', { name: 'Remove', exact: true }).click();
   await expect(imported).toHaveCount(0);
   const { application: edited } = await call(page, 'GET', `applications/${id}`);
@@ -451,14 +445,17 @@ test('saves exports and imports from the Links tab, each card on its own', async
 
 test('reloading after a change made elsewhere keeps unsaved edits and shows the change', async ({ page, account }) => {
   void account;
+  await page.clock.install();
   await createApplication(page);
   const id = page.url().split('/').pop()!;
   await applicationTab(page, 'Volumes').click();
   await page.getByRole('button', { name: 'Add volume', exact: true }).click();
   await page.getByLabel('Volume name', { exact: true }).fill('kept');
   await call(page, 'PUT', `applications/${id}/name?force=true`, { value: 'renamed-elsewhere' });
+  // The next dashboard refresh reports it.
+  await page.clock.runFor(16_000);
   const reload = page.getByRole('button', { name: 'Reload saved configuration', exact: true });
-  await expect(reload).toBeVisible({ timeout: 20_000 });
+  await expect(reload).toBeVisible();
   await reload.click();
   await expect(title(page)).toHaveText('renamed-elsewhere');
   await expect(page.getByLabel('Volume name', { exact: true })).toHaveValue('kept');
@@ -466,13 +463,15 @@ test('reloading after a change made elsewhere keeps unsaved edits and shows the 
 });
 
 test('reauthenticates after revocation without losing an unsaved editor draft', async ({ page, account }) => {
+  await page.clock.install();
   await createApplication(page);
   await page.getByRole('button', { name: 'Rename application', exact: true }).click();
   await page.getByLabel('Application name', { exact: true }).fill('preserved-draft');
   await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
   // The dashboard's next refresh detects revocation without an explicit reload.
+  await page.clock.runFor(16_000);
   const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible({ timeout: 20_000 });
+  await expect(dialog).toBeVisible();
   await dialog.getByRole('button', { name: 'Sign in with a passkey', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByLabel('Application name', { exact: true })).toHaveValue('preserved-draft');
@@ -481,13 +480,15 @@ test('reauthenticates after revocation without losing an unsaved editor draft', 
 });
 
 test('signing in as another account after the session expired drops the previous drafts', async ({ page, account }) => {
+  await page.clock.install();
   await createApplication(page);
   await page.getByRole('button', { name: 'Rename application', exact: true }).click();
   await page.getByLabel('Application name', { exact: true }).fill('alice-draft');
   const link = (await auth<Managed>(page, 'manage', { action: 'create_invitation', grants: [{ permission: 'admin' }] })).invitation_url;
   await auth(page, 'manage', { action: 'revoke_all', user_id: account.id });
+  await page.clock.runFor(16_000);
   const dialog = page.getByRole('dialog');
-  await expect(dialog).toBeVisible({ timeout: 20_000 });
+  await expect(dialog).toBeVisible();
   // Bob registers and signs in elsewhere in this browser, then continues here.
   const ceremony = await auth<Ceremony>(page, 'register/start', {
     invitation: link.split('#invite=')[1], user_id: null, username: 'bob', display_name: '', passkey_name: 'Test',

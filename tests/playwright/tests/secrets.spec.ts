@@ -1,24 +1,15 @@
-import { test, expect, call, card, environmentId, webManifest, applicationTab, environmentTab } from '../fixtures.js';
-import type { Page, Request } from '@playwright/test';
+import { test, expect, apply, call, card, confirmNext, webManifest, applicationTab, environmentTab } from '../fixtures.js';
+import type { Request } from '@playwright/test';
 
 /** Whether `request` is a `method` request for exactly `path`. */
 const sent = (request: Request, method: string, path: string) =>
   request.method() === method && new URL(request.url()).pathname === `/api/v1/${path}`;
 
-/** Accepts the next confirmation once its message contains `text`. */
-function confirmNext(page: Page, text: string) {
-  page.once('dialog', async dialog => {
-    expect(dialog.message()).toContain(text);
-    await dialog.accept();
-  });
-}
-
 test('replacing a stored value keeps an access list changed elsewhere, and access saves on its own', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('vault'), expected_generation: 0 });
-  const app = saved.application_id as string;
+  const { app, env } = await apply(page, webManifest('vault'));
   const path = `applications/${app}/secrets/api-token`;
-  await call(page, 'PUT', `${path}?environments=${await environmentId(page, app)}`, 'first', { 'X-Expected-Generation': '0' });
+  await call(page, 'PUT', `${path}?environments=${env}`, 'first', { 'X-Expected-Generation': '0' });
   await page.goto(`/dashboard/applications/${app}`);
   await applicationTab(page, 'Secrets').click();
   const store = card(page, 'Secret store');
@@ -78,8 +69,7 @@ test('replacing a stored value keeps an access list changed elsewhere, and acces
 
 test('a refused secret write clears the value and waits for a refresh', async ({ page, account }) => {
   void account;
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest('vault'), expected_generation: 0 });
-  const app = saved.application_id as string;
+  const { app } = await apply(page, webManifest('vault'));
   const path = `applications/${app}/secrets/api-token`;
   await call(page, 'PUT', `${path}?environments=all`, 'first', { 'X-Expected-Generation': '0' });
   await page.goto(`/dashboard/applications/${app}`);
@@ -121,10 +111,8 @@ test.describe('with deployments', () => {
       }],
       secrets: [{ name: 'session-key', generate: { type: 'random', bytes: 32 } }],
     });
-    const saved = await call(page, 'POST', 'applications/apply', { manifest, expected_generation: 0 });
-    const app = saved.application_id as string;
-    const env = await environmentId(page, app);
-    await call(page, 'POST', `environments/${env}/deploy?expected_generation=${saved.generation}`);
+    const { app, env, generation } = await apply(page, manifest);
+    await call(page, 'POST', `environments/${env}/deploy?expected_generation=${generation}`);
     // Its first deployment generates the value.
     await expect.poll(async () => (await call(page, 'GET', `environments/${env}/secrets`)).length, { timeout: 20_000 }).toBe(1);
 

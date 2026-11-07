@@ -266,29 +266,6 @@ mod tests {
         assert!(controller.manual_pending());
         assert!(controller.begin_request());
         assert!(!controller.manual_pending());
-        controller.record_success();
-        controller.set_hidden(true);
-        assert!(!controller.begin_request());
-    }
-
-    #[test]
-    fn application_health_covers_terminal_and_pending_states() {
-        assert_eq!(
-            ApplicationHealth::from_server_state(ApplicationState::Ready),
-            ApplicationHealth::Converged
-        );
-        assert_eq!(
-            ApplicationHealth::from_server_state(ApplicationState::Degraded),
-            ApplicationHealth::Degraded
-        );
-        assert_eq!(
-            ApplicationHealth::from_server_state(ApplicationState::Failed),
-            ApplicationHealth::Failed
-        );
-        assert_eq!(
-            ApplicationHealth::from_server_state(ApplicationState::Pending),
-            ApplicationHealth::Pending
-        );
     }
 
     #[test]

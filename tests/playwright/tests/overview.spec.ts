@@ -1,12 +1,5 @@
-import { test, expect, call, environmentId, rewrite, webManifest } from '../fixtures.js';
+import { test, expect, apply, call, rewrite, webManifest } from '../fixtures.js';
 import type { Page, Route } from '@playwright/test';
-
-/** Saves application `name`, returning its ID, its `production` environment's, and its generation. */
-async function apply(page: Page, name: string): Promise<{ id: string; env: string; generation: number }> {
-  const saved = await call(page, 'POST', 'applications/apply', { manifest: webManifest(name), expected_generation: 0 });
-  const id = saved.application_id as string;
-  return { id, env: await environmentId(page, id), generation: saved.generation as number };
-}
 /** The value of the overview's `label` metric tile. */
 const metric = (page: Page, label: string) => page.locator('.metric', { hasText: label }).locator('strong');
 /** A refused API response with `message`. */
@@ -14,12 +7,12 @@ const refusal = (message: string) => ({ status: 503, json: { code: 'unavailable'
 
 test('the overview sums up applications by their least healthy environment', async ({ page, account }) => {
   void account;
-  const shop = await apply(page, 'shop');
-  const notes = await apply(page, 'notes');
-  const blog = await apply(page, 'blog');
+  const shop = await apply(page, webManifest('shop'));
+  const notes = await apply(page, webManifest('notes'));
+  const blog = await apply(page, webManifest('blog'));
   const deployed = await call(page, 'POST', `environments/${shop.env}/deploy?expected_generation=${shop.generation}`);
   await call(page, 'POST', `environments/${notes.env}/deploy?expected_generation=${notes.generation}`);
-  const staging = await call(page, 'POST', `applications/${shop.id}/environments`, { name: 'staging', expected_generation: shop.generation });
+  const staging = await call(page, 'POST', `applications/${shop.app}/environments`, { name: 'staging', expected_generation: shop.generation });
   // The fixture never deploys: report each environment's state instead.
   const state = (id: string, value: string, message: string | null = null) =>
     rewrite(page, `/api/v1/environments/${id}/status`, data => { data.state = value; data.message = message; });
@@ -39,7 +32,7 @@ test('the overview sums up applications by their least healthy environment', asy
   await expect(recent.getByRole('alert')).toHaveText('blog: deployment history unavailable');
   await expect(recent.getByRole('row')).toHaveCount(3);
   await expect(recent.getByRole('link', { name: 'shop', exact: true }))
-    .toHaveAttribute('href', `/dashboard/applications/${shop.id}/environments/${shop.env}?deployment=${deployed.operation_id}`);
+    .toHaveAttribute('href', `/dashboard/applications/${shop.app}/environments/${shop.env}?deployment=${deployed.operation_id}`);
 
   await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
   const row = (name: string) => page.locator('a.list-row', { hasText: name });
@@ -53,7 +46,7 @@ test('the overview sums up applications by their least healthy environment', asy
 
 test('a failed refresh keeps the last successful view, marked stale, until one succeeds', async ({ page, account }) => {
   void account;
-  await apply(page, 'shop');
+  await apply(page, webManifest('shop'));
   let failure: 'refused' | 'unreachable' | null = 'refused';
   await page.route(url => url.pathname === '/api/v1/system/status', (route: Route) => {
     if (failure === 'refused') return route.fulfill(refusal('maintenance window'));
