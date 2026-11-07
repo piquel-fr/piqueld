@@ -169,6 +169,7 @@ async fn generated_json_mutation_encodes_paths_and_decodes_api_errors() {
     };
     assert_eq!(status, http::StatusCode::CONFLICT);
     assert_eq!(error.code, "generation_conflict");
+    assert_eq!(error.message, "stale revision");
     assert_eq!(error.details["current"], 7);
     assert_eq!(error.request_id, "trace");
     let request = server.requests.recv().await.unwrap();

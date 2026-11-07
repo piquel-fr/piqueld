@@ -624,11 +624,14 @@ fn doctor_reports_the_connection_and_exits_6_on_a_failed_check() {
 
 #[test]
 fn doctor_reports_the_connection_when_the_daemon_times_out() {
-    let server = start_server(true, 1, |_| {
-        thread::sleep(Duration::from_millis(1500));
+    // The checks stay pending until the CLI has given up on them.
+    let (release, pending) = mpsc::channel::<()>();
+    let server = start_server(true, 1, move |_| {
+        let _ = pending.recv_timeout(ACCEPT_TIMEOUT);
         Reply::json(json!({"checks": []}))
     });
     let output = run_with_timeout(&server, &["doctor"], "500ms");
+    drop(release);
     assert_eq!(output.status.code(), Some(4));
     let value: Value = serde_json::from_slice(&output.stdout).expect("clean JSON stdout");
     assert_eq!(value["connection"]["credential"], "none");
@@ -638,39 +641,35 @@ fn doctor_reports_the_connection_when_the_daemon_times_out() {
 
 #[test]
 fn list_paginates_and_includes_reconciliation_status() {
-    for unix in [false, true] {
-        let mut page_number = 0;
-        let server = start_server(unix, 4, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100"
-            | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
-                page_number += 1;
-                if page_number == 1 {
-                    Reply::json(page(
-                        vec![app_summary("app-first-01", "first")],
-                        Some("v1:app-first-01"),
-                    ))
-                } else {
-                    Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
-                }
+    let mut page_number = 0;
+    let server = start_server(true, 4, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100"
+        | "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
+            page_number += 1;
+            if page_number == 1 {
+                Reply::json(page(
+                    vec![app_summary("app-first-01", "first")],
+                    Some("v1:app-first-01"),
+                ))
+            } else {
+                Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
             }
-            "/api/v1/environments/app-first-01/status" => {
-                Reply::json(status("app-first-01", "ready"))
-            }
-            "/api/v1/environments/app-notes-01/status" => {
-                Reply::json(status("app-notes-01", "degraded"))
-            }
-            path => panic!("unexpected path {path}"),
-        });
-        let output = run(&server, &["app", "list"]);
-        let value = assert_json_success(&output);
-        assert_eq!(value["items"].as_array().expect("items").len(), 2);
-        assert_eq!(
-            value["items"][1]["environments"][0]["status"]["state"],
-            "degraded"
-        );
-        assert_eq!(output.stderr, b"");
-        let _ = server.finish();
-    }
+        }
+        "/api/v1/environments/app-first-01/status" => Reply::json(status("app-first-01", "ready")),
+        "/api/v1/environments/app-notes-01/status" => {
+            Reply::json(status("app-notes-01", "degraded"))
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["app", "list"]);
+    let value = assert_json_success(&output);
+    assert_eq!(value["items"].as_array().expect("items").len(), 2);
+    assert_eq!(
+        value["items"][1]["environments"][0]["status"]["state"],
+        "degraded"
+    );
+    assert_eq!(output.stderr, b"");
+    let _ = server.finish();
 }
 
 #[test]
@@ -740,21 +739,19 @@ fn exec_cat(target: &[&str], runs_in: &str, stdin: Stdio, input: &[u8]) -> (Test
 
 #[test]
 fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
-    let target = ["app", "exec", "app-notes-01"];
-    let (server, output) = exec_cat(&target, "app-notes-01", Stdio::piped(), b"hello");
-    assert_eq!(output.status.code(), Some(3));
-    assert_eq!(output.stdout, b"hello");
-    assert_eq!(output.stderr, b"closed");
-    let _ = server.finish();
-}
-
-#[test]
-fn preview_exec_runs_the_command_in_the_preview() {
-    let target = ["preview", "exec", "app-notes-01", "notes-feat-login-0a1b2c"];
-    let (server, output) = exec_cat(&target, "env-preview-01", Stdio::piped(), b"hello");
-    assert_eq!(output.status.code(), Some(3));
-    assert_eq!(output.stdout, b"hello");
-    let _ = server.finish();
+    for (target, runs_in) in [
+        (&["app", "exec", "app-notes-01"][..], "app-notes-01"),
+        (
+            &["preview", "exec", "app-notes-01", "notes-feat-login-0a1b2c"],
+            "env-preview-01",
+        ),
+    ] {
+        let (server, output) = exec_cat(target, runs_in, Stdio::piped(), b"hello");
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout, b"hello");
+        assert_eq!(output.stderr, b"closed");
+        let _ = server.finish();
+    }
 }
 
 #[test]
@@ -804,68 +801,52 @@ fn show_resolves_name_across_pages_and_id_directly() {
 }
 
 #[test]
-fn apply_deploy_confirmation_and_transport_retry_are_exercised() {
-    for unix in [false, true] {
-        let directory = tempdir().expect("manifest directory");
-        let manifest = write_manifest(&directory);
-        let mut mutation_requests = Vec::new();
-        let server = start_server(unix, 3, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
-            "/api/v1/applications/apply?deploy=true" => {
-                mutation_requests.push(request.clone());
-                assert_eq!(request.body, MANIFEST.as_bytes());
-                if mutation_requests.len() == 1 {
-                    Reply::dropped()
-                } else {
-                    assert_eq!(
-                        request.headers.get("content-type"),
-                        Some(&"application/toml".to_owned())
-                    );
-                    Reply::accepted(saved_deployment("app-notes-01"))
-                }
+fn apply_deploy_retries_a_dropped_request_with_the_same_identity() {
+    let directory = tempdir().expect("manifest directory");
+    let manifest = write_manifest(&directory);
+    let mut attempts = 0;
+    // Over the Unix socket, the default transport; other retries run over TCP.
+    let server = start_server(true, 3, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications/apply?deploy=true" => {
+            attempts += 1;
+            if attempts == 1 {
+                Reply::dropped()
+            } else {
+                Reply::accepted(saved_deployment("app-notes-01"))
             }
-            path => panic!("unexpected path {path}"),
-        });
-        let output = run(
-            &server,
-            &[
-                "app",
-                "apply",
-                "--deploy",
-                "--file",
-                manifest.to_str().expect("manifest path"),
-                "--yes",
-                "--no-wait",
-            ],
-        );
-        let value = assert_json_success(&output);
-        assert_eq!(value["application_id"], "app-notes-01");
-        assert!(output.stderr.is_empty(), "preview is a separate command");
-        let records = server.finish();
-        let retries = records
-            .iter()
-            .filter(|request| request.path == "/api/v1/applications/apply?deploy=true")
-            .map(|request| request.body.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(retries.len(), 2);
-        assert_eq!(retries[0], retries[1]);
-        let mutations = records
-            .iter()
-            .filter(|request| request.path == "/api/v1/applications/apply?deploy=true")
-            .collect::<Vec<_>>();
-        let key = mutations[0]
-            .headers
-            .get("idempotency-key")
-            .expect("command has a replay identity");
-        assert_eq!(Some(key), mutations[1].headers.get("idempotency-key"));
-        assert_eq!(
-            mutations[0]
-                .headers
-                .get("x-expected-generation")
-                .map(String::as_str),
-            Some("0")
-        );
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(
+        &server,
+        &[
+            "app",
+            "apply",
+            "--deploy",
+            "--file",
+            manifest.to_str().expect("manifest path"),
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    let value = assert_json_success(&output);
+    assert_eq!(value["application_id"], "app-notes-01");
+    assert!(output.stderr.is_empty(), "preview is a separate command");
+    let records = server.finish();
+    let [first, second] = &records[1..] else {
+        panic!("one retry: {records:?}");
+    };
+    for mutation in [first, second] {
+        assert_eq!(mutation.body, MANIFEST.as_bytes());
+        assert_eq!(mutation.headers["content-type"], "application/toml");
+        assert_eq!(mutation.headers["x-expected-generation"], "0");
     }
+    let key = first
+        .headers
+        .get("idempotency-key")
+        .expect("command has a replay identity");
+    assert_eq!(Some(key), second.headers.get("idempotency-key"));
 }
 
 #[test]
@@ -889,37 +870,6 @@ fn noninteractive_apply_stops_after_inspection() {
     assert!(!output.status.success());
     assert_eq!(output.stdout, b"");
     assert!(String::from_utf8_lossy(&output.stderr).contains("confirmation"));
-    let _ = server.finish();
-}
-
-#[test]
-fn apply_reports_a_failed_operation_with_a_nonzero_exit() {
-    let directory = tempdir().expect("manifest directory");
-    let manifest = write_manifest(&directory);
-    let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
-        "/api/v1/applications/apply?deploy=true" => {
-            Reply::accepted(saved_deployment("app-notes-01"))
-        }
-        "/api/v1/operations/operation-01" => Reply::json(operation("failed")),
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(
-        &server,
-        &[
-            "app",
-            "apply",
-            "--deploy",
-            "--file",
-            manifest.to_str().expect("manifest path"),
-            "--yes",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(5));
-    assert_eq!(output.stdout, b"");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("runtime_failed"));
-    assert!(stderr.contains("runtime reconciliation failed"));
     let _ = server.finish();
 }
 
@@ -974,13 +924,14 @@ fn human_plan_keeps_actions_and_diagnostics_when_configuration_matches_the_deplo
     }
 }
 
-/// `app plan` lists how saving the manifest would change the environments it
-/// declares, marking each change.
+/// `app plan` asks only for a plan, and lists how saving the manifest would
+/// change the environments it declares, marking each change.
 #[test]
 fn human_plan_lists_environment_changes() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
-    let server = start_server(true, 1, |_| {
+    let server = start_server(true, 1, |request| {
+        assert_eq!(request.path, "/api/v1/applications/plan");
         let mut preview = plan("app-notes-01");
         preview["environments"] = json!([
             {"change": "create", "environment": "staging", "source": {"type": "branch", "branch": "main"}, "sync": true},
@@ -1188,8 +1139,10 @@ fn human_operation_progress_omits_duplicate_poll_results() {
     let _ = server.finish();
 }
 
+/// A failed deployment exits 5, reporting the failure with bounded context
+/// instead of the raw operation.
 #[test]
-fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
+fn apply_reports_a_failed_operation_with_exit_5_and_bounded_context() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(true, 3, move |request| match request.path.as_str() {
@@ -1218,6 +1171,7 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
         ],
     );
     assert_eq!(output.status.code(), Some(5));
+    assert_eq!(output.stdout, b"");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Context:"));
     assert!(stderr.contains("Resource: app-notes-network"));
@@ -1228,39 +1182,41 @@ fn human_operation_error_uses_bounded_context_instead_of_raw_json() {
     let _ = server.finish();
 }
 
+/// Missing, oversized, and non-regular manifests fail as input errors
+/// before the daemon is contacted, without opening a FIFO.
 #[test]
-fn manifest_input_is_missing_or_oversized_before_network_use() {
+fn unreadable_manifests_fail_before_network_use() {
     let directory = tempdir().expect("manifest directory");
-    let missing = directory.path().join("missing.toml");
     let oversized = directory.path().join("oversized.toml");
     fs::write(&oversized, vec![b'x'; 4 * 1024 * 1024 + 1]).expect("oversized manifest");
+    let fifo = directory.path().join("manifest.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo")
+            .success()
+    );
     let server = start_server(false, 0, |_| panic!("manifest input must fail locally"));
-
-    let missing_output = run(
-        &server,
-        &[
-            "app",
-            "plan",
-            "--file",
-            missing.to_str().expect("manifest path"),
-        ],
-    );
-    assert_eq!(missing_output.status.code(), Some(2));
-    assert_eq!(missing_output.stdout, b"");
-
-    let oversized_output = run(
-        &server,
-        &[
-            "app",
-            "plan",
-            "--file",
-            oversized.to_str().expect("manifest path"),
-        ],
-    );
-    assert_eq!(oversized_output.status.code(), Some(2));
-    assert_eq!(oversized_output.stdout, b"");
-    let stderr = String::from_utf8_lossy(&oversized_output.stderr);
-    assert!(stderr.contains("exceeds"));
+    for (path, expected) in [
+        (directory.path().join("missing.toml"), "missing.toml"),
+        (oversized, "exceeds"),
+        (fifo, "not a regular file"),
+    ] {
+        let output = run(
+            &server,
+            &[
+                "app",
+                "plan",
+                "--file",
+                path.to_str().expect("manifest path"),
+            ],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.stdout, b"");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+    }
     let _ = server.finish();
 }
 
@@ -1314,31 +1270,29 @@ fn validate_checks_manifests_without_a_daemon_or_profiles() {
 
 #[test]
 fn delete_reports_named_volume_retention_and_operation_completion() {
-    for unix in [false, true] {
-        let mut deleting = false;
-        let server = start_server(unix, 4, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => {
-                Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
-            }
-            "/api/v1/applications/app-notes-01" if !deleting => {
-                Reply::json(app_view("app-notes-01", "notes"))
-            }
-            "/api/v1/applications/app-notes-01?expected_generation=1" => {
-                deleting = true;
-                Reply::accepted(deleted("app-notes-01"))
-            }
-            "/api/v1/applications/app-notes-01" => Reply::status(
-                "404 Not Found",
-                &json!({"code":"not_found","message":"Application deleted"}),
-            ),
-            path => panic!("unexpected path {path}"),
-        });
-        let output = run(&server, &["app", "delete", "notes", "--yes"]);
-        let value = assert_json_success(&output);
-        assert_eq!(value["volumes_retained"], true);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
-        let _ = server.finish();
-    }
+    let mut deleting = false;
+    let server = start_server(false, 4, move |request| match request.path.as_str() {
+        "/api/v1/applications?limit=100" => {
+            Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
+        }
+        "/api/v1/applications/app-notes-01" if !deleting => {
+            Reply::json(app_view("app-notes-01", "notes"))
+        }
+        "/api/v1/applications/app-notes-01?expected_generation=1" => {
+            deleting = true;
+            Reply::accepted(deleted("app-notes-01"))
+        }
+        "/api/v1/applications/app-notes-01" => Reply::status(
+            "404 Not Found",
+            &json!({"code":"not_found","message":"Application deleted"}),
+        ),
+        path => panic!("unexpected path {path}"),
+    });
+    let output = run(&server, &["app", "delete", "notes", "--yes"]);
+    let value = assert_json_success(&output);
+    assert_eq!(value["volumes_retained"], true);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("named volumes are retained"));
+    let _ = server.finish();
 }
 
 #[test]
@@ -1565,38 +1519,32 @@ fn recover_admin_sends_no_credential() {
     assert!(!requests[0].headers.contains_key("authorization"));
 }
 
+/// A name matching no application is an input error, and one matching
+/// several is a conflict.
 #[test]
-fn unknown_names_exit_with_input_error_and_no_mutation() {
-    let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(&server, &["app", "show", "missing"]);
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(output.stdout, b"");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("was not found"));
-    let _ = server.finish();
-}
-
-#[test]
-fn ambiguous_names_report_the_match_count() {
-    let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(
+fn names_must_match_exactly_one_application() {
+    for (applications, code, expected) in [
+        (Vec::new(), 2, "was not found"),
+        (
             vec![
                 app_summary("app-notes-01", "notes"),
                 app_summary("app-notes-02", "notes"),
             ],
-            None,
-        )),
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run(&server, &["app", "show", "notes"]);
-    assert_eq!(output.status.code(), Some(3));
-    assert_eq!(output.stdout, b"");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("matched 2 applications"));
-    let _ = server.finish();
+            3,
+            "matched 2 applications",
+        ),
+    ] {
+        let server = start_server(false, 1, move |request| match request.path.as_str() {
+            "/api/v1/applications?limit=100" => Reply::json(page(applications.clone(), None)),
+            path => panic!("unexpected path {path}"),
+        });
+        let output = run(&server, &["app", "show", "notes"]);
+        assert_eq!(output.status.code(), Some(code));
+        assert_eq!(output.stdout, b"");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        let _ = server.finish();
+    }
 }
 
 #[test]
@@ -1610,26 +1558,6 @@ fn read_request_uses_the_full_command_timeout() {
     let output = run_with_timeout(&server, &["status"], "1s");
     assert_json_success(&output);
     server.finish();
-}
-
-#[test]
-fn fifo_manifest_is_rejected_before_opening() {
-    let directory = tempdir().expect("temporary directory");
-    let path = directory.path().join("manifest.fifo");
-    assert!(
-        Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .expect("mkfifo")
-            .success()
-    );
-    let output = support::command()
-        .args(["--timeout", "100ms", "app", "plan", "--file"])
-        .arg(path)
-        .output()
-        .expect("CLI rejects FIFO");
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
 }
 
 #[test]
@@ -1978,22 +1906,6 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
 }
 
 #[test]
-fn preview_is_an_explicit_read_only_command() {
-    let directory = tempdir().unwrap();
-    let manifest = write_manifest(&directory);
-    let server = start_server(false, 1, |request| {
-        assert_eq!(request.path, "/api/v1/applications/plan");
-        Reply::json(plan("preview-00000001"))
-    });
-    let output = run(
-        &server,
-        &["app", "plan", "--file", manifest.to_str().unwrap()],
-    );
-    assert_json_success(&output);
-    assert_eq!(server.finish().len(), 1);
-}
-
-#[test]
 fn quiet_preserves_json_and_errors_but_suppresses_human_success() {
     for json in [false, true] {
         let server = start_server(false, 1, |_| {
@@ -2213,6 +2125,15 @@ fn assert_saves_field(arguments: &[&str], suffix: &str, expected: &Value) {
     );
 }
 
+/// Runs `arguments` against a server that serves `notes`, asserting they
+/// exit as an input error after only reading it, as editing an entry the
+/// application lacks does.
+fn assert_edit_refused(arguments: &[&str]) {
+    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
+    assert_eq!(run(&server, arguments).status.code(), Some(2));
+    assert_eq!(server.finish().len(), 1);
+}
+
 #[test]
 fn file_add_inlines_local_files_and_names_repository_files() {
     let directory = tempdir().expect("file directory");
@@ -2328,13 +2249,7 @@ fn job_commands_edit_the_loaded_jobs_and_save_the_whole_list() {
         assert_saves(view, &arguments, "PUT", "jobs", &json!({"value": expected}));
     }
 
-    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
-    let output = run(
-        &server,
-        &["app", "job", "remove", "app-notes-01", "seed", "--yes"],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(server.finish().len(), 1);
+    assert_edit_refused(&["app", "job", "remove", "app-notes-01", "seed", "--yes"]);
 }
 
 #[test]
@@ -2380,22 +2295,16 @@ fn secret_mount_commands_edit_the_loaded_mounts_and_save_the_whole_list() {
         );
     }
 
-    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
-    let output = run(
-        &server,
-        &[
-            "app",
-            "service",
-            "secret",
-            "remove",
-            "app-notes-01",
-            "web",
-            "/run/secrets/db",
-            "--yes",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(server.finish().len(), 1);
+    assert_edit_refused(&[
+        "app",
+        "service",
+        "secret",
+        "remove",
+        "app-notes-01",
+        "web",
+        "/run/secrets/db",
+        "--yes",
+    ]);
 }
 
 #[test]
@@ -2468,21 +2377,15 @@ fn link_commands_edit_the_loaded_links_and_save_the_whole_list() {
         assert_saves(view, &arguments, "PUT", field, &json!({"value": expected}));
     }
 
-    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
-    let output = run(
-        &server,
-        &[
-            "app",
-            "import",
-            "remove",
-            "app-notes-01",
-            "auth",
-            "api",
-            "--yes",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(server.finish().len(), 1);
+    assert_edit_refused(&[
+        "app",
+        "import",
+        "remove",
+        "app-notes-01",
+        "auth",
+        "api",
+        "--yes",
+    ]);
 }
 
 #[test]
@@ -2570,20 +2473,14 @@ fn generated_secret_commands_edit_the_loaded_declarations_and_save_the_whole_lis
         server.finish();
     }
 
-    let server = start_server(false, 1, |_| Reply::json(app_view("app-notes-01", "notes")));
-    let output = run(
-        &server,
-        &[
-            "app",
-            "generated-secret",
-            "remove",
-            "app-notes-01",
-            "session",
-            "--yes",
-        ],
-    );
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(server.finish().len(), 1);
+    assert_edit_refused(&[
+        "app",
+        "generated-secret",
+        "remove",
+        "app-notes-01",
+        "session",
+        "--yes",
+    ]);
 }
 
 #[test]
@@ -2774,6 +2671,29 @@ fn two_environment_view() -> Value {
     view
 }
 
+/// Serves `view` as `app-notes-01` and answers one `method` request to
+/// `path`, which must carry the JSON `body`, with `reply`.
+fn request_server(
+    view: Value,
+    method: &'static str,
+    path: &'static str,
+    body: Value,
+    reply: Reply,
+) -> TestServer {
+    start_server(false, 2, move |request| {
+        if request.path == "/api/v1/applications/app-notes-01" {
+            return Reply::json(view.clone());
+        }
+        assert_eq!(
+            (request.method.as_str(), request.path.as_str()),
+            (method, path)
+        );
+        let sent: Value = serde_json::from_slice(&request.body).expect("JSON body");
+        assert_eq!(sent, body);
+        reply.clone()
+    })
+}
+
 #[test]
 fn runtime_app_commands_never_pick_one_of_several_environments() {
     for action in ["deploy", "reconcile", "stop", "start", "logs"] {
@@ -2821,19 +2741,14 @@ fn env_commands_target_the_named_environment() {
     );
     let _ = server.finish();
 
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
-        "/api/v1/applications/app-notes-01/environments" => {
-            assert_eq!(request.method, "POST");
-            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-            assert_eq!(
-                body,
-                json!({"name": "staging", "branch": "release", "expected_generation": 1})
-            );
-            Reply::json(environment("app-notes-01", "env-staging-01", "staging"))
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let staging = Reply::json(environment("app-notes-01", "env-staging-01", "staging"));
+    let server = request_server(
+        app_view("app-notes-01", "notes"),
+        "POST",
+        "/api/v1/applications/app-notes-01/environments",
+        json!({"name": "staging", "branch": "release", "expected_generation": 1}),
+        staging.clone(),
+    );
     let output = run(
         &server,
         &[
@@ -2850,20 +2765,13 @@ fn env_commands_target_the_named_environment() {
     let _ = server.finish();
 
     let commit = "a".repeat(40);
-    let expected = commit.clone();
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
-        "/api/v1/environments/env-staging-01/branch" => {
-            assert_eq!(request.method, "PUT");
-            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-            assert_eq!(
-                body,
-                json!({"branch": "main", "commit": expected, "expected_generation": 1})
-            );
-            Reply::json(environment("app-notes-01", "env-staging-01", "staging"))
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let server = request_server(
+        two_environment_view(),
+        "PUT",
+        "/api/v1/environments/env-staging-01/branch",
+        json!({"branch": "main", "commit": commit, "expected_generation": 1}),
+        staging,
+    );
     let output = run(
         &server,
         &[
@@ -3077,7 +2985,9 @@ fn audit_matches_accounts_missing_from_the_directory() {
 
 /// Account commands name accounts by username and send the daemon's IDs;
 /// `update` keeps the profile fields it was not asked to change, and renames
-/// the account's saved login so `--account` still finds it.
+/// the account's saved login so `--account` still finds it. Passkey IDs are
+/// base64url credential IDs, so some start with `-` and must still parse as
+/// the ID rather than as a flag.
 #[test]
 fn account_changes_resolve_usernames_to_typed_requests() {
     let server = start_server(false, 13, |request| match request.path.as_str() {
@@ -3125,8 +3035,8 @@ fn account_changes_resolve_usernames_to_typed_requests() {
     );
     for arguments in [
         &["account", "delete", "bob", "--yes"][..],
-        &["account", "passkey", "rename", "key-1", "laptop"],
-        &["account", "passkey", "remove", "key-1", "--yes"],
+        &["account", "passkey", "rename", "-_key", "laptop"],
+        &["account", "passkey", "remove", "-_key", "--yes"],
         &["account", "invitation", "revoke", "inv-1"],
         &["token", "revoke", "--all", "--user", "bob", "--yes"],
         &["token", "revoke", "--all", "--yes"],
@@ -3149,44 +3059,11 @@ fn account_changes_resolve_usernames_to_typed_requests() {
         [
             json!({"action": "update_user", "user_id": "bob-id", "username": "robert", "display_name": "Bob"}),
             json!({"action": "delete_user", "user_id": "bob-id"}),
-            json!({"action": "rename_passkey", "id": "key-1", "name": "laptop"}),
-            json!({"action": "remove_passkey", "id": "key-1"}),
+            json!({"action": "rename_passkey", "id": "-_key", "name": "laptop"}),
+            json!({"action": "remove_passkey", "id": "-_key"}),
             json!({"action": "revoke_invitation", "id": "inv-1"}),
             json!({"action": "revoke_all", "user_id": "bob-id"}),
             json!({"action": "revoke_all", "user_id": "bob-id"}),
-        ]
-    );
-}
-
-/// Passkey IDs are base64url credential IDs, so some start with `-`
-/// and must still parse as the ID rather than as a flag.
-#[test]
-fn passkey_ids_may_start_with_a_hyphen() {
-    let server = start_server(false, 2, |request| match request.path.as_str() {
-        "/api/v1/auth/manage" => Reply::bare(&json!({})),
-        path => panic!("unexpected path {path}"),
-    });
-    for arguments in [
-        &["account", "passkey", "rename", "-_key", "laptop"][..],
-        &["account", "passkey", "remove", "-_key", "--yes"],
-    ] {
-        let output = run(&server, arguments);
-        assert!(
-            output.status.success(),
-            "{arguments:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let sent: Vec<Value> = server
-        .finish()
-        .into_iter()
-        .map(|request| serde_json::from_slice(&request.body).unwrap())
-        .collect();
-    assert_eq!(
-        sent,
-        [
-            json!({"action": "rename_passkey", "id": "-_key", "name": "laptop"}),
-            json!({"action": "remove_passkey", "id": "-_key"}),
         ]
     );
 }
@@ -3234,18 +3111,15 @@ fn sync_settings_and_environment_opt_outs_are_sent_as_typed_requests() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("--interval applies only to `poll`"));
     assert!(server.finish().is_empty());
 
-    let server = start_server(false, 2, |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
-        "/api/v1/environments/env-staging-01/sync" => {
-            assert_eq!(request.method, "PUT");
-            let body: Value = serde_json::from_slice(&request.body).unwrap();
-            assert_eq!(body, json!({"enabled": false}));
-            let mut staging = environment("app-notes-01", "env-staging-01", "staging");
-            staging["sync"] = json!(false);
-            Reply::json(staging)
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let mut staging = environment("app-notes-01", "env-staging-01", "staging");
+    staging["sync"] = json!(false);
+    let server = request_server(
+        two_environment_view(),
+        "PUT",
+        "/api/v1/environments/env-staging-01/sync",
+        json!({"enabled": false}),
+        Reply::json(staging),
+    );
     let output = run(&server, &["env", "sync", "app-notes-01", "staging", "off"]);
     assert_eq!(assert_json_success(&output)["sync"], false);
     let _ = server.finish();
@@ -3268,18 +3142,15 @@ fn telemetry_receivers_and_grants_are_sent_as_typed_requests() {
         "services/web/receives-telemetry",
         &json!({"value": true}),
     );
-    let server = start_server(false, 2, |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
-        "/api/v1/environments/env-staging-01/telemetry" => {
-            assert_eq!(request.method, "PUT");
-            let body: Value = serde_json::from_slice(&request.body).unwrap();
-            assert_eq!(body, json!({"granted": true}));
-            let mut staging = environment("app-notes-01", "env-staging-01", "staging");
-            staging["telemetry"] = json!(true);
-            Reply::json(staging)
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let mut staging = environment("app-notes-01", "env-staging-01", "staging");
+    staging["telemetry"] = json!(true);
+    let server = request_server(
+        two_environment_view(),
+        "PUT",
+        "/api/v1/environments/env-staging-01/telemetry",
+        json!({"granted": true}),
+        Reply::json(staging),
+    );
     let output = run(
         &server,
         &["env", "telemetry", "app-notes-01", "staging", "on"],
@@ -3326,19 +3197,13 @@ fn promotion_plan() -> Value {
 /// accepted promotion reports the release it pinned and where it came from.
 #[test]
 fn promotion_commands_name_environments_and_report_the_pinned_release() {
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
-        "/api/v1/environments/app-notes-01/source" => {
-            assert_eq!(request.method, "PUT");
-            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-            assert_eq!(
-                body,
-                json!({"promote_from": "env-staging-01", "expected_generation": 1})
-            );
-            Reply::json(promoted_view()["environments"][0].clone())
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let server = request_server(
+        two_environment_view(),
+        "PUT",
+        "/api/v1/environments/app-notes-01/source",
+        json!({"promote_from": "env-staging-01", "expected_generation": 1}),
+        Reply::json(promoted_view()["environments"][0].clone()),
+    );
     let output = run_human(
         &server,
         &[
@@ -3378,22 +3243,17 @@ fn promotion_commands_name_environments_and_report_the_pinned_release() {
     assert!(stdout.contains("production-api-key"), "{stdout}");
     let _ = server.finish();
 
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(promoted_view()),
-        "/api/v1/environments/app-notes-01/promote" => {
-            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-            assert_eq!(
-                body,
-                json!({"deployment": "operation-01", "expected_generation": 1})
-            );
-            Reply::accepted(json!({
-                "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1,
-                "release_id": "rel-0123456789abcdef",
-                "origin": {"type": "promotion", "environment": "env-staging-01", "deployment": "operation-01"}
-            }))
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let server = request_server(
+        promoted_view(),
+        "POST",
+        "/api/v1/environments/app-notes-01/promote",
+        json!({"deployment": "operation-01", "expected_generation": 1}),
+        Reply::accepted(json!({
+            "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1,
+            "release_id": "rel-0123456789abcdef",
+            "origin": {"type": "promotion", "environment": "env-staging-01", "deployment": "operation-01"}
+        })),
+    );
     let output = run(
         &server,
         &[
@@ -3437,10 +3297,11 @@ fn env_rollback_saves_the_setting_or_returns_to_the_default() {
     }
 }
 
-/// `env history` names the failed deployment an automatic rollback rolled
-/// back.
+/// `env history` lists deployments with where each came from, naming the
+/// failed deployment an automatic rollback rolled back, and `env restore`
+/// restores the one it names, reporting the new deployment.
 #[test]
-fn history_names_the_deployment_a_rollback_rolled_back() {
+fn history_lists_restores_and_restore_names_the_deployment() {
     let server = start_server(false, 2, move |request| match request.path.as_str() {
         "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
         "/api/v1/environments/app-notes-01/deployments" => {
@@ -3449,56 +3310,38 @@ fn history_names_the_deployment_a_rollback_rolled_back() {
             rollback["origin"] = json!({
                 "type": "restore", "deployment": "operation-01", "rolled_back": "operation-02"
             });
-            Reply::json(json!({"items": [rollback], "next_cursor": null}))
-        }
-        path => panic!("unexpected path {path}"),
-    });
-    let output = run_human(&server, &["env", "history", "app-notes-01", "production"]);
-    assert!(output.status.success(), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("rolled back from deployment operation-02 to deployment operation-01"),
-        "{stdout}"
-    );
-    let _ = server.finish();
-}
-
-/// `env history` lists deployments with where each came from, and
-/// `env restore` restores the one it names, reporting the new deployment.
-#[test]
-fn history_lists_restores_and_restore_names_the_deployment() {
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
-        "/api/v1/environments/app-notes-01/deployments" => {
             let mut restored = deployment("succeeded");
             restored["operation"]["id"] = json!("operation-02");
+            restored["current_target"] = json!(false);
             restored["origin"] = json!({"type": "restore", "deployment": "operation-01"});
-            Reply::json(json!({"items": [restored], "next_cursor": null}))
+            Reply::json(page(vec![rollback, restored], None))
         }
         path => panic!("unexpected path {path}"),
     });
     let output = run_human(&server, &["env", "history", "app-notes-01", "production"]);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("operation-02  succeeded"), "{stdout}");
-    assert!(stdout.contains("(current)"), "{stdout}");
-    assert!(
-        stdout.contains("restored from deployment operation-01"),
-        "{stdout}"
-    );
+    for line in [
+        "operation-03  succeeded",
+        "(current)",
+        "rolled back from deployment operation-02 to deployment operation-01",
+        "operation-02  succeeded",
+        "restored from deployment operation-01",
+    ] {
+        assert!(stdout.contains(line), "{line:?} missing from {stdout}");
+    }
+    assert_eq!(stdout.matches("(current)").count(), 1, "{stdout}");
     let _ = server.finish();
 
-    let server = start_server(false, 2, move |request| match request.path.as_str() {
-        "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
-        "/api/v1/environments/app-notes-01/restore" => {
-            let body: Value = serde_json::from_slice(&request.body).expect("JSON body");
-            assert_eq!(body, json!({"deployment": "operation-01"}));
-            Reply::accepted(json!({
-                "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1
-            }))
-        }
-        path => panic!("unexpected path {path}"),
-    });
+    let server = request_server(
+        two_environment_view(),
+        "POST",
+        "/api/v1/environments/app-notes-01/restore",
+        json!({"deployment": "operation-01"}),
+        Reply::accepted(json!({
+            "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1
+        })),
+    );
     let output = run(
         &server,
         &[

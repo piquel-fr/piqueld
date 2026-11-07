@@ -233,27 +233,12 @@ mod tests {
         support::looks_like_application_id,
     };
 
+    /// The argument forms no command test in `tests/cli.rs` runs.
     #[test]
-    fn parser_covers_the_initial_command_surface() {
-        let cases = [
-            vec!["piquelctl", "status"],
-            vec!["piquelctl", "app", "list"],
-            vec!["piquelctl", "app", "show", "notes"],
-            vec!["piquelctl", "builds", "list", "--environment", "app-01"],
-            vec!["piquelctl", "builds", "logs", "1", "--before", "64"],
-            vec!["piquelctl", "app", "validate", "--file", "application.toml"],
-            vec!["piquelctl", "app", "plan", "--file", "application.toml"],
-            vec![
-                "piquelctl",
-                "app",
-                "apply",
-                "--file",
-                "application.toml",
-                "--yes",
-            ],
-            vec!["piquelctl", "app", "delete", "notes", "--yes", "--no-wait"],
-            vec!["piquelctl", "operation", "operation-01", "--no-wait"],
-            vec![
+    fn parser_accepts_combined_exec_flags_and_build_filters() {
+        for arguments in [
+            &["piquelctl", "builds", "list", "--environment", "app-01"][..],
+            &[
                 "piquelctl",
                 "app",
                 "exec",
@@ -265,8 +250,7 @@ mod tests {
                 "-c",
                 "id",
             ],
-        ];
-        for arguments in cases {
+        ] {
             Cli::try_parse_from(arguments).expect("command parses");
         }
     }

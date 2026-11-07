@@ -33,10 +33,6 @@ async fn status() -> Json<Envelope<SystemStatus>> {
     })
 }
 
-fn app() -> Router {
-    Router::new().route("/api/v1/system/status", get(status))
-}
-
 /// Binds a free IPv4 loopback port and returns it with a client for it.
 async fn listen() -> (TcpListener, Client) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -105,90 +101,43 @@ fn assert_timed_out<T: std::fmt::Debug>(result: &Result<T, ClientError>) {
     );
 }
 
+/// Each kind of TCP host reaches the server and is named in the `Host`
+/// header: names resolved through DNS (the trailing dot avoids the special
+/// bare-localhost path), `*.localhost` pinned to loopback rather than trusting
+/// the system resolver, which is what makes plain HTTP credentials safe there,
+/// and IPv6 literals.
 #[tokio::test]
-async fn typed_client_uses_tcp() {
-    let (listener, client) = listen().await;
-    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
-    let response = client.system_status().await.unwrap();
-    assert_eq!(response.instance_id, "instance-test");
-    assert_eq!(response.status, "running");
-    assert_eq!(response.api_version, "v1");
-    assert_eq!(response.daemon_version, "0.1.0");
-    server.abort();
-}
-
-#[tokio::test]
-async fn typed_client_resolves_dns_and_preserves_the_host_header() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            Router::new().route(
-                "/api/v1/system/status",
-                get(move |headers: HeaderMap| async move {
-                    assert_eq!(headers["host"], format!("localhost.:{port}"));
-                    status().await
-                }),
-            ),
-        )
-        .await
-        .unwrap();
-    });
-    // The trailing dot exercises DNS instead of the special bare-localhost path.
-    let response = Client::tcp(&format!("http://localhost.:{port}"))
-        .unwrap()
-        .system_status()
-        .await
-        .unwrap();
-    assert_eq!(response.status, "running");
-    server.abort();
-}
-
-#[tokio::test]
-async fn localhost_subdomains_reach_loopback_with_credentials() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            Router::new().route(
-                "/api/v1/system/status",
-                get(move |headers: HeaderMap| async move {
-                    assert_eq!(headers["host"], format!("dev.localhost:{port}"));
-                    assert_eq!(headers["authorization"], "Bearer secret");
-                    status().await
-                }),
-            ),
-        )
-        .await
-        .unwrap();
-    });
-    // The client pins `*.localhost` to loopback rather than trusting the
-    // system resolver, which is what makes plain HTTP credentials safe there.
-    let response = Client::tcp(&format!("http://dev.localhost:{port}"))
-        .unwrap()
-        .with_bearer("secret")
-        .unwrap()
-        .system_status()
-        .await
-        .unwrap();
-    assert_eq!(response.status, "running");
-    server.abort();
-}
-
-#[tokio::test]
-async fn typed_client_uses_ipv6() {
-    let listener = TcpListener::bind("[::1]:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
-    let response = Client::tcp(&format!("http://{address}"))
-        .unwrap()
-        .system_status()
-        .await
-        .unwrap();
-    assert_eq!(response.status, "running");
-    server.abort();
+async fn tcp_hosts_reach_the_server_and_name_it_in_the_host_header() {
+    for (bind, host, bearer) in [
+        ("127.0.0.1:0", "localhost.", None),
+        ("127.0.0.1:0", "dev.localhost", Some("secret")),
+        ("[::1]:0", "[::1]", None),
+    ] {
+        let listener = TcpListener::bind(bind).await.unwrap();
+        let authority = format!("{host}:{}", listener.local_addr().unwrap().port());
+        let expected = authority.clone();
+        let server = tokio::spawn(async move {
+            let route = get(move |headers: HeaderMap| async move {
+                assert_eq!(headers["host"], expected);
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .map(|value| value.to_str().unwrap()),
+                    bearer.map(|token| format!("Bearer {token}")).as_deref()
+                );
+                status().await
+            });
+            let app = Router::new().route("/api/v1/system/status", route);
+            axum::serve(listener, app).await.unwrap();
+        });
+        let mut client = Client::tcp(&format!("http://{authority}")).unwrap();
+        if let Some(token) = bearer {
+            client = client.with_bearer(token).unwrap();
+        }
+        let response = client.system_status().await.unwrap();
+        assert_eq!(response.status, "running", "{host}");
+        server.abort();
+    }
 }
 
 #[tokio::test]
@@ -218,9 +167,12 @@ async fn typed_client_uses_unix_socket() {
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("piqueld.sock");
     let listener = UnixListener::bind(&path).unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, app()).await.unwrap() });
+    let app = Router::new().route("/api/v1/system/status", get(status));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let response = Client::unix(&path).unwrap().system_status().await.unwrap();
+    assert_eq!(response.instance_id, "instance-test");
     assert_eq!(response.status, "running");
+    assert_eq!(response.api_version, "v1");
     assert_eq!(response.daemon_version, "0.1.0");
     server.abort();
 }
@@ -260,30 +212,24 @@ async fn request_timeout_is_reported_by_the_client() {
 }
 
 #[tokio::test]
-async fn incomplete_response_bodies_time_out() {
-    let (listener, client) = listen().await;
-    let server = tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
-    let result = client
-        .with_timeout(Duration::from_millis(50))
-        .system_status()
-        .await;
-    assert_timed_out(&result);
-    server.abort();
-}
-
-#[tokio::test]
-async fn unix_socket_stalled_response_bodies_time_out() {
+async fn stalled_response_bodies_time_out_over_tcp_and_unix_sockets() {
+    let (listener, tcp) = listen().await;
+    let tcp_server =
+        tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("stalled.sock");
     let listener = UnixListener::bind(&path).unwrap();
-    let server = tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
-    let result = Client::unix(&path)
-        .unwrap()
-        .with_timeout(Duration::from_millis(50))
-        .system_status()
-        .await;
-    assert_timed_out(&result);
-    server.abort();
+    let unix_server =
+        tokio::spawn(async move { stall_body(listener.accept().await.unwrap().0).await });
+    for client in [tcp, Client::unix(&path).unwrap()] {
+        let result = client
+            .with_timeout(Duration::from_millis(50))
+            .system_status()
+            .await;
+        assert_timed_out(&result);
+    }
+    tcp_server.abort();
+    unix_server.abort();
 }
 
 #[tokio::test]
@@ -364,6 +310,8 @@ async fn unreadable_error_bodies_fall_back_to_invalid_error_response() {
     }
 }
 
+/// An undocumented status with a structured body still decodes as an API
+/// error: `system_status` documents no 409.
 #[tokio::test]
 async fn structured_api_errors_expose_status_code_and_message() {
     let (listener, client) = listen().await;
