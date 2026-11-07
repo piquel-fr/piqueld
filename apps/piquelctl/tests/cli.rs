@@ -3593,15 +3593,12 @@ fn wait_needs_the_runtime_observed() {
     unobserved["diagnostics"] = json!([{
         "code": "runtime_unavailable", "message": "Runtime observation is unavailable."
     }]);
-    for ready in ["runtime", "routes"] {
+    for ready in [&[][..], &["--ready", "routes"]] {
         let server = wait_server(vec!["succeeded"], vec![unobserved.clone()]);
-        let output = run_with_timeout(
-            &server,
-            &["env", "wait", "app-notes-01", "--ready", ready],
-            "500ms",
-        );
+        let arguments = [&["env", "wait", "app-notes-01"][..], ready].concat();
+        let output = run_with_timeout(&server, &arguments, "500ms");
         server.stop();
-        assert_eq!(output.status.code(), Some(4), "{ready}: {output:?}");
+        assert_eq!(output.status.code(), Some(4), "{ready:?}: {output:?}");
         assert_eq!(support::json_error(&output)["code"], "timeout");
     }
 }
