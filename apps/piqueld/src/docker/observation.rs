@@ -70,6 +70,20 @@ impl BollardDocker {
         }
     }
 
+    /// The ID of the container `task` runs in, if it has one. Swarm reports
+    /// tasks that never got a container (rejected, or not yet started) with
+    /// an empty ID rather than none, and addressing `/containers//…` makes
+    /// Docker answer every request with a 301 redirect.
+    pub(super) fn task_container(task: &bollard::models::Task) -> Option<&str> {
+        task.status
+            .as_ref()?
+            .container_status
+            .as_ref()?
+            .container_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+    }
+
     /// Maps Bollard's task state enum to the backend-neutral task state.
     pub(super) fn task_state(task: &bollard::models::Task) -> TaskState {
         match task
@@ -472,6 +486,28 @@ mod tests {
             desired_running: true,
             diagnostic: None,
         }
+    }
+
+    /// Swarm reports rejected tasks with an empty container ID; reading
+    /// `/containers//logs` for one failed every log request with a 301.
+    #[test]
+    fn tasks_without_a_container_have_no_container_id() {
+        let task = |container_id: Option<&str>| bollard::models::Task {
+            status: Some(bollard::models::TaskStatus {
+                container_status: Some(bollard::models::ContainerStatus {
+                    container_id: container_id.map(Into::into),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(BollardDocker::task_container(&task(Some(""))), None);
+        assert_eq!(BollardDocker::task_container(&task(None)), None);
+        assert_eq!(
+            BollardDocker::task_container(&task(Some("9472413"))),
+            Some("9472413")
+        );
     }
 
     #[test]

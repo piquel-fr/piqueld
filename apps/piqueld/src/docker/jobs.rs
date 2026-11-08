@@ -468,7 +468,7 @@ impl BollardDocker {
             .await?
             .into_iter()
             .flat_map(|(_, tasks)| tasks)
-            .find_map(|task| task.status?.container_status?.container_id);
+            .find_map(|task| Self::task_container(&task).map(str::to_owned));
         let Some(container) = container else {
             return Ok(JobOutput::default());
         };

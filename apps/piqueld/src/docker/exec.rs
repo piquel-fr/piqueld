@@ -69,7 +69,8 @@ impl BollardDocker {
             .into_iter()
             .filter_map(|task| {
                 let rank = Self::exec_rank(&Self::task_state(&task))?;
-                Some((rank, task.id?, task.status?.container_status?.container_id?))
+                let container = Self::task_container(&task)?.to_owned();
+                Some((rank, task.id?, container))
             })
             .min_by_key(|(rank, ..)| *rank)
         else {
