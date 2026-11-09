@@ -29,7 +29,7 @@ piqueld runs on an x86_64 Linux host with systemd and Docker Engine. Install
 the daemon and the CLI, and start the daemon as a service, with:
 
 ```console
-curl -fsSL https://piqueld.dev/install.sh | sudo sh
+curl -fsSL https://piqueld.dev/install.sh | sh
 ```
 
 [Installing piqueld](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/user/getting-started/install.md) also covers

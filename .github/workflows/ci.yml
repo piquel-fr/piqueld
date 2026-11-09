@@ -408,7 +408,9 @@ jobs:
 
   # Builds the release archive as the release workflow does, then installs it
   # with install.sh on the runner, which has systemd and Docker Engine like a
-  # user's host. The second run is an update, which must leave the daemon
+  # user's host. The script runs as the runner's user, as users run it, with
+  # sudo for the steps that need root; --yes also adds that user to the
+  # piqueld group. The second run is an update, which must leave the daemon
   # running too. The cache is shared with the release workflow's build.
   install:
     name: install
@@ -431,10 +433,13 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
           for run in install update; do
             echo "::group::$run"
-            sudo PIQUELD_VERSION="$version" PIQUELD_RELEASE_URL="file://$PWD/target/dist" sh apps/site/install.sh
+            PIQUELD_VERSION="$version" PIQUELD_RELEASE_URL="file://$PWD/target/dist" sh apps/site/install.sh --yes
             echo "::endgroup::"
           done
       - run: sudo piquelctl status
+      # A member of the piqueld group reaches the daemon without an account to
+      # print the setup link; sg runs it with the group the script added.
+      - run: sg piqueld -c 'piquelctl setup-link'
       - name: Show the daemon's logs
         if: failure()
         run: sudo journalctl --unit piqueld --no-pager

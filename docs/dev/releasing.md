@@ -163,7 +163,7 @@ The GitHub release lists the archive and `SHA256SUMS`. On a Linux host with
 systemd and Docker Engine, the install script installs the new version:
 
 ```console
-curl -fsSL https://piqueld.dev/install.sh | sudo sh
+curl -fsSL https://piqueld.dev/install.sh | sh
 piquelctl --version
 ```
 

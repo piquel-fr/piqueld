@@ -28,13 +28,14 @@ Install piqueld [with the install script](#install-with-the-script),
 
 ## Install with the script
 
-On the host, run:
+On the host, run as yourself:
 
 ```console
-curl -fsSL https://piqueld.dev/install.sh | sudo sh
+curl -fsSL https://piqueld.dev/install.sh | sh
 ```
 
-The script installs the latest
+The script lists what it will do, and asks before it changes anything. Then it
+installs the latest
 [release](https://github.com/sourceorigin-dev/piqueld/releases) of piqueld and
 starts it:
 
@@ -46,33 +47,43 @@ starts it:
 - It writes the daemon's configuration to `/etc/piqueld/config.toml`, unless
   that file exists. The configuration serves the dashboard on the host's
   [localhost](#localhost).
-- It installs the `piqueld` systemd service, starts it, and prints
-  `piquelctl status`.
+- It installs the `piqueld` systemd service, starts it, and waits until it
+  answers.
+
+The steps that need root run with `sudo`, which asks for your password, and
+the script prints each of their commands before it runs it.
+
+The script also asks whether to add you to the `piqueld` group. Its members
+run `piquelctl` on the host without `sudo`. Log out and back in for the new
+group to apply. To let other users in later:
+
+```console
+sudo usermod -aG piqueld alice
+```
 
 To install a specific version instead of the latest one, set
 `PIQUELD_VERSION`:
 
 ```console
-curl -fsSL https://piqueld.dev/install.sh | sudo PIQUELD_VERSION=0.1.0 sh
+curl -fsSL https://piqueld.dev/install.sh | PIQUELD_VERSION=0.1.0 sh
 ```
 
-Then:
+To install without questions, such as from a provisioning script, pass
+`--yes`. It also adds the user running the script to the `piqueld` group:
 
-1. Let the users who run `piquelctl` on the host into the `piqueld` group:
+```console
+curl -fsSL https://piqueld.dev/install.sh | sh -s -- --yes
+```
 
-   ```console
-   sudo usermod -aG piqueld alice
-   ```
-
-   They log out and back in for the new group to apply.
-
-2. Keep the dashboard on localhost, or
-   [choose another address](#choose-how-to-reach-the-dashboard).
+Then keep the dashboard on localhost, or
+[choose another address](#choose-how-to-reach-the-dashboard), and
+[create your account](first-account.md).
 
 ### Update piqueld
 
-Run the script again. It installs the latest release, or `PIQUELD_VERSION`,
-over the current one, and restarts the daemon. It keeps your configuration and
+Run the script again. It shows the version you have and the one it installs,
+then installs the latest release, or `PIQUELD_VERSION`, over the current one,
+and restarts the daemon. It keeps your configuration and
 the data in `/var/lib/piqueld`.
 
 The script replaces the service's unit, so keep your changes to the service in
