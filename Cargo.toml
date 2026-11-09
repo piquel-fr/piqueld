@@ -21,7 +21,7 @@ edition = "2024"
 # support it when updating the lockfile.
 rust-version = "1.99"
 license = "Apache-2.0"
-repository = "https://github.com/piquel-fr/piqueld"
+repository = "https://github.com/sourceorigin-dev/piqueld"
 homepage = "https://piqueld.dev"
 # The daemon and CLI link the book; the library crates leave this unset, so
 # crates.io links their API documentation on docs.rs.

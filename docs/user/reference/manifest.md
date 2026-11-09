@@ -315,7 +315,7 @@ VS Code with Even Better TOML, give completion, hover documentation, and inline
 errors when a manifest starts with a schema directive:
 
 ```toml
-#:schema https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/application-manifest.schema.json
+#:schema https://raw.githubusercontent.com/sourceorigin-dev/piqueld/main/docs/application-manifest.schema.json
 api_version = "piqueld.dev/v1alpha1"
 ```
 
@@ -326,7 +326,7 @@ local copy of the schema. To apply the schema without directives, add a
 ```toml
 [[rule]]
 include = ["deploy/**/*.toml"]
-schema.path = "https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/application-manifest.schema.json"
+schema.path = "https://raw.githubusercontent.com/sourceorigin-dev/piqueld/main/docs/application-manifest.schema.json"
 ```
 
 ## Git build sources
@@ -475,7 +475,7 @@ and `app show` and the application's Environments tab list how the
 environments differ from the saved manifest. `app apply --deploy` deploys
 every declared environment that builds; promoted ones wait for their first
 `env promote`. So for an application such as
-[`examples/staging-production.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/staging-production.toml),
+[`examples/staging-production.toml`](https://github.com/sourceorigin-dev/piqueld/blob/main/examples/staging-production.toml),
 applying it with `--deploy` is enough: staging follows `main`, and production
 receives what staging ran once you promote it.
 

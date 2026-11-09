@@ -6,7 +6,7 @@ validation every change must pass. Everyone taking part follows the
 [code of conduct](CODE_OF_CONDUCT.md).
 
 Look for issues labelled
-[`good first issue`](https://github.com/piquel-fr/piqueld/labels/good%20first%20issue)
+[`good first issue`](https://github.com/sourceorigin-dev/piqueld/labels/good%20first%20issue)
 to start with. Before working on a larger change, open an issue to discuss it.
 
 - Open pull requests as drafts, and mark them ready for review once the work is

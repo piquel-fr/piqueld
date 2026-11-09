@@ -300,5 +300,5 @@ without `Retry-After`.
 ## Tests
 
 Browser authentication and CLI device-login coverage lives in the
-[Playwright browser suite](https://github.com/piquel-fr/piqueld/blob/main/tests/playwright/README.md), including session revocation and
+[Playwright browser suite](https://github.com/sourceorigin-dev/piqueld/blob/main/tests/playwright/README.md), including session revocation and
 preservation of unsaved editor drafts during reauthentication.

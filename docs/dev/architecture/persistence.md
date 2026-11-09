@@ -44,7 +44,7 @@ restart or later migration failure can resume from any committed version
 without changing the instance identity.
 
 Each file in
-[`apps/piqueld/migrations/`](https://github.com/piquel-fr/piqueld/tree/main/apps/piqueld/migrations)
+[`apps/piqueld/migrations/`](https://github.com/sourceorigin-dev/piqueld/tree/main/apps/piqueld/migrations)
 explains in its comments what it changes and what it does to existing data.
 The migration tests cover upgrading populated databases, the data moves of
 `0012`, `0014`, `0021` and `0022`, and reopening every committed version after

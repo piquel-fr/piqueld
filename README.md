@@ -1,7 +1,7 @@
 <!-- Links are absolute, so they also work on crates.io, which shows this file. -->
-# <img src="https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/images/wordmark.svg" alt="piqueld" height="40">
+# <img src="https://raw.githubusercontent.com/sourceorigin-dev/piqueld/main/docs/images/wordmark.svg" alt="piqueld" height="40">
 
-[![CI](https://github.com/piquel-fr/piqueld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/piquel-fr/piqueld/actions/workflows/ci.yml)
+[![CI](https://github.com/sourceorigin-dev/piqueld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sourceorigin-dev/piqueld/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/piqueld.svg)](https://crates.io/crates/piqueld)
 [![docs.rs](https://img.shields.io/docsrs/piqueld-client?label=piqueld-client)](https://docs.rs/piqueld-client)
 
@@ -33,28 +33,28 @@ rustup target add x86_64-unknown-linux-musl
 cargo install --locked piqueld piquelctl
 ```
 
-[Installing piqueld](https://github.com/piquel-fr/piqueld/blob/main/docs/user/getting-started/install.md) covers both, and
+[Installing piqueld](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/user/getting-started/install.md) covers both, and
 setting the daemon up as a service. To script the API from Rust, use the
 [`piqueld-client`](https://docs.rs/piqueld-client) crate.
 
 ## Documentation
 
-The [documentation](https://github.com/piquel-fr/piqueld/blob/main/docs/README.md) has a [user guide](https://github.com/piquel-fr/piqueld/blob/main/docs/user/introduction.md)
+The [documentation](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/README.md) has a [user guide](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/user/introduction.md)
 for running piqueld and deploying to it, and a
-[developer guide](https://github.com/piquel-fr/piqueld/blob/main/docs/dev/getting-started.md) for changing it.
+[developer guide](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/dev/getting-started.md) for changing it.
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/piquel-fr/piqueld/blob/main/CONTRIBUTING.md), and the
-[code of conduct](https://github.com/piquel-fr/piqueld/blob/main/CODE_OF_CONDUCT.md). Questions and feedback go to
+See [CONTRIBUTING.md](https://github.com/sourceorigin-dev/piqueld/blob/main/CONTRIBUTING.md), and the
+[code of conduct](https://github.com/sourceorigin-dev/piqueld/blob/main/CODE_OF_CONDUCT.md). Questions and feedback go to
 [contact@piqueld.dev](mailto:contact@piqueld.dev).
 
 ## Security
 
 Report vulnerabilities privately to
 [security@piqueld.dev](mailto:security@piqueld.dev); see
-[SECURITY.md](https://github.com/piquel-fr/piqueld/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/sourceorigin-dev/piqueld/blob/main/SECURITY.md).
 
 ## License
 
-piqueld is licensed under the [Apache License 2.0](https://github.com/piquel-fr/piqueld/blob/main/LICENSE).
+piqueld is licensed under the [Apache License 2.0](https://github.com/sourceorigin-dev/piqueld/blob/main/LICENSE).

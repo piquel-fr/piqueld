@@ -24,7 +24,7 @@ them use `piquelctl` on the host without signing in.
 1. Add piqueld to your flake's inputs:
 
    ```nix
-   inputs.piqueld.url = "github:piquel-fr/piqueld";
+   inputs.piqueld.url = "github:sourceorigin-dev/piqueld";
    ```
 
 2. Import its module and enable the service:

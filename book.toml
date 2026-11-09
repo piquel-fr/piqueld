@@ -19,5 +19,5 @@ site-url = "/"
 theme = "apps/piqueld-ui/assets"
 # Chapters are grouped into the user and developer guides, not numbered.
 no-section-label = true
-git-repository-url = "https://github.com/piquel-fr/piqueld"
-edit-url-template = "https://github.com/piquel-fr/piqueld/edit/main/{path}"
+git-repository-url = "https://github.com/sourceorigin-dev/piqueld"
+edit-url-template = "https://github.com/sourceorigin-dev/piqueld/edit/main/{path}"

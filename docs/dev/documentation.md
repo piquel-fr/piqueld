@@ -133,7 +133,7 @@ just docs-screenshots
 ```
 
 The recipe runs the specs in `tests/playwright/screenshots/` with the daemon
-of the [browser tests](https://github.com/piquel-fr/piqueld/tree/main/tests/playwright),
+of the [browser tests](https://github.com/sourceorigin-dev/piqueld/tree/main/tests/playwright),
 in a mode where it deploys to an in-memory Docker engine: deployments succeed,
 services report healthy, and commands run in them exit with 0. Each spec
 seeds example data the way its guide does, then saves each page into
@@ -195,7 +195,7 @@ shows, for readers who can't see it:
   `[routes](../reference/manifest.md#routes)`. These links work both on GitHub
   and in the book.
 - Link to a repository file outside `docs/` with its GitHub URL on `main`, such
-  as `https://github.com/piquel-fr/piqueld/blob/main/examples/piqueld.toml`
+  as `https://github.com/sourceorigin-dev/piqueld/blob/main/examples/piqueld.toml`
   (`tree` instead of `blob` for a directory). A relative path would break in
   the book. The link check resolves these URLs against your checkout, so the
   file must exist on your branch, and fails links to any other branch or

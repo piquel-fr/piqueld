@@ -22,7 +22,7 @@ Progenitor cannot generate: the two TOML operations, the local snapshot upload,
 and the exec WebSocket. The generator is a
 daemon example that only development builds compile; the client uses Progenitor's
 small runtime support crate. See
-[client generation](https://github.com/piquel-fr/piqueld/blob/main/tools/client-codegen/README.md).
+[client generation](https://github.com/sourceorigin-dev/piqueld/blob/main/tools/client-codegen/README.md).
 
 Inside the daemon:
 

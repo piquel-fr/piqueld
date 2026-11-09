@@ -16,7 +16,7 @@ path = "deploy/piqueld-dev.toml"
 sync = { mode = "webhook" }
 
 [spec.manifest.repository]
-url = "https://github.com/piquel-fr/piqueld.git"
+url = "https://github.com/sourceorigin-dev/piqueld.git"
 branch = "main"
 
 [spec.environments.production]

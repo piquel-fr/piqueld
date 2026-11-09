@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/piquel-fr/piqueld/blob/main/SECURITY.md
+    url: https://github.com/sourceorigin-dev/piqueld/blob/main/SECURITY.md
     about: Report vulnerabilities privately, never in a public issue.
   - name: Ask a question
     url: https://docs.piqueld.dev
