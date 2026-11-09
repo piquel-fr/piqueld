@@ -609,6 +609,8 @@ impl Plan {
     /// service, or one mounting a volume it uses exclusively. A
     /// prerequisite's wait remains only while it is still converging, so it
     /// gates active dependents without blocking their repair. Applies only while the deployment may still roll out.
+    /// `prepared` is the target as its prerequisites were planned, with the
+    /// link networks its imports add.
     pub fn preserve_job_prerequisites(
         &mut self,
         prepared: &ResolvedApplication,

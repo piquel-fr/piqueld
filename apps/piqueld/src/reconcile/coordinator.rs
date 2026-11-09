@@ -704,6 +704,11 @@ impl<D: DockerApi> Controller<D> {
             .rolling_out(&self.store.operation(operation_id).await?, &observed)
             .await?
         {
+            // As its job prerequisites were planned, so the link networks of
+            // imports it adds are kept too.
+            let prepared = self
+                .runtime_target(&prepared, &accepted_routes, &observed, false)
+                .await?;
             plan.preserve_job_prerequisites(&prepared, &observed);
         }
         let Some(action) = plan.next_repair() else {
