@@ -263,7 +263,7 @@ impl Scenario {
             .resolve("three.example.test", "127.0.0.1:443".parse().unwrap())
             .build()
             .unwrap();
-        Self {
+        let scenario = Self {
             directory,
             socket,
             store,
@@ -274,11 +274,31 @@ impl Scenario {
             client,
             tls_port,
             plain_port,
-        }
+        };
+        scenario.await_certificate("one.example.test").await;
+        scenario
     }
 
     fn url(&self, host: &str) -> String {
         format!("https://{host}:{}/", self.tls_port)
+    }
+
+    /// Waits until Caddy serves a certificate for `host`. Its internal CA
+    /// issues one only after the deployment adding the route has loaded, so
+    /// a request made right after `deploy` can fail the TLS handshake with
+    /// `internal_error`. Call it before the first request to a new hostname.
+    async fn await_certificate(&self, host: &str) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Err(error) = self.client.head(self.url(host)).send().await {
+                assert!(
+                    error.is_connect() || error.is_timeout(),
+                    "{host}: {error:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("Caddy issues a certificate for {host}"));
     }
 
     async fn body(&self, host: &str) -> String {
@@ -358,6 +378,7 @@ impl Scenario {
     async fn redirect_without_backend(&self) {
         let app = piqueld_core::parse_toml("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='www'\n[[spec.routes]]\nhostname='www.example.test'\nvisibility='public'\nredirect={to='https://one.example.test/base/'}").unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap());
         let id = deploy(&self.store, &self.controller, app).await;
+        self.await_certificate("www.example.test").await;
         let response = self
             .client
             .get(format!("{}path?q=1", self.url("www.example.test")))
@@ -405,6 +426,7 @@ impl Scenario {
             original,
             "network attachment must not replace Caddy"
         );
+        self.await_certificate("two.example.test").await;
         assert_eq!(self.body("two.example.test").await, "second backend");
         let one = self.docker.observe(&self.first).await.unwrap();
         let two = self.docker.observe(&second).await.unwrap();
@@ -980,6 +1002,7 @@ impl Scenario {
             ),
         )
         .await;
+        self.await_certificate("three.example.test").await;
         let body = self
             .client
             .get(self.url("three.example.test"))
