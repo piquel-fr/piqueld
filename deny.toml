@@ -1,5 +1,14 @@
 [advisories]
 unmaintained = "workspace"
+# Each ignored advisory names why piqueld isn't exposed and what ends the
+# ignore; drop it once that happens.
+ignore = [
+  # Bundled SQLite before 3.54 can return stale page-cache memory for a
+  # database whose `-wal` file, written by a less trusted party, has a
+  # different page size. The fix needs libsqlite3-sys 0.39, which no sqlx
+  # release accepts yet (0.9.0 caps it below 0.38).
+  { id = "RUSTSEC-2026-0459", reason = "piqueld opens only its own database; waiting on sqlx to accept libsqlite3-sys 0.39" },
+]
 
 [bans]
 multiple-versions = "warn"
