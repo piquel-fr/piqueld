@@ -443,6 +443,8 @@ in
       home = cfg.dataDir;
     };
     virtualisation.docker.enable = true;
+    # apps/piqueld/piqueld.service is this unit for hosts without NixOS;
+    # keep the two in step.
     systemd.services.piqueld = {
       description = "piqueld application control plane";
       wantedBy = [ "multi-user.target" ];

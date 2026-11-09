@@ -25,16 +25,15 @@ supported yet.
 
 ## Installation
 
-piqueld runs on an x86_64 Linux host with Docker Engine. On NixOS, import the
-flake's module; elsewhere, install the daemon and the CLI from crates.io:
+piqueld runs on an x86_64 Linux host with systemd and Docker Engine. Install
+the daemon and the CLI, and start the daemon as a service, with:
 
 ```console
-rustup target add x86_64-unknown-linux-musl
-cargo install --locked piqueld piquelctl
+curl -fsSL https://piqueld.dev/install.sh | sudo sh
 ```
 
-[Installing piqueld](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/user/getting-started/install.md) covers both, and
-setting the daemon up as a service. To script the API from Rust, use the
+[Installing piqueld](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/user/getting-started/install.md) also covers
+NixOS, installing by hand, and building from crates.io. To script the API from Rust, use the
 [`piqueld-client`](https://docs.rs/piqueld-client) crate.
 
 ## Documentation

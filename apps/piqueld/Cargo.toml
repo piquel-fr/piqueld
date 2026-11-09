@@ -28,6 +28,9 @@ embedded-ui = ["dep:wasm-bindgen-cli-support"]
 # throwaway stores. It only adds API: the daemon's store syncs regardless.
 # Release builds leave it out.
 fake-docker = []
+# Builds OpenSSL from source and links it statically, instead of the system's.
+# The static release binaries of `cargo xtask dist` use it.
+vendored-openssl = ["openssl/vendored"]
 
 [dependencies]
 chacha20poly1305.workspace = true

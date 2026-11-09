@@ -1,11 +1,13 @@
 //! Development tasks for the piqueld workspace, run with `cargo xtask`: this
 //! worktree's development instance (`just dev`, see docs/dev/development.md), the
 //! isolated Docker integration tests, the Playwright browser suite, the
-//! `piqueld-core` dependency boundary, test coverage, and releases.
+//! `piqueld-core` dependency boundary, test coverage, the release binaries,
+//! and releases.
 
 mod boundary;
 mod coverage;
 mod dev;
+mod dist;
 mod docker;
 mod docker_test;
 mod playwright;
@@ -54,6 +56,9 @@ enum Task {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Build the static `x86_64-linux` release archive, which install.sh
+    /// installs, and its checksums, into `target/dist`.
+    Dist,
     /// Publish the crates to crates.io, with the prebuilt dashboard the
     /// published daemon embeds.
     #[command(disable_help_flag = true)]
@@ -63,8 +68,8 @@ enum Task {
         args: Vec<String>,
     },
     /// Release the workspace version from the latest main: publish the
-    /// crates, tag the commit, create its GitHub release, and close its
-    /// milestone.
+    /// crates, tag the commit, whose release workflow creates its GitHub
+    /// release, and close its milestone.
     Release {
         /// Run the checks and `cargo publish --dry-run`, and only print the
         /// other steps.
@@ -82,6 +87,7 @@ async fn main() -> Result<ExitCode> {
         Task::Playwright { args } => playwright::run(&workspace, &args).await,
         Task::Boundary => boundary::check(&workspace),
         Task::Coverage { args } => coverage::run(&workspace, &args),
+        Task::Dist => dist::run(&workspace),
         Task::Publish { args } => publish::run(&workspace, &args),
         Task::Release { dry_run } => publish::release(&workspace, dry_run),
     }
@@ -125,6 +131,26 @@ impl Workspace {
             }
         }
         command
+    }
+
+    /// The daemon's package ID, such as `path+file:///…/apps/piqueld#0.1.0`.
+    fn daemon_package_id(&self) -> Result<String> {
+        let output = self
+            .cargo()
+            .args(["pkgid", "--package", "piqueld"])
+            .output()
+            .context("run cargo pkgid")?;
+        process::checked_stdout("cargo pkgid", output)
+    }
+
+    /// The workspace version, which every crate shares, such as `0.1.0`.
+    fn version(&self) -> Result<String> {
+        let package_id = self.daemon_package_id()?;
+        Ok(package_id
+            .rsplit(['#', '@'])
+            .next()
+            .with_context(|| format!("no version in the package ID {package_id}"))?
+            .to_owned())
     }
 
     /// Every checkout of the repository, the main one first.

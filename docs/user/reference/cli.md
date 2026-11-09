@@ -9,9 +9,11 @@ and options.
 
 ## Installing
 
-On the daemon's host, the [NixOS module](nixos.md) installs `piquelctl`, and
-the [other installations](../getting-started/install.md#other-linux-distributions)
-install it beside the daemon. On any other Linux or macOS machine, install
+On the daemon's host, the
+[install script](../getting-started/install.md#install-with-the-script), the
+[NixOS module](nixos.md) and the
+[other installations](../getting-started/install.md#install-by-hand) install
+it beside the daemon. On any other Linux or macOS machine, install
 Rust with [rustup](https://rustup.rs), then install `piquelctl` from
 [crates.io](https://crates.io/crates/piquelctl):
 

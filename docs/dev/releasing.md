@@ -2,8 +2,9 @@
 
 A release publishes the daemon, `piquelctl` and `piqueld-client` to
 [crates.io](https://crates.io/crates/piqueld), with the two crates they depend
-on, then tags the commit and creates a GitHub release. A maintainer runs it
-with `just release`.
+on, then tags the commit. CI then creates the GitHub release, with the static
+binaries the [install script](../user/getting-started/install.md#install-with-the-script)
+installs. A maintainer runs it with `just release`.
 
 ## Versions
 
@@ -65,6 +66,31 @@ manifest, a build script, or a file a crate reads at compile time:
 just publish --dry-run --allow-dirty
 ```
 
+## Release binaries
+
+Each GitHub release has the archive the install script,
+[`apps/site/install.sh`](https://github.com/sourceorigin-dev/piqueld/blob/main/apps/site/install.sh),
+downloads, `piqueld-<version>-x86_64-linux.tar.gz`, and its `SHA256SUMS`. The
+archive holds the daemon, with its dashboard, `piquelctl`, the systemd unit
+[`apps/piqueld/piqueld.service`](https://github.com/sourceorigin-dev/piqueld/blob/main/apps/piqueld/piqueld.service),
+and the licence. The binaries link musl and OpenSSL statically, through the
+daemon's `vendored-openssl` feature, so they run on any x86_64 Linux.
+
+`just dist`, which runs `cargo xtask dist`, builds them into `target/dist`. It
+needs `musl-gcc`, from the `musl-tools` package on Debian and Ubuntu, for the
+C code of OpenSSL, SQLite and ring. The `install` CI job runs it on every pull
+request that changes what the archive is built from, once it is ready for
+review, then installs the archive with the script on the runner, which has
+systemd and Docker Engine, and installs it again as an update. The script
+reads the archive from `PIQUELD_RELEASE_URL` there, instead of the release.
+
+The release workflow,
+[`.github/workflows/release.yml`](https://github.com/sourceorigin-dev/piqueld/blob/main/.github/workflows/release.yml),
+runs on each `v<version>` tag. It builds the archive and creates the GitHub
+release with it, with notes listing the pull requests merged since the
+previous release. The release is published only once its files are uploaded,
+so the script always finds the latest release's archive.
+
 ## Set up publishing
 
 Do this once, on the machine you release from:
@@ -111,13 +137,15 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    It checks that you are on the latest `main` with a clean working tree, and
    that the version isn't released yet. It then publishes the five crates in
    dependency order, which takes several minutes, tags the commit
-   `v<version>`, pushes the tag, and creates the GitHub release, with notes
-   listing the pull requests merged since the previous release. Last, it
-   closes the GitHub milestone of the minor version, such as `v0.2` for
-   0.2.0. A patch release finds it already closed.
+   `v<version>`, and pushes the tag. Last, it closes the GitHub milestone of
+   the minor version, such as `v0.2` for 0.2.0. A patch release finds it
+   already closed.
 
-   For a release that breaks existing setups, edit the release on GitHub to
-   say how to upgrade.
+5. Wait for the tag's
+   [release workflow](https://github.com/sourceorigin-dev/piqueld/actions/workflows/release.yml)
+   to build the release binaries and create the GitHub release, which takes
+   about as long as the `install` CI job. For a release that breaks existing
+   setups, then edit the release on GitHub to say how to upgrade.
 
 ## Check that it works
 
@@ -131,6 +159,14 @@ piquelctl --version
 
 docs.rs builds the new `piqueld-client` documentation within a few minutes.
 
+The GitHub release lists the archive and `SHA256SUMS`. On a Linux host with
+systemd and Docker Engine, the install script installs the new version:
+
+```console
+curl -fsSL https://piqueld.dev/install.sh | sudo sh
+piquelctl --version
+```
+
 ## Troubleshooting
 
 - **Publishing fails partway.** The crates published before the failure stay
@@ -143,12 +179,17 @@ docs.rs builds the new `piqueld-client` documentation within a few minutes.
   just publish --exclude piqueld-probe --exclude piqueld-core
   git tag --annotate v0.2.0 --message "piqueld 0.2.0"
   git push origin v0.2.0
-  gh release create v0.2.0 --verify-tag --title "piqueld 0.2.0" --generate-notes
   ```
 
-- **Tagging or creating the GitHub release fails.** The crates are published.
-  Run the command that failed again, then the `git` and `gh` commands above
-  that come after it, and close the milestone on GitHub.
+- **Tagging fails.** The crates are published. Run the `git` command that
+  failed again, then the ones above that come after it, and close the
+  milestone on GitHub.
+- **The release workflow fails.** The crates are published and the tag is
+  pushed, but the GitHub release doesn't exist yet, so the install script
+  still installs the previous one. If it failed for a passing reason, such as
+  a network error, re-run it from its page on GitHub. A re-run uses the
+  workflow and code of the tag, so any other failure needs a fix, then a new
+  patch release.
 
 - **A published version is broken.** A version can't be replaced. Yank it
   with `cargo yank --version 0.2.0 <crate>` for each crate, so new installs

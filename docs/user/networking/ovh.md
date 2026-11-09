@@ -66,7 +66,7 @@ doesn't expire, or replace the keys before they do.
 
    In `/etc/piqueld/config.toml`, pass each file to the service with
    `LoadCredential=`, as for the
-   [tailnet auth key](../getting-started/install.md#other-linux-distributions),
+   [tailnet auth key](../getting-started/install.md#pass-files-to-the-daemon),
    and refer to it by name:
 
    ```toml

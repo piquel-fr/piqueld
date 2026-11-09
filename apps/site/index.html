@@ -622,7 +622,7 @@ pre .b { color: var(--preview); }
                 <div>
                     <p class="lede">An agent deploys its worktree, uncommitted files included, to a private preview of its own. Staging follows every push; production runs only what you promote.</p>
                     <div class="actions">
-                        <a class="button" href="https://docs.piqueld.dev/user/getting-started/install.html">Install</a>
+                        <a class="button" href="#install">Install</a>
                         <a class="button" href="https://github.com/sourceorigin-dev/piqueld">Source on GitHub</a>
                         <a class="button" href="https://docs.piqueld.dev">Documentation</a>
                     </div>
@@ -990,13 +990,13 @@ slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
                 <p>Three stops to your first application.</p>
             </div>
             <ol class="journey">
-                <li>
+                <li id="install">
                     <span class="number" aria-hidden="true">1</span>
                     <div>
                         <h3>Install piqueld</h3>
-                        <p>One daemon and one CLI on a Linux host with Docker. Build them with Cargo, then set them up as a system service as the install guide describes.</p>
-                        <pre><code>cargo install <span class="f">--locked</span> piqueld piquelctl</code></pre>
-                        <a class="text-link" href="https://docs.piqueld.dev/user/getting-started/install.html">Read the install guide</a>
+                        <p>One command installs the daemon and its CLI on an x86_64 Linux host with Docker, and starts piqueld as a system service.</p>
+                        <pre><code><span class="cmd">curl</span> <span class="f">-fsSL</span> https://piqueld.dev/install.sh | <span class="cmd">sudo</span> sh</code></pre>
+                        <a class="text-link" href="https://docs.piqueld.dev/user/getting-started/install.html">Install on NixOS, or by hand</a>
                     </div>
                 </li>
                 <li>

@@ -1,0 +1,37 @@
+# The piqueld systemd unit for hosts without NixOS, installed as
+# /etc/systemd/system/piqueld.service by install.sh, or by hand; see
+# docs/user/getting-started/install.md. It matches the NixOS module's unit in
+# nix/module.nix. Add settings with `systemctl edit piqueld`, so that
+# reinstalling keeps them.
+
+[Unit]
+Description=piqueld application control plane
+# Wanted, not required: piqueld serves its API while Docker is down and starts
+# deploying once it is back, so a Docker failure or restart must not stop it.
+After=docker.service
+Wants=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/piqueld --config /etc/piqueld/config.toml
+User=piqueld
+Group=piqueld
+SupplementaryGroups=docker
+StateDirectory=piqueld
+StateDirectoryMode=0700
+RuntimeDirectory=piqueld
+RuntimeDirectoryMode=0750
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=180s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
