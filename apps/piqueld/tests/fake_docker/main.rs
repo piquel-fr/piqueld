@@ -226,6 +226,31 @@ impl ControllerHarness {
             .expect("application saved")
     }
 
+    /// Saves and deploys application `name` beside the harness's own: the
+    /// fixture as `edit` changes it. Returns its environment.
+    async fn deploy_application(
+        &self,
+        name: &str,
+        edit: impl FnOnce(&mut ApplicationManifest),
+    ) -> EnvironmentId {
+        let mut manifest = self.application.to_manifest();
+        manifest.metadata.name = name.into();
+        edit(&mut manifest);
+        let application = manifest
+            .validate()
+            .unwrap()
+            .normalize(ApplicationId::parse(format!("app-{name}-0001")).unwrap());
+        self.store
+            .save_application(
+                &ApplicationTemplate::from(&application),
+                Some(&prebuilt::resolver(&application, self.store.instance_id())),
+                None,
+            )
+            .await
+            .unwrap()
+            .environment_id
+    }
+
     /// Stores a value for the application's secret `token`, replacing
     /// version `generation`.
     async fn store_token(&self, environment: &EnvironmentId, generation: i64, value: &[u8]) {

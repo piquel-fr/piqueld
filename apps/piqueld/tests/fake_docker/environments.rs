@@ -186,46 +186,27 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
 /// are linked. Returns the harness and both environments.
 async fn linked_harness() -> (ControllerHarness, EnvironmentId, EnvironmentId) {
     let harness = ControllerHarness::new().await;
-    let deploy = |name: &str, edit: fn(&mut ApplicationManifest)| {
-        let mut manifest = harness.application.to_manifest();
-        manifest.metadata.name = name.into();
-        edit(&mut manifest);
-        let application = manifest
-            .validate()
-            .unwrap()
-            .normalize(ApplicationId::parse(format!("app-{name}-0001")).unwrap());
-        let store = Arc::clone(&harness.store);
-        async move {
-            store
-                .save_application(
-                    &ApplicationTemplate::from(&application),
-                    Some(&prebuilt::resolver(&application, store.instance_id())),
-                    None,
-                )
-                .await
-                .unwrap()
-                .environment_id
-        }
-    };
-    let auth = deploy("auth", |manifest| {
-        manifest.spec.exports.push(piqueld_core::manifest::Export {
-            service: "web".into(),
-            applications: vec!["notes".into()],
-            previews: false,
-        });
-        let mut worker = manifest.spec.services[0].clone();
-        worker.name = "worker".into();
-        manifest.spec.services.push(worker);
-    })
-    .await;
-    let notes = deploy("notes", |manifest| {
-        manifest.spec.imports.push(piqueld_core::manifest::Import {
-            application: "auth".into(),
-            service: "web".into(),
-            environment: None,
-        });
-    })
-    .await;
+    let auth = harness
+        .deploy_application("auth", |manifest| {
+            manifest.spec.exports.push(piqueld_core::manifest::Export {
+                service: "web".into(),
+                applications: vec!["notes".into()],
+                previews: false,
+            });
+            let mut worker = manifest.spec.services[0].clone();
+            worker.name = "worker".into();
+            manifest.spec.services.push(worker);
+        })
+        .await;
+    let notes = harness
+        .deploy_application("notes", |manifest| {
+            manifest.spec.imports.push(piqueld_core::manifest::Import {
+                application: "auth".into(),
+                service: "web".into(),
+                environment: None,
+            });
+        })
+        .await;
     for _ in 0..3 {
         harness.scan().await;
     }

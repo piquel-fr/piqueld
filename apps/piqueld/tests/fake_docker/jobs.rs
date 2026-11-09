@@ -286,6 +286,58 @@ async fn a_deployment_blocked_by_a_conflict_rolls_back_its_job_prerequisites() {
     assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
+/// A deployment adding an import keeps the link network its job
+/// prerequisites created while repair maintains the active target, which
+/// links nothing: creating it asks for a scan, and removing it would fail
+/// the next service joining it.
+#[tokio::test]
+async fn job_prerequisites_keep_the_link_network_of_a_new_import() {
+    let harness = ControllerHarness::new().await;
+    let first = harness.apply(manifest(), None).await;
+    harness.finish(&first).await;
+    let auth = harness
+        .deploy_application("auth", |manifest| {
+            manifest.spec.exports.push(piqueld_core::manifest::Export {
+                service: "web".into(),
+                applications: vec!["notes".into()],
+                previews: false,
+            });
+        })
+        .await;
+    harness.scan().await;
+    let mut replacement = migration();
+    replacement
+        .spec
+        .imports
+        .push(piqueld_core::manifest::Import {
+            application: "auth".into(),
+            service: "web".into(),
+            environment: None,
+        });
+    // The job fails as a conflict planning can't see, so the deployment
+    // may still roll out while scans repair the active target.
+    *harness.docker.conflicting_job.lock().await = Some("migrate".into());
+    let operation = harness.apply(replacement, None).await;
+    let network = piqueld_core::DockerNetworkName::for_link(&operation.environment_id, &auth);
+    for _ in 0..3 {
+        assert_eq!(
+            harness.scan_result(&operation).await,
+            (OperationState::Failed, Some("ownership_conflict".into()))
+        );
+    }
+    assert!(
+        !harness
+            .operation_events(&operation.id)
+            .await
+            .iter()
+            .any(|event| event.phase.as_deref() == Some("remove_network")
+                && event.resource.as_deref() == Some(network.as_str())),
+        "repair removed the link network"
+    );
+    *harness.docker.conflicting_job.lock().await = None;
+    harness.finish(&operation).await;
+}
+
 /// A conflict blocking a deployment after a job that stops services
 /// succeeded keeps them stopped, as they would run against data in the new
 /// format. The deployment continues once the conflict is resolved.
