@@ -106,14 +106,15 @@ version() {
 }
 
 # Says what the script will do, and asks to go ahead. Sets `join` when the user
-# running it should join the piqueld group.
+# running it should join the piqueld group, and `member` when they are, or will
+# be, a member.
 plan() {
     installed=$("$prefix/piqueld" --version 2>/dev/null || true)
-    if [ -n "$installed" ]; then
-        say "This updates ${installed} to piqueld $version, on this host:"
-    else
-        say "This installs piqueld $version on this host:"
-    fi
+    case "$installed" in
+    "") say "This installs piqueld $version on this host:" ;;
+    "piqueld $version") say "This reinstalls piqueld $version on this host:" ;;
+    *) say "This updates $installed to piqueld $version, on this host:" ;;
+    esac
     say "  - Download $archive from"
     say "    $release,"
     say "    and check it against the release's SHA256SUMS."
@@ -136,12 +137,18 @@ plan() {
     fi
 
     join=0
+    member=0
     user=$(id -un)
-    if [ -n "$sudo" ] && ! id -nG "$user" | tr ' ' '\n' | grep -qx piqueld; then
-        say
-        say "Members of the piqueld group run piquelctl on this host without sudo."
-        if confirm "Add $user to the piqueld group?"; then
-            join=1
+    if [ -n "$sudo" ]; then
+        if id -nG "$user" | tr ' ' '\n' | grep -qx piqueld; then
+            member=1
+        else
+            say
+            say "Members of the piqueld group run piquelctl on this host without sudo."
+            if confirm "Add $user to the piqueld group?"; then
+                join=1
+                member=1
+            fi
         fi
     fi
     say
@@ -196,7 +203,7 @@ wait_for_daemon() {
 # Says what to do next, with piquelctl run as the user can run it.
 next_steps() {
     piquelctl=piquelctl
-    [ -n "$sudo" ] && [ "$join" = 0 ] && piquelctl="sudo piquelctl"
+    [ -n "$sudo" ] && [ "$member" = 0 ] && piquelctl="sudo piquelctl"
     say
     say "piqueld $version is running. Next:"
     [ "$join" = 0 ] ||
