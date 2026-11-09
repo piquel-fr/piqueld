@@ -34,7 +34,7 @@ See [automated validation](validation.md) for the CI jobs and
 
 Client generation is implemented in Rust with Progenitor. Ordinary Cargo builds
 use the checked-in client without compiling the generator. See
-[client generation](https://github.com/piquel-fr/piqueld/blob/main/tools/client-codegen/README.md) for the shared contract
+[client generation](https://github.com/sourceorigin-dev/piqueld/blob/main/tools/client-codegen/README.md) for the shared contract
 mappings and the handwritten requests.
 
 The optional privileged Docker qualification uses an isolated Docker-in-Docker

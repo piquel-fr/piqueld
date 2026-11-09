@@ -11,24 +11,24 @@ piqueld.dev is served by a piqueld instance, as two applications:
 Every push to `main` deploys both. This page sets them up once, on the
 instance that serves them, then shows how to preview a change.
 
-[`deploy/piqueld-dev.toml`](https://github.com/piquel-fr/piqueld/blob/main/deploy/piqueld-dev.toml)
+[`deploy/piqueld-dev.toml`](https://github.com/sourceorigin-dev/piqueld/blob/main/deploy/piqueld-dev.toml)
 and
-[`deploy/piqueld-observability.toml`](https://github.com/piquel-fr/piqueld/blob/main/deploy/piqueld-observability.toml)
+[`deploy/piqueld-observability.toml`](https://github.com/sourceorigin-dev/piqueld/blob/main/deploy/piqueld-observability.toml)
 are their manifests. piqueld reads each from `main` on each deployment, with
 the files its services build and mount, from the same commit:
 
-- [`deploy/site`](https://github.com/piquel-fr/piqueld/tree/main/deploy/site)
+- [`deploy/site`](https://github.com/sourceorigin-dev/piqueld/tree/main/deploy/site)
   holds the `Dockerfile` of the `site` service. It serves
-  [`apps/site`](https://github.com/piquel-fr/piqueld/tree/main/apps/site),
+  [`apps/site`](https://github.com/sourceorigin-dev/piqueld/tree/main/apps/site),
   static pages with no build step, with
   [static-web-server](https://static-web-server.net/) on port 8080, as an
   unprivileged user.
-- [`deploy/docs`](https://github.com/piquel-fr/piqueld/tree/main/deploy/docs)
+- [`deploy/docs`](https://github.com/sourceorigin-dev/piqueld/tree/main/deploy/docs)
   holds the `Dockerfile` of the `docs` service. It builds the book with the
   mdBook that `flake.lock` pins, through `nix develop .#docs`, the shell
   `just docs` and CI use. It serves the pages with static-web-server
   too.
-- [`deploy/observability`](https://github.com/piquel-fr/piqueld/tree/main/deploy/observability)
+- [`deploy/observability`](https://github.com/sourceorigin-dev/piqueld/tree/main/deploy/observability)
   holds the configuration of the telemetry stack: an OpenTelemetry Collector
   receiving the daemon's telemetry, Prometheus keeping metrics for 15 days,
   Tempo and Loki keeping traces and logs for 7, and Grafana. Grafana's data
@@ -68,7 +68,7 @@ ones, which can't deploy while the others hold their hostnames.
   needs `telemetry:grant`, which only `admin` holds by default; see
   [permissions](../user/accounts/permissions.md#grants).
 - You can change the DNS of `piqueld.dev` and the settings of the
-  `piquel-fr/piqueld` repository on GitHub.
+  `sourceorigin-dev/piqueld` repository on GitHub.
 
 Run the `piquelctl` commands on this page from a checkout of `main`, on the
 host or on any machine where `piquelctl` is signed in to the instance.
@@ -257,7 +257,7 @@ docker run --rm --publish 8080:8080 piqueld-docs
 
 The book is then on <http://localhost:8080>. The marketing site builds the same
 way from `deploy/site/Dockerfile`; to look at it without Docker, see
-[`apps/site`](https://github.com/piquel-fr/piqueld/tree/main/apps/site). To build it in a
+[`apps/site`](https://github.com/sourceorigin-dev/piqueld/tree/main/apps/site). To build it in a
 [development instance](development.md#docker)'s engine rather than the host's,
 set `DOCKER_HOST` to that engine's socket first.
 

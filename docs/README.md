@@ -20,4 +20,4 @@ This documentation has two parts:
 - Questions and feedback: [contact@piqueld.dev](mailto:contact@piqueld.dev)
 - Security vulnerabilities: [security@piqueld.dev](mailto:security@piqueld.dev).
   Report them privately, never in a public issue; see the
-  [security policy](https://github.com/piquel-fr/piqueld/blob/main/SECURITY.md).
+  [security policy](https://github.com/sourceorigin-dev/piqueld/blob/main/SECURITY.md).

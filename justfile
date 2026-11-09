@@ -136,7 +136,7 @@ docs:
         echo "$log" >&2
         exit 1
     fi
-    repository='https://(github\.com/piquel-fr/piqueld/(blob|tree)|raw\.githubusercontent\.com/piquel-fr/piqueld)'
+    repository='https://(github\.com/sourceorigin-dev/piqueld/(blob|tree)|raw\.githubusercontent\.com/sourceorigin-dev/piqueld)'
     git ls-files -z --cached --others --exclude-standard '*.md' \
         | xargs -0 lychee --root-dir "{{justfile_directory()}}/target/book" \
             --remap "$repository/main/ file://{{justfile_directory()}}/" \

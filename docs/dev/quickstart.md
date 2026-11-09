@@ -41,7 +41,7 @@ just run --socket /tmp/piqueld-dev-run/piqueld.sock app apply \
 just run --socket /tmp/piqueld-dev-run/piqueld.sock app show basic-website
 ```
 
-[`examples/basic-website.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/basic-website.toml) runs one
+[`examples/basic-website.toml`](https://github.com/sourceorigin-dev/piqueld/blob/main/examples/basic-website.toml) runs one
 `nginx:alpine` replica with an HTTP health check.
 
 `status` reports the daemon version and `--json` produces the same structured

@@ -3,7 +3,7 @@
 Deploy an application that stores piqueld's telemetry and lets you explore it
 in Grafana.
 
-[`examples/observability/application.toml`](https://github.com/piquel-fr/piqueld/blob/main/examples/observability/application.toml)
+[`examples/observability/application.toml`](https://github.com/sourceorigin-dev/piqueld/blob/main/examples/observability/application.toml)
 is a small starting point, with no dashboards, that you can extend. It runs:
 
 - an OpenTelemetry Collector, which

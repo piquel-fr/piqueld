@@ -104,7 +104,7 @@ hidden, never overlap, and a manual refresh remains available. A failed refresh
 keeps the last successful view visible and marks it stale.
 ## Browser tests
 
-The [Playwright suite](https://github.com/piquel-fr/piqueld/blob/main/tests/playwright/README.md) exercises the embedded dashboard against
+The [Playwright suite](https://github.com/sourceorigin-dev/piqueld/blob/main/tests/playwright/README.md) exercises the embedded dashboard against
 an isolated API fixture. Run `just setup-playwright` once, then `just test-playwright`. Chromium
 is provided by a pinned Docker image; the tests need no system browser, Python,
 or ChromeDriver. The `browser-playwright` CI job retains failure traces and screenshots.

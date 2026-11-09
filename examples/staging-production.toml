@@ -1,4 +1,4 @@
-#:schema https://raw.githubusercontent.com/piquel-fr/piqueld/main/docs/application-manifest.schema.json
+#:schema https://raw.githubusercontent.com/sourceorigin-dev/piqueld/main/docs/application-manifest.schema.json
 # A repository-backed application whose manifest declares its environments.
 # `staging` builds `main` on every push; `production` never builds and only
 # receives releases promoted from `staging` with `piquelctl env promote`.
