@@ -73,7 +73,7 @@ Each GitHub release has the archive the install script,
 downloads, `piqueld-<version>-x86_64-linux.tar.gz`, and its `SHA256SUMS`. The
 archive holds the daemon, with its dashboard, `piquelctl`, the systemd unit
 [`apps/piqueld/piqueld.service`](https://github.com/sourceorigin-dev/piqueld/blob/main/apps/piqueld/piqueld.service),
-and the licence. The binaries link musl and OpenSSL statically, through the
+and the license. The binaries link musl and OpenSSL statically, through the
 daemon's `vendored-openssl` feature, so they run on any x86_64 Linux.
 
 `just dist`, which runs `cargo xtask dist`, builds them into `target/dist`. It
@@ -172,8 +172,9 @@ piquelctl --version
 - **Publishing fails partway.** The crates published before the failure stay
   published, and crates.io refuses to publish a version twice, so
   `just release` can't run again. Fix the cause, publish the remaining crates
-  with `--exclude` for each one already published, then tag and create the
-  release by hand, and close the milestone on GitHub:
+  with `--exclude` for each one already published, then tag the commit and
+  push the tag, which starts the release workflow. Then close the milestone
+  on GitHub:
 
   ```console
   just publish --exclude piqueld-probe --exclude piqueld-core

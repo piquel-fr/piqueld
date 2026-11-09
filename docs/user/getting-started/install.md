@@ -16,7 +16,7 @@ You need:
   [Docker's guide](https://docs.docker.com/engine/install/); on NixOS, the
   module enables it.
 - **`git` and `ssh` on the host**, which piqueld fetches your repositories
-  with. The NixOS module provides them.
+  with, and `curl` for the install script. The NixOS module provides them.
 
 Anyone who controls the host also controls piqueld: they can read its database
 and drive its Docker engine. piqueld calls them the
@@ -256,7 +256,8 @@ To install piqueld without the script, do what it does yourself, on the host:
 
    ```console
    sudo useradd --system --user-group --groups docker \
-     --home-dir /var/lib/piqueld --no-create-home piqueld
+     --home-dir /var/lib/piqueld --no-create-home \
+     --shell /usr/sbin/nologin piqueld
    ```
 
 3. Write the daemon's configuration to `/etc/piqueld/config.toml`, readable by
