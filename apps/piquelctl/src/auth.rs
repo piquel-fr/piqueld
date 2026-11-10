@@ -596,8 +596,9 @@ mod tests {
             .endpoints
             .entry("unix:/run/piqueld/piqueld.sock".into())
             .or_default();
-        // Bob's username is Alice's account ID.
-        for (id, username) in [("alice-id", "Alice"), ("bob-id", "alice-id")] {
+        // Alice's username is Bob's account ID, and her account sorts
+        // first, so only an ID-first lookup finds Bob by his ID.
+        for (id, username) in [("alice-id", "bob-id"), ("bob-id", "Bob")] {
             endpoint.accounts.insert(
                 id.into(),
                 Account {
@@ -607,9 +608,10 @@ mod tests {
             );
         }
         for (account, id) in [
-            ("alice-id", "alice-id"),
-            ("ALICE", "alice-id"),
-            ("ALICE-ID", "bob-id"),
+            ("bob-id", "bob-id"),
+            ("BOB", "bob-id"),
+            // IDs match exactly, so this is Alice's username.
+            ("BOB-ID", "alice-id"),
         ] {
             let cli = Cli::try_parse_from(["piquelctl", "--account", account, "whoami"]).unwrap();
             let selected = credentials.selected(&cli).unwrap().map(|(id, _)| id);
