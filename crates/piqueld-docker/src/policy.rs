@@ -1,7 +1,8 @@
 use super::{
-    BTreeSet, BollardDocker, HealthConfig, HealthProbe, MountTypeEnum, NANO_CPUS_PER_MILLICORE,
-    RESTART_DELAY, SERVICE_LABEL, ServiceSpec, ServiceSpecUpdateConfigFailureActionEnum, TaskSpec,
-    TaskSpecContainerSpec, TaskSpecRestartPolicyConditionEnum,
+    BTreeSet, BollardDocker, HealthConfig, HealthProbe, INSTANCE_LABEL, MountTypeEnum,
+    NANO_CPUS_PER_MILLICORE, RESTART_DELAY, SERVICE_LABEL, ServiceSpec,
+    ServiceSpecUpdateConfigFailureActionEnum, TaskSpec, TaskSpecContainerSpec,
+    TaskSpecRestartPolicyConditionEnum,
 };
 
 /// The runtime policy emitted by the desired-service Docker specification builder.
@@ -43,6 +44,13 @@ impl ServiceRuntimePolicy {
             && Self::resource_limits(task)
             && Self::no_unsupported_service_settings(spec)
             && Self::no_security_settings(task, container, node_id)
+            && HealthProbe::matches(
+                container,
+                spec.labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(INSTANCE_LABEL))
+                    .map(String::as_str),
+            )
     }
 
     /// Rejects security-sensitive drift outside the supported single-node policy.
@@ -105,7 +113,6 @@ impl ServiceRuntimePolicy {
                         })
                 })
             })
-            && HealthProbe::matches(container)
             && BollardDocker::files_match_policy(container)
             && container.oom_score_adj.is_none_or(|value| value == 0)
             && container.isolation.is_none_or(|value| {

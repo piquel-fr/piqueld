@@ -213,6 +213,16 @@ impl ImageBuild<'_> {
     ///   -> --label io.piqueld.managed=true --label io.piqueld.instance=instance-1
     ///      --build-arg A=1 --build-arg B=x=y --target runtime
     /// ```
+    /// The repository and tag naming the image `id` this build produced,
+    /// `piqueld-build/<owner>:<id's hex digits>`, so `docker image prune`
+    /// doesn't take it for a dangling image and break restoring or rolling
+    /// back to it. Cleanup removes the image by ID, which removes this, its
+    /// only tag.
+    fn tag(&self, id: &piqueld_core::Sha256Digest) -> (String, String) {
+        let hex = id.as_str().trim_start_matches("sha256:");
+        (format!("piqueld-build/{}", self.owner), hex.to_owned())
+    }
+
     fn options(&self) -> impl Iterator<Item = String> {
         let labels = [
             format!("{MANAGED_LABEL}=true"),
@@ -445,9 +455,9 @@ pub trait DockerApi: Send + Sync + 'static {
         instance: &InstanceId,
         id: &piqueld_core::Sha256Digest,
     ) -> Result<(), DockerError>;
-    /// Removes `piqueld-probe` configs of other versions that no service
-    /// mounts, such as those older daemons published.
-    async fn prune_health_probes(&self) -> Result<(), DockerError>;
+    /// Removes `instance`'s `piqueld-probe` configs of other versions that no
+    /// service mounts, such as those older daemons published.
+    async fn prune_health_probes(&self, instance: &InstanceId) -> Result<(), DockerError>;
     /// Removes the configs of the files of the environment `ownership`
     /// labels that no service mounts, now or in the previous spec a rollback
     /// restores. Docker refuses to remove configs in use.
@@ -587,6 +597,22 @@ mod tests {
                 "runtime"
             ]
         );
+    }
+
+    #[test]
+    fn builds_are_tagged_by_owner_and_id() {
+        let owner = InstanceId::parse("instance-1").unwrap();
+        let build = ImageBuild {
+            owner: &owner,
+            dockerfile: PathBuf::from("Dockerfile"),
+            context: PathBuf::from("."),
+            args: &BTreeMap::new(),
+            target: None,
+            priority: BuildPriority::Environment,
+        };
+        let hex = "c".repeat(64);
+        let id = piqueld_core::Sha256Digest::parse(format!("sha256:{hex}")).unwrap();
+        assert_eq!(build.tag(&id), ("piqueld-build/instance-1".into(), hex));
     }
 
     #[test]

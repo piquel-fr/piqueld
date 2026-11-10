@@ -40,17 +40,24 @@ pub(super) struct ListedConfig {
     spec: ListedConfigSpec,
 }
 
-/// A listed config's name.
+/// A listed config's name and labels.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ListedConfigSpec {
     name: String,
+    #[serde(default)]
+    labels: Option<BTreeMap<String, String>>,
 }
 
 impl ListedConfig {
     /// The config's name.
     pub(super) fn name(&self) -> &str {
         &self.spec.name
+    }
+
+    /// The config's label `key`, if set.
+    pub(super) fn label(&self, key: &str) -> Option<&str> {
+        self.spec.labels.as_ref()?.get(key).map(String::as_str)
     }
 }
 

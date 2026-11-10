@@ -263,9 +263,12 @@ daemon, so images need no `wget`, shell, or C library:
 ["CMD","/run/piqueld/probe","http","--port","8080","--path","/health","--timeout","3"]
 ```
 
-The daemon publishes the probe as a Swarm config named by its content,
-`piqueld-health-probe-<hash>`, the first time it deploys a service with an HTTP
-check. Services mount it at `/run/piqueld/probe`, root-owned with mode `0555`,
+The daemon publishes the probe as a Swarm config named by its content and its
+installation, `piqueld-health-probe-<hash>`, and labelled with its instance ID,
+the first time it deploys a service with an HTTP check. Installations sharing a
+Docker Engine, such as development instances, each publish their own, so the
+first daemon release with instance-scoped probes rolls every service with an
+HTTP check once. Services mount it at `/run/piqueld/probe`, root-owned with mode `0555`,
 so Swarm itself stores and distributes it, and Docker still runs the check, so
 health still gates tasks and rollouts. A service whose check runs the probe
 without mounting this daemon's config at `/run/piqueld/probe`, that mounts any
@@ -276,9 +279,10 @@ The probe's command line is a stable contract that newer probes keep
 accepting. A daemon upgrade that changes the probe publishes a new config, and
 services move to it through a normal health-gated rollout, as do services
 whose HTTP checks earlier daemons pointed at `wget`. Image cleanup removes
-probe configs of other versions that no service mounts any longer, in its
-current spec or in the previous one a rollback would restore; the current
-version's config is always kept.
+its installation's probe configs of other versions, and unlabelled ones older
+daemons published, that no service mounts any longer, in its current spec or
+in the previous one a rollback would restore; the current version's config and
+other installations' configs are always kept.
 
 Daemon builds compile the probe for the daemon architecture's
 `*-unknown-linux-musl` target with the size-optimised `probe` profile, since
@@ -324,6 +328,10 @@ and images built by hand or before these labels existed are left alone, as are
 pulled registry images. An image ID covers its labels, so they can't change
 under it; removal still rechecks them, then removes the image by ID, without
 force and without its untagged parents. Cleanup never runs a broad prune.
+Each build is also tagged `piqueld-build/<instance ID>:<image ID hex>`, so an
+operator's `docker image prune` doesn't take it for a dangling image and break
+restoring or rolling back to it. Removing the image by ID removes that tag,
+its only one.
 
 An image is kept while a retention root uses it:
 

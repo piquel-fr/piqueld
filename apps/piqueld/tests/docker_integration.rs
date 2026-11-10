@@ -501,7 +501,8 @@ impl SwarmScenario {
         }
 
         // The probe is mounted as a Swarm config, beside the service's files,
-        // and pruning removes only probe configs no service mounts.
+        // and pruning removes only this installation's probe configs, and
+        // unlabelled ones older daemons published, that no service mounts.
         let spec = self
             .docker_api("GET", &format!("/services/{}", http_service.name))
             .await;
@@ -513,17 +514,29 @@ impl SwarmScenario {
             .find(|config| config["File"]["Name"] == "/run/piqueld/probe")
             .unwrap_or_else(|| panic!("no probe config in {configs}"));
         let current = probe["ConfigName"].as_str().unwrap().to_owned();
-        self.docker_api_with(
-            "POST",
-            "/configs/create",
-            Some(serde_json::json!({
-                "Name": "piqueld-health-probe-stale",
-                "Labels": {"io.piqueld.health-probe": "true"},
-                "Data": "c3RhbGU=",
-            })),
-        )
-        .await;
-        self.engine.docker.prune_health_probes().await.unwrap();
+        let instance = &http_service.labels[piqueld_core::resource::INSTANCE_LABEL];
+        for (name, owner) in [
+            ("piqueld-health-probe-stale", None),
+            ("piqueld-health-probe-own-stale", Some(instance.as_str())),
+            ("piqueld-health-probe-other", Some("instance-other")),
+        ] {
+            let mut labels = serde_json::json!({"io.piqueld.health-probe": "true"});
+            if let Some(owner) = owner {
+                labels[piqueld_core::resource::INSTANCE_LABEL] = owner.into();
+            }
+            self.docker_api_with(
+                "POST",
+                "/configs/create",
+                Some(serde_json::json!({"Name": name, "Labels": labels, "Data": "c3RhbGU="})),
+            )
+            .await;
+        }
+        let instance = piqueld_core::InstanceId::parse(instance.clone()).unwrap();
+        self.engine
+            .docker
+            .prune_health_probes(&instance)
+            .await
+            .unwrap();
         let names = self
             .docker_api("GET", "/configs")
             .await
@@ -533,6 +546,12 @@ impl SwarmScenario {
             .map(|config| config["Spec"]["Name"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
         assert!(names.contains(&current), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "piqueld-health-probe-other"),
+            "{names:?}"
+        );
         assert!(
             !names.iter().any(|name| name.ends_with("-stale")),
             "{names:?}"
@@ -1129,6 +1148,21 @@ async fn git_build_runs_as_a_local_swarm_image() {
     let other = InstanceId::parse("another-installation").unwrap();
     let image = built().await.expect("the build is listed by its ID");
     assert!(image.built_by(&owner) && !image.built_by(&other));
+    // Tagged, so `docker image prune` keeps it; cleanup still removes it by ID.
+    let tags = std::process::Command::new("docker")
+        .arg("--host")
+        .arg(format!("unix://{}", engine.socket.display()))
+        .args(["image", "inspect", "--format", "{{json .RepoTags}}"])
+        .arg(id.as_str())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(tags.stdout).unwrap().trim(),
+        format!(
+            r#"["piqueld-build/{owner}:{}"]"#,
+            id.as_str().trim_start_matches("sha256:")
+        )
+    );
     assert!(matches!(
         docker.remove_image(&other, &id).await,
         Err(DockerError::OwnershipConflict)

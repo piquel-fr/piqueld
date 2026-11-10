@@ -166,7 +166,11 @@ what every environment and preview runs or is deploying, plus each
 environment's last `keep_deployments` successful deployments, so their releases
 can be promoted again, and removes the rest one by one, by ID. Images other installations
 built on the same Docker Engine, images built by hand, and pulled registry
-images are never removed. See
+images are never removed. Builds are tagged `piqueld-build/<instance>:<image ID>`,
+where `<instance>` is the installation's ID that `piquelctl status` prints, so
+`docker image prune` leaves them. `docker image prune --all` still removes any
+that no container uses, and restoring or rolling back to one then fails with
+`image_unavailable`. See
 [image retention](../../dev/architecture/docker-reconciliation.md#image-retention).
 
 ```toml

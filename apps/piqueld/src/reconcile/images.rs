@@ -156,7 +156,7 @@ impl<D: DockerApi> Controller<D> {
             }
         }
         // Old probe configs are about as long-lived as old images.
-        self.docker.prune_health_probes().await?;
+        self.docker.prune_health_probes(instance).await?;
         let now = piqueld_store::now_ms();
         self.images.status.send_modify(|status| {
             status.images = kept;

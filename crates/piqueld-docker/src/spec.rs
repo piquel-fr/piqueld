@@ -7,7 +7,7 @@ use super::{
     TaskSpecRestartPolicy, TaskSpecRestartPolicyConditionEnum,
 };
 use piqueld_core::manifest::{HealthExecution, RolloutOrder, RolloutPolicy};
-use piqueld_core::resource::TELEMETRY_TARGET;
+use piqueld_core::resource::{INSTANCE_LABEL, TELEMETRY_TARGET};
 
 /// Opens a Go template action in the fields Swarm expands.
 const SWARM_OPEN: &str = "{{";
@@ -49,7 +49,11 @@ impl BollardDocker {
             .as_ref()
             .is_some_and(|health| health.execution().runs_probe())
         {
-            configs.push(self.health_probe_reference().await?);
+            let instance = desired
+                .labels
+                .get(INSTANCE_LABEL)
+                .ok_or(DockerError::Validation("health probe ownership"))?;
+            configs.push(self.health_probe_reference(instance).await?);
         }
         if !configs.is_empty() {
             container.configs = Some(configs);
