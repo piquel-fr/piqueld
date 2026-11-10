@@ -274,6 +274,15 @@ pub(crate) enum Command {
     /// It reads the profiles files without contacting a daemon, and ignores
     /// `--profile` and the endpoint options.
     Profiles,
+    /// Print the completion script of a shell.
+    ///
+    /// Save it where your shell loads completions, such as
+    /// `piquelctl completions bash > ~/.local/share/bash-completion/completions/piquelctl`.
+    /// It contacts no daemon.
+    Completions {
+        /// The shell to complete in.
+        shell: clap_complete::Shell,
+    },
     /// Manage the daemon's encryption key for secrets.
     Secrets {
         #[command(subcommand)]
@@ -318,7 +327,8 @@ pub(crate) enum Command {
         command: crate::previews::PreviewCommand,
     },
     /// Inspect Git source builds and job runs, and read their output.
-    Builds(BuildArgs),
+    #[command(alias = "builds")]
+    Build(BuildArgs),
     /// Show an operation, waiting until it ends.
     ///
     /// Deployments, deletions and other long tasks run as operations, whose IDs
@@ -328,18 +338,14 @@ pub(crate) enum Command {
     /// Summarize deployment outcomes, retries, durations, and failure codes
     /// over a time window, for every readable application or one environment.
     Analytics(crate::analytics::AnalyticsArgs),
-    /// Read one page of the event history, oldest first.
+    /// Read one page of the event history, newest first.
     ///
     /// Events record what happened to applications, environments and the
     /// daemon, such as edits, deployments and failures.
-    Events {
-        /// Only show events of the application with this ID, and of all its
-        /// environments, including deleted ones.
-        #[arg(long, value_name = "APPLICATION_ID")]
-        application: Option<String>,
-        /// Only show events of the environment with this ID, even a deleted one.
-        #[arg(long, value_name = "ENVIRONMENT_ID")]
-        environment: Option<String>,
+    #[command(alias = "events")]
+    Event {
+        #[command(flatten)]
+        scope: crate::commands::HistoryScope,
         /// Only show events of this kind, such as `operation_failed`.
         ///
         /// The dashboard's Events page lists the kinds recorded so far.
@@ -547,22 +553,17 @@ pub(crate) struct BuildArgs {
 pub(crate) enum BuildCommand {
     /// List Git source builds and job runs, newest first.
     List {
-        /// Only show the builds of the environments of the application with this ID.
-        #[arg(long, value_name = "APPLICATION_ID")]
-        application: Option<String>,
-        /// Only show the builds of the environment with this ID.
-        #[arg(long, value_name = "ENVIRONMENT_ID")]
-        environment: Option<String>,
-        /// Read the page after this cursor, which the previous page printed.
-        #[arg(long)]
-        cursor: Option<String>,
+        #[command(flatten)]
+        scope: crate::commands::HistoryScope,
+        #[command(flatten)]
+        page: crate::support::PageArgs,
     },
     /// Read the newest page of a build's output.
     ///
     /// To read older output, pass the `--before` offset it prints. Needs
     /// `logs:read`.
     Logs {
-        /// Build ID, from `builds list`.
+        /// Build ID, from `build list`.
         id: i64,
         /// Read the output before this byte offset, which the previous page printed.
         #[arg(long, value_name = "OFFSET")]

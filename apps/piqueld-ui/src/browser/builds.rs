@@ -12,7 +12,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
-    BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
+    BuildRecord, BuildState, Client, ClientError, Page, ValidatedBuild as Build,
+    ValidatedSource as Source,
     access::AppPermission,
     observability::{Bytes, Elapsed},
 };
@@ -27,6 +28,22 @@ pub(super) fn BuildsPage() -> impl IntoView {
         />
         <BuildHistory />
     }
+}
+
+/// One page of the builds of `scope`, an application and environment ID
+/// that each narrow it when given, newest first, after `cursor`.
+async fn builds_page(
+    (application, environment): (Option<String>, Option<String>),
+    cursor: Option<String>,
+) -> Result<Page<BuildRecord>, ClientError> {
+    Client::browser()
+        .builds(
+            application.as_deref(),
+            environment.as_deref(),
+            cursor.as_deref(),
+            None,
+        )
+        .await
 }
 
 /// Build list, optionally scoped to one `application`'s environments or to one
@@ -62,10 +79,7 @@ pub(super) fn BuildHistory(
             {
                 refresh.set(false);
                 loading.set(true);
-                let (application, environment) = scope.get_value();
-                let result = Client::browser()
-                    .builds(application.as_deref(), environment.as_deref(), None)
-                    .await;
+                let result = builds_page(scope.get_value(), None).await;
                 if !alive.get() {
                     break;
                 }
@@ -88,17 +102,9 @@ pub(super) fn BuildHistory(
     });
     let older = move || {
         loading.set(true);
-        let (application, environment) = scope.get_value();
-        let next = cursor.get_untracked();
+        let (scope, next) = (scope.get_value(), cursor.get_untracked());
         spawn_local(async move {
-            match Client::browser()
-                .builds(
-                    application.as_deref(),
-                    environment.as_deref(),
-                    next.as_deref(),
-                )
-                .await
-            {
+            match builds_page(scope, next).await {
                 Ok(page) => {
                     records.update(|items| items.extend(page.items));
                     cursor.set(page.next_cursor);

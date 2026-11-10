@@ -22,6 +22,8 @@ tempfile.workspace = true
 indicatif.workspace = true
 parking_lot.workspace = true
 clap.workspace = true
+# `piquelctl completions` shell scripts.
+clap_complete.workspace = true
 futures-util.workspace = true
 http.workspace = true
 piqueld-client.workspace = true

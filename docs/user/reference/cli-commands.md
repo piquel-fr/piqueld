@@ -69,6 +69,7 @@ Commands:
 - [`piquelctl sign-in-link`](#piquelctl-sign-in-link): Print a one-time link that signs a browser in as the host operator.
 - [`piquelctl setup-link`](#piquelctl-setup-link): Print the link that creates the first account.
 - [`piquelctl profiles`](#piquelctl-profiles): List your connection profiles and their endpoints.
+- [`piquelctl completions`](#piquelctl-completions): Print the completion script of a shell.
 - [`piquelctl secrets`](#piquelctl-secrets): Manage the daemon's encryption key for secrets.
 - [`piquelctl notification`](#piquelctl-notification): Manage notification destinations and their deliveries.
 - [`piquelctl status`](#piquelctl-status): Show whether the daemon responds, its version, and the health of its subsystems.
@@ -79,10 +80,10 @@ Commands:
 - [`piquelctl app`](#piquelctl-app): Create, inspect, edit and deploy applications.
 - [`piquelctl env`](#piquelctl-env): Create, inspect, deploy and delete an application's environments.
 - [`piquelctl preview`](#piquelctl-preview): Create, inspect, deploy and delete previews: disposable deployments of a branch.
-- [`piquelctl builds`](#piquelctl-builds): Inspect Git source builds and job runs, and read their output.
+- [`piquelctl build`](#piquelctl-build): Inspect Git source builds and job runs, and read their output.
 - [`piquelctl operation`](#piquelctl-operation): Show an operation, waiting until it ends.
 - [`piquelctl analytics`](#piquelctl-analytics): Summarize deployment outcomes, retries, durations, and failure codes over a time window, for every readable application or one environment.
-- [`piquelctl events`](#piquelctl-events): Read one page of the event history, oldest first.
+- [`piquelctl event`](#piquelctl-event): Read one page of the event history, newest first.
 
 ## `piquelctl login`
 
@@ -607,6 +608,20 @@ It reads the profiles files without contacting a daemon, and ignores `--profile`
 ```text
 piquelctl profiles [OPTIONS]
 ```
+
+## `piquelctl completions`
+
+Print the completion script of a shell.
+
+Save it where your shell loads completions, such as `piquelctl completions bash > ~/.local/share/bash-completion/completions/piquelctl`. It contacts no daemon.
+
+```text
+piquelctl completions [OPTIONS] <SHELL>
+```
+
+Arguments:
+
+- `<SHELL>`: The shell to complete in. Values: `bash`, `elvish`, `fish`, `powershell`, `zsh`.
 
 ## `piquelctl secrets`
 
@@ -3909,46 +3924,47 @@ Options:
 - `--yes`: Skip the confirmation prompt. You need it when not on a terminal.
 - `--no-wait`: Return once the daemon accepts the deletion, without waiting for it to finish.
 
-## `piquelctl builds`
+## `piquelctl build`
 
 Inspect Git source builds and job runs, and read their output.
 
 ```text
-piquelctl builds [OPTIONS] <COMMAND>
+piquelctl build [OPTIONS] <COMMAND>
 ```
 
 Commands:
 
-- [`piquelctl builds list`](#piquelctl-builds-list): List Git source builds and job runs, newest first.
-- [`piquelctl builds logs`](#piquelctl-builds-logs): Read the newest page of a build's output.
+- [`piquelctl build list`](#piquelctl-build-list): List Git source builds and job runs, newest first.
+- [`piquelctl build logs`](#piquelctl-build-logs): Read the newest page of a build's output.
 
-## `piquelctl builds list`
+## `piquelctl build list`
 
 List Git source builds and job runs, newest first.
 
 ```text
-piquelctl builds list [OPTIONS]
+piquelctl build list [OPTIONS]
 ```
 
 Options:
 
-- `--application <APPLICATION_ID>`: Only show the builds of the environments of the application with this ID.
-- `--environment <ENVIRONMENT_ID>`: Only show the builds of the environment with this ID.
+- `--app <APP>`: Only this application and its environments, by name or ID. An ID also finds a deleted application's history.
+- `--env <ENV>`: Only this environment: with `--app`, by name or ID; alone, by ID, which also finds a deleted environment's history.
 - `--cursor <CURSOR>`: Read the page after this cursor, which the previous page printed.
+- `--limit <LIMIT>`: Show at most this many items, from 1 to 100. Default: `50`.
 
-## `piquelctl builds logs`
+## `piquelctl build logs`
 
 Read the newest page of a build's output.
 
 To read older output, pass the `--before` offset it prints. Needs `logs:read`.
 
 ```text
-piquelctl builds logs [OPTIONS] <ID>
+piquelctl build logs [OPTIONS] <ID>
 ```
 
 Arguments:
 
-- `<ID>`: Build ID, from `builds list`.
+- `<ID>`: Build ID, from `build list`.
 
 Options:
 
@@ -3987,20 +4003,20 @@ Options:
 - `--since <SINCE>`: Start this long ago, such as 24h or 7d; defaults to 30 days before the end.
 - `--until <UNTIL>`: End this long ago; defaults to now.
 
-## `piquelctl events`
+## `piquelctl event`
 
-Read one page of the event history, oldest first.
+Read one page of the event history, newest first.
 
 Events record what happened to applications, environments and the daemon, such as edits, deployments and failures.
 
 ```text
-piquelctl events [OPTIONS]
+piquelctl event [OPTIONS]
 ```
 
 Options:
 
-- `--application <APPLICATION_ID>`: Only show events of the application with this ID, and of all its environments, including deleted ones.
-- `--environment <ENVIRONMENT_ID>`: Only show events of the environment with this ID, even a deleted one.
+- `--app <APP>`: Only this application and its environments, by name or ID. An ID also finds a deleted application's history.
+- `--env <ENV>`: Only this environment: with `--app`, by name or ID; alone, by ID, which also finds a deleted environment's history.
 - `--kind <KIND>`: Only show events of this kind, such as `operation_failed`.
 
   The dashboard's Events page lists the kinds recorded so far.

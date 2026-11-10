@@ -330,24 +330,24 @@ run to see its output.
 
 ![The Builds tab of reader, with run #1 of job migrate expanded: it succeeded with exit code 0 in 1.1 seconds, in the image miniflux/miniflux:2.3.4](../../images/applications/job-run.png)
 
-`piquelctl builds list` lists the latest runs and builds, newest first:
+`piquelctl build list` lists the latest runs and builds, newest first:
 
 ```console
-$ piquelctl builds list
+$ piquelctl build list
 1  env-01a16da791427563adb574452b389f93  job migrate (web)  Succeeded  1792841094238
 ```
 
 The first column is the run's ID. Read its output:
 
 ```console
-$ piquelctl builds logs 1
+$ piquelctl build logs 1
 level=INFO msg="Running database migrations" current_version=0 latest_version=135
 ```
 
 ## Troubleshooting
 
 - **The deployment fails with `job_failed`.** Read the job's output on the
-  **Builds** tab, or with `piquelctl builds logs`. Its last line says how the container ended, such as
+  **Builds** tab, or with `piquelctl build logs`. Its last line says how the container ended, such as
   `piqueld: task: non-zero exit (1)`.
 - **The deployment fails with `job_timeout`.** The job ran longer than its
   `timeout_seconds`. Raise it, or find out what the job waits for.

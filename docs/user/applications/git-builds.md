@@ -280,10 +280,10 @@ Service: web
   Source: git https://github.com/docker/welcome-to-docker.git (main)
 ```
 
-List the application's builds by its ID, which `app show` prints:
+List the application's builds:
 
 ```console
-$ piquelctl builds list --application app-01a16d91fb2c7b93bfe138a7d95dc56f
+$ piquelctl build list --app welcome
 1  env-01a16d91fb2c7b93bfe138a7d95dc560  web  Succeeded  1792839646134
 ```
 
@@ -292,7 +292,7 @@ state, and when it started, in Unix milliseconds. Read a build's output by its
 number:
 
 ```console
-piquelctl builds logs 1
+piquelctl build logs 1
 ```
 
 It prints the latest output. When there is more, its last line,
@@ -303,7 +303,7 @@ prints the earlier part.
 
 - **The deployment fails with `git_build_failed`.** The checkout or the build
   failed. Its output ends with the error: open the build on the **Builds**
-  page, or run `piquelctl builds logs`. Fix the repository or the source's
+  page, or run `piquelctl build logs`. Fix the repository or the source's
   settings, then deploy again. `piquelctl` suggests `env reconcile`, which
   retries the same deployment: it only helps when the cause was temporary,
   such as the network.
