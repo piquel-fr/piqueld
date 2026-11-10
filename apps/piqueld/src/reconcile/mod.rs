@@ -32,7 +32,7 @@ pub struct Controller<D> {
     /// Managed ingress; without it, routes are staged and acknowledged directly.
     ingress: Option<Arc<crate::ingress::Ingress>>,
     retry: RetryPolicy,
-    /// Image cleanup, and the lock preparations hold against it.
+    /// Image cleanup, and the lock operations hold against it.
     images: images::ImageRetention,
     /// Asks the coordinator for a full scan now, so environments linked to
     /// one whose links changed replan within seconds rather than at the next

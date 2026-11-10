@@ -332,14 +332,16 @@ is the image ID; a failed removal keeps the image and cleanup moves on.
 and the total size of those it removed since the daemon started. Removing an
 image frees only layers no other image shares, so less space may be reclaimed.
 
-Preparations and cleanup share a lock. Each preparation holds it shared from
-before it chooses, pulls, or builds images until its prepared target is saved,
-when they are retention roots. Cleanup takes it exclusively while it reads the
-roots and removes images, and skips its turn while any preparation holds it,
-so it never removes an image a preparation is about to record, including one
-Docker's build cache returned unchanged, and never delays a deployment for
-more than one cleanup pass. Deployments that use a retained image again, such
-as release promotion, check that it is still present first: a missing
+Operations and cleanup share a lock. Each operation holds it shared from
+start to finish: while it prepares, before its images are retention roots,
+and after a newer deployment supersedes it, when its images may no longer be
+roots but its jobs and services can still start on them until it stops.
+Cleanup takes it exclusively while it reads the roots and removes images, and
+skips its turn while any operation holds it, so it never removes an image an
+operation still uses, including one Docker's build cache returned unchanged.
+It runs between operations instead, and delays an operation by at most one
+cleanup pass. Deployments that use a retained image again, such as release
+promotion, check that it is still present first: a missing
 registry image is pulled again by its digest, and a missing build, or a pull
 that fails, fails with `image_unavailable` naming the service and image. A
 release promotion holds the lock shared from that check until the promotion
