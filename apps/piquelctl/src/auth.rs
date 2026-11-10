@@ -460,43 +460,46 @@ pub(crate) async fn login(cli: &Cli, client: &Client, console: &mut Console) -> 
             ErrorKind::Input,
             "login expired; run piquelctl login again",
         )),
-        signal = tokio::signal::ctrl_c() => {
-            signal?;
-            Err(CliError::new(ErrorKind::Interrupted, "login cancelled"))
-        }
+        error = CliError::on_interrupt("login cancelled") => Err(error),
     }
 }
 /// Revokes the current credential on the daemon, then drops its saved copy.
 /// A 401 counts as already revoked. With `PIQUELD_TOKEN` set, only the
 /// environment token is revoked and the credentials file is left untouched.
+/// Without either, there is nothing to revoke and no request is sent.
 pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) -> Result<()> {
-    let saved = if std::env::var_os("PIQUELD_TOKEN").is_none() {
+    let environment = std::env::var_os("PIQUELD_TOKEN").is_some();
+    let saved = if environment {
+        None
+    } else {
         Credentials::read()?
             .selected(cli)?
             .map(|(id, account)| (id.to_owned(), account.token.clone()))
-    } else {
-        None
     };
-    let client = if let Some((_, token)) = &saved {
-        client.clone().with_bearer(token)?
-    } else {
-        client.clone()
+    let client = match &saved {
+        Some((_, token)) => client.clone().with_bearer(token)?,
+        None if environment => client.clone(),
+        None => return console.info("No saved login for this daemon"),
     };
-    match client.auth_logout().await {
-        Ok(_)
-        | Err(piqueld_client::ClientError::Api {
+    let revoked = match client.auth_logout().await {
+        Ok(_) => true,
+        Err(piqueld_client::ClientError::Api {
             status: http::StatusCode::UNAUTHORIZED,
             ..
-        }) => {}
+        }) => false,
         Err(error) => return Err(error.into()),
-    }
+    };
     if let Some((id, token)) = saved {
         Credentials::update_at(&Credentials::path()?, |credentials| {
             credentials.remove(&Credentials::key(cli), &id, &token);
             Ok(())
         })?;
     }
-    console.info("Signed out")
+    console.info(match (revoked, environment) {
+        (true, _) => "Signed out",
+        (false, true) => "PIQUELD_TOKEN had already expired or been revoked",
+        (false, false) => "This login had already expired or been revoked; removed its saved copy",
+    })
 }
 
 #[cfg(test)]

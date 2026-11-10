@@ -1372,6 +1372,50 @@ fn operation_polls_by_default_and_no_wait_fetches_once() {
 }
 
 #[test]
+fn rejected_credentials_exit_7_with_a_hint_and_throttling_exits_4() {
+    for (status, code, exit, hint) in [
+        (
+            "401 Unauthorized",
+            "authentication_required",
+            7,
+            "piquelctl login",
+        ),
+        (
+            "403 Forbidden",
+            "permission_denied",
+            7,
+            "ask an account owner",
+        ),
+        ("408 Request Timeout", "request_timeout", 4, ""),
+        ("429 Too Many Requests", "rate_limited", 4, ""),
+    ] {
+        let server = start_server(false, 1, move |_| {
+            Reply::status(status, &json!({"code": code, "message": "refused"}))
+        });
+        let output = run_human(&server, &["operation", "operation-01", "--no-wait"]);
+        assert_eq!(output.status.code(), Some(exit), "{status}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(hint), "{status}: {stderr}");
+        assert_eq!(
+            stderr.contains("Credential"),
+            exit == 7,
+            "{status}: {stderr}"
+        );
+        let _ = server.finish();
+    }
+}
+
+#[test]
+fn logout_without_a_credential_sends_nothing() {
+    let output = support::command()
+        .args(["--socket", "/nonexistent/piqueld.sock", "logout"])
+        .output()
+        .expect("piquelctl process");
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("No saved login for this daemon"));
+}
+
+#[test]
 fn timeout_and_ctrl_c_end_only_the_local_wait() {
     let timeout_server = start_server(false, 1, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");

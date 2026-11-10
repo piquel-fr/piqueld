@@ -247,10 +247,7 @@ pub(crate) async fn doctor(cli: &Cli, client: &Client, console: &mut Console) ->
     // Outside the command supervisor, so Ctrl-C is handled here, like login.
     let checks = tokio::select! {
         checks = client.system_checks() => checks.map_err(CliError::from),
-        signal = tokio::signal::ctrl_c() => {
-            signal?;
-            Err(CliError::new(ErrorKind::Interrupted, "doctor interrupted"))
-        }
+        error = CliError::on_interrupt("doctor interrupted") => Err(error),
     };
     console.emit(&DoctorReport {
         connection: &connection,

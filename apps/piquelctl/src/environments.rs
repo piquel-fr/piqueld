@@ -949,7 +949,8 @@ pub(crate) async fn deploy(
     })
     .await?;
     let result = wait_for_accepted(console, client, environment, flags.no_wait, &accepted).await;
-    // The outcome matters more than its warnings, so failing to read them is ignored.
+    // The outcome matters more than its warnings, so failing to read or
+    // print them is ignored.
     if !flags.no_wait
         && let Ok(deployments) = client
             .deployments(environment.id.as_str(), None, Some(1))
@@ -961,7 +962,7 @@ pub(crate) async fn deploy(
             .filter(|deployment| deployment.operation.id == accepted.operation_id)
             .flat_map(|deployment| deployment.warnings);
         for warning in warnings {
-            console.warning(format_args!("{}: {}", warning.code, warning.message))?;
+            let _ = console.warning(format_args!("{}: {}", warning.code, warning.message));
         }
     }
     result

@@ -144,7 +144,8 @@ async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliErr
     // timeout diagnostics can never echo rejected URL input.
     let client = commands::build_client(cli)?;
     let command = commands::run(cli, &client, console);
-    let interrupt = tokio::signal::ctrl_c();
+    let interrupt =
+        CliError::on_interrupt("command interrupted; any server-side operation was not cancelled");
     tokio::pin!(command, interrupt);
     let mut deadline = checked_deadline(Instant::now(), cli.timeout)
         .map_err(|error| error.configuration(cli.connection_sources.timeout.to_string()))?;
@@ -176,16 +177,7 @@ async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliErr
                     result => result,
                 };
             }
-            result = &mut interrupt => {
-                result.map_err(|error| CliError::new(
-                    ErrorKind::General,
-                    format!("could not install Ctrl-C handler: {error}"),
-                ))?;
-                return Err(CliError::new(
-                    ErrorKind::Interrupted,
-                    "command interrupted; any server-side operation was not cancelled",
-                ));
-            }
+            error = &mut interrupt => return Err(error),
             // An interaction started or finished; re-evaluate from the top.
             () = support::interaction_changed() => {}
             // The deadline is suspended while an interactive prompt is open.
