@@ -14,11 +14,11 @@ impl BollardDocker {
     ///
     /// `healthy` carries the container healthcheck verdict for running tasks;
     /// it is `None` when the task has no healthcheck, has not converged to a
-    /// verdict yet, or its container could not be inspected. `template` is
-    /// the service's current task specification.
+    /// verdict yet, or its container could not be inspected. `updated` is
+    /// when the service's latest update started, if it was ever updated.
     pub(super) fn observe_task(
         task: &bollard::models::Task,
-        template: Option<&bollard::models::TaskSpec>,
+        updated: Option<&str>,
         healthy: Option<bool>,
     ) -> ObservedTask {
         let state = Self::task_state(task);
@@ -40,9 +40,17 @@ impl BollardDocker {
             diagnostic,
             id: task.id.clone().unwrap_or_default(),
             slot: task.slot.and_then(|slot| u64::try_from(slot).ok()),
-            // Swarm replaces exactly the tasks whose specification differs
-            // from the service's.
-            current: task.spec.is_some() && task.spec.as_ref() == template,
+            // Swarm creates the tasks of a specification once it applies it,
+            // so those created since the latest update started run it. Task
+            // specifications can't be compared with the service's: Docker
+            // reports defaults in one and not the other.
+            current: updated.is_none_or(|updated| {
+                task.created_at
+                    .as_deref()
+                    .and_then(SwarmTime::parse)
+                    .zip(SwarmTime::parse(updated))
+                    .is_some_and(|(created, updated)| created >= updated)
+            }),
         }
     }
 
@@ -482,6 +490,31 @@ impl BollardDocker {
     }
 }
 
+/// A time as Swarm reports it, in UTC with up to nanoseconds, such as
+/// `2026-11-10T16:11:28.38968Z`; times compare in order.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SwarmTime<'a> {
+    /// Up to the second, `2026-11-10T16:11:28`, which compares as text.
+    seconds: &'a str,
+    nanoseconds: u32,
+}
+
+impl<'a> SwarmTime<'a> {
+    /// Parses `text`; `None` unless it is a UTC time as Swarm writes them.
+    fn parse(text: &'a str) -> Option<Self> {
+        let text = text.strip_suffix('Z')?;
+        let (seconds, fraction) = text.split_once('.').unwrap_or((text, ""));
+        if seconds.len() != 19 || fraction.len() > 9 {
+            return None;
+        }
+        Some(Self {
+            seconds,
+            // Go trims trailing zeros: `.5` is 500 ms.
+            nanoseconds: format!("{fraction:0<9}").parse().ok()?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,6 +527,26 @@ mod tests {
             diagnostic: None,
             ..ObservedTask::default()
         }
+    }
+
+    /// Tasks created since the service's latest update started run its
+    /// specification, and so do all tasks of a service never updated.
+    #[test]
+    fn tasks_created_since_the_latest_update_are_current() {
+        let current = |created: &str, updated: Option<&str>| {
+            let task = bollard::models::Task {
+                created_at: Some(created.into()),
+                ..Default::default()
+            };
+            BollardDocker::observe_task(&task, updated, None).current
+        };
+        let updated = Some("2026-11-10T16:11:28.5Z");
+        assert!(current("2026-11-10T16:11:28.500000001Z", updated));
+        assert!(current("2026-11-10T16:11:29Z", updated));
+        assert!(!current("2026-11-10T16:11:28.38968Z", updated));
+        assert!(!current("2026-11-10T16:11:28Z", updated));
+        assert!(current("2026-11-10T16:11:28Z", None));
+        assert!(!current("yesterday", updated));
     }
 
     /// Swarm reports rejected tasks with an empty container ID; reading
