@@ -18,6 +18,9 @@ use std::{
 
 /// Upper bound for one device login, regardless of the daemon's `expires_in`.
 const MAX_DEVICE_LOGIN_SECS: u64 = 15 * 60;
+/// How long an update waits for another `piquelctl` to release the
+/// credentials lock.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// Private per-user login store (`credentials.json`), keyed by daemon endpoint.
 /// Kept separate from profiles so shareable connection config never holds tokens.
@@ -71,29 +74,47 @@ impl Credentials {
     fn read() -> Result<Self> {
         Self::read_at(&Self::path()?)
     }
-    /// Reads credentials from `path`; a missing file is an empty store. On Unix,
-    /// refuses files with any group or other permission bits so tokens are never silently exposed.
+    /// Reads credentials from `path`; a missing file is an empty store. So
+    /// tokens are never silently exposed or taken from someone else, refuses
+    /// a symbolic link, anything but a regular file, a file another user
+    /// owns, and one with any group or other permission bits.
     fn read_at(path: &Path) -> Result<Self> {
-        match std::fs::File::open(path) {
-            Ok(file) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let metadata = file.metadata().map_err(|e| Self::io_error(path, &e))?;
-                    if metadata.permissions().mode() & 0o077 != 0 {
-                        return Err(CliError::new(
-                            ErrorKind::Input,
-                            "credentials file must be readable only by its owner (chmod 600)",
-                        ));
-                    }
-                }
-                serde_json::from_reader(file).map_err(|e| {
-                    CliError::new(ErrorKind::Input, format!("read credentials file: {e}"))
-                })
+        use rustix::fs::OFlags;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let refuse = |problem: &str| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("credentials file {} {problem}", path.display()),
+            )
+        };
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            // Without NONBLOCK, opening a FIFO would wait for a writer
+            // instead of reaching the regular-file check.
+            .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits().cast_signed())
+            .open(path);
+        let file = match opened {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(Self::io_error(path, &error)),
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
+                return Err(refuse("must not be a symbolic link"));
+            }
+            Err(error) => return Err(Self::io_error(path, &error)),
+        };
+        let metadata = file.metadata().map_err(|e| Self::io_error(path, &e))?;
+        if !metadata.is_file() {
+            return Err(refuse("must be a regular file"));
         }
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(refuse("must be owned by you"));
+        }
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(refuse("must be readable only by its owner (chmod 600)"));
+        }
+        serde_json::from_reader(file)
+            .map_err(|e| CliError::new(ErrorKind::Input, format!("read credentials file: {e}")))
     }
     /// Reports a credential-file I/O failure with the file's path, so it is not
     /// mistaken for an output write error.
@@ -108,38 +129,64 @@ impl Credentials {
     /// The new contents are written to a synced temp file and renamed over `path`,
     /// so readers never observe a partial file.
     fn update_at(path: &Path, update: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
-        let _lock = Self::lock_at(path).map_err(|e| Self::io_error(path, &e))?;
+        let _lock = Self::lock_at(path)?;
         let mut credentials = Self::read_at(path)?;
         update(&mut credentials)?;
         credentials
             .write_at(path)
             .map_err(|e| Self::io_error(path, &e))
     }
-    /// Creates the parent directory and takes an exclusive lock on the sidecar
-    /// `<path>.lock`, held until the returned file is dropped.
-    fn lock_at(path: &Path) -> std::io::Result<std::fs::File> {
-        std::fs::create_dir_all(Self::parent(path))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+    /// Creates the parent directory, private to you, and takes an exclusive
+    /// lock on the sidecar `<path>.lock`, held until the returned file is
+    /// dropped. Fails after `LOCK_WAIT` rather than hang behind a stuck
+    /// `piquelctl`.
+    fn lock_at(path: &Path) -> Result<std::fs::File> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let io_error = |error| Self::io_error(path, &error);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(Self::parent(path))
+            .map_err(io_error)?;
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
-        let lock = options.open(PathBuf::from(lock_path))?;
-        lock.lock()?;
-        Ok(lock)
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(PathBuf::from(lock_path))
+            .map_err(io_error)?;
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            match lock.try_lock() {
+                Ok(()) => return Ok(lock),
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(CliError::new(
+                        ErrorKind::Unavailable,
+                        format!(
+                            "credentials file {} is locked by another piquelctl; try again once it finishes",
+                            path.display()
+                        ),
+                    ));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(io_error(error)),
+            }
+        }
     }
-    /// Writes to a synced temp file beside `path`, then renames it over `path`.
+    /// Writes to a synced temp file beside `path`, renames it over `path`,
+    /// then syncs the directory so the rename survives a crash.
     fn write_at(&self, path: &Path) -> std::io::Result<()> {
         let mut file = tempfile::NamedTempFile::new_in(Self::parent(path))?;
         serde_json::to_writer(&mut file, self).map_err(std::io::Error::other)?;
         file.flush()?;
         file.as_file().sync_all()?;
         file.persist(path).map_err(|e| e.error)?;
-        Ok(())
+        std::fs::File::open(Self::parent(path))?.sync_all()
     }
     /// Directory holding `path`, or `.` for a bare file name.
     fn parent(path: &Path) -> &Path {
@@ -165,17 +212,24 @@ impl Credentials {
             }
         }
     }
-    /// Finds the active account for the CLI's endpoint: `--account` (matched by ID or
-    /// username) if given, else the endpoint's selected account. Returns `(id, account)`.
-    /// An explicit `--account` with no match is an error rather than an anonymous request.
+    /// Finds the active account for the CLI's endpoint: `--account` if given,
+    /// else the endpoint's selected account. Like `account` commands, it
+    /// matches an ID first, then a username ignoring case, since a username
+    /// may equal another account's ID. Returns `(id, account)`. An explicit
+    /// `--account` with no match is an error rather than an anonymous request.
     fn selected<'a>(&'a self, cli: &Cli) -> Result<Option<(&'a str, &'a Account)>> {
         let endpoint = self.endpoints.get(&Self::key(cli));
         let account = endpoint.and_then(|endpoint| {
             let selected = cli.auth.account.as_deref().unwrap_or(&endpoint.selected);
             endpoint
                 .accounts
-                .iter()
-                .find(|(id, account)| id.as_str() == selected || account.username == selected)
+                .get_key_value(selected)
+                .or_else(|| {
+                    endpoint
+                        .accounts
+                        .iter()
+                        .find(|(_, account)| account.username.eq_ignore_ascii_case(selected))
+                })
                 .map(|(id, account)| (id.as_str(), account))
         });
         if cli.auth.account.is_some() && account.is_none() {
@@ -505,6 +559,7 @@ pub(crate) async fn logout(cli: &Cli, client: &Client, console: &mut Console) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn credential_io_errors_name_the_credentials_file() {
@@ -519,6 +574,64 @@ mod tests {
                 .starts_with(&format!("credentials file {}: ", path.display())),
             "{error}"
         );
+    }
+
+    #[test]
+    fn credentials_must_be_a_regular_file_not_a_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.json");
+        std::fs::write(&real, "{\"endpoints\":{}}").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("credentials.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let fifo = dir.path().join("fifo.json");
+        // rustix has no portable `mkfifo`: `mknodat` is missing on macOS.
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        for (path, problem) in [
+            (link, "must not be a symbolic link"),
+            (dir.path().to_owned(), "must be a regular file"),
+            // Refused without waiting for a writer.
+            (fifo, "must be a regular file"),
+        ] {
+            let error = Credentials::read_at(&path).err().expect("refused");
+            assert!(error.to_string().ends_with(problem), "{error}");
+        }
+        assert!(Credentials::read_at(&real).is_ok());
+    }
+
+    #[test]
+    fn account_selection_prefers_ids_then_usernames_in_any_case() {
+        let mut credentials = Credentials::default();
+        let endpoint = credentials
+            .endpoints
+            .entry("unix:/run/piqueld/piqueld.sock".into())
+            .or_default();
+        // Alice's username is Bob's account ID, and her account sorts
+        // first, so only an ID-first lookup finds Bob by his ID.
+        for (id, username) in [("alice-id", "bob-id"), ("bob-id", "Bob")] {
+            endpoint.accounts.insert(
+                id.into(),
+                Account {
+                    username: username.into(),
+                    token: id.into(),
+                },
+            );
+        }
+        for (account, id) in [
+            ("bob-id", "bob-id"),
+            ("BOB", "bob-id"),
+            // IDs match exactly, so this is Alice's username.
+            ("BOB-ID", "alice-id"),
+        ] {
+            let cli = Cli::try_parse_from(["piquelctl", "--account", account, "whoami"]).unwrap();
+            let selected = credentials.selected(&cli).unwrap().map(|(id, _)| id);
+            assert_eq!(selected, Some(id), "{account}");
+        }
     }
 
     #[test]

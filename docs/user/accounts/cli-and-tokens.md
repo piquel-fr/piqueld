@@ -109,8 +109,8 @@ carol (01a16b4c-8584-7390-a0cb-b6b2c348ec20)
   events:read on blog
 ```
 
-`--account` matches the username exactly as it was when you logged in. When
-you rename an account with
+`--account` takes the account's ID, or the username saved with the login,
+ignoring case. When you rename an account with
 [`piquelctl account update`](accounts.md#edit-a-profile), its saved login on
 that daemon is renamed too. After a rename on the dashboard, select the login
 by ID, or log in again.
@@ -119,7 +119,8 @@ by ID, or log in again.
 `--account`, it signs that account out.
 
 `piquelctl` also creates `credentials.json.lock` next to the file. Don't
-delete it while `login` or `logout` is running.
+delete it while `login` or `logout` is running. Another `piquelctl` waits up
+to 30 seconds for it, then fails.
 
 ## Create an API token
 
@@ -290,8 +291,13 @@ a new token.
 - **A bound token is refused with `tailnet_binding_mismatch`.** Use it
   through piqueld's tailnet address, from a device with that user or tag.
   `tailnet_unavailable` (503) means `tailscaled` didn't answer in time: retry.
-- **"credentials file must be readable only by its owner (chmod 600)".** Run
-  `chmod 600` on the credentials file.
+- **"credentials file … must be readable only by its owner (chmod 600)".**
+  Run `chmod 600` on the credentials file.
+- **"credentials file … must not be a symbolic link", "must be a regular
+  file" or "must be owned by you".** `piquelctl` only reads a credentials
+  file that is a regular file you own, and `login` refuses to save into one
+  it can't read. Point `PIQUELD_CREDENTIALS_FILE` at the real file, or at a
+  new path, or remove the file, then log in again.
 - **"the daemon predates limited tokens" or "it predates limited logins".**
   The daemon is too old to limit access, so `piquelctl` refuses rather than
   getting full access. [Upgrade it](../operations/backups.md#upgrade).
