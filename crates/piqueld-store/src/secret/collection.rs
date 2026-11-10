@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 impl Store {
     /// The Docker secrets, per environment, of the secret versions and
     /// stored-secret copies nothing can mount any more: not their secret's
-    /// current generation, pinned by no deployment, and named by no prepared
-    /// or running target. Secrets being deleted are left to their deletion.
+    /// current generation, pinned by no deployment (whose prepared targets
+    /// name only pinned versions), and named by no running target. Secrets
+    /// being deleted are left to their deletion.
     ///
     /// # Errors
     /// Returns storage or decoding errors.
@@ -19,7 +20,6 @@ impl Store {
         let rows = sqlx::query!(
             r#"WITH targeted(swarm_name) AS (
                 SELECT j.value FROM environments e,json_each(e.resolved_json,'$.secret_names') j WHERE e.resolved_json IS NOT NULL
-                UNION SELECT j.value FROM operations o,json_each(o.target_json,'$.secret_names') j WHERE o.target_json IS NOT NULL
             )
             SELECT v.environment_id AS "environment_id!",v.swarm_name AS "swarm_name!" FROM secret_versions v
             JOIN environment_secrets s ON s.environment_id=v.environment_id AND s.name=v.name
