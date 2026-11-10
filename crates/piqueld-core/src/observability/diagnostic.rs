@@ -37,6 +37,8 @@ string_enum! {
     PreparationTimeout => "preparation_timeout",
     /// Repository checkout or image build failed.
     GitBuildFailed => "git_build_failed",
+    /// The build machine could not be reached to build an image.
+    BuilderUnavailable => "builder_unavailable",
     /// Docker paused a failed service update.
     ServiceUpdateFailed => "service_update_failed",
     /// A one-shot job exited unsuccessfully before rollout.
@@ -101,6 +103,8 @@ const ENVIRONMENT_PROMOTED: &str = "The environment was made promoted after this
 const TELEMETRY_EXPORT: &str = "Check that the collector at telemetry.endpoint is reachable and accepts the configured headers. Records are dropped until it does.";
 /// Guidance for a Docker Engine that is not the manager of a single-node Swarm.
 const SWARM: &str = "Make Docker Engine the active manager of a single-node Swarm. Reconciliation retries once it is.";
+/// Guidance for a build machine the host could not reach.
+const BUILDER_UNAVAILABLE: &str = "Start the build machine and check that this host can reach its BuildKit daemon, then retry the deployment.";
 /// Guidance for transient failures that reconciliation retries on its own.
 const AUTOMATIC_RETRY: &str =
     "Reconciliation will retry. Inspect the affected resource if the failure persists.";
@@ -156,6 +160,7 @@ impl DiagnosticCode {
                 false,
                 "Open the build output, fix the source or build configuration, then deploy again.",
             ),
+            Self::BuilderUnavailable => (Application, false, BUILDER_UNAVAILABLE),
             Self::JobFailed | Self::JobTimeout => (
                 Application,
                 false,

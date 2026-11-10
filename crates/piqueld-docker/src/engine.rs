@@ -472,6 +472,41 @@ impl BollardDocker {
         Ok(info.swarm.unwrap_or_default())
     }
 
+    /// The build machine a build runs on: the configured one, once it
+    /// accepts connections. While it does not, the build fails with
+    /// [`super::BuilderUnavailable`], or runs on the engine if
+    /// `build.unavailable` is `local`; `log` says which.
+    pub(super) async fn reachable_builder(
+        &self,
+        log: Option<&dyn crate::command::OutputLog>,
+    ) -> anyhow::Result<Option<&super::RemoteBuilder>> {
+        let Some(remote) = self.builder.as_deref() else {
+            return Ok(None);
+        };
+        let Err(unavailable) = remote.probe().await else {
+            return Ok(Some(remote));
+        };
+        let local = remote.unavailable == piqueld_core::build_machine::WhenUnavailable::Local;
+        if let Some(log) = log {
+            let outcome = if local {
+                "WARN Building on this host instead, as build.unavailable allows"
+            } else {
+                "ERROR Start the build machine, then deploy again"
+            };
+            log.append(
+                format!("{unavailable}\n{outcome}.\n").as_bytes(),
+                piqueld_core::api::LogStream::Stderr,
+            )
+            .await?;
+        }
+        if local {
+            tracing::warn!(error = ?unavailable, "the build machine is unreachable; building on this host");
+            Ok(None)
+        } else {
+            Err(unavailable.into())
+        }
+    }
+
     /// The platform the engine runs images of, as Buildx names it, such as
     /// `linux/arm64`: a build machine may have another architecture.
     pub(super) async fn platform(&self) -> Result<String, DockerError> {

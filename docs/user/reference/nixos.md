@@ -118,7 +118,7 @@ services.piqueld.settings.tailscale = {
 `tailscale.hostname`, `tailscale.auth_key_file`, `tailscale.https_port`,
 `tailscale.socket`, `docker.socket`,
 `docker.auto_initialize_swarm`, `build.builder`, `build.repository` (set both, or
-neither), `ingress.enabled`, `ingress.public_addresses`,
+neither), `build.unavailable`, `ingress.enabled`, `ingress.public_addresses`,
 `ingress.acme.directory`,
 `ingress.acme.email`, `ingress.private.enabled`, `ingress.private.hostname`,
 `ingress.private.auth_key_file` (passed as a systemd credential, like the other

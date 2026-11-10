@@ -1,6 +1,6 @@
 //! Where images build: this host's Docker Engine, or a build machine.
 use super::schema_from_raw;
-use piqueld_core::build_machine::{BuildRepository, BuilderEndpoint, RemoteBuild};
+use piqueld_core::build_machine::{BuildRepository, BuilderEndpoint, RemoteBuild, WhenUnavailable};
 use serde::Deserialize;
 
 /// The `[build]` table. Images build on this host's Docker Engine unless it
@@ -11,6 +11,7 @@ use serde::Deserialize;
 /// [build]
 /// builder = "tcp://build.example.ts.net:1234"
 /// repository = "build.example.ts.net:5000/piqueld"
+/// unavailable = "fail" # or "local"
 /// ```
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(try_from = "RawBuildConfig")]
@@ -42,16 +43,26 @@ struct RawBuildConfig {
     /// by digest, so they share their layers.
     #[schema(value_type = Option<String>)]
     repository: Option<BuildRepository>,
+    /// What a deployment that has to build does while the build machine
+    /// can't be reached: `fail`, the default, fails it with
+    /// `builder_unavailable`, and `local` builds on this host's Docker Engine
+    /// instead, where a build competes with the applications the host runs.
+    /// Requires `builder`.
+    unavailable: Option<WhenUnavailable>,
 }
 
 impl TryFrom<RawBuildConfig> for BuildConfig {
     type Error = &'static str;
     fn try_from(raw: RawBuildConfig) -> Result<Self, Self::Error> {
         let remote = match (raw.builder, raw.repository) {
+            (None, None) if raw.unavailable.is_some() => {
+                return Err("build.unavailable requires build.builder");
+            }
             (None, None) => None,
             (Some(builder), Some(repository)) => Some(RemoteBuild {
                 builder,
                 repository,
+                unavailable: raw.unavailable.unwrap_or_default(),
             }),
             (Some(_), None) => return Err("build.builder requires build.repository"),
             (None, Some(_)) => return Err("build.repository requires build.builder"),
@@ -91,6 +102,8 @@ mod tests {
         for invalid in [
             "builder = 'tcp://build.example.ts.net:1234'",
             "repository = 'build.example.ts.net:5000/piqueld'",
+            // The policy without a build machine.
+            "unavailable = 'local'",
             // An invalid builder, and an invalid repository.
             "builder = 'tcp://build.example.ts.net'\nrepository = 'registry.example/piqueld'",
             "builder = 'tcp://build.example:1234'\nrepository = 'piqueld'",

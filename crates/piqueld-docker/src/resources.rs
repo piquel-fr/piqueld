@@ -576,7 +576,8 @@ impl DockerApi for BollardDocker {
             }
             let directory = tempfile::tempdir().context("create Docker build directory")?;
             let metadata = directory.path().join("metadata.json");
-            let mut command = if let Some(remote) = &self.builder {
+            let builder = self.reachable_builder(log).await?;
+            let mut command = if let Some(remote) = builder {
                 let mut command = remote.docker();
                 command
                     .args(["buildx", "build"])
@@ -606,7 +607,7 @@ impl DockerApi for BollardDocker {
                 serde_json::from_slice(&metadata).context("decode build metadata")?;
             let digest = piqueld_core::resource::Sha256Digest::parse(metadata.digest)
                 .context("validate built image digest")?;
-            let Some(remote) = &self.builder else {
+            let Some(remote) = builder else {
                 return Ok(digest.into());
             };
             // The build machine pushed it: the engine has to pull it.
@@ -617,9 +618,14 @@ impl DockerApi for BollardDocker {
             Ok(image.into())
         }
         .await;
-        result.map_err(|source: anyhow::Error| DockerError::RequestSource {
-            operation: "build Docker image",
-            source: source.into(),
+        result.map_err(|source: anyhow::Error| {
+            match source.downcast::<super::BuilderUnavailable>() {
+                Ok(unavailable) => unavailable.into(),
+                Err(source) => DockerError::RequestSource {
+                    operation: "build Docker image",
+                    source: source.into(),
+                },
+            }
         })
     }
 

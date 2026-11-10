@@ -99,6 +99,18 @@ impl DaemonConfig {
             Some(remote) => group([
                 ("Builder", remote.builder.to_string()),
                 ("Image repository", remote.repository.to_string()),
+                (
+                    "While unreachable",
+                    match remote.unavailable {
+                        piqueld_core::build_machine::WhenUnavailable::Fail => {
+                            "Deployments that build fail"
+                        }
+                        piqueld_core::build_machine::WhenUnavailable::Local => {
+                            "Images build on this host"
+                        }
+                    }
+                    .into(),
+                ),
             ]),
             None => group([("Builder", "This host's Docker Engine".into())]),
         }

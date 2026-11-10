@@ -13,6 +13,19 @@ pub struct RemoteBuild {
     pub builder: BuilderEndpoint,
     /// The image repository the builds are pushed to.
     pub repository: BuildRepository,
+    /// What a build does while the build machine can't be reached.
+    pub unavailable: WhenUnavailable,
+}
+
+/// What a build does while its build machine can't be reached.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WhenUnavailable {
+    /// Fail the deployment with `builder_unavailable`.
+    #[default]
+    Fail,
+    /// Build on this host's Docker Engine instead.
+    Local,
 }
 
 /// Where a build machine's `BuildKit` daemon listens: `tcp://host:port`,

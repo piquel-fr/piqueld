@@ -343,9 +343,11 @@ impl Store {
             event.scope,
             event.error_code.as_deref(),
         ) {
-            ("operation_failed", EventScope::Application, Some("git_build_failed")) => {
-                NotificationCategory::BuildFailures
-            }
+            (
+                "operation_failed",
+                EventScope::Application,
+                Some("git_build_failed" | "builder_unavailable"),
+            ) => NotificationCategory::BuildFailures,
             ("operation_failed", EventScope::Application, _) => {
                 NotificationCategory::DeploymentFailures
             }
