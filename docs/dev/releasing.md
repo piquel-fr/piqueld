@@ -73,8 +73,8 @@ Each GitHub release has the archive the install script,
 downloads, `piqueld-<version>-x86_64-linux.tar.gz`, and its `SHA256SUMS`. The
 archive holds the daemon, with its dashboard, `piquelctl`, the systemd unit
 [`apps/piqueld/piqueld.service`](https://github.com/sourceorigin-dev/piqueld/blob/main/apps/piqueld/piqueld.service),
-and the license. The binaries link musl and OpenSSL statically, through the
-daemon's `vendored-openssl` feature, so they run on any x86_64 Linux.
+and the license. The binaries link musl and OpenSSL statically, so they run on
+any x86_64 Linux: the daemon builds OpenSSL from source for musl targets.
 
 `just dist`, which runs `cargo xtask dist`, builds them into `target/dist`. It
 needs `musl-gcc`, from the `musl-tools` package on Debian and Ubuntu, for the

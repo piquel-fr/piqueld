@@ -102,9 +102,9 @@ pub fn run(workspace: &Workspace) -> Result<ExitCode> {
         .args(["build", "--release", "--locked", "--target", TARGET])
         .args(["--package", "piqueld", "--package", "piquelctl"])
         .args(["--bin", "piqueld", "--bin", "piquelctl"])
-        // The daemon's features. `piqueld/<feature>` would name the feature of
-        // its dev-dependency on itself, which this build leaves out.
-        .args(["--features", "embedded-ui,vendored-openssl"])
+        // The daemon's feature. `piqueld/embedded-ui` would name the feature
+        // of its dev-dependency on itself, which this build leaves out.
+        .args(["--features", "embedded-ui"])
         .status()
         .context("run cargo build")?;
     if !status.success() {

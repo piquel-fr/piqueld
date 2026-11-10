@@ -28,6 +28,9 @@
 # midway runs nothing.
 
 set -eu
+# Debian leaves the sbin directories, with useradd and nologin, off users' PATH.
+PATH=$PATH:/usr/local/sbin:/usr/sbin:/sbin
+export PATH
 
 repository=https://github.com/sourceorigin-dev/piqueld
 prefix=/usr/local/bin
@@ -55,8 +58,8 @@ as_root() {
 confirm() {
     [ "$yes" = 1 ] && return
     printf '%s [Y/n] ' "$1" >/dev/tty
-    answer=
-    read -r answer </dev/tty || true
+    # The end of input, such as Ctrl-D, is a no.
+    read -r answer </dev/tty || return 1
     case "$answer" in
     "" | [Yy]*) return 0 ;;
     *) return 1 ;;
@@ -203,7 +206,8 @@ wait_for_daemon() {
 # Says what to do next, with piquelctl run as the user can run it.
 next_steps() {
     piquelctl=piquelctl
-    [ -n "$sudo" ] && [ "$member" = 0 ] && piquelctl="sudo piquelctl"
+    # The full path: some distributions leave /usr/local/bin off sudo's PATH.
+    [ -n "$sudo" ] && [ "$member" = 0 ] && piquelctl="sudo $prefix/piquelctl"
     say
     say "piqueld $version is running. Next:"
     [ "$join" = 0 ] ||

@@ -14,8 +14,8 @@ on:
 permissions:
   contents: read
 
-# As in CI: rust-cache's key hashes these, and the build restores the cache of
-# the CI install job.
+# As in CI: rust-cache's key hashes the CARGO*, RUST* and CC* variables, so the
+# build restores the cache of the CI install job only while they match.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"

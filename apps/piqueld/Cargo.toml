@@ -28,9 +28,6 @@ embedded-ui = ["dep:wasm-bindgen-cli-support"]
 # throwaway stores. It only adds API: the daemon's store syncs regardless.
 # Release builds leave it out.
 fake-docker = []
-# Builds OpenSSL from source and links it statically, instead of the system's.
-# The static release binaries of `cargo xtask dist` use it.
-vendored-openssl = ["openssl/vendored"]
 
 [dependencies]
 chacha20poly1305.workspace = true
@@ -81,6 +78,12 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 uuid.workspace = true
 x509-parser.workspace = true
+
+# musl builds, such as the static release binaries of `cargo xtask dist`,
+# build OpenSSL from source and link it statically: musl hosts rarely have a
+# static OpenSSL to link.
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { workspace = true, features = ["vendored"] }
 
 [dev-dependencies]
 # Tests and examples build against this crate with its fake Docker engine.
