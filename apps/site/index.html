@@ -521,7 +521,7 @@ pre .b { color: var(--preview); }
 
 .journey p { margin-top: 6px; color: var(--ink-soft); max-width: 60ch; }
 
-.journey pre {
+.journey pre, .command pre {
     margin-top: 14px;
     padding: 16px 18px;
     overflow-x: auto;
@@ -534,7 +534,9 @@ pre .b { color: var(--preview); }
    button and marks it `copyable`; without the script, it is plain text. */
 .command { position: relative; margin-top: 14px; }
 
-.journey .command pre { margin-top: 0; }
+.command pre { margin-top: 0; }
+
+.hero .command { margin-top: 24px; }
 
 /* The command wraps beside the button rather than scrolling under it. */
 .command.copyable pre {
@@ -621,7 +623,7 @@ pre .b { color: var(--preview); }
 
 @media (max-width: 480px) {
     .journey li { gap: 0 16px; }
-    .journey pre { font-size: 13.5px; padding: 14px; }
+    .journey pre, .command pre { font-size: 13.5px; padding: 14px; }
     .panel pre { font-size: 12px; padding: 14px; }
 }
 </style>
@@ -651,8 +653,11 @@ pre .b { color: var(--preview); }
                 </div>
                 <div>
                     <p class="lede">An agent deploys its worktree, uncommitted files included, to a private preview of its own. Staging follows every push; production runs only what you promote.</p>
+                    <div class="command">
+                        <pre><code><span class="cmd">curl</span> <span class="f">-fsSL</span> https://piqueld.dev/<wbr>install.sh | sh</code></pre>
+                        <button class="copy" type="button" aria-live="polite" hidden>Copy</button>
+                    </div>
                     <div class="actions">
-                        <a class="button" href="#install">Install</a>
                         <a class="button" href="https://github.com/sourceorigin-dev/piqueld">Source on GitHub</a>
                         <a class="button" href="https://docs.piqueld.dev">Documentation</a>
                     </div>
