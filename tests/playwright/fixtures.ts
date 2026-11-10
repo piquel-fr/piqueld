@@ -259,12 +259,18 @@ export const card = (page: Page, heading: string) =>
 /** The title of an application, environment, or service page. */
 export const title = (page: Page) => page.locator('.detail-title h1');
 
-/** The cards of the Deployments tab, each tagged with the revision it deploys. */
-export const deploymentCards = (page: Page) =>
-  page.locator('.expander', { has: page.locator('.expander-summary .tag', { hasText: /^Revision \d+$/ }) });
+/** The rows of the Deployments tab, newest first. */
+export const deploymentRows = (page: Page) => page.getByRole('list', { name: 'Deployments', exact: true }).getByRole('listitem');
 
-/** Expands or collapses a deployment card. */
-export const toggleDeployment = (card: Locator) => card.getByRole('button', { name: /Revision \d+/ }).click();
+/** Opens the page of the deployment a row of the Deployments tab shows. */
+export async function openDeployment(page: Page, row: Locator) {
+  await row.getByRole('link').first().click();
+  await expect(page).toHaveURL(/\/deployments\/[^/?]+/);
+}
+
+/** One of a deployment page's section tabs. */
+export const deploymentTab = (page: Page, name: string) =>
+  page.getByRole('tablist', { name: 'Deployment sections' }).getByRole('tab', { name, exact: true });
 /** The header of an application, environment, or service page, with its actions. */
 export const head = (page: Page) => page.locator('.detail-head');
 

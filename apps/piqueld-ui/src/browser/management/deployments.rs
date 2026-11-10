@@ -1,29 +1,34 @@
 //! Deployment and promotion actions, plan dialogs, history, and snapshot
 //! inspection.
 use super::super::format::timestamp;
-use super::super::observability::EventHistory;
 use super::super::ui::{
-    Icon, Modal, TabSet, Tone, badge, empty, expander_summary, icon, key_values, load_older,
-    loading, notice, operation_badge, text_field, when,
+    Icon, Modal, Tone, badge, empty, icon, key_values, load_older, loading, notice,
+    operation_badge, text_field, when,
 };
 use super::super::{
     Alive, ClientErrorExt, confirm, document_hidden, live_row, operation_events, release_link,
 };
 use super::releases::ReleaseCard;
-use super::timeline::{OperationTimeline, PlannedSteps};
-use super::{EditorContext, editor};
+use super::timeline::{
+    CompactProgress, DeploymentProgress, LiveTimeline, OperationTimeline, PlannedSteps,
+    RunningDeployment, duration, status_pill,
+};
+use super::{EditorContext, EditorFeedback, back_link, editor};
+use crate::application::DEPLOYMENT_TABS;
 use crate::changes::{ChangeDisplay, Mark};
-use crate::deployments::{Attempts, DeploymentList, Promotion};
+use crate::deployments::{Attempts, DeploymentList, DeploymentSummary, Promotion};
 use crate::editor::Choice;
 use crate::overview::build_arguments;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::NavigateOptions;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use piqueld_client::{
-    ApplyApplicationRequest, Build, Client, DeploymentView, EnvironmentId, EnvironmentView,
-    HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView, RuntimeCoverage,
-    SecretProblem, Service, Source, Template, ValidatedRollout, access::AppPermission,
+    AcceptedOperation, ApplyApplicationRequest, Build, Client, DeploymentView, EnvironmentId,
+    EnvironmentView, HealthCheck, ManifestChange, ManifestRevision, Operation, Page, PlanView,
+    RuntimeCoverage, SecretProblem, Service, Source, Template, ValidatedRollout,
+    access::AppPermission,
 };
 use std::fmt::Display;
 
@@ -928,9 +933,11 @@ impl History {
 
     /// Polls the first page of `environment` every 2 seconds while the
     /// editor's Deployments tab is selected and the page is visible, and
-    /// right after the tab opens. Stops when the owning view unmounts.
+    /// right after the tab opens, following its newest deployment while it
+    /// runs (see `RunningDeployment`). Stops when the owning view unmounts.
     fn poll(self, context: EditorContext, environment: String) {
         let active = Alive::new();
+        let running = use_context::<RunningDeployment>();
         spawn_local(async move {
             while active.get() {
                 let shown = context.tabs.selected.get_untracked() == "Deployments";
@@ -943,6 +950,9 @@ impl History {
                     }
                     match result {
                         Ok(page) => {
+                            if let (Some(newest), Some(running)) = (page.items.first(), running) {
+                                running.saw(&newest.operation);
+                            }
                             self.merge(page);
                             self.error.set(None);
                             self.fetched.set(true);
@@ -981,9 +991,10 @@ impl History {
     }
 }
 
-/// Deployment list for the editor's environment. The first page is polled while
-/// the deployments tab is visible; older pages are appended on request without
-/// duplicating deployments already shown.
+/// Deployment list for the editor's environment, a row per deployment
+/// opening its page. The first page is polled while the deployments tab is
+/// visible; older pages are appended on request without duplicating
+/// deployments already shown.
 #[component]
 pub(super) fn DeploymentHistory() -> impl IntoView {
     let context = editor();
@@ -1009,24 +1020,20 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                         }
                     })
             }}
-            <For
-                each={move || history.items.get()}
-                key={|d| d.operation.id.clone()}
-                children={move |initial| {
-                    let newer = {
-                        let id = initial.operation.id.clone();
-                        Signal::derive(move || {
-                            history
-                                .items
-                                .with(|items| {
-                                    items.first().is_some_and(|newest| newest.operation.id != id)
-                                })
-                        })
-                    };
-                    let deployment = live_row(history.items, initial, |d| &d.operation.id);
-                    view! { <DeploymentCard deployment={deployment} newer={newer} /> }
-                }}
-            />
+            <ul
+                class="list"
+                aria-label="Deployments"
+                hidden={move || history.items.with(Vec::is_empty)}
+            >
+                <For
+                    each={move || history.items.get()}
+                    key={|d| d.operation.id.clone()}
+                    children={move |initial| {
+                        let deployment = live_row(history.items, initial, |d| &d.operation.id);
+                        view! { <DeploymentRow deployment={deployment} /> }
+                    }}
+                />
+            </ul>
             {load_older(
                 "Load older deployments",
                 history.cursor,
@@ -1037,212 +1044,289 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
     }
 }
 
-/// Expandable deployment summary, titled by what brought it (see
-/// `ApplicationViewExt::deployment_title`) and tagged with the configuration
-/// revision it deploys, with details, snapshot, attempts and events tabs.
-/// Starts expanded when it matches the `?deployment=` query; attempts and
-/// events load lazily the first time their tab is opened. `newer` is whether
-/// a newer deployment is listed: one that failed before replacing the current
-/// target leaves Restore offered on it.
+/// One deployment in its environment's history, opening its page: its
+/// state, what brought it (see `ApplicationViewExt::deployment_title`), the
+/// configuration revision and commit it deploys, and how long it ran, or
+/// while the page follows it running, its progress.
 #[component]
-fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> impl IntoView {
+fn DeploymentRow(deployment: Signal<DeploymentView>) -> impl IntoView {
     let context = editor();
-    let application = context.id();
-    let initial = deployment.get_untracked();
-    let op = initial.operation;
-    let selected = leptos_router::hooks::use_query_map()
-        .with(|q| q.get("deployment").is_some_and(|id| id == op.id));
-    let opened = RwSignal::new(selected);
-    let tab = RwSignal::new("Details");
-    let tabs = TabSet::new("Deployment sections", tab);
-    let timeline_requested = RwSignal::new(false);
-    let attempts_requested = RwSignal::new(false);
-    let events_requested = RwSignal::new(false);
-    Effect::new(move |_| {
-        if opened.get() {
-            match tab.get() {
-                "Timeline" => timeline_requested.set(true),
-                "Attempts" => attempts_requested.set(true),
-                "Events" => events_requested.set(true),
-                _ => {}
+    let running = expect_context::<RunningDeployment>();
+    let id = deployment.with_untracked(|deployment| deployment.operation.id.clone());
+    let href = context.deployment_href(&context.environment_id(), &id);
+    let live = Signal::derive(move || running.running(Some(&id)));
+    let tag = move |shown: fn(&DeploymentView) -> bool, label: &'static str| {
+        move || {
+            deployment
+                .with(shown)
+                .then(|| view! { <span class="tag">{label}</span> })
+        }
+    };
+    view! {
+        <li class="list-row list-row-link deployment-row">
+            {move || operation_badge(deployment.get().operation.state)} <span class="title">
+                <A href={href}>{move || context.deployment_title(&deployment.get().origin)}</A>
+                <small>{move || deployment.with(DeploymentSummary::commit)}</small>
+            </span>
+            <span class="tag">
+                {move || format!("Revision {}", deployment.get().operation.generation)}
+            </span> {tag(|deployment| deployment.current_target, "Current target")}
+            {tag(|deployment| deployment.last_successful, "Last successful")}
+            <span class="meta">
+                {move || match live.get() {
+                    Some(live) => view! { <CompactProgress live={live} /> }.into_any(),
+                    None => {
+                        deployment
+                            .with(|deployment| {
+                                let took = deployment
+                                    .duration_ms()
+                                    .map(|ms| format!("{} · ", duration(ms)));
+                                view! {
+                                    {took}
+                                    {when(deployment.operation.created_at_ms)}
+                                }
+                                    .into_any()
+                            })
+                    }
+                }}
+            </span> <span class="chevron" aria-hidden="true">
+                {icon(Icon::ChevronRight)}
+            </span>
+        </li>
+    }
+}
+
+/// The deployment a deployment page shows, read from its environment's
+/// history, as the page opens and again once it ended.
+#[derive(Clone, Copy)]
+struct ShownDeployment {
+    deployment: RwSignal<Option<DeploymentView>>,
+    /// Whether a newer deployment is listed: one that failed before
+    /// replacing the current target leaves Restore offered on it.
+    newer: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+}
+
+impl ShownDeployment {
+    fn new() -> Self {
+        Self {
+            deployment: RwSignal::new(None),
+            newer: RwSignal::new(false),
+            error: RwSignal::new(None),
+        }
+    }
+
+    /// Reads deployment `operation` of `environment`, paging back through
+    /// the environment's history until it is found. Abandoned when the
+    /// calling owner is cleaned up.
+    fn load(self, environment: String, operation: String) {
+        let alive = Alive::new();
+        spawn_local(async move {
+            let client = Client::browser();
+            let mut cursor = None;
+            let mut newest = true;
+            loop {
+                let result = client
+                    .deployments(&environment, cursor.as_deref(), Some(PAGE))
+                    .await;
+                if !alive.get() {
+                    return;
+                }
+                let page = match result {
+                    Ok(page) => page,
+                    Err(error) => return self.error.set(Some(error.user_message())),
+                };
+                if let Some(index) = page
+                    .items
+                    .iter()
+                    .position(|deployment| deployment.operation.id == operation)
+                {
+                    self.newer.set(!newest || index > 0);
+                    self.deployment.set(page.items.into_iter().nth(index));
+                    return self.error.set(None);
+                }
+                newest = false;
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    return self.error.set(Some(
+                        "This deployment is not in the environment's history.".into(),
+                    ));
+                }
             }
+        });
+    }
+}
+
+/// One deployment's page: its progress, followed live over its timeline
+/// stream while it runs, then its steps and events, details, configuration
+/// snapshot, and attempts. A deployment that may be restored offers
+/// Restore, which opens the restoring deployment's page.
+#[component]
+pub(super) fn DeploymentPage(operation: String) -> impl IntoView {
+    let context = editor();
+    let tabs = context.tabs;
+    let environment = context.environment_id();
+    let application_href = format!("/dashboard/applications/{}", context.id());
+    if context.selected_environment().is_none() {
+        return view! {
+            <div class="stack-sm">
+                {notice(Tone::Bad, "This environment no longer exists.")}
+                {back_link(application_href, "Back to the application")}
+            </div>
+        }
+        .into_any();
+    }
+    let live = LiveTimeline::follow(operation.clone());
+    let progress = live.progress();
+    let shown = ShownDeployment::new();
+    Effect::new({
+        let environment = environment.clone();
+        move |_| {
+            // Read again once it ended, for its outcome and flags.
+            live.live();
+            shown.load(environment.clone(), operation.clone());
         }
     });
-    let events_of = op.id.clone();
-    let timeline_of = op.id.clone();
+    // The operation as its newest snapshot has it, which runs ahead of the
+    // history's.
+    let deployment = Signal::derive(move || {
+        let mut deployment = shown.deployment.get()?;
+        if let Some(operation) = live.operation() {
+            deployment.operation = operation;
+        }
+        Some(deployment)
+    });
+    // What brought it, as its page is titled.
+    let title = Memo::new(move |_| {
+        shown.deployment.with(|deployment| {
+            deployment.as_ref().map_or_else(
+                || "Deployment".to_owned(),
+                |deployment| context.deployment_title(&deployment.origin),
+            )
+        })
+    });
+    let loaded = Memo::new(move |_| shown.deployment.with(Option::is_some));
+    let subject = format!("{}/{}", context.name(), context.selected_name());
     view! {
-        <article class="expander" class:selected={selected}>
-            {expander_summary(
-                opened,
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+            <A href="/dashboard/applications">"Applications"</A>
+            {icon(Icon::ChevronRight)}
+            <A href={application_href}>{move || context.name()}</A>
+            {icon(Icon::ChevronRight)}
+            <A href={context.deployable_href(&environment)}>{move || context.selected_name()}</A>
+            {icon(Icon::ChevronRight)}
+            <span>{title}</span>
+        </nav>
+        <header class="detail-head">
+            <div class="detail-title">
+                <h1>{title}</h1>
+                {move || progress.with(|p| p.as_ref().map(status_pill))}
+            </div>
+            <div class="page-actions">
+                <RestoreDeployment deployment={deployment} newer={shown.newer} />
+            </div>
+        </header>
+        <EditorFeedback />
+        <section class="card deployment-head" aria-label="Deployment progress">
+            {move || deployment.get().map(|deployment| context.deployment_meta(&deployment))}
+            <DeploymentProgress live={live} subject={subject} />
+        </section>
+        {move || shown.error.get().map(|error| notice(Tone::Bad, error))}
+        {tabs.bar(&DEPLOYMENT_TABS, None)}
+        {tabs.panel("Timeline", view! { <OperationTimeline live={live} /> })}
+        {move || {
+            if !loaded.get() {
+                return None;
+            }
+            let initial = shown.deployment.get_untracked()?;
+            let deployment = Signal::derive(move || {
+                deployment.get().unwrap_or_else(|| initial.clone())
+            });
+            Some(
+                // Read, not just tracked: a memo only follows its source once read.
+                view! { <DeploymentSections deployment={deployment} /> },
+            )
+        }}
+    }
+    .into_any()
+}
+
+/// A deployment page's tabs past its timeline: its operation's fields, the
+/// configuration it captured, and its attempts, loaded once their tab opens.
+#[component]
+fn DeploymentSections(deployment: Signal<DeploymentView>) -> impl IntoView {
+    let context = editor();
+    let tabs = context.tabs;
+    view! {
+        {tabs
+            .panel(
+                "Details",
+                move || deployment.with(|deployment| context.deployment_details(deployment)),
+            )}
+        {tabs.panel("Snapshot", view! { <DeploymentSnapshot deployment={deployment} /> })}
+        {tabs
+            .panel(
+                "Attempts",
                 view! {
-                    {move || operation_badge(deployment.get().operation.state)}
-                    <strong>{move || context.deployment_title(&deployment.get().origin)}</strong>
-                    <span class="tag">
-                        {move || format!("Revision {}", deployment.get().operation.generation)}
-                    </span>
-                    {move || {
-                        deployment
-                            .get()
-                            .current_target
-                            .then(|| view! { <span class="tag">"Current target"</span> })
-                    }}
-                    {move || {
-                        deployment
-                            .get()
-                            .last_successful
-                            .then(|| view! { <span class="tag">"Last successful"</span> })
-                    }}
-                    <span class="meta">
-                        {move || {
-                            let op = deployment.get().operation;
-                            view! {
-                                {op.phase.map(|phase| format!("{phase} · "))}
-                                {when(op.created_at_ms)}
-                            }
-                        }}
-                    </span>
+                    <Show when={move || tabs.selected.get() == "Attempts"}>
+                        <DeploymentAttempts deployment={deployment} />
+                    </Show>
                 },
             )}
-            <div class="expander-body" hidden={move || !opened.get()}>
-                {tabs
-                    .bar(
-                        &["Details", "Timeline", "Snapshot", "Attempts", "Events"],
-                        Some(Callback::new(move |tab| context.tab_hidden(tab))),
-                    )}
-                {tabs
-                    .panel(
-                        "Details",
-                        move || {
-                            let DeploymentView {
-                                operation: op,
-                                release,
-                                origin,
-                                succeeded_at_ms,
-                                current_target,
-                                ..
-                            } = deployment.get();
-                            let restore = (succeeded_at_ms.is_some()
-                                && (!current_target || newer.get()) && context.can_restore())
-                                .then(|| {
-                                    let id = op.id.clone();
-                                    view! {
-                                        <div class="toolbar">
-                                            <p class="hint">
-                                                "Restoring deploys this deployment again exactly as it ran: its manifest, images and secret versions. Its jobs don't run again, and volume contents and migrations stay as they are."
-                                            </p>
-                                            <div class="toolbar-end">
-                                                <button
-                                                    type="button"
-                                                    class="btn btn-sm"
-                                                    disabled={move || context.action_blocked()}
-                                                    on:click={move |_| context.restore(id.clone())}
-                                                >
-                                                    {icon(Icon::Restore)}
-                                                    "Restore"
-                                                </button>
-                                            </div>
-                                        </div>
-                                    }
-                                });
-                            let release = release
-                                .map_or_else(
-                                    || "Not recorded".into_any(),
-                                    |release| release_link(&application, &release.to_string()),
-                                );
-                            view! {
-                                <div class="stack-sm">
-                                    {restore} <dl class="kv">
-                                        <dt>"Operation ID"</dt>
-                                        <dd>
-                                            <code>{op.id}</code>
-                                        </dd>
-                                        <dt>"Release"</dt>
-                                        <dd>{release}</dd>
-                                        <dt>"Origin"</dt>
-                                        <dd>{context.describe_origin(&origin)}</dd>
-                                        <dt>"Kind"</dt>
-                                        <dd>{op.kind.as_str()}</dd>
-                                        <dt>"Configuration revision"</dt>
-                                        <dd>{op.generation}</dd>
-                                        <dt>"Attempts"</dt>
-                                        <dd>{op.attempt}</dd>
-                                        <dt>"Phase"</dt>
-                                        <dd>
-                                            {op.phase.map_or("Waiting", piqueld_client::Phase::as_str)}
-                                        </dd>
-                                        {op
-                                            .resource
-                                            .map(|resource| {
-                                                view! {
-                                                    <dt>"Resource"</dt>
-                                                    <dd>
-                                                        <code>{resource}</code>
-                                                    </dd>
-                                                }
-                                            })}
-                                        <dt>"Created"</dt>
-                                        <dd>{timestamp(op.created_at_ms)}</dd>
-                                        <dt>"Updated"</dt>
-                                        <dd>{timestamp(op.updated_at_ms)}</dd>
-                                        {op
-                                            .finished_at_ms
-                                            .map(|ms| {
-                                                view! {
-                                                    <dt>"Finished"</dt>
-                                                    <dd>{timestamp(ms)}</dd>
-                                                }
-                                            })}
-                                    </dl>
-                                    {op
-                                        .error_message
-                                        .map(|error| {
-                                            notice(
-                                                Tone::Bad,
-                                                view! {
-                                                    {op
-                                                        .error_code
-                                                        .map(|code| view! { <strong>{code}</strong> })}
-                                                    <span>{error}</span>
-                                                },
-                                            )
-                                        })}
-                                </div>
-                            }
-                        },
-                    )}
-                {tabs
-                    .panel(
-                        "Timeline",
-                        view! {
-                            <Show when={move || timeline_requested.get()}>
-                                <OperationTimeline operation={timeline_of.clone()} />
-                            </Show>
-                        },
-                    )}
-                {tabs.panel("Snapshot", view! { <DeploymentSnapshot deployment={deployment} /> })}
-                {tabs
-                    .panel(
-                        "Attempts",
-                        view! {
-                            <Show when={move || attempts_requested.get()}>
-                                <DeploymentAttempts deployment={deployment} />
-                            </Show>
-                        },
-                    )}
-                {tabs
-                    .panel(
-                        "Events",
-                        view! {
-                            <Show when={move || events_requested.get()}>
-                                <EventHistory
-                                    environment={context.environment_id()}
-                                    operation={events_of.clone()}
-                                />
-                            </Show>
-                        },
-                    )}
-            </div>
-        </article>
+    }
+}
+
+/// Restore, offered on a deployment the caller may restore that succeeded
+/// and is not the current target, unless a `newer` deployment failed to
+/// replace it. Opens the restoring deployment's page once accepted.
+#[component]
+fn RestoreDeployment(
+    deployment: Signal<Option<DeploymentView>>,
+    newer: RwSignal<bool>,
+) -> impl IntoView {
+    let context = editor();
+    let navigate = use_navigate();
+    move || {
+        let id = deployment.with(|deployment| {
+            deployment
+                .as_ref()
+                .filter(|deployment| {
+                    deployment.succeeded_at_ms.is_some()
+                        && (!deployment.current_target || newer.get())
+                })
+                .map(|deployment| deployment.operation.id.clone())
+        })?;
+        let navigate = navigate.clone();
+        context.can_restore().then(|| {
+            view! {
+                <button
+                    type="button"
+                    class="btn"
+                    title="Deploy this deployment again exactly as it ran: its manifest, images and secret versions."
+                    disabled={move || context.action_blocked()}
+                    on:click={move |_| {
+                        let navigate = navigate.clone();
+                        context
+                            .restore(
+                                id.clone(),
+                                move |accepted| {
+                                    navigate(
+                                        &context
+                                            .deployment_href(
+                                                &accepted.environment_id,
+                                                &accepted.operation_id,
+                                            ),
+                                        NavigateOptions::default(),
+                                    );
+                                },
+                            );
+                    }}
+                >
+                    {icon(Icon::Restore)}
+                    "Restore"
+                </button>
+            }
+        })
     }
 }
 
@@ -1261,8 +1345,8 @@ impl EditorContext {
     }
 
     /// Confirms, then restores `deployment` of the shown environment or
-    /// preview exactly as it ran.
-    fn restore(self, deployment: String) {
+    /// preview exactly as it ran, and runs `restored` once accepted.
+    fn restore(self, deployment: String, restored: impl FnOnce(AcceptedOperation) + 'static) {
         if !confirm(&format!(
             "Restore deployment {deployment}? Its jobs don't run again, and volume contents and migrations stay as they are."
         )) {
@@ -1276,12 +1360,97 @@ impl EditorContext {
                 let (environment, deployment) = (environment.clone(), deployment.clone());
                 async move { client.restore_deployment(&environment, &deployment).await }
             },
-            move |_| {
-                self.notice
-                    .set("Restore accepted. Follow its progress below.".into());
+            move |accepted| {
                 self.refresh_dashboard();
+                restored(accepted);
             },
         );
+    }
+
+    /// What a deployment page's header says of `deployment`: where it came
+    /// from, the commit, revision and release it deploys, when it started,
+    /// and its operation's ID.
+    fn deployment_meta(self, deployment: &DeploymentView) -> impl IntoView + use<> {
+        let operation = &deployment.operation;
+        let release = deployment.release.as_ref().map(|release| {
+            view! { <span>"Release " {release_link(&self.id(), &release.to_string())}</span> }
+        });
+        view! {
+            <p class="deployment-meta">
+                <span>{self.describe_origin(&deployment.origin)}</span>
+                {deployment.commit().map(|commit| view! { <span>{commit}</span> })}
+                <span>{format!("Revision {}", operation.generation)}</span>
+                {release}
+                <span>"Created " {when(operation.created_at_ms)}</span>
+                <span>"Attempt " {operation.attempt}</span>
+                <code>{operation.id.clone()}</code>
+            </p>
+        }
+    }
+
+    /// A deployment's Details tab: its operation's fields, and why it failed.
+    fn deployment_details(self, deployment: &DeploymentView) -> AnyView {
+        let op = deployment.operation.clone();
+        let release = deployment.release.as_ref().map_or_else(
+            || "Not recorded".into_any(),
+            |release| release_link(&self.id(), &release.to_string()),
+        );
+        view! {
+            <div class="stack-sm">
+                <dl class="kv">
+                    <dt>"Operation ID"</dt>
+                    <dd>
+                        <code>{op.id}</code>
+                    </dd>
+                    <dt>"Release"</dt>
+                    <dd>{release}</dd>
+                    <dt>"Origin"</dt>
+                    <dd>{self.describe_origin(&deployment.origin)}</dd>
+                    <dt>"Kind"</dt>
+                    <dd>{op.kind.as_str()}</dd>
+                    <dt>"Configuration revision"</dt>
+                    <dd>{op.generation}</dd>
+                    <dt>"Attempts"</dt>
+                    <dd>{op.attempt}</dd>
+                    <dt>"Phase"</dt>
+                    <dd>{op.phase.map_or("Waiting", piqueld_client::Phase::as_str)}</dd>
+                    {op
+                        .resource
+                        .map(|resource| {
+                            view! {
+                                <dt>"Resource"</dt>
+                                <dd>
+                                    <code>{resource}</code>
+                                </dd>
+                            }
+                        })}
+                    <dt>"Created"</dt>
+                    <dd>{timestamp(op.created_at_ms)}</dd>
+                    <dt>"Updated"</dt>
+                    <dd>{timestamp(op.updated_at_ms)}</dd>
+                    {op
+                        .finished_at_ms
+                        .map(|ms| {
+                            view! {
+                                <dt>"Finished"</dt>
+                                <dd>{timestamp(ms)}</dd>
+                            }
+                        })}
+                </dl>
+                {op
+                    .error_message
+                    .map(|error| {
+                        notice(
+                            Tone::Bad,
+                            view! {
+                                {op.error_code.map(|code| view! { <strong>{code}</strong> })}
+                                <span>{error}</span>
+                            },
+                        )
+                    })}
+            </div>
+        }
+        .into_any()
     }
 }
 

@@ -9,7 +9,7 @@
 use super::super::format::clock;
 use super::super::observability::{headline, kind_badge};
 use super::super::stream::EventStream;
-use super::super::ui::{Tone, badge, empty, loading, notice};
+use super::super::ui::{Icon, Tone, badge, empty, icon, loading, notice};
 use super::super::{Alive, ClientErrorExt, document_hidden, format::now_ms, operation_events};
 use super::editor;
 use crate::log_output::LogLine;
@@ -21,7 +21,9 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::observability::Elapsed;
 use piqueld_client::timeline::{Step, StepKey, StepState, Timeline};
-use piqueld_client::{API_PREFIX, BuildRecord, Client, Event, Phase, access::AppPermission};
+use piqueld_client::{
+    API_PREFIX, BuildRecord, Client, Event, Operation, Phase, access::AppPermission,
+};
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -31,10 +33,10 @@ const FEED: usize = 50;
 const TAIL: usize = 12;
 
 /// One operation's timeline, followed over its stream until the operation
-/// ended. Created by a component; its stream and clock stop when that
-/// component unmounts.
+/// ended. Created by a component or effect; its stream and clock stop when
+/// that owner is disposed.
 #[derive(Clone, Copy)]
-struct LiveTimeline {
+pub(super) struct LiveTimeline {
     timeline: RwSignal<Option<Timeline>>,
     /// The current time, ticking every second while the operation runs.
     now: RwSignal<i64>,
@@ -54,7 +56,7 @@ struct LiveTimeline {
 impl LiveTimeline {
     /// Follows `operation`'s timeline until it ended or the calling
     /// component unmounts.
-    fn follow(operation: String) -> Self {
+    pub(super) fn follow(operation: String) -> Self {
         let timeline = RwSignal::new(None::<Timeline>);
         let now = RwSignal::new(now_ms());
         let live = Memo::new(move |_| timeline.with(|t| t.as_ref().is_none_or(|t| !t.ended())));
@@ -84,12 +86,24 @@ impl LiveTimeline {
     }
 
     /// How far the operation has come, once its timeline loaded.
-    fn progress(self) -> Memo<Option<Progress>> {
+    pub(super) fn progress(self) -> Memo<Option<Progress>> {
         Memo::new(move |_| {
             let now = self.now.get();
             self.timeline
                 .with(|t| t.as_ref().map(|t| Progress::new(t, now)))
         })
+    }
+
+    /// The operation as of its newest snapshot, once one arrived.
+    pub(super) fn operation(self) -> Option<Operation> {
+        self.timeline
+            .with(|t| t.as_ref().map(|t| t.operation.clone()))
+    }
+
+    /// Whether the operation may still change: true until a snapshot shows
+    /// it ended.
+    pub(super) fn live(self) -> bool {
+        self.live.get()
     }
 
     /// Whether the component following the timeline is still mounted.
@@ -189,61 +203,151 @@ impl LiveTimeline {
 }
 
 /// A duration as the timeline shows it.
-fn duration(milliseconds: u64) -> String {
+pub(super) fn duration(milliseconds: u64) -> String {
     Elapsed(Duration::from_millis(milliseconds)).to_string()
 }
 
-/// The environment's deployment, followed live above its tabs from the
-/// moment the page sees it run until it is closed: a header with its
-/// progress, then its steps and events. The tab title follows its progress.
-#[component]
-pub(super) fn LiveDeployment() -> impl IntoView {
-    let context = editor();
-    let signals = context.signals();
-    let environment = context.environment_id();
-    let running = Memo::new(move |_| {
-        signals.detail.with(|detail| {
-            detail
-                .as_ref()
-                .filter(|detail| detail.environment.id.as_str() == environment)?
-                .latest_operation
-                .as_ref()
-                .filter(|operation| !operation.state.terminal())
-                .map(|operation| operation.id.clone())
-        })
-    });
-    let watched = RwSignal::new(None::<String>);
-    Effect::new(move |_| {
-        if let Some(id) = running.get()
-            && watched.with_untracked(|watched| watched.as_ref() != Some(&id))
-        {
-            watched.set(Some(id));
-        }
-    });
-    view! {
-        <For
-            each={move || watched.get()}
-            key={Clone::clone}
-            children={move |operation| {
-                view! {
-                    <DeploymentPanel
-                        operation={operation}
-                        close={Callback::new(move |()| watched.set(None))}
-                    />
+/// The deployment an environment's page follows while it runs, as its
+/// polled detail or deployment history first shows it: one timeline stream,
+/// whose progress the Overview and Deployments tabs both show.
+#[derive(Clone, Copy)]
+pub(super) struct RunningDeployment {
+    /// The newest operation seen running.
+    operation: RwSignal<Option<String>>,
+    live: RwSignal<Option<LiveTimeline>>,
+}
+
+impl RunningDeployment {
+    /// Provides it to the environment page, following the operation its
+    /// detail shows running.
+    pub(super) fn provide() -> Self {
+        let this = Self {
+            operation: RwSignal::new(None),
+            live: RwSignal::new(None),
+        };
+        // Followed under this effect, so the next operation's replaces it.
+        Effect::new(move |_| {
+            this.live
+                .set(this.operation.get().map(LiveTimeline::follow));
+        });
+        let context = editor();
+        let signals = context.signals();
+        let environment = context.environment_id();
+        Effect::new(move |_| {
+            signals.detail.with(|detail| {
+                if let Some(operation) = detail
+                    .as_ref()
+                    .filter(|detail| detail.environment.id.as_str() == environment)
+                    .and_then(|detail| detail.latest_operation.as_ref())
+                {
+                    this.saw(operation);
                 }
-            }}
-        />
+            });
+        });
+        provide_context(this);
+        this
+    }
+
+    /// Follows `operation` while it runs, unless it is followed already.
+    pub(super) fn saw(self, operation: &Operation) {
+        if !operation.state.terminal()
+            && self
+                .operation
+                .with_untracked(|followed| followed.as_deref() != Some(operation.id.as_str()))
+        {
+            self.operation.set(Some(operation.id.clone()));
+        }
+    }
+
+    /// The followed timeline while it runs, if it is `operation`'s, or with
+    /// `None`, whichever operation's it is.
+    pub(super) fn running(self, operation: Option<&str>) -> Option<LiveTimeline> {
+        self.live.get().filter(|live| {
+            live.live.get()
+                && operation.is_none_or(|operation| live.operation.with_value(|id| id == operation))
+        })
     }
 }
 
-/// One deployment followed live: see `LiveDeployment`.
+/// The environment's running deployment, in brief: its state, steps and
+/// time left, linking to its page. Shown on the Overview tab while it runs.
 #[component]
-fn DeploymentPanel(operation: String, close: Callback<()>) -> impl IntoView {
+pub(super) fn RunningProgress() -> impl IntoView {
     let context = editor();
-    let live = LiveTimeline::follow(operation.clone());
-    let label = operation.clone();
+    let running = expect_context::<RunningDeployment>();
+    move || {
+        running.running(None).map(|live| {
+            let href = live.operation.with_value(|operation| {
+                context.deployment_href(&context.environment_id(), operation)
+            });
+            let progress = live.progress();
+            view! {
+                <section
+                    class="card running-deployment list-row-link"
+                    aria-label="Running deployment"
+                >
+                    {move || progress.with(|p| p.as_ref().map(status_pill))}
+                    <span class="title">
+                        <A href={href}>"Follow the deployment"</A>
+                        <small>
+                            {move || progress.with(|p| p.as_ref().map(|p| p.running.join(", ")))}
+                        </small>
+                    </span>
+                    <CompactProgress live={live} />
+                    <span class="chevron" aria-hidden="true">
+                        {icon(Icon::ChevronRight)}
+                    </span>
+                </section>
+            }
+        })
+    }
+}
+
+/// A running operation in brief: its steps done, time left, and a segment
+/// per step.
+#[component]
+pub(super) fn CompactProgress(live: LiveTimeline) -> impl IntoView {
     let progress = live.progress();
-    let subject = format!("{}/{}", context.name(), context.selected_name());
+    view! {
+        <span class="progress-compact">
+            <span>
+                {move || {
+                    progress
+                        .with(|p| {
+                            p.as_ref()
+                                .map(|p| {
+                                    let outlook = p
+                                        .outlook()
+                                        .map(|outlook| format!(" · {outlook}"));
+                                    view! {
+                                        <strong>{p.steps()}</strong>
+                                        {outlook}
+                                    }
+                                })
+                        })
+                }}
+            </span>
+            <ProgressBar live={live} />
+        </span>
+    }
+}
+
+/// Where an operation stands, in a word, as a pill: "Deploying".
+pub(super) fn status_pill(progress: &Progress) -> impl IntoView + use<> {
+    view! {
+        <span class="status-pill" data-state={progress.state.as_str()}>
+            {progress.status()}
+        </span>
+    }
+}
+
+/// How far a deployment has come, for its page: a segment per step, the
+/// steps done and running, the time it has run, about how long is left, and
+/// how long it usually takes. The tab title follows it while the page is
+/// open, titled by `subject`.
+#[component]
+pub(super) fn DeploymentProgress(live: LiveTimeline, subject: String) -> impl IntoView {
+    let progress = live.progress();
     let title = Memo::new(move |_| progress.with(|p| p.as_ref().map(|p| p.title(&subject))));
     let original = document().title();
     Effect::new(move |_| {
@@ -252,103 +356,49 @@ fn DeploymentPanel(operation: String, close: Callback<()>) -> impl IntoView {
         }
     });
     on_cleanup(move || document().set_title(&original));
-    let expanded = RwSignal::new(true);
-    let feed = context.can(AppPermission::EventsRead);
     view! {
-        <section class="card deployment-live" aria-label="Deployment progress">
-            <div class="deployment-live-head">
+        <ProgressBar live={live} />
+        <p class="deployment-progress-summary">
+            <span>
                 {move || {
                     progress
-                        .with(|p| p.as_ref().map(|p| (p.state, p.status())))
-                        .map(|(state, status)| {
-                            view! {
-                                <span class="status-pill" data-state={state.as_str()}>
-                                    {status}
-                                </span>
-                            }
+                        .with(|p| {
+                            p.as_ref()
+                                .map(|p| {
+                                    let doing = (!p.running.is_empty())
+                                        .then(|| format!(" · {}", p.running.join(", ")));
+                                    view! {
+                                        <strong>{p.steps()}</strong>
+                                        " steps"
+                                        {doing}
+                                    }
+                                })
                         })
-                }} <A href={operation_events(&operation)}>
-                    <code>{label}</code>
-                </A> <div class="toolbar-end">
-                    <button
-                        type="button"
-                        class="btn btn-sm"
-                        aria-expanded={move || expanded.get().to_string()}
-                        on:click={move |_| expanded.update(|expanded| *expanded = !*expanded)}
-                    >
-                        {move || if expanded.get() { "Hide steps" } else { "Show steps" }}
-                    </button>
-                    <Show when={move || !live.live.get()}>
-                        <button
-                            type="button"
-                            class="btn btn-sm btn-ghost"
-                            on:click={move |_| close.run(())}
-                        >
-                            "Close"
-                        </button>
-                    </Show>
-                </div>
-            </div>
-            <ProgressBar live={live} />
-            <p class="deployment-live-summary">
-                <span>
-                    {move || {
-                        progress
-                            .with(|p| {
-                                p.as_ref()
-                                    .map(|p| {
-                                        let steps = format!("{}/{}", p.done, p.total);
-                                        let doing = if p.running.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!(" · {}", p.running.join(", "))
-                                        };
-                                        view! {
-                                            <strong>{steps}</strong>
-                                            {doing}
-                                        }
-                                    })
-                            })
-                    }}
-                </span>
-                <span>
-                    {move || {
-                        progress
-                            .with(|p| {
-                                p.as_ref()
-                                    .map(|p| {
-                                        let left = match (p.left_ms, p.against_usual()) {
-                                            (_, Some(against)) => format!(" · {against}"),
-                                            (Some(left), None) => {
-                                                format!(" · ~{} left", duration(left))
-                                            }
-                                            (None, None) => String::new(),
-                                        };
-                                        let usual = p
-                                            .usual_ms
-                                            .map(|usual| format!(" · usually {}", duration(usual)))
-                                            .unwrap_or_default();
-                                        view! {
-                                            <strong>{duration(p.elapsed_ms)}</strong>
-                                            " elapsed"
-                                            {left}
-                                            {usual}
-                                        }
-                                    })
-                            })
-                    }}
-                </span>
-            </p>
-            <div class="deployment-live-body" hidden={move || !expanded.get()}>
-                <div class="deployment-live-steps">
-                    <TimelineView live={live} />
-                </div>
-                {feed
-                    .then(|| {
-                        view! { <EventFeed operation={operation.clone()} live={live.live} /> }
-                    })}
-            </div>
-        </section>
+                }}
+            </span>
+            <span>
+                {move || {
+                    progress
+                        .with(|p| {
+                            p.as_ref()
+                                .map(|p| {
+                                    let outlook = p
+                                        .outlook()
+                                        .map(|outlook| format!(" · {outlook}"));
+                                    let usual = p
+                                        .usual_ms
+                                        .map(|usual| format!(" · usually {}", duration(usual)));
+                                    view! {
+                                        <strong>{duration(p.elapsed_ms)}</strong>
+                                        " elapsed"
+                                        {outlook}
+                                        {usual}
+                                    }
+                                })
+                        })
+                }}
+            </span>
+        </p>
     }
 }
 
@@ -385,43 +435,45 @@ fn ProgressBar(live: LiveTimeline) -> impl IntoView {
     }
 }
 
-/// A followed timeline: its waterfall, then the shown step's detail. The
-/// running step is shown unless a step was picked; "Follow live" returns
-/// to it.
+/// A followed operation's steps, the shown step's detail, and with
+/// `events:read`, its events as they are recorded. The running step is
+/// shown unless a step was picked; "Follow live" returns to it.
 #[component]
-fn TimelineView(live: LiveTimeline) -> impl IntoView {
+pub(super) fn OperationTimeline(live: LiveTimeline) -> impl IntoView {
     let picked = RwSignal::new(None::<RowId>);
     let shown = Memo::new(move |_| {
         picked
             .get()
             .or_else(|| live.waterfall.with(|w| w.current().cloned()))
     });
+    let feed = editor().can(AppPermission::EventsRead);
     view! {
-        {move || live.error.get().map(|error| notice(Tone::Bad, error))}
-        <Show
-            when={move || live.timeline.with(Option::is_some)}
-            fallback={move || {
-                live.error.with(Option::is_none).then(|| loading("Loading the timeline…"))
-            }}
-        >
-            <StepWaterfall
-                waterfall={live.waterfall.into()}
-                selection={Selection {
-                    shown,
-                    pick: Callback::new(move |id| picked.set(Some(id))),
-                }}
-                settled={live.settled}
-            />
-            <StepDetail live={live} shown={shown} picked={picked} />
-        </Show>
+        <div class="deployment-timeline">
+            <section class="deployment-steps" aria-label="Steps and detail">
+                {move || live.error.get().map(|error| notice(Tone::Bad, error))}
+                <Show
+                    when={move || live.timeline.with(Option::is_some)}
+                    fallback={move || {
+                        live.error.with(Option::is_none).then(|| loading("Loading the timeline…"))
+                    }}
+                >
+                    <StepWaterfall
+                        waterfall={live.waterfall.into()}
+                        selection={Selection {
+                            shown,
+                            pick: Callback::new(move |id| picked.set(Some(id))),
+                        }}
+                        settled={live.settled}
+                    />
+                    <StepDetail live={live} shown={shown} picked={picked} />
+                </Show>
+            </section>
+            {feed
+                .then(|| {
+                    view! { <EventFeed operation={live.operation.get_value()} live={live.live} /> }
+                })}
+        </div>
     }
-}
-
-/// A finished or running operation's timeline, as a deployment's tab.
-#[component]
-pub(super) fn OperationTimeline(operation: String) -> impl IntoView {
-    let live = LiveTimeline::follow(operation);
-    view! { <TimelineView live={live} /> }
 }
 
 /// The steps `steps` lists, as a waterfall without times: a plan.
@@ -904,9 +956,10 @@ async fn find_build(
 }
 
 /// The operation's events as they are recorded, newest first, keeping the
-/// newest `FEED`. Its stream replays the operation's history, then follows
-/// it; it closes a moment after the operation ended, once its last events
-/// arrived. Events arriving together are drawn in one frame.
+/// newest `FEED`, with a link to all of them. Its stream replays the
+/// operation's history, then follows it; it closes a moment after the
+/// operation ended, once its last events arrived. Events arriving together
+/// are drawn in one frame.
 #[component]
 fn EventFeed(operation: String, live: Memo<bool>) -> impl IntoView {
     let events = RwSignal::new(VecDeque::<Event>::new());
@@ -926,6 +979,7 @@ fn EventFeed(operation: String, live: Memo<bool>) -> impl IntoView {
         });
     };
     let url = format!("{API_PREFIX}/events/stream?operation_id={operation}");
+    let history = operation_events(&operation);
     stream.set_value(EventStream::open(
         &url,
         &["event"],
@@ -968,6 +1022,9 @@ fn EventFeed(operation: String, live: Memo<bool>) -> impl IntoView {
                 <Show when={move || live.get()}>
                     <span class="event-feed-live">"streaming"</span>
                 </Show>
+                <A href={history} attr:class="event-feed-all">
+                    "All events"
+                </A>
             </div>
             <Show when={move || events.with(VecDeque::is_empty)}>
                 <p class="hint">"No events yet."</p>

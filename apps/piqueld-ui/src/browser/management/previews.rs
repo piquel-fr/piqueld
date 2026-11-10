@@ -21,11 +21,6 @@ use piqueld_client::{
 };
 
 impl EditorContext {
-    /// Dashboard address of one of the application's previews.
-    fn preview_href(self, preview: &str) -> String {
-        format!("/dashboard/applications/{}/previews/{preview}", self.id())
-    }
-
     /// Confirms, then deletes `preview` with every volume it created and runs
     /// `deleted` once accepted.
     fn delete_preview(self, preview: &EnvironmentView, deleted: impl FnOnce() + 'static) {

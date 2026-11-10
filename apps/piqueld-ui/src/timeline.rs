@@ -388,10 +388,28 @@ impl Progress {
         }
     }
 
+    /// Steps done of all, such as "4/9".
+    #[must_use]
+    pub fn steps(&self) -> String {
+        format!("{}/{}", self.done, self.total)
+    }
+
+    /// How long a running operation should still take, such as "~48.0 s
+    /// left", or how a finished one compared with its usual duration.
+    #[must_use]
+    pub fn outlook(&self) -> Option<String> {
+        self.against_usual().or_else(|| {
+            let left = self.left_ms.filter(|_| !self.state.terminal())?;
+            Some(format!(
+                "~{} left",
+                Elapsed(std::time::Duration::from_millis(left))
+            ))
+        })
+    }
+
     /// How a finished operation compared with its usual duration, such as
     /// "6.0 s faster than usual".
-    #[must_use]
-    pub fn against_usual(&self) -> Option<String> {
+    fn against_usual(&self) -> Option<String> {
         let usual = self.usual_ms.filter(|_| self.state.terminal())?;
         let difference = self.elapsed_ms.abs_diff(usual);
         Some(if difference < 1_000 {
@@ -508,6 +526,28 @@ mod tests {
         let plan = Waterfall::new(&[left(Phase::EnsureService, "web", 3)], None);
         assert_eq!(plan.axis, None);
         assert_eq!((plan.rows[0].bar, plan.rows[0].usual), (None, None));
+    }
+
+    #[test]
+    fn progress_tells_the_time_left_then_against_the_usual() {
+        let mut progress = Progress {
+            kind: OperationKind::Apply,
+            state: OperationState::Running,
+            done: 4,
+            total: 9,
+            running: vec!["Build web".into()],
+            elapsed_ms: 30_000,
+            left_ms: Some(48_000),
+            usual_ms: Some(80_000),
+        };
+        assert_eq!(progress.steps(), "4/9");
+        assert_eq!(progress.outlook().as_deref(), Some("~48.0 s left"));
+        progress.state = OperationState::Succeeded;
+        progress.elapsed_ms = 74_000;
+        assert_eq!(
+            progress.outlook().as_deref(),
+            Some("6.0 s faster than usual")
+        );
     }
 
     #[test]

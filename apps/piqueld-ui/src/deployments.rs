@@ -1,11 +1,38 @@
 //! Transport-independent logic of the dashboard's deployment and preview
-//! views: deployment history paging, attempt lists, promotion confirmation,
-//! and preview creation.
+//! views: deployment history paging, what a deployment's row says,
+//! attempt lists, promotion confirmation, and preview creation.
 
 use piqueld_client::{
     CreatePreviewRequest, DeploymentOrigin, DeploymentView, Operation, Page, PlanView,
-    PromoteRequest, ReleaseAvailability,
+    PromoteRequest, ReleaseAvailability, SystemVariable, sync::short_commit,
 };
+
+/// What a deployment's row in its environment's history says of it.
+pub trait DeploymentSummary {
+    /// The branch and commit its manifest was read from, such as
+    /// "main @ 0123456789ab"; `None` for a saved manifest.
+    fn commit(&self) -> Option<String>;
+
+    /// How long it ran once it ended, from its start, or creation if it
+    /// never started.
+    fn duration_ms(&self) -> Option<u64>;
+}
+
+impl DeploymentSummary for DeploymentView {
+    fn commit(&self) -> Option<String> {
+        let commit = short_commit(self.system_value(SystemVariable::GitSha)?);
+        Some(match self.system_value(SystemVariable::GitBranch) {
+            Some(branch) => format!("{branch} @ {commit}"),
+            None => commit.to_owned(),
+        })
+    }
+
+    fn duration_ms(&self) -> Option<u64> {
+        let operation = &self.operation;
+        let started = operation.started_at_ms.unwrap_or(operation.created_at_ms);
+        u64::try_from(operation.finished_at_ms? - started).ok()
+    }
+}
 
 /// The deployments of one environment shown in its history, newest first:
 /// its newest page, polled, and older pages appended on request.
@@ -219,6 +246,21 @@ mod tests {
 
     fn ids(list: &[DeploymentView]) -> Vec<&str> {
         list.iter().map(|item| item.operation.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_row_names_the_commit_deployed_and_how_long_it_ran() {
+        let mut built = deployment("operation-1", true, true);
+        assert_eq!((built.commit(), built.duration_ms()), (None, None));
+        built.variables = serde_json::from_value(json!({
+            "git.branch": "main",
+            "git.sha": "0123456789abcdef0123456789abcdef01234567",
+        }))
+        .unwrap();
+        built.operation.created_at_ms = 1_000;
+        built.operation.finished_at_ms = Some(39_000);
+        assert_eq!(built.commit().as_deref(), Some("main @ 0123456789ab"));
+        assert_eq!(built.duration_ms(), Some(38_000));
     }
 
     #[test]

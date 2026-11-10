@@ -26,16 +26,18 @@ on its own when a rollout fails.
 1. Open the environment, such as **production** on `hello`'s **Environments**
    tab, then its **Deployments** tab. It lists the environment's deployments,
    newest first.
-2. Select the deployment to return to, to expand it. Each deployment that
-   succeeded offers **Restore**, except the newest one when the environment
-   runs it. So after a deployment failed, you can restore the one before it.
+2. Select the deployment to return to, to open its page. Each deployment that
+   succeeded offers **Restore** at the top of its page, except the newest one
+   when the environment runs it. So after a deployment failed, you can restore
+   the one before it.
 
-   ![The Deployments tab of hello's production environment, with its first deployment expanded: a Restore button above its operation ID, release and origin](../../images/applications/restore.png)
+   ![The page of hello's first production deployment: a Restore button beside its title, then its origin, revision, release and operation ID, and its progress](../../images/applications/restore.png)
 
 3. Select **Restore**, and confirm.
 
-The restore is a new deployment, at the top of the list. Its **Origin** reads
-"Restored from deployment" and the ID of the one it restored.
+The restore is a new deployment, and the dashboard opens its page. It reads
+"Restored from deployment" and the ID of the one it restored, and comes first
+on the **Deployments** tab.
 
 ### With piquelctl
 
@@ -222,8 +224,8 @@ It runs the release of the deployment it restored.
   describes. When piqueld can't roll back,
   because no earlier deployment succeeded or its images or secret versions
   are gone, the failed deployment records a `rollback_unavailable` event
-  saying why. To see it, expand the deployment on the **Deployments** tab
-  and select **Events**. Fix the cause, then deploy again.
+  saying why. To see it, open the deployment from the **Deployments** tab
+  and select **All events** beside its live events. Fix the cause, then deploy again.
 - **There is no Restore button.** The deployment didn't succeed, or it is
   the newest one and the environment runs it. Without `apps:deploy`, or
   `previews:deploy` for a preview, the dashboard doesn't offer it either.

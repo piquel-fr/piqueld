@@ -33,14 +33,15 @@ message, and who caused it.
 
 To follow a deployment's steps in the dashboard:
 
-- While a deployment runs, its environment's page shows it above the tabs:
-  how many of its steps are done, how long it has run, about how long is
-  left, and how long it usually takes. Its steps and its events follow,
-  live. The browser tab's title shows its progress, then ✓ once it is
-  deployed. See [deployment timelines](../dashboard.md#deployment-timelines).
-- Afterwards, on the environment's **Deployments** tab, select the deployment
-  to expand it. **Timeline** shows its steps the same way. **Events** lists
-  every event, newest first, with the same filters as the Events page.
+- While a deployment runs, its environment's **Overview** tab shows how many
+  of its steps are done and about how long is left. Select it, or the
+  deployment's row on the **Deployments** tab, to open the deployment's page.
+- The deployment's page shows how long it has run, about how long is left,
+  and how long it usually takes, then its steps and its events, live. The
+  browser tab's title shows its progress, then ✓ once it is deployed. See
+  [deployment timelines](../dashboard.md#deployment-timelines).
+- Afterwards, the same page's **Timeline** tab shows its steps the same way,
+  and **All events** lists every event, with the filters of the Events page.
   **Attempts** lists each time piqueld tried it, with a link to that
   attempt's events.
 

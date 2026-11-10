@@ -125,8 +125,8 @@ changes that. When a deployment changes a service, Docker watches its new
 replicas for 30 seconds, as [rollout order](#rollout-order) explains.
 
 If `piquelctl` stops waiting first, it exits with code 4, but the deployment
-carries on. Keep following it on the environment's **Deployments** tab, or
-with `piquelctl env wait notes`.
+carries on. Keep following it on its page, from the environment's
+**Deployments** tab, or with `piquelctl env wait notes`.
 
 The services of an application reach each other by name: `web` reaches the
 database at `db:5432`. Services of other applications can't, unless you

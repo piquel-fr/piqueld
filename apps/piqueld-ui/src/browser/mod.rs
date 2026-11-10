@@ -276,10 +276,7 @@ impl DashboardSignals {
     /// refresh.
     fn refresh_notices(self) -> impl IntoView {
         view! {
-            <div
-                class="stack-sm mb-md"
-                hidden={move || self.refresh_error.get().is_none()}
-            >
+            <div class="stack-sm mb-md" hidden={move || self.refresh_error.get().is_none()}>
                 {move || {
                     self.refresh_error
                         .get()
@@ -299,10 +296,7 @@ impl DashboardSignals {
                         })
                 }}
             </div>
-            <div
-                class="stack-sm mb-md"
-                hidden={move || self.data_state.get() != DataState::Stale}
-            >
+            <div class="stack-sm mb-md" hidden={move || self.data_state.get() != DataState::Stale}>
                 {notice(Tone::Warn, "Showing the last successful view; the latest refresh failed.")}
             </div>
         }
@@ -402,6 +396,16 @@ fn App() -> impl IntoView {
                         path={path!("applications/:id/previews/:preview")}
                         view={ApplicationDetailPage}
                     />
+                    <Route
+                        path={path!(
+                            "applications/:id/environments/:environment/deployments/:deployment"
+                        )}
+                        view={ApplicationDetailPage}
+                    />
+                    <Route
+                        path={path!("applications/:id/previews/:preview/deployments/:deployment")}
+                        view={ApplicationDetailPage}
+                    />
                     <Route path={path!("*any")} view={NotFoundPage} />
                 </ParentRoute>
             </Routes>
@@ -460,7 +464,8 @@ fn dashboard_context() -> DashboardContext {
 }
 
 /// Route wrapper for
-/// `/applications/:id[/services/:service|/environments/:environment|/previews/:preview]`.
+/// `/applications/:id[/services/:service|/environments/:environment|/previews/:preview]`,
+/// and an environment's or preview's `/deployments/:deployment`.
 /// Loads the shown environment's or preview's detail into the shared signals when the route
 /// changes, and keys `management::ApplicationPage` on the route so it remounts
 /// on navigation.
@@ -752,6 +757,15 @@ fn reload() {
 /// Dashboard address of one of `application`'s environments.
 fn environment_href(application: &str, environment: &str) -> String {
     format!("/dashboard/applications/{application}/environments/{environment}")
+}
+
+/// Dashboard address of deployment `operation` of one of `application`'s
+/// environments.
+fn deployment_href(application: &str, environment: &str, operation: &str) -> String {
+    format!(
+        "{}/deployments/{operation}",
+        environment_href(application, environment)
+    )
 }
 
 /// Address of the events of operation `id`.

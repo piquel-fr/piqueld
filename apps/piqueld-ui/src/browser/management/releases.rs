@@ -208,11 +208,8 @@ pub(super) fn ReleaseCard(release: ReleaseView, #[prop(optional)] planned: bool)
                                     .into_iter()
                                     .map(|promotion| {
                                         let environment = promotion.environment_id.to_string();
-                                        let href = format!(
-                                            "{}?deployment={}",
-                                            context.environment_href(&environment),
-                                            promotion.deployment_id,
-                                        );
+                                        let href = context
+                                            .deployment_href(&environment, &promotion.deployment_id);
                                         view! {
                                             <li class="btn-group">
                                                 <A href={href}>{context.environment_name(&environment)}</A>

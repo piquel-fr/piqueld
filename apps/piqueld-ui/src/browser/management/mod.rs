@@ -52,10 +52,18 @@ use std::collections::BTreeSet;
 
 impl Page {
     /// The page an `/applications/:id[/services/:service|/environments/:environment|/previews/:preview]`
-    /// route shows.
+    /// route shows, or with `/deployments/:deployment`, one of the
+    /// environment's or preview's deployments.
     pub(super) fn from_params(params: &ParamsMap) -> Self {
+        let environment = params.get("environment").or_else(|| params.get("preview"));
         if let Some(service) = params.get("service") {
             Self::Service(service)
+        } else if let (Some(environment), Some(operation)) = (environment, params.get("deployment"))
+        {
+            Self::Deployment {
+                environment,
+                operation,
+            }
         } else if let Some(environment) = params.get("environment") {
             Self::Environment(environment)
         } else if let Some(preview) = params.get("preview") {
@@ -199,6 +207,36 @@ impl EditorContext {
     /// Dashboard address of one of the application's environments.
     fn environment_href(self, environment: &str) -> String {
         environment_href(&self.id(), environment)
+    }
+
+    /// Dashboard address of one of the application's previews.
+    fn preview_href(self, preview: &str) -> String {
+        format!("/dashboard/applications/{}/previews/{preview}", self.id())
+    }
+
+    /// Dashboard address of one of the application's environments or
+    /// previews.
+    fn deployable_href(self, id: &str) -> String {
+        let preview = self.saved.with(|saved| {
+            saved
+                .previews
+                .iter()
+                .any(|preview| preview.id.as_str() == id)
+        });
+        if preview {
+            self.preview_href(id)
+        } else {
+            self.environment_href(id)
+        }
+    }
+
+    /// Dashboard address of deployment `operation` of one of the
+    /// application's environments or previews.
+    fn deployment_href(self, environment: &str, operation: &str) -> String {
+        format!(
+            "{}/deployments/{operation}",
+            self.deployable_href(environment)
+        )
     }
 
     /// Name of one of the application's environments or previews; its ID
@@ -1133,7 +1171,9 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
     let signals = dashboard.signals;
     let saved = RwSignal::new(initial);
     let shown = match &page {
-        Page::Environment(environment) | Page::Preview(environment) => Some(environment.clone()),
+        Page::Environment(environment)
+        | Page::Preview(environment)
+        | Page::Deployment { environment, .. } => Some(environment.clone()),
         Page::Application | Page::Service(_) => None,
     };
     let context = EditorContext {
@@ -1227,6 +1267,9 @@ fn ApplicationEditor(initial: ApplicationView, page: Page) -> impl IntoView {
     match page {
         Page::Service(name) => view! { <services::ServiceEditor name={name} /> }.into_any(),
         Page::Environment(_) | Page::Preview(_) => view! { <EnvironmentPage /> }.into_any(),
+        Page::Deployment { operation, .. } => {
+            view! { <deployments::DeploymentPage operation={operation} /> }.into_any()
+        }
         Page::Application => view! { <ApplicationSections /> }.into_any(),
     }
 }
@@ -1381,9 +1424,11 @@ fn ApplicationOverview() -> impl IntoView {
     }
 }
 
-/// One environment or preview: its running deployment, followed live, then
-/// its runtime, deployments, secrets, logs, and history. An environment's overview renames and deletes it; a preview's
-/// shows its branch and deletes it.
+/// One environment or preview: its runtime, deployments, secrets, logs, and
+/// history. While a deployment runs, its Overview and Deployments tabs show
+/// its progress (see `timeline::RunningDeployment`). An environment's
+/// overview renames and deletes it; a preview's shows its branch and
+/// deletes it.
 #[component]
 fn EnvironmentPage() -> impl IntoView {
     let context = editor();
@@ -1408,6 +1453,7 @@ fn EnvironmentPage() -> impl IntoView {
         }
         .into_any();
     }
+    timeline::RunningDeployment::provide();
     let name = move || context.selected_name();
     // Previews are not listed, so their health comes from the loaded detail.
     let health = {
@@ -1452,15 +1498,16 @@ fn EnvironmentPage() -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
-        <timeline::LiveDeployment />
         {tabs.bar(&ENVIRONMENT_TABS, Some(Callback::new(move |tab| context.tab_hidden(tab))))}
         {tabs
             .panel(
                 "Overview",
                 view! {
                     <div class="stack">
+                        <timeline::RunningProgress />
                         {preview.then(|| view! { <previews::PreviewSettings /> })}
-                        <RuntimeOverview /> <variables::EnvironmentVariables />
+                        <RuntimeOverview />
+                        <variables::EnvironmentVariables />
                         {(!preview).then(|| view! { <environments::EnvironmentSettings /> })}
                         {preview.then(|| view! { <previews::DeletePreview /> })}
                     </div>

@@ -1385,17 +1385,73 @@
 
     /* Operation timelines. Bars grow between the clock's one-second ticks
        through transitions; nothing animates per row from script. */
-    .deployment-live {
+    .deployment-head {
         display: grid;
         gap: 12px;
         margin-bottom: 20px;
     }
 
-    .deployment-live-head {
+    .deployment-meta {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 8px 14px;
+        gap: 4px 16px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+    }
+
+    /* A running deployment in brief: steps done, time left, and a segment
+       per step, on the Overview tab and in the deployment history. */
+    .progress-compact {
+        display: inline-grid;
+        gap: 4px;
+        width: 13rem;
+        color: var(--muted);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+
+    .progress-compact strong {
+        color: var(--ink);
+        font-weight: 600;
+    }
+
+    .progress-compact .progress-segments {
+        gap: 2px;
+        height: 5px;
+    }
+
+    .running-deployment {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 14px;
+    }
+
+    .running-deployment .title {
+        flex: 1 1 12rem;
+        min-width: 0;
+        font-weight: 550;
+    }
+
+    .running-deployment .title small {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 400;
+    }
+
+    .running-deployment .chevron {
+        color: var(--muted);
+    }
+
+    .list-row-link .latest-deployment {
+        position: relative;
+        z-index: 1;
+        color: inherit;
+        text-decoration: none;
     }
 
     .status-pill {
@@ -1486,7 +1542,7 @@
         background: var(--bad);
     }
 
-    .deployment-live-summary {
+    .deployment-progress-summary {
         display: flex;
         flex-wrap: wrap;
         justify-content: space-between;
@@ -1495,31 +1551,27 @@
         font-size: 13px;
     }
 
-    .deployment-live-summary strong {
+    .deployment-progress-summary strong {
         color: var(--ink);
         font-weight: 600;
         font-variant-numeric: tabular-nums;
     }
 
-    .deployment-live-body {
+    .deployment-timeline {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 300px;
         gap: 16px;
         align-items: start;
     }
 
-    .deployment-live-body[hidden] {
-        display: none;
-    }
-
-    .deployment-live-steps {
+    .deployment-steps {
         overflow: hidden;
         border: 1px solid var(--line);
         border-radius: var(--radius);
     }
 
-    .deployment-live-steps > .notice,
-    .deployment-live-steps > .loading {
+    .deployment-steps > .notice,
+    .deployment-steps > .loading {
         margin: 12px;
     }
 
@@ -1859,6 +1911,11 @@
         border-bottom: 1px solid var(--line);
     }
 
+    .event-feed-all {
+        margin-left: auto;
+        font-size: 12px;
+    }
+
     .event-feed-live {
         display: inline-flex;
         align-items: center;
@@ -1924,7 +1981,7 @@
     }
 
     @media (max-width: 1180px) {
-        .deployment-live-body {
+        .deployment-timeline {
             grid-template-columns: minmax(0, 1fr);
         }
 
