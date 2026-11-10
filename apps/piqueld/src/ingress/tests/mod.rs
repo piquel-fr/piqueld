@@ -4,14 +4,16 @@ mod traffic;
 mod tunnel;
 use super::*;
 use crate::{
-    api::{Mutation, MutationResponse},
+    api::{Actor, Mutation, MutationResponse},
     docker::{BollardDocker, DockerApi},
     reconcile::Controller,
 };
 use hyper::Method;
 use piqueld_core::{
-    EnvironmentId, NormalizedApplication, OperationState, manifest::ApplicationTemplate,
-    observability::EventScope,
+    EnvironmentId, EventActor, NormalizedApplication, OperationState,
+    manifest::ApplicationTemplate,
+    observability::{DiagnosticCode, EventScope},
+    resource::{APPLICATION_LABEL, INGRESS_LABEL, INSTANCE_LABEL, MANAGED_LABEL},
 };
 use serde_json::json;
 
@@ -121,13 +123,16 @@ pub(super) fn application(name: &str, host: &str, body: &str) -> NormalizedAppli
     piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
 
+/// Saves and deploys `app` on behalf of `actor`, returning its production
+/// environment and the deployment's operation.
 pub(super) async fn request_deployment(
     store: &Store,
+    actor: Actor<'_>,
     app: NormalizedApplication,
 ) -> (EnvironmentId, String) {
     let (MutationResponse::Saved(saved), _) = store
         .accept(
-            crate::api::Actor::Daemon,
+            actor,
             Mutation::Save {
                 application: Box::new(ApplicationTemplate::from(&app)),
                 expected_application_id: None,
@@ -154,7 +159,7 @@ async fn deploy(
     controller: &Controller<BollardDocker>,
     app: NormalizedApplication,
 ) -> EnvironmentId {
-    let (id, operation) = request_deployment(store, app).await;
+    let (id, operation) = request_deployment(store, Actor::Daemon, app).await;
     tokio::time::timeout(Duration::from_mins(3), async {
         loop {
             controller.scan(&CancellationToken::new()).await.unwrap();
@@ -444,6 +449,7 @@ impl Scenario {
         let guard = self.gateway.update.lock().await;
         let (_, routed) = request_deployment(
             &self.store,
+            Actor::Daemon,
             application("one", "one.example.test", "first backend"),
         )
         .await;
@@ -480,6 +486,7 @@ impl Scenario {
                     private.spec.routes.clear();
                     let (_, operation) = request_deployment(
                         &self.store,
+                        Actor::Daemon,
                         private.validate().unwrap().normalize(
                             piqueld_core::ApplicationId::parse("private-input").unwrap(),
                         ),
@@ -1161,6 +1168,37 @@ async fn journaled_requests_commit_intent_and_record_sanitized_failures() {
     );
 }
 
+/// Gateway passes credit the deployment they serve, but the DNS and
+/// certificate loops, which run alongside them, are the daemon's own.
+#[tokio::test]
+async fn only_gateway_actions_credit_the_deployment_they_serve() {
+    let engine = Engine::failing().await;
+    let ingress = engine.ingress(true);
+    let actor = Actor::System(piqueld_core::sync::SystemActor::SyncPoll);
+    let app = application("blog", "blog.example.test", "blog");
+    let (_, operation) = request_deployment(&engine.store, actor, app).await;
+    *ingress.requester.lock().await = Some(operation);
+    let gateway = ingress.journal("ingress_configure_routes", "gateway");
+    gateway.await.unwrap().finish(Ok(())).await.unwrap();
+    let records = ingress.journal_as(DiagnosticCode::DnsRecordsFailed, "dns", "blog");
+    records.await.unwrap().finish(Ok(())).await.unwrap();
+
+    let events = engine.history().await;
+    let actor = |phase: &str| {
+        let started = events
+            .iter()
+            .find(|event| event.kind == "action_started" && event.phase.as_deref() == Some(phase));
+        started.unwrap().actor.clone()
+    };
+    assert_eq!(
+        actor("ingress_configure_routes"),
+        Some(EventActor::System {
+            actor: piqueld_core::sync::SystemActor::SyncPoll
+        })
+    );
+    assert_eq!(actor("dns"), None);
+}
+
 #[tokio::test]
 async fn failed_gateway_sync_reports_health_without_response_details() {
     let engine = Engine::failing().await;
@@ -1277,8 +1315,12 @@ async fn each_listener_serves_only_its_own_routes() {
             .collect::<std::collections::BTreeSet<_>>()
     };
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration =
-        ingress.build_configuration(&table, &ingress.exact_hostnames(&table), Some(&edge), None);
+    let configuration = ingress.build_configuration(
+        &table,
+        &ingress.exact_hostnames(&table).await.unwrap(),
+        Some(&edge),
+        None,
+    );
     let servers = &configuration["apps"]["http"]["servers"];
     for (https, http, host) in [
         ("public", "public_http", "www.example.com"),
@@ -1327,8 +1369,12 @@ async fn each_listener_serves_only_its_own_routes() {
 
     // Without private ingress, private routes are served nowhere, never on
     // the public listener.
-    let configuration =
-        ingress.build_configuration(&table, &ingress.exact_hostnames(&table), None, None);
+    let configuration = ingress.build_configuration(
+        &table,
+        &ingress.exact_hostnames(&table).await.unwrap(),
+        None,
+        None,
+    );
     let servers = configuration["apps"]["http"]["servers"]
         .as_object()
         .unwrap();
@@ -1344,8 +1390,17 @@ async fn each_listener_serves_only_its_own_routes() {
 
 #[tokio::test]
 async fn exact_hostnames_win_over_wildcards_covering_them() {
-    let (_engine, ingress) = private_ingress().await;
-    let ingress = ingress.with_webhooks(Some(Hostname::parse("hooks.example.com").unwrap()));
+    let (engine, ingress) = private_ingress().await;
+    let hooks = Hostname::parse("hooks.example.com").unwrap();
+    // The website is reserved without being served by the gateway.
+    let website = Hostname::parse("piqueld.example.com").unwrap();
+    let reserved = [hooks.clone(), website];
+    engine
+        .store
+        .reserve_installation_hostnames(&reserved)
+        .await
+        .unwrap();
+    let ingress = ingress.with_webhooks(Some(hooks));
     let table: crate::store::ingress::RoutingTable = [
         (
             "env-deeper",
@@ -1361,8 +1416,12 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
     .map(|(id, routes)| (EnvironmentId::parse(id).unwrap(), routes))
     .into();
     let edge = ["172.20.0.0/16".to_owned()];
-    let configuration =
-        ingress.build_configuration(&table, &ingress.exact_hostnames(&table), Some(&edge), None);
+    let configuration = ingress.build_configuration(
+        &table,
+        &ingress.exact_hostnames(&table).await.unwrap(),
+        Some(&edge),
+        None,
+    );
     let servers = &configuration["apps"]["http"]["servers"];
     let matchers = |server: &str, host: &str| {
         servers[server]["routes"]
@@ -1374,9 +1433,11 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
             .collect::<Vec<_>>()
     };
     // The wildcard's probe, proxy and redirect leave out every exact
-    // hostname it covers, even one served on another listener, but not
-    // deeper ones.
-    let excluded = json!([{"host":["www.example.com", "admin.example.com", "hooks.example.com"]}]);
+    // hostname it covers, even one served on another listener or not by
+    // the gateway at all, but not deeper ones.
+    let excluded = json!([{"host":[
+        "hooks.example.com", "piqueld.example.com", "www.example.com", "admin.example.com"
+    ]}]);
     let wildcard = matchers("public", "*.example.com");
     assert_eq!(wildcard.len(), 2);
     for matcher in wildcard
@@ -1504,35 +1565,139 @@ async fn an_unhealthy_apps_node_alone_makes_ingress_unavailable() {
     assert_eq!(health.error_code.as_deref(), Some("ingress_unavailable"));
 }
 
-/// Whether the private listener is configured on an engine whose Swarm
-/// allocates application networks from `pool`.
-async fn private_listener_with_pool(pool: &'static str) -> bool {
-    let engine = Engine::serving(|_| {
-        axum::Router::new()
-            .route(
-                "/info",
-                axum::routing::get(move || async move {
-                    axum::Json(json!({"Swarm":{"Cluster":{"DefaultAddrPool":[pool]}}}))
-                }),
-            )
-            .fallback(|| async {
-                axum::Json(json!({"IPAM":{"Config":[{"Subnet":"172.20.0.0/16"}]}}))
-            })
+/// What the gateway keeps of an environment's acknowledged public route,
+/// and why, when its ingress network is a managed overlay on `subnet`, or
+/// on none, with or without a private listener.
+async fn prepare_on_subnet(
+    private: bool,
+    subnet: Option<&'static str>,
+) -> (Vec<ValidatedRoute>, Option<String>) {
+    let environment = Arc::new(std::sync::OnceLock::<String>::new());
+    let labelled = Arc::clone(&environment);
+    let engine = Engine::serving(|store| {
+        let instance = store.instance_id().to_string();
+        axum::Router::new().fallback(move || {
+            let network = json!({
+                "Labels":{
+                    MANAGED_LABEL:"true",INSTANCE_LABEL:instance,APPLICATION_LABEL:labelled.get()
+                },
+                "Driver":"overlay","Attachable":true,
+                "IPAM":{"Config":subnet.map(|subnet| json!([{"Subnet":subnet}])).unwrap_or_default()}
+            });
+            async move { axum::Json(network) }
+        })
     })
     .await;
-    let ingress = engine.ingress(true).with_private(&private_config());
-    let configuration = ingress.configuration(&RoutingTable::new()).await.unwrap();
-    configuration["apps"]["http"]["servers"]
-        .get("private")
-        .is_some()
+    let mut ingress = engine.ingress(true);
+    if private {
+        ingress = ingress.with_private(&private_config());
+    }
+    let app = application("public", "www.example.com", "body");
+    let (id, _) = request_deployment(&engine.store, Actor::Daemon, app).await;
+    environment.set(id.to_string()).unwrap();
+    let store = &engine.store;
+    let route = routes(Visibility::Public, "www.example.com");
+    store.stage_routes(&id, &route, true, None).await.unwrap();
+    let table = store.routing_table().await.unwrap();
+    store.acknowledge_routes(&table).await.unwrap();
+    let (prepared, _, mut failures) = ingress.prepare_routes(&table).await.unwrap();
+    (prepared[&id].clone(), failures.remove(&id))
 }
 
 #[tokio::test]
-async fn the_private_listener_stays_off_while_application_pools_overlap_the_tailnet() {
-    assert!(private_listener_with_pool("10.0.0.0/8").await);
-    // Applications on such a pool could pass for tailnet clients.
-    assert!(!private_listener_with_pool("100.64.0.0/10").await);
-    assert!(!private_listener_with_pool("not a pool").await);
+async fn ingress_networks_overlapping_the_tailnet_lose_their_routes_with_a_private_listener() {
+    for (private, subnet) in [(true, "10.0.3.0/24"), (false, "100.64.5.0/24")] {
+        let (routes, failure) = Box::pin(prepare_on_subnet(private, Some(subnet))).await;
+        assert_eq!((routes.len(), failure), (1, None), "{subnet}");
+    }
+    // A network without a subnet can't be checked, so it fails closed: its
+    // accepted route is retained like any unverified network's, and the
+    // gateway detaches the network (see the ordering test below).
+    let (routes, failure) = Box::pin(prepare_on_subnet(true, None)).await;
+    assert_eq!(routes.len(), 1);
+    assert!(
+        failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("no subnet")),
+        "{failure:?}"
+    );
+    // Its containers could pass for tailnet clients on the private listener,
+    // so even its acknowledged route is withdrawn and the network detached.
+    let (routes, failure) = Box::pin(prepare_on_subnet(true, Some("100.64.5.0/24"))).await;
+    assert_eq!(routes, []);
+    assert!(
+        failure.as_deref().is_some_and(
+            |failure| failure.starts_with("ingress network subnet 100.64.5.0/24 overlaps")
+        ),
+        "{failure:?}"
+    );
+}
+
+/// Networks that could pass their containers for tailnet clients, on a
+/// tailnet subnet or on none, are detached before Caddy loads a
+/// configuration, even while an environment's routes are retained; other
+/// stale networks only after.
+#[tokio::test]
+async fn networks_exposing_the_private_listener_are_detached_before_caddy_reloads() {
+    let id = EnvironmentId::parse("env-retained").unwrap();
+    let overlap = piqueld_core::DockerNetworkName::for_ingress(&id).to_string();
+    let requests = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+    let (docker, exposed) = (Arc::clone(&requests), overlap.clone());
+    let engine = Engine::serving(|store| {
+        let labels = json!({
+            MANAGED_LABEL:"true",INSTANCE_LABEL:store.instance_id().as_str(),INGRESS_LABEL:"true"
+        });
+        axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let path = request.uri().path().to_owned();
+            docker.lock().push(format!("{} {path}", request.method()));
+            let body = if path.contains("/containers/") {
+                json!({
+                    "Config":{"Labels":labels.clone()},
+                    "NetworkSettings":{"Networks":{exposed.as_str():{},"unknown":{},"stale":{}}}
+                })
+            } else if path.contains(exposed.as_str()) {
+                json!({"IPAM":{"Config":[{"Subnet":"100.64.5.0/24"}]}})
+            } else if path.contains("unknown") {
+                json!({"IPAM":{"Config":[]}})
+            } else {
+                json!({"IPAM":{"Config":[{"Subnet":"10.0.3.0/24"}]}})
+            };
+            async move { axum::Json(body) }
+        })
+    })
+    .await;
+    let control = engine.directory.path().join("ingress/control");
+    std::fs::create_dir_all(&control).unwrap();
+    let admin = tokio::net::UnixListener::bind(control.join("admin.sock")).unwrap();
+    let caddy = Arc::clone(&requests);
+    let admin_api = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        caddy.lock().push(format!(
+            "caddy {} {}",
+            request.method(),
+            request.uri().path()
+        ));
+        async { axum::Json(json!({})) }
+    });
+    let server = tokio::spawn(async move { axum::serve(admin, admin_api).await });
+    let ingress = engine.ingress(true).with_private(&private_config());
+
+    // Retained routes, as for a network failing its check for another reason.
+    let table = [(id, routes(Visibility::Public, "www.example.com"))].into();
+    ingress
+        .configure_gateway(&table, &BTreeSet::new())
+        .await
+        .unwrap();
+    server.abort();
+    let log = requests.lock().clone();
+    let position = |entry: &str| {
+        log.iter()
+            .position(|request| request.ends_with(entry))
+            .unwrap_or_else(|| panic!("{entry} in {log:#?}"))
+    };
+    let load = position("caddy POST /load");
+    assert!(position(&format!("/networks/{overlap}/disconnect")) < load);
+    assert!(position("/networks/unknown/disconnect") < load);
+    assert!(load < position("/networks/stale/disconnect"));
 }
 
 #[tokio::test]

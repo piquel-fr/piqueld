@@ -295,14 +295,14 @@ pub(super) struct Subnet {
     prefix: u8,
 }
 
-/// A Swarm address pool overlaps the tailnet ranges, so application
+/// An ingress network's subnet overlaps the tailnet ranges, so its
 /// containers could pass for tailnet clients on the private listener.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "Swarm address pool {pool} overlaps the tailnet ranges the private listener trusts; private routes stay off until the Swarm uses pools outside 100.64.0.0/10 and fd7a:115c:a1e0::/48"
+    "ingress network subnet {subnet} overlaps the tailnet ranges the private listener trusts; this environment's routes are withdrawn until Swarm allocates its network outside 100.64.0.0/10 and fd7a:115c:a1e0::/48"
 )]
 pub(super) struct TailnetOverlap {
-    pub(super) pool: String,
+    pub(super) subnet: String,
 }
 
 impl Subnet {

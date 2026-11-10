@@ -388,6 +388,13 @@ impl Ingress {
         // Another installation's claim makes the name shared: never exclusive.
         let owned = !ours_found.is_empty() && foreign.is_empty();
         let republish = self.store.dns_records_unpublished(hostname).await?;
+        // A withdrawal is done once our claim is gone and its deletion
+        // published, which a staged provider may not have done yet.
+        let withdrawing =
+            self.withdrawing.lock().contains(hostname) && (!ours_found.is_empty() || republish);
+        if !withdrawing {
+            self.withdrawing.lock().remove(hostname);
+        }
         let Some(desired) = desired else {
             // Only this installation's own records: the addresses when it
             // owns the name, and its ownership records in any case.
@@ -408,6 +415,13 @@ impl Ingress {
             self.store.release_dns_records(hostname).await?;
             return Ok(RouteDns::default());
         };
+        // A claim that lost a race and could not be deleted or published
+        // then. Claims that were ever established are never withdrawn this
+        // way.
+        if withdrawing {
+            let claims = ours_found.iter().map(|found| found.id.clone()).collect();
+            return self.withdraw(&site, claims).await;
+        }
         if !owned && (!current.is_empty() || !ownership.is_empty()) {
             let existing: Vec<String> = current
                 .iter()
@@ -424,8 +438,13 @@ impl Ingress {
         }
         let changes = Changes::between(&current, desired);
         if !owned {
-            self.change_records("ingress_dns_create", &site, Some(&ours), &changes)
+            let written = self
+                .change_records("ingress_dns_create", &site, Some(&ours), &changes)
                 .await?;
+            if let Written::ClaimTaken(claim) = written {
+                self.withdrawing.lock().insert(hostname.clone());
+                return self.withdraw(&site, vec![claim]).await;
+            }
         } else if !changes.is_empty() || republish {
             self.change_records("ingress_dns_update", &site, None, &changes)
                 .await?;
@@ -433,16 +452,35 @@ impl Ingress {
         Ok(RouteDns::new(DnsRecordState::Managed, None))
     }
 
+    /// Deletes this installation's `claims` on a name another installation
+    /// claimed at the same time, if still listed, and publishes the zone,
+    /// then forgets the withdrawal. On failure the name stays in
+    /// `withdrawing`, so the next pass retries.
+    async fn withdraw(&self, site: &Site<'_>, claims: Vec<RecordId>) -> Result<RouteDns> {
+        let changes = Changes {
+            delete: claims,
+            ..Changes::default()
+        };
+        self.change_records("ingress_dns_delete", site, None, &changes)
+            .await?;
+        self.withdrawing.lock().remove(site.hostname);
+        Ok(RouteDns::new(
+            DnsRecordState::DnsConflict,
+            "Another installation claimed this name at the same time, so piqueld withdrew its claim and never overwrites its records".to_owned(),
+        ))
+    }
+
     /// Writes `changes` in one journal action, after the ownership record
-    /// `claim` when given. The hostname is tracked in the store first, with
-    /// changes a provider stages marked unpublished until it publishes them.
+    /// `claim` when given (see [`Site::apply`]). The hostname is tracked in
+    /// the store first, with changes a provider stages marked unpublished
+    /// until it publishes them.
     async fn change_records(
         &self,
         phase: &str,
         site: &Site<'_>,
         claim: Option<&Record>,
         changes: &Changes,
-    ) -> Result<()> {
+    ) -> Result<Written> {
         let stages = site.provider.stages_changes();
         self.store.track_dns_records(site.hostname, stages).await?;
         let journal = self
@@ -454,12 +492,12 @@ impl Ingress {
             .await
             .context("record the DNS change in the journal")?;
         let result = site.apply(&journal, claim, changes).await;
-        journal.finish(result).await?;
+        let written = journal.finish(result).await?;
         if stages {
             self.store.track_dns_records(site.hostname, false).await?;
         }
         tracing::info!(hostname=%site.hostname, phase, "changed route DNS records");
-        Ok(())
+        Ok(written)
     }
 
     /// The DNS state of `hostname` from the latest pass.
@@ -470,6 +508,16 @@ impl Ingress {
             .cloned()
             .unwrap_or_default()
     }
+}
+
+/// What [`Site::apply`] wrote.
+#[derive(Debug, Eq, PartialEq)]
+enum Written {
+    /// The claim, if any, and every change.
+    Changes,
+    /// Only the claim, whose record ID this is: another installation
+    /// claimed the name at the same time, so it must be withdrawn.
+    ClaimTaken(RecordId),
 }
 
 /// Where one hostname's records live.
@@ -505,19 +553,31 @@ impl Site<'_> {
 
     /// Writes the ownership record `claim`, then `changes` in order, then
     /// publishes the zone. Each request is committed to `journal` first.
+    /// Writes and publishes nothing more when another installation claimed
+    /// the name at the same time: the caller withdraws `claim`.
     async fn apply(
         &self,
         journal: &Journaled<'_>,
         claim: Option<&Record>,
         changes: &Changes,
-    ) -> Result<()> {
+    ) -> Result<Written> {
         let (provider, http, zone) = (self.provider, self.http, self.zone);
         let name = self.hostname.as_str();
         if let Some(claim) = claim {
             journal.request().await?;
-            provider
+            let id = provider
                 .upsert(http, zone, &self.owner(), None, claim)
                 .await?;
+            // Two installations may both have read the name as free. Each
+            // reads it again before writing addresses, and the one that sees
+            // the other's claim backs off; if both do, the next pass retries.
+            let ownership = provider.records(http, zone, &self.owner()).await?;
+            if ownership
+                .iter()
+                .any(|found| matches!(found.record, Record::Txt(_)) && found.record != *claim)
+            {
+                return Ok(Written::ClaimTaken(id));
+            }
         }
         for (id, record) in &changes.update {
             journal.request().await?;
@@ -533,7 +593,7 @@ impl Site<'_> {
         }
         journal.request().await?;
         provider.publish(http, zone).await?;
-        Ok(())
+        Ok(Written::Changes)
     }
 }
 

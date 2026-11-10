@@ -227,14 +227,18 @@ impl Ingress {
             .inspect(&format!("/networks/{}", self.name))
             .await?
             .context("gateway edge network is not ready")?;
-        let subnets: Vec<String> = network["IPAM"]["Config"]
+        let subnets: Vec<String> = Self::subnets(&network).map(str::to_owned).collect();
+        ensure!(!subnets.is_empty(), "gateway edge network has no subnet");
+        Ok(subnets)
+    }
+
+    /// The subnets of an inspected Docker `network`.
+    fn subnets(network: &Value) -> impl Iterator<Item = &str> {
+        network["IPAM"]["Config"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|config| config["Subnet"].as_str().map(str::to_owned))
-            .collect();
-        ensure!(!subnets.is_empty(), "gateway edge network has no subnet");
-        Ok(subnets)
+            .filter_map(|config| config["Subnet"].as_str())
     }
 
     /// Where the daemon reaches the private listener: the gateway's address on
@@ -299,7 +303,9 @@ impl Ingress {
     /// (withdrawn or redirect-only) need no network and are passed through.
     /// Keep unavailable apps on their accepted destinations, but always honor
     /// withdrawals. Never attach an unverified network or acknowledge a new route
-    /// for an app whose network failed validation.
+    /// for an app whose network failed validation. An app whose network
+    /// overlaps the tailnet loses all its routes instead, so that network is
+    /// detached rather than retained.
     pub(super) async fn prepare_routes(
         &self,
         desired: &RoutingTable,
@@ -320,6 +326,12 @@ impl Ingress {
                 Ok(()) => {
                     networks.insert(name);
                 }
+                Err(error) if error.is::<TailnetOverlap>() => {
+                    tracing::error!(environment_id=%id, network=%name, error=?error,
+                        "withdrawing the application's routes; other applications can still update");
+                    routes.clear();
+                    failures.insert(id.clone(), format!("{error:#}"));
+                }
                 Err(error) => {
                     tracing::error!(environment_id=%id, network=%name, error=?error,
                         "preserving accepted destinations; other applications can still update");
@@ -334,7 +346,10 @@ impl Ingress {
     }
 
     /// Verifies an application's ingress network exists, is owned by that
-    /// application on this instance, and is an attachable overlay.
+    /// application on this instance, and is an attachable overlay. With a
+    /// private listener, its subnets must also lie outside the tailnet
+    /// ranges, or its containers could pass for tailnet clients there: that
+    /// fails with [`TailnetOverlap`].
     async fn check_ingress_network(
         &self,
         id: &piqueld_core::EnvironmentId,
@@ -355,37 +370,21 @@ impl Ingress {
             network["Driver"] == "overlay" && network["Attachable"] == true,
             "application ingress network must be an attachable overlay"
         );
-        Ok(())
-    }
-
-    /// Requires Swarm's default address pools, which every application
-    /// ingress network is allocated from, to lie outside the tailnet ranges.
-    /// Otherwise an application's containers could pass for tailnet clients on
-    /// the private listener, which therefore stays off until this holds.
-    /// Pools are fixed when the Swarm is created, so success is remembered.
-    pub(super) async fn check_tailnet_pools(&self) -> Result<()> {
-        self.tailnet_pools
-            .get_or_try_init(|| async {
-                let info = self.docker.get("/info").await?;
-                let pools = info["Swarm"]["Cluster"]["DefaultAddrPool"]
-                    .as_array()
-                    .filter(|pools| !pools.is_empty())
-                    .context("Docker reports no Swarm address pools")?;
-                for pool in pools {
-                    let pool = pool.as_str().context("Swarm address pool is not text")?;
-                    let subnet = Subnet::parse(pool)
-                        .with_context(|| format!("decode Swarm address pool {pool}"))?;
-                    if subnet.overlaps_tailnet() {
-                        return Err(TailnetOverlap {
-                            pool: pool.to_owned(),
-                        }
-                        .into());
-                    }
+        if self.node.is_some() {
+            ensure!(
+                Self::subnets(&network).next().is_some(),
+                "ingress network has no subnet to check against the tailnet ranges"
+            );
+            for subnet in Self::subnets(&network) {
+                let parsed = Subnet::parse(subnet)
+                    .with_context(|| format!("decode ingress network subnet {subnet}"))?;
+                if parsed.overlaps_tailnet() {
+                    let subnet = subnet.to_owned();
+                    return Err(TailnetOverlap { subnet }.into());
                 }
-                Ok(())
-            })
-            .await
-            .copied()
+            }
+        }
+        Ok(())
     }
 
     /// The hardened base of every managed container's spec (the gateway, the
@@ -525,8 +524,15 @@ impl Ingress {
         }
         let journal = self.journal("ingress_start_gateway", &self.name).await?;
         let result = async {
-            if current.is_none() {
-                self.create_container(&journal, &self.name, &spec).await?;
+            match &current {
+                None => self.create_container(&journal, &self.name, &spec).await?,
+                // A stopped gateway keeps its attachments, so one exposing
+                // the private listener goes before it starts.
+                Some(container) => {
+                    for network in self.exposing_networks(container, networks).await? {
+                        self.detach(&journal, &network).await?;
+                    }
+                }
             }
             self.attach_networks(&journal, &self.name, networks).await?;
             self.start_gateway(&journal, table).await
@@ -1002,6 +1008,62 @@ impl Ingress {
         Ok(())
     }
 
+    /// The networks the gateway `container` is attached to, besides the edge
+    /// network.
+    fn attached_networks<'a>(&'a self, container: &'a Value) -> impl Iterator<Item = &'a String> {
+        container["NetworkSettings"]["Networks"]
+            .as_object()
+            .into_iter()
+            .flat_map(serde_json::Map::keys)
+            .filter(move |name| *name != &self.name)
+    }
+
+    /// Attached networks, other than the verified `networks`, whose
+    /// containers could pass for tailnet clients while a private listener is
+    /// configured: their subnets overlap the tailnet ranges or are unknown.
+    /// They must be detached before the private listener serves, even when
+    /// their application's routes are retained.
+    async fn exposing_networks(
+        &self,
+        container: &Value,
+        networks: &BTreeSet<String>,
+    ) -> Result<Vec<String>> {
+        let mut exposing = Vec::new();
+        if self.node.is_none() {
+            return Ok(exposing);
+        }
+        for name in self
+            .attached_networks(container)
+            .filter(|name| !networks.contains(*name))
+        {
+            let Some(network) = self.docker.inspect(&format!("/networks/{name}")).await? else {
+                continue;
+            };
+            let mut subnets = Self::subnets(&network).peekable();
+            let known = subnets.peek().is_some();
+            if !known
+                || !subnets
+                    .all(|subnet| Subnet::parse(subnet).is_some_and(|s| !s.overlaps_tailnet()))
+            {
+                exposing.push(name.clone());
+            }
+        }
+        Ok(exposing)
+    }
+
+    /// Detaches the gateway from `network`.
+    async fn detach(&self, journal: &Journaled<'_>, network: &str) -> Result<()> {
+        self.docker
+            .send(
+                journal,
+                Method::POST,
+                &format!("/networks/{network}/disconnect"),
+                Some(&json!({"Container":self.name,"Force":false})),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Desired networks the inspected container is not attached to.
     fn missing_networks<'a>(
         container: &Value,
@@ -1015,7 +1077,8 @@ impl Ingress {
 
     /// Converges attachments and routes; a matching gateway records no action.
     /// Attaches new networks before loading routes, and detaches stale networks
-    /// only after the new configuration no longer references them.
+    /// only after the new configuration no longer references them, except
+    /// those exposing the private listener, which go first.
     pub(super) async fn configure_gateway(
         &self,
         table: &RoutingTable,
@@ -1027,17 +1090,18 @@ impl Ingress {
             .context("gateway container disappeared")?;
         let desired = self.configuration(table).await?;
         let reload = self.caddy.get("/config/").await? != desired;
-        // Keep existing attachments for unavailable apps whose routes were retained.
+        let exposing = self.exposing_networks(&container, networks).await?;
+        // Keep existing attachments for unavailable apps whose routes were
+        // retained, unless they expose the private listener.
         let retained: BTreeSet<_> = table
             .iter()
             .filter(|(_, routes)| Self::proxies(routes))
             .map(|(id, _)| DockerNetworkName::for_ingress(id).to_string())
+            .filter(|name| !exposing.contains(name))
             .collect();
-        let stale: Vec<String> = container["NetworkSettings"]["Networks"]
-            .as_object()
-            .into_iter()
-            .flat_map(|attached| attached.keys())
-            .filter(|name| *name != &self.name && !retained.contains(*name))
+        let stale: Vec<String> = self
+            .attached_networks(&container)
+            .filter(|name| !retained.contains(*name))
             .cloned()
             .collect();
         if !reload
@@ -1050,6 +1114,9 @@ impl Ingress {
         }
         let journal = self.journal("ingress_configure_routes", &self.name).await?;
         let result = async {
+            for network in &exposing {
+                self.detach(&journal, network).await?;
+            }
             self.attach_networks(&journal, &self.name, networks).await?;
             if reload {
                 self.caddy
@@ -1060,15 +1127,8 @@ impl Ingress {
                     "applied ingress routing configuration"
                 );
             }
-            for network in &stale {
-                self.docker
-                    .send(
-                        &journal,
-                        Method::POST,
-                        &format!("/networks/{network}/disconnect"),
-                        Some(&json!({"Container":self.name,"Force":false})),
-                    )
-                    .await?;
+            for network in stale.iter().filter(|name| !exposing.contains(name)) {
+                self.detach(&journal, network).await?;
             }
             Ok(())
         }

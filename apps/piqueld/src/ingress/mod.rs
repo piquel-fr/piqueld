@@ -136,11 +136,12 @@ pub struct Ingress {
     public_addresses: Vec<IpAddr>,
     /// Each route hostname's DNS record state from the latest pass.
     records: parking_lot::RwLock<BTreeMap<RouteHostname, records::RouteDns>>,
+    /// Hostnames another installation claimed at the same time as this one,
+    /// whose own claim is not deleted yet; each pass retries until it is.
+    withdrawing: parking_lot::Mutex<BTreeSet<RouteHostname>>,
     /// Set once the gateway has converged, or stopped, with this daemon's
     /// configuration; DNS records wait for it.
     gateway_converged: std::sync::atomic::AtomicBool,
-    /// Set once Swarm's address pools are verified outside the tailnet ranges.
-    tailnet_pools: tokio::sync::OnceCell<()>,
     /// Public hostname whose webhook path the gateway forwards to the
     /// daemon's webhook socket, `ingress.webhook_hostname`.
     webhooks: Option<Hostname>,
@@ -208,8 +209,8 @@ impl Ingress {
             tunnel: None,
             public_addresses: Vec::new(),
             records: parking_lot::RwLock::default(),
+            withdrawing: parking_lot::Mutex::default(),
             gateway_converged: std::sync::atomic::AtomicBool::new(false),
-            tailnet_pools: tokio::sync::OnceCell::new(),
             webhooks: None,
             #[cfg(test)]
             issuer: None,
@@ -667,16 +668,6 @@ impl Ingress {
                 "The gateway is unavailable, and with it the private listener. See ingress health",
             );
         }
-        if let Err(error) = self.check_tailnet_pools().await {
-            tracing::error!(error=?error, "the private listener stays off");
-            return match error.downcast_ref::<node::TailnetOverlap>() {
-                Some(overlap) => status(false, &overlap.to_string()),
-                None => status(
-                    false,
-                    "The private listener stays off: Swarm's address pools could not be verified outside the tailnet ranges. See daemon logs for details.",
-                ),
-            };
-        }
         if let Err(error) = self.ensure_node().await {
             tracing::error!(error=?error, "apps tailnet node is unavailable");
             return status(
@@ -701,7 +692,10 @@ impl Ingress {
         ) else {
             return;
         };
-        let exact = &self.exact_hostnames(&everything);
+        let Ok(exact) = self.exact_hostnames(&everything).await else {
+            return;
+        };
+        let exact = &exact;
         let (healthy, private) = {
             let health = self.health.read().await;
             (health.healthy, health.private.clone())

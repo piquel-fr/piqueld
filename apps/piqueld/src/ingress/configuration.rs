@@ -71,10 +71,9 @@ struct Listener {
 
 impl Ingress {
     /// The complete replacement configuration for `table`, with the private
-    /// and tunnel listeners trusting only the edge network's subnets. The
-    /// private listener is left out unless Swarm's address pools are verified
-    /// outside the tailnet ranges. Wildcards leave alone the exact hostnames
-    /// of every route, stopped environments' included, which `table` omits.
+    /// and tunnel listeners trusting only the edge network's subnets.
+    /// Wildcards leave alone the exact hostnames of every route, stopped
+    /// environments' included, which `table` omits.
     pub(super) async fn configuration(&self, table: &RoutingTable) -> Result<Value> {
         let edge = if self.node.is_some() || self.tunnel.is_some() {
             Some(self.edge_subnets().await?)
@@ -82,10 +81,7 @@ impl Ingress {
             None
         };
         let tunnel = self.tunnel.as_ref().and(edge.clone());
-        let proxies = match &self.node {
-            Some(_) if self.check_tailnet_pools().await.is_ok() => edge,
-            _ => None,
-        };
+        let proxies = self.node.as_ref().and(edge);
         // Tests outside the engine reach the published private listener from
         // the host's Docker bridge, outside the edge network. Application
         // networks, from Swarm's 10.0.0.0/8 pool, stay untrusted.
@@ -96,22 +92,26 @@ impl Ingress {
             }
             proxies
         });
-        let exact = self.exact_hostnames(&self.store.routing_table().await?);
+        let exact = self
+            .exact_hostnames(&self.store.routing_table().await?)
+            .await?;
         Ok(self.build_configuration(table, &exact, proxies.as_deref(), tunnel.as_deref()))
     }
 
     /// Every exact hostname, served on this gateway or not, which wildcards
     /// leave alone: a private route's stays out of a public wildcard even
-    /// while private ingress is off.
-    pub(super) fn exact_hostnames(&self, table: &RoutingTable) -> Vec<Hostname> {
-        table
-            .values()
-            .flatten()
-            .filter(|route| route.hostname.wildcard().is_none())
-            .map(|route| route.hostname.domain())
-            .chain(self.webhook_hostname().cloned())
-            .chain(self.dashboard_hostname().cloned())
-            .collect()
+    /// while private ingress is off, and so do the installation's own
+    /// hostnames (its website, dashboard and webhooks).
+    pub(super) async fn exact_hostnames(&self, table: &RoutingTable) -> Result<Vec<Hostname>> {
+        let mut exact = self.store.reserved_hostnames().await?;
+        exact.extend(
+            table
+                .values()
+                .flatten()
+                .filter(|route| route.hostname.wildcard().is_none())
+                .map(|route| route.hostname.domain()),
+        );
+        Ok(exact)
     }
 
     /// Produces the configuration, whose wildcards leave the `exact`
@@ -252,11 +252,14 @@ impl Ingress {
                     "stream_close_delay":300_000_000_000_u64
                 });
                 // Cloudflare terminated TLS, and the client address
-                // comes from `Cf-Connecting-IP`, not the peer.
+                // comes from `Cf-Connecting-IP`, not the peer. Caddy keeps
+                // a trusted peer's `X-Forwarded-Host`, which `cloudflared`
+                // passes through from the client, so it is set here too.
                 if tunnel && route.visibility == Visibility::Public {
                     proxy["headers"] = json!({"request":{"set":{
                         "X-Forwarded-For":["{http.vars.client_ip}"],
-                        "X-Forwarded-Proto":["https"]
+                        "X-Forwarded-Proto":["https"],
+                        "X-Forwarded-Host":["{http.request.hostport}"]
                     }}});
                 }
                 proxy

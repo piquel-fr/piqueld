@@ -76,7 +76,7 @@ route's.
   public or private, so a wildcard never captures a hostname that exists
   already. The [webhook](webhooks.md) and
   [dashboard](private-routes.md#serve-the-dashboard-on-your-own-domain)
-  hostnames win too.
+  hostnames, and the website's (`auth.public_url`), win too.
 - **Names below a wildcard belong to its application.** Only that application
   can add an exact route below it. An exact name that another application
   routed before the wildcard existed stays that application's.

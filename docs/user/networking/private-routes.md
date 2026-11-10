@@ -341,11 +341,14 @@ the host.
   [renewal and failures](wildcards.md#renewal-and-failures).
 - **`Private HTTPS is not verified yet`.** Check that the hostname's A and AAAA
   records point at the apps node's addresses, and nothing else.
-- **`Swarm address pool <pool> overlaps the tailnet ranges`.** Your Swarm was
-  set up with custom address pools. Docker gives application networks
-  addresses from them, which piqueld can't tell apart from tailnet devices, so
-  it keeps private routes off until the Swarm's pools are outside
-  `100.64.0.0/10` and `fd7a:115c:a1e0::/48`.
+- **A deployment fails with `ingress network subnet <subnet> overlaps the
+  tailnet ranges`.** Your Swarm was set up with custom address pools, and
+  Docker gave the environment's network addresses from them. piqueld can't
+  tell those apart from tailnet devices, so it withdraws all of that
+  environment's routes until the Swarm's pools are outside `100.64.0.0/10`
+  and `fd7a:115c:a1e0::/48`. Other environments are unaffected. If all your
+  Swarm's pools overlap, every environment's routes are withdrawn, public ones
+  included, and their DNS records are deleted.
 - **Devices on the tailnet can't resolve the hostname.** Check your router's
   [DNS-rebinding protection](#dns-for-private-routes).
 - **The daemon doesn't start, with `ingress.private.dashboard_hostname requires

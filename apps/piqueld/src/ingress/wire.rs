@@ -87,27 +87,44 @@ impl Journaled<'_> {
 }
 
 impl super::Ingress {
-    /// Opens a daemon-scoped journal action, attributed to the deployment the
-    /// current pass serves (see `requester`). Callers decide from reads first
-    /// and open an action only when a change is needed, so unchanged passes
-    /// record no history.
+    /// Opens a daemon-scoped journal action for a gateway pass, run under
+    /// `update`, attributed to the deployment the pass serves (see
+    /// `requester`). Callers decide from reads first and open an action only
+    /// when a change is needed, so unchanged passes record no history.
     pub(super) async fn journal(&self, phase: &str, resource: &str) -> Result<Journaled<'_>> {
-        self.journal_as(DiagnosticCode::IngressUnavailable, phase, resource)
-            .await
+        let requester = self.requester.lock().await.clone();
+        self.begin(
+            requester.as_deref(),
+            DiagnosticCode::IngressUnavailable,
+            phase,
+            resource,
+        )
+        .await
     }
 
-    /// Opens an action whose failure is classified as `code`, attributed like
-    /// [`Self::journal`].
+    /// Opens an action of the background DNS or certificate loops, whose
+    /// failure is classified as `code`. They run outside `update` and serve
+    /// no deployment, so the daemon is the actor.
     pub(super) async fn journal_as(
         &self,
         code: DiagnosticCode,
         phase: &str,
         resource: &str,
     ) -> Result<Journaled<'_>> {
-        let requester = self.requester.lock().await.clone();
+        self.begin(None, code, phase, resource).await
+    }
+
+    /// Opens an action requested by `requester`'s operation, if any.
+    async fn begin(
+        &self,
+        requester: Option<&str>,
+        code: DiagnosticCode,
+        phase: &str,
+        resource: &str,
+    ) -> Result<Journaled<'_>> {
         let action = self
             .store
-            .begin_daemon_action(requester.as_deref(), phase, Some(resource))
+            .begin_daemon_action(requester, phase, Some(resource))
             .await?;
         Ok(Journaled {
             store: &self.store,
