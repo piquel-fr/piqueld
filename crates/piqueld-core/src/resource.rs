@@ -1524,6 +1524,16 @@ impl TaskState {
     pub fn is_live(&self) -> bool {
         matches!(self, Self::Starting | Self::Running)
     }
+
+    /// Whether the task is over: it completed, failed, was rejected, or was
+    /// shut down.
+    #[must_use]
+    pub const fn ended(self) -> bool {
+        matches!(
+            self,
+            Self::Complete | Self::Failed | Self::Rejected | Self::Shutdown
+        )
+    }
 }
 
 /// Sanitized observation of one Docker task.

@@ -307,6 +307,79 @@ impl TaskSpan {
     }
 }
 
+impl TaskLane {
+    /// Whether the task serves requests as last observed.
+    #[must_use]
+    pub fn serving(&self) -> bool {
+        self.spans.last().is_some_and(|span| span.serving())
+    }
+
+    /// Whether the task served requests at `at_ms`, as observed then.
+    #[must_use]
+    pub fn serving_at(&self, at_ms: i64) -> bool {
+        self.spans
+            .iter()
+            .rfind(|span| span.from_ms <= at_ms)
+            .is_some_and(|span| span.serving())
+    }
+
+    /// When Swarm watched, or watches, this new task for failure: for
+    /// `monitor_seconds` from when it first served. `None` for an old task
+    /// or one that never served.
+    #[must_use]
+    pub fn monitor(&self, monitor_seconds: u32) -> Option<Window> {
+        if !self.task.current || monitor_seconds == 0 {
+            return None;
+        }
+        let from_ms = self.spans.iter().find(|span| span.serving())?.from_ms;
+        Some(Window {
+            from_ms,
+            to_ms: from_ms + i64::from(monitor_seconds) * 1_000,
+        })
+    }
+}
+
+/// A stretch of time, in Unix milliseconds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Window {
+    /// When it opens.
+    pub from_ms: i64,
+    /// When it closes.
+    pub to_ms: i64,
+}
+
+impl Window {
+    /// How long it is left open at `now_ms`, zero once closed.
+    #[must_use]
+    pub fn left_ms(self, now_ms: i64) -> u64 {
+        u64::try_from(self.to_ms - now_ms).unwrap_or(0)
+    }
+
+    /// Whether it is open at `now_ms`.
+    #[must_use]
+    pub const fn contains(self, now_ms: i64) -> bool {
+        self.from_ms <= now_ms && now_ms < self.to_ms
+    }
+}
+
+/// How many of a rollout's new tasks serve requests, such as "1/2 new tasks
+/// running".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NewTasks {
+    /// New tasks serving.
+    pub running: usize,
+    /// New tasks not over: serving, or on their way to it.
+    pub total: usize,
+}
+
+impl std::fmt::Display for NewTasks {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { running, total } = self;
+        let tasks = if *total == 1 { "task" } else { "tasks" };
+        write!(formatter, "{running}/{total} new {tasks} running")
+    }
+}
+
 /// When no task of a rolling-out service served requests.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct Gap {
@@ -315,6 +388,23 @@ pub struct Gap {
     /// When a task served again; `None` while none does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_ms: Option<i64>,
+}
+
+impl Gap {
+    /// When it ended, or `end_ms` while it has not.
+    #[must_use]
+    pub fn until(self, end_ms: i64) -> i64 {
+        self.to_ms.unwrap_or(end_ms)
+    }
+}
+
+/// How long no task of a rolling-out service served requests altogether.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Downtime {
+    /// For how long, in milliseconds.
+    pub ms: u64,
+    /// Whether no task serves still.
+    pub ongoing: bool,
 }
 
 impl Step {
@@ -407,6 +497,58 @@ impl Step {
             }
         }
         gaps
+    }
+
+    /// How long no task of the service served requests, as of `now_ms` or
+    /// the step's end; `None` when a task always did.
+    #[must_use]
+    pub fn downtime(&self, now_ms: i64) -> Option<Downtime> {
+        let end = self.finished_at_ms.unwrap_or(now_ms);
+        let gaps = self.gaps();
+        let ms = gaps
+            .iter()
+            .map(|gap| u64::try_from(gap.until(end) - gap.from_ms).unwrap_or(0))
+            .sum();
+        let ongoing = gaps.last()?.to_ms.is_none();
+        Some(Downtime { ms, ongoing })
+    }
+
+    /// Whether an old task was seen still serving once a new one served,
+    /// with no gap since: requests always found a task, as in a
+    /// `start-first` rollout. A handover between two observations shows
+    /// neither this nor a gap.
+    #[must_use]
+    pub fn overlapped(&self) -> bool {
+        let (new, old): (Vec<_>, Vec<_>) = self.tasks.iter().partition(|lane| lane.task.current);
+        self.gaps().is_empty()
+            && new
+                .iter()
+                .filter_map(|lane| lane.spans.iter().find(|span| span.serving()))
+                .any(|span| old.iter().any(|lane| lane.serving_at(span.from_ms)))
+    }
+
+    /// How many of the rollout's new tasks serve; `None` before any was
+    /// observed.
+    #[must_use]
+    pub fn new_tasks(&self) -> Option<NewTasks> {
+        let new = self.tasks.iter().filter(|lane| lane.task.current);
+        let tasks = NewTasks {
+            running: new.clone().filter(|lane| lane.serving()).count(),
+            total: new.filter(|lane| !lane.task.state.ended()).count(),
+        };
+        (tasks.total > 0).then_some(tasks)
+    }
+
+    /// The monitor window open at `now_ms` while the step runs: Swarm
+    /// watches a new task for failure before it replaces the next one.
+    #[must_use]
+    pub fn monitor(&self, now_ms: i64) -> Option<Window> {
+        let seconds = self.monitor_seconds.filter(|_| self.state.running())?;
+        self.tasks
+            .iter()
+            .filter_map(|lane| lane.monitor(seconds))
+            .filter(|window| window.contains(now_ms))
+            .max_by_key(|window| window.to_ms)
     }
 
     /// How much longer it should take at `now_ms`: its expected duration
@@ -998,6 +1140,90 @@ mod tests {
             ],
         );
         assert_eq!(start_first.steps[0].gaps(), []);
+        assert!(start_first.steps[0].overlapped());
+        // A stop-first rollout neither overlaps, nor, when its handover
+        // fell between two observations, shows a gap.
+        assert!(!timeline.steps[0].overlapped());
+        let mut unseen = self::timeline(&[]);
+        apply(
+            &mut unseen,
+            vec![
+                action("action_started", "wait", Phase::WaitForService, "web", 0),
+                rollout(100, &[("old", false, Running)]),
+                rollout(500, &[("old", false, Shutdown), ("new", true, Running)]),
+            ],
+        );
+        assert_eq!(
+            (unseen.steps[0].gaps(), unseen.steps[0].overlapped()),
+            (vec![], false)
+        );
+    }
+
+    #[test]
+    fn rollouts_summarize_their_new_tasks_monitor_window_and_downtime() {
+        use TaskState::{Preparing, Running, Shutdown};
+        let mut timeline = timeline(&[]);
+        apply(
+            &mut timeline,
+            vec![
+                action("action_started", "wait", Phase::WaitForService, "web", 0),
+                rollout(100, &[("old", false, Running)]),
+                rollout(200, &[("old", false, Shutdown), ("new", true, Preparing)]),
+            ],
+        );
+        let step = &timeline.steps[0];
+        let tasks = step.new_tasks().unwrap();
+        assert_eq!(
+            tasks,
+            NewTasks {
+                running: 0,
+                total: 1
+            }
+        );
+        assert_eq!(tasks.to_string(), "0/1 new task running");
+        // Down since the old task stopped, and still.
+        let down = Downtime {
+            ms: 800,
+            ongoing: true,
+        };
+        assert_eq!(step.downtime(1_000), Some(down));
+        assert_eq!(step.monitor(1_000), None);
+
+        apply(
+            &mut timeline,
+            vec![rollout(
+                2_000,
+                &[("old", false, Shutdown), ("new", true, Running)],
+            )],
+        );
+        let step = &timeline.steps[0];
+        assert_eq!(step.new_tasks().unwrap().running, 1);
+        // Swarm watches the new task for 5 s from when it ran.
+        let window = Window {
+            from_ms: 2_000,
+            to_ms: 7_000,
+        };
+        assert_eq!(step.monitor(3_000), Some(window));
+        assert_eq!(window.left_ms(3_000), 4_000);
+        assert_eq!(step.monitor(7_000), None);
+        let down = Downtime {
+            ms: 1_800,
+            ongoing: false,
+        };
+        assert_eq!(step.downtime(9_000), Some(down));
+
+        // Once the step ended, no window is open.
+        apply(
+            &mut timeline,
+            vec![action(
+                "action_succeeded",
+                "wait",
+                Phase::WaitForService,
+                "web",
+                4_000,
+            )],
+        );
+        assert_eq!(timeline.steps[0].monitor(3_000), None);
     }
 
     #[test]
