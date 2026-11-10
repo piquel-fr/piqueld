@@ -223,8 +223,11 @@ impl SecretAction {
                         format!("secret must contain 1–{MAX_SECRET_VALUE_BYTES} bytes"),
                     ));
                 }
+                // Replacing the access, guard it like `access` does, so a
+                // concurrent change isn't overwritten.
+                let expected = access.as_ref().and(existing.map(|s| &s.access));
                 let secret = client
-                    .put_stored_secret(id, name, generation, value, access.as_ref())
+                    .put_stored_secret(id, name, generation, value, access.as_ref(), expected)
                     .await?;
                 console.emit(&StoredSecretReport {
                     secret: &secret,

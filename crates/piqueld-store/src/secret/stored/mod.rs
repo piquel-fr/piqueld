@@ -114,6 +114,26 @@ impl Store {
         value: Vec<u8>,
         access: Option<&SecretAccess>,
     ) -> Result<StoredSecret, StoreError> {
+        self.put_stored_secret_guarded(actor, application, name, (expected, None), value, access)
+            .await
+    }
+
+    /// [`Self::put_stored_secret`], also guarded by the access the caller
+    /// read, when given: once an existing secret's access is no longer
+    /// `expected_access`, it fails with `SecretAccessConflict` instead of
+    /// overwriting a concurrent access change.
+    ///
+    /// # Errors
+    /// See [`Self::put_stored_secret`], and `SecretAccessConflict`.
+    pub async fn put_stored_secret_guarded(
+        &self,
+        actor: Actor<'_>,
+        application: &ApplicationId,
+        name: &str,
+        (expected, expected_access): (i64, Option<&SecretAccess>),
+        value: Vec<u8>,
+        access: Option<&SecretAccess>,
+    ) -> Result<StoredSecret, StoreError> {
         let value = Zeroizing::new(value);
         Self::check_secret_write(name, &value, expected)?;
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -146,10 +166,20 @@ impl Store {
         .fetch_optional(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        let replacing = existing.is_some();
         let generation = Self::next_secret_generation(
             existing.map(|row| (row.generation, row.deletion_id.is_some())),
             expected,
         )?;
+        if let Some(expected_access) = expected_access
+            && replacing
+            && Self::stored_secret_on(&mut tx, application, name)
+                .await?
+                .access
+                != *expected_access
+        {
+            return Err(StoreError::SecretAccessConflict);
+        }
         if generation == 1 {
             let count = sqlx::query_scalar!(
                 "SELECT COUNT(*) FROM application_secrets WHERE application_id=?1",

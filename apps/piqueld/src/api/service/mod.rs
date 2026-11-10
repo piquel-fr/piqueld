@@ -359,22 +359,23 @@ impl ApplicationService {
     }
 
     /// Stores a new version of an application's secret after checking the
-    /// inspected generation; `access` replaces its access list.
+    /// inspected generation, and its access when the caller read one;
+    /// `access` replaces its access list.
     ///
     /// # Errors
-    /// Returns a validation, generation conflict, or storage error.
+    /// Returns a validation, generation or access conflict, or storage error.
     pub async fn put_stored_secret(
         &self,
         actor: Actor<'_>,
         application: &ApplicationId,
         name: &str,
-        expected_generation: i64,
+        expected: (i64, Option<&SecretAccess>),
         value: Vec<u8>,
         access: Option<&SecretAccess>,
     ) -> Result<StoredSecret, ApplicationError> {
         Ok(self
             .store
-            .put_stored_secret(actor, application, name, expected_generation, value, access)
+            .put_stored_secret_guarded(actor, application, name, expected, value, access)
             .await?)
     }
 

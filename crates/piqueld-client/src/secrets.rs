@@ -31,9 +31,11 @@ impl Client {
 
     /// Creates or rotates a stored secret with optimistic version checking.
     /// `access` replaces its access list; a new secret otherwise allows every
-    /// environment and no previews.
+    /// environment and no previews. `expected`, the access the secret was read
+    /// with, guards an existing secret's access against a concurrent change.
     /// # Errors
-    /// Returns transport, decoding or API errors; values are never returned.
+    /// Returns transport, decoding or API errors, such as 409
+    /// `secret_access_conflict`; values are never returned.
     pub async fn put_stored_secret(
         &self,
         application: &str,
@@ -41,13 +43,17 @@ impl Client {
         generation: i64,
         value: Vec<u8>,
         access: Option<&SecretAccess>,
+        expected: Option<&SecretAccess>,
     ) -> Result<StoredSecret, ClientError> {
         let environments = access.map(|access| access.environments.to_query());
+        let expected_environments = expected.map(|access| access.environments.to_query());
         self.generated
             .put_application_secret(
                 application,
                 name,
                 environments.as_deref(),
+                expected_environments.as_deref(),
+                expected.map(|access| access.previews),
                 access.map(|access| access.previews),
                 generation,
                 value,

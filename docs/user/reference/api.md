@@ -886,7 +886,11 @@ belong to their environment. Secret endpoints expose metadata only:
   environment IDs; empty for none) replaces the access list, together with
   `previews` (default `false`). `previews` alone returns 400 `query_invalid`, so
   it never resets the environments. Without them a new secret allows every
-  environment and no previews, and an existing one keeps its list. Names the saved
+  environment and no previews, and an existing one keeps its list.
+  `expected_environments` and `expected_previews`, in the same form, give the
+  access you read: replacing an existing secret then fails with 409
+  `secret_access_conflict` if someone changed its access meanwhile.
+  `piquelctl` and the dashboard send them whenever they replace the access. Names the saved
   manifest or an environment's last fetched one declares in `spec.secrets` return
   422 `manifest_validation_failed` with `secret_name_conflict` in `details.errors`. Each store
   (and each environment's generated secrets) supports at most 100 logical secrets,

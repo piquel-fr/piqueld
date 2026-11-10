@@ -54,6 +54,7 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
             0,
             b"one".to_vec(),
             Some(&none),
+            None,
         )
         .await
         .unwrap();
@@ -223,7 +224,14 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     let referenced = client.delete_stored_secret(&app.application_id, "token", 1);
     assert_eq!(api_error(referenced.await.unwrap_err()).status, 409);
     reference(Vec::new(), saved.generation).await;
-    let stale = client.put_stored_secret(&app.application_id, "token", 0, b"stale".to_vec(), None);
+    let stale = client.put_stored_secret(
+        &app.application_id,
+        "token",
+        0,
+        b"stale".to_vec(),
+        None,
+        None,
+    );
     assert_eq!(api_error(stale.await.unwrap_err()).status, 409);
     let absent = client.stored_secrets("app-absent").await;
     assert_eq!(api_error(absent.unwrap_err()).status, 404);
@@ -248,7 +256,14 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let client = server.client();
     let app = client.apply_and_deploy(&new_application()).await.unwrap();
     client
-        .put_stored_secret(&app.application_id, "token", 0, b"value".to_vec(), None)
+        .put_stored_secret(
+            &app.application_id,
+            "token",
+            0,
+            b"value".to_vec(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
@@ -258,6 +273,7 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
             "token",
             1,
             b"replacement".to_vec(),
+            None,
             None,
         )
         .await
@@ -440,6 +456,7 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
             1,
             b"new-value".to_vec(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -466,6 +483,7 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
             0,
             b"live".to_vec(),
             Some(&production_only),
+            None,
         )
         .await
         .unwrap();
