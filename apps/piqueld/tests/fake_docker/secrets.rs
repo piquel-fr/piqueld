@@ -184,3 +184,88 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
         "no Docker request is made without secret values: {events:#?}"
     );
 }
+
+/// Whether `environment` still records the stored-secret copy `swarm_name`.
+async fn copy_recorded(harness: &ControllerHarness, swarm_name: &str) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM application_secret_copies WHERE swarm_name=?1",
+    )
+    .bind(swarm_name)
+    .fetch_one(&mut harness.database().await)
+    .await
+    .unwrap()
+        > 0
+}
+
+/// Runs the controller, whose first pass prunes history, until `done`.
+async fn run_until(harness: &ControllerHarness, done: impl AsyncFn() -> bool) {
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let run = harness.controller.run(
+        wake,
+        Duration::from_secs(60),
+        10,
+        30,
+        CancellationToken::new(),
+    );
+    tokio::select! {
+        result = run => panic!("the controller stopped: {result:?}"),
+        found = eventually(Duration::from_secs(3), POLL, async || done().await.then_some(())) => {
+            found.expect("the history pass finishes");
+        }
+    }
+}
+
+#[tokio::test]
+async fn history_passes_remove_versions_no_deployment_pins_from_docker_then_the_store() {
+    let harness = ControllerHarness::new().await;
+    let first = harness.apply(manifest(), Some(0)).await;
+    harness.finish(&first).await;
+    let environment = first.environment_id.clone();
+    harness.store_token(&environment, 0, b"version-one").await;
+    let pinning = harness.apply(with_token(manifest()), Some(1)).await;
+    harness.finish(&pinning).await;
+    let old = harness.target(&environment).await.secret_names["token"].clone();
+    harness.store_token(&environment, 1, b"version-two").await;
+    let next = harness
+        .applications()
+        .deploy(&environment, None)
+        .await
+        .unwrap();
+    harness.finish(&next).await;
+    let new = harness.target(&environment).await.secret_names["token"].clone();
+    // As if deployment history pruned the deployment pinning the old version.
+    sqlx::query("DELETE FROM operations WHERE id=?1")
+        .bind(&pinning.id)
+        .execute(&mut harness.database().await)
+        .await
+        .unwrap();
+
+    // A failed removal keeps the records, so the next pass retries it.
+    harness
+        .docker
+        .fail_secret_removal
+        .store(true, Ordering::SeqCst);
+    run_until(&harness, async || {
+        let events = harness
+            .store
+            .events(Some(&environment), None, 100)
+            .await
+            .unwrap()
+            .items;
+        events.iter().any(|event| {
+            event.phase.as_deref() == Some("remove_secrets") && event.kind == "action_failed"
+        })
+    })
+    .await;
+    assert!(copy_recorded(&harness, &old).await);
+
+    harness
+        .docker
+        .fail_secret_removal
+        .store(false, Ordering::SeqCst);
+    run_until(&harness, async || !copy_recorded(&harness, &old).await).await;
+    let secrets = harness.docker.secrets.lock().await;
+    assert!(!secrets.contains_key(&old) && secrets.contains_key(&new));
+    drop(secrets);
+    assert!(copy_recorded(&harness, &new).await);
+}
