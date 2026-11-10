@@ -816,7 +816,7 @@ impl EnvironmentDetailView {
 }
 
 /// Current control-plane status.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema)]
 pub struct SystemStatus {
     /// Machine-readable service status.
     pub status: String,
@@ -845,6 +845,34 @@ pub struct SystemStatus {
     /// Export of the daemon's own telemetry over OTLP.
     #[serde(default)]
     pub telemetry: TelemetryStatus,
+    /// The build machine images build on, when the host has one and the
+    /// caller has `system:read`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<BuilderStatus>,
+}
+
+/// A build machine: where it is, and whether its `BuildKit` daemon answered.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct BuilderStatus {
+    /// Its `BuildKit` daemon, as `tcp://host:port`.
+    pub builder: String,
+    /// The image repository it pushes to, and the host pulls from.
+    pub repository: String,
+    /// The latest check of its `BuildKit` daemon, before a build or on
+    /// request; absent until the first.
+    pub last_check: Option<BuilderCheck>,
+}
+
+/// One check of a build machine's `BuildKit` daemon.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct BuilderCheck {
+    /// Whether it accepted a connection.
+    pub reachable: bool,
+    /// When it was checked, in Unix milliseconds.
+    pub checked_at_ms: i64,
+    /// Why connecting failed, such as a refused connection or a timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Export of the daemon's traces, metrics and logs over OTLP, and of its
@@ -1602,6 +1630,10 @@ pub struct BuildRecord {
     pub commit: Option<String>,
     /// Built image identifier, when successful; for job runs, the image that ran.
     pub image_id: Option<String>,
+    /// Where the image was built, once it was: absent for job runs and
+    /// builds that reused an image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_on: Option<BuiltOn>,
     /// The earlier build whose image this build reused instead of building,
     /// because its commit and build settings were the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1615,6 +1647,28 @@ pub struct BuildRecord {
     pub log_truncated: bool,
     /// Output was removed by retention.
     pub log_expired: bool,
+}
+
+/// Where an image was built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltOn {
+    /// The host's Docker Engine.
+    Host,
+    /// The host's build machine, which pushed it to its registry.
+    BuildMachine,
+}
+
+impl BuiltOn {
+    /// Where `image`, a built image's local ID or repository digest, was
+    /// built.
+    #[must_use]
+    pub fn of(image: &crate::BuiltImage) -> Self {
+        match image {
+            crate::BuiltImage::Local(_) => Self::Host,
+            crate::BuiltImage::Pushed(_) => Self::BuildMachine,
+        }
+    }
 }
 
 /// Outcome of a source-preparation attempt or job run.

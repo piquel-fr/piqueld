@@ -11142,6 +11142,55 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Check the build machine now
+
+    Connects to its `BuildKit` daemon, as before each build, and returns its
+    status with that check as its latest. 404 `builder_not_configured` when
+    the host builds images itself.
+
+    Sends a `POST` request to `/api/v1/system/builder/check`
+
+    */
+    pub async fn check_builder<'a>(
+        &'a self,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::BuilderStatus>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!("{}/api/v1/system/builder/check", self.baseurl,);
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .post(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "check_builder",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Checks the installation's health
 
     Inspects the live installation read-only: the public URL and its
@@ -11449,9 +11498,9 @@ impl Client {
     }
     /*Get daemon status
 
-    DNS providers and certificates are empty without `system:read`; see
-    [`redact_dns`]. Preview counts per application list only readable
-    applications.
+    DNS providers and certificates are empty without `system:read`, and the
+    build machine is absent; see [`redact_host`]. Preview counts per
+    application list only readable applications.
 
     Sends a `GET` request to `/api/v1/system/status`
 

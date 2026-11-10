@@ -426,7 +426,6 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
         api_version: "v1".into(),
         daemon_version: "0.1.0".into(),
         instance_id: "instance".into(),
-        tailscale: piqueld_client::TailnetStatus::default(),
         dns: DnsStatus {
             providers: vec![DnsProviderStatus {
                 kind: "ovh".into(),
@@ -463,8 +462,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
             reclaimed_bytes: 2048,
             cleaned_at_ms: Some(7),
         },
-        snapshots: None,
-        telemetry: piqueld_client::TelemetryStatus::default(),
+        ..SystemStatus::default()
     };
     let stdout = Capture::default();
     let mut console = stdout.human_console();
@@ -485,7 +483,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
             message: "The apps node needs login".into(),
             ..Default::default()
         },
-        routes: Vec::new(),
+        ..Default::default()
     };
     console
         .emit(&crate::output::reports::StatusReport {
@@ -652,4 +650,36 @@ fn urls_print_one_line_each_with_name_state_and_what_they_wait_for() {
         "URL: https://notes.example.com (web) ready\n\
          URL: https://admin.notes.example.com pending: HTTPS (Ingress is disabled in daemon configuration), service web\n"
     );
+}
+
+#[test]
+fn status_shows_the_build_machine_and_its_latest_check() {
+    use piqueld_client::system::{BuilderCheck, BuilderStatus};
+    let status = |last_check| BuilderStatus {
+        builder: "tcp://build.example.ts.net:1234".into(),
+        repository: "build.example.ts.net:5000/piqueld".into(),
+        last_check,
+    };
+    let unreachable = BuilderCheck {
+        reachable: false,
+        checked_at_ms: 9,
+        message: Some("connection refused".into()),
+    };
+    for (builder, expected) in [
+        (status(None), "(not checked yet)"),
+        (
+            status(Some(unreachable)),
+            "(unreachable at Unix ms 9: connection refused)",
+        ),
+    ] {
+        let stdout = Capture::default();
+        stdout.human_console().emit(&builder).unwrap();
+        let text = stdout.text();
+        assert!(
+            text.contains(&format!(
+                "Build machine: tcp://build.example.ts.net:1234 pushing to build.example.ts.net:5000/piqueld {expected}"
+            )),
+            "{text}"
+        );
+    }
 }

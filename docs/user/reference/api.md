@@ -114,10 +114,11 @@ when the complete normalized manifest is needed.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/v1/system/status` | Daemon status, with `tailscale`: the [tailnet node](configuration.md#tailnet-node)'s login and certificate state; `images`: the built images cleanup kept, the total size of those it removed since the daemon started, and when it last ran; DNS providers and certificates only with `system:read`; preview counts per readable application; `snapshots`: the largest [local snapshot](#local-snapshots) upload, working tree and file count the daemon accepts |
+| GET | `/api/v1/system/status` | Daemon status, with `tailscale`: the [tailnet node](configuration.md#tailnet-node)'s login and certificate state; `images`: the built images cleanup kept, the total size of those it removed since the daemon started, and when it last ran; DNS providers and certificates only with `system:read`; `builder`: the [build machine](configuration.md#build-machine), its repository and its latest check, only when the host has one and with `system:read`; preview counts per readable application; `snapshots`: the largest [local snapshot](#local-snapshots) upload, working tree and file count the daemon accepts |
 | GET | `/api/v1/system/configuration` | Effective read-only host settings (`system:read`); 503 `configuration_unavailable` without them |
 | GET | `/api/v1/system/checks` | Installation checks, each `pass`, `warn`, `fail` or `skip` with a next step (`system:read`); see [`piquelctl doctor`](cli.md#installation-checks) |
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
+| POST | `/api/v1/system/builder/check` | Check that the [build machine](configuration.md#build-machine)'s BuildKit daemon answers now (`system:operate`); returns `BuilderStatus` with that check as its latest, or 404 `builder_not_configured` without a build machine |
 | GET | `/api/v1/openapi.json` | Generated API schema |
 | GET | `/api/v1/applications?name=…` | Paginated application summaries (up to 100 per page); `name` returns only the application with exactly that name |
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments, with `drift`: how they differ from the environments the saved manifest [declares](manifest.md#declared-environments) |

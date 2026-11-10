@@ -93,6 +93,8 @@ pub struct ApplicationService {
     tailnet: Option<tokio::sync::watch::Receiver<piqueld_core::api::TailnetStatus>>,
     /// The built images as of the last cleanup; `None` without a controller.
     images: Option<tokio::sync::watch::Receiver<piqueld_core::api::ImageStatus>>,
+    /// The build machine images build on, if the host has one.
+    builder: Option<Arc<piqueld_docker::RemoteBuilder>>,
     /// Effective host settings; `None` unless attached at startup.
     configuration: Option<Arc<Configuration>>,
     store: Arc<Store>,
@@ -196,6 +198,7 @@ impl ApplicationService {
             ingress: None,
             tailnet: None,
             images: None,
+            builder: None,
             telemetry: crate::telemetry::Telemetry::default(),
             audit_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG)),
             anonymous_backlog: Arc::new(tokio::sync::Semaphore::new(AUDIT_BACKLOG / 2)),
@@ -303,6 +306,13 @@ impl ApplicationService {
         status: tokio::sync::watch::Receiver<piqueld_core::api::ImageStatus>,
     ) -> Self {
         self.images = Some(status);
+        self
+    }
+
+    /// Reports `builder`, the build machine images build on, if any.
+    #[must_use]
+    pub fn with_builder(mut self, builder: Option<Arc<piqueld_docker::RemoteBuilder>>) -> Self {
+        self.builder = builder;
         self
     }
 

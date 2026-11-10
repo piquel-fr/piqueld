@@ -102,6 +102,12 @@ impl BollardDocker {
         self
     }
 
+    /// The build machine images build on, if any.
+    #[must_use]
+    pub fn builder(&self) -> Option<&Arc<super::RemoteBuilder>> {
+        self.builder.as_ref()
+    }
+
     /// The typed Bollard client, created on first use. Bollard refuses a
     /// socket that does not exist, so until Docker creates it, every call
     /// fails as unavailable and the next one tries again.

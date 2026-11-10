@@ -85,6 +85,7 @@ impl ApplicationService {
         .with_telemetry(telemetry.sockets().cloned());
         let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)), sources)?
             .with_image_status(reconciler.image_status())
+            .with_builder(docker.builder().cloned())
             .with_configuration(config)
             .with_ingress(Arc::clone(&ingress))
             .with_webhook_hostname(config.ingress.webhook_hostname.clone())

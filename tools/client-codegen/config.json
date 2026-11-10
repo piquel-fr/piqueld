@@ -141,6 +141,11 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::api::DnsStatus>"
     },
     {
+      "schema": "Envelope_BuilderStatus",
+      "name": "EnvelopeBuilderStatus",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::api::BuilderStatus>"
+    },
+    {
       "schema": "Envelope_Vec_SecretMetadata",
       "name": "EnvelopeVecSecretMetadata",
       "rustType": "piqueld_core::api::Envelope<Vec<piqueld_core::api::SecretMetadata>>"

@@ -5,7 +5,7 @@ use crate::{profiles::ProfileSummary, support::join_or};
 use piqueld_client::{
     DnsStatus, ImageStatus, PreviewUsage, SystemStatus, TelemetryStatus,
     observability::{Bytes, DaemonStats, Uptime},
-    system::{HostConfiguration, IngressStatus, PublicIngressStatus, SystemCheck},
+    system::{BuilderStatus, HostConfiguration, IngressStatus, PublicIngressStatus, SystemCheck},
 };
 use serde::Serialize;
 use std::time::Duration;
@@ -24,6 +24,9 @@ report!(StatusReport<'_> as SystemStatus = status, self, out, {
         s.status, s.daemon_version, s.api_version, s.instance_id
     ))?;
     out.label("Transport", self.transport)?;
+    if let Some(builder) = &s.builder {
+        builder.render_human(out)?;
+    }
     s.images.render_human(out)?;
     let tailnet = &s.tailscale;
     if tailnet.enabled {
@@ -134,6 +137,25 @@ report!(TelemetryStatus, self, out, {
         )?;
     }
     out.label("Telemetry exports", self.exported())
+});
+
+// The build machine images build on, and how its latest check went.
+report!(BuilderStatus, self, out, {
+    let check = match &self.last_check {
+        None => "not checked yet".to_owned(),
+        Some(check) if check.reachable => {
+            format!("reachable at Unix ms {}", check.checked_at_ms)
+        }
+        Some(check) => format!(
+            "unreachable at Unix ms {}: {}",
+            check.checked_at_ms,
+            check.message.as_deref().unwrap_or("no reason given")
+        ),
+    };
+    out.label(
+        "Build machine",
+        format_args!("{} pushing to {} ({check})", self.builder, self.repository),
+    )
 });
 
 // The built images cleanup kept, and what it removed since the daemon started.

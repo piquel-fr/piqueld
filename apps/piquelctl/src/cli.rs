@@ -302,6 +302,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DnsCommand,
     },
+    /// Inspect the build machine images build on.
+    Builder {
+        #[command(subcommand)]
+        command: BuilderCommand,
+    },
     /// Create, inspect, edit and deploy applications.
     App {
         #[command(subcommand)]
@@ -361,6 +366,16 @@ pub(crate) enum DnsCommand {
     /// only when it starts, so restart it after changing one. Needs
     /// `system:operate`.
     Refresh,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BuilderCommand {
+    /// Check that the build machine answers now.
+    ///
+    /// The daemon otherwise checks it before each build, and `piquelctl
+    /// status` shows the latest check. Fails when the host has no build
+    /// machine. Needs `system:operate`.
+    Check,
 }
 
 #[derive(Debug, Subcommand)]
