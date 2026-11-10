@@ -473,7 +473,7 @@ stopping application management. Application images' own ports remain private.
 
 Restart after changing the TOML. With ingress enabled, stopping piqueld leaves
 Caddy serving independently and renewing the certificates it obtains itself.
-Restarting piqueld with ingress disabled removes the managed gateway container and its restart policy, closing public listeners while
+Restarting piqueld with ingress disabled removes the managed gateway container and its restart policy, and its network, closing public listeners while
 retaining route intent, reservations, and Caddy's certificates. While disabled,
 DNS-01 certificates are not renewed and are deleted once expired, and managed DNS
 records are deleted. Re-enabling restores deployed routes, including deployments

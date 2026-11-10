@@ -560,8 +560,8 @@ daemon's every 10 seconds, at most 100 lines per container, each cut to 4096
 characters. Gateway startup,
 port and configuration failures leave the daemon available.
 
-Disabling ingress and restarting removes the containers and the tunnel
-credentials copy, but keeps route state, Caddy's data and configuration, and
+Disabling ingress and restarting removes the containers, then the edge
+network, and the tunnel credentials copy, but keeps route state, Caddy's data and configuration, and
 node state on disk, and keeps accepting route-bearing manifests. Re-enabling
 exposes only deployed route intent. A normal shutdown leaves Caddy serving and
 renewing the certificates it obtains itself; DNS-01 certificates renew only

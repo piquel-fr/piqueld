@@ -1553,6 +1553,50 @@ async fn a_disabled_apps_node_is_unconfirmed_until_it_is_removed() {
     }
 }
 
+/// Disabled ingress removes its edge network once no gateway container is
+/// left, but only its own installation's.
+#[tokio::test]
+async fn disabled_ingress_removes_its_own_edge_network() {
+    for (owner, removed) in [(None, true), (Some("instance-other"), false)] {
+        let deleted = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let engine = Engine::serving(|store| {
+            let (deleted, owner) = (
+                Arc::clone(&deleted),
+                owner.unwrap_or(store.instance_id().as_str()),
+            );
+            let network = json!({"Id":"edge-id","Labels":{
+                "io.piqueld.managed":"true","io.piqueld.instance":owner,"io.piqueld.ingress":"true"
+            }});
+            axum::Router::new().fallback(move |method: Method, uri: axum::http::Uri| {
+                let (deleted, network) = (Arc::clone(&deleted), network.clone());
+                async move {
+                    match (method, uri.path()) {
+                        (Method::GET, path) if path.contains("/networks/") => {
+                            axum::response::IntoResponse::into_response(axum::Json(network))
+                        }
+                        (Method::DELETE, path) => {
+                            deleted
+                                .lock()
+                                .push(path.rsplit('/').next().unwrap().to_owned());
+                            axum::response::IntoResponse::into_response(
+                                hyper::StatusCode::NO_CONTENT,
+                            )
+                        }
+                        _ => axum::response::IntoResponse::into_response(
+                            hyper::StatusCode::NOT_FOUND,
+                        ),
+                    }
+                }
+            })
+        })
+        .await;
+        let result = engine.ingress(false).stop_gateway().await;
+        assert_eq!(result.is_ok(), removed, "{result:?}");
+        let expected: &[&str] = if removed { &["edge-id"] } else { &[] };
+        assert_eq!(*deleted.lock(), expected);
+    }
+}
+
 #[tokio::test]
 async fn an_unhealthy_apps_node_alone_makes_ingress_unavailable() {
     let (engine, ingress) = private_ingress().await;
