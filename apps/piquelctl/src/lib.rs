@@ -309,6 +309,62 @@ mod tests {
     }
 
     #[test]
+    fn parser_takes_env_secret_targets_positionally_and_short_yes() {
+        for arguments in [
+            &["piquelctl", "env", "secret", "list", "notes"][..],
+            &["piquelctl", "env", "secret", "list", "notes", "staging"],
+            &[
+                "piquelctl",
+                "env",
+                "secret",
+                "regenerate",
+                "notes",
+                "staging",
+                "db",
+                "-y",
+            ],
+            &[
+                "piquelctl",
+                "env",
+                "secret",
+                "delete",
+                "notes",
+                "staging",
+                "db",
+                "-y",
+            ],
+            &[
+                "piquelctl",
+                "env",
+                "promote",
+                "notes",
+                "production",
+                "--force",
+                "-y",
+            ],
+            &["piquelctl", "app", "delete", "notes", "-y"],
+        ] {
+            Cli::try_parse_from(arguments).expect("command parses");
+        }
+        for arguments in [
+            // A generated secret is always named in one environment.
+            &["piquelctl", "env", "secret", "regenerate", "notes", "db"][..],
+            &[
+                "piquelctl",
+                "env",
+                "promote",
+                "notes",
+                "production",
+                "--force",
+                "--expected-generation",
+                "3",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_err(), "{arguments:?}");
+        }
+    }
+
+    #[test]
     fn parser_rejects_conflicting_transports_and_invalid_timeout() {
         assert!(
             Cli::try_parse_from([

@@ -389,7 +389,7 @@ In the dashboard, open the environment's **Secrets** tab, and select
 `piquelctl`:
 
 ```console
-$ piquelctl env secret notes regenerate db-password
+$ piquelctl env secret regenerate notes production db-password
 Generated db-password generation 2. Deploy the environment to use it.
 ```
 
@@ -422,7 +422,7 @@ database that stored the old one doesn't know. Select **Delete** next to it
 under **Generated secrets**, on the environment's **Secrets** tab, or run:
 
 ```console
-piquelctl env secret notes delete <name>
+piquelctl env secret delete notes production <name>
 ```
 
 Removing a declaration from `spec.secrets` keeps the values already generated.

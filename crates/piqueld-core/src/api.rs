@@ -1265,7 +1265,7 @@ pub struct PromoteRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<String>,
     /// Current application revision, required unless explicitly forced; ignored by plans.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_generation: Option<u64>,
 }
 

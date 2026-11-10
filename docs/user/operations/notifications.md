@@ -35,14 +35,15 @@ In the dashboard:
 
 With `piquelctl`:
 
-1. Create the destination, then paste the webhook URL and press Ctrl-D:
+1. Create the destination, then paste the webhook URL and press Enter:
 
    ```console
    piquelctl notification set ops --kind discord --url-stdin
    ```
 
    `ops` is its name. The URL is read from standard input rather than the
-   command line, so it stays out of your shell's history.
+   command line, so it stays out of your shell's history, and it isn't shown
+   as you paste it.
 
 2. Send a test notification:
 

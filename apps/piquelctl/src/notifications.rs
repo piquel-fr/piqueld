@@ -6,7 +6,7 @@ use crate::{
     commands::{fold_applications, resolve_application},
     error::{CliError, ErrorKind, Result},
     output::{Console, reports::report},
-    support::{PageArgs, read_input},
+    support::{PageArgs, read_hidden},
 };
 use clap::{
     Args, Subcommand,
@@ -20,11 +20,7 @@ use piqueld_client::{
         NotificationDestination, NotificationMessage,
     },
 };
-use std::{
-    collections::BTreeMap,
-    io::{self, Read},
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 // `notification` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
@@ -233,27 +229,24 @@ impl SetArgs {
         Ok(settings)
     }
 
-    /// Reads the URL from `--url-file` or stdin, if either was given.
-    async fn url(&self) -> Result<Option<String>> {
+    /// Reads the URL from `--url-file` or stdin, if either was given. A
+    /// terminal is asked for it without echo, since it holds a credential.
+    /// Refuses more than 8 KiB, more than any webhook URL needs.
+    async fn url(&self, console: &mut Console) -> Result<Option<String>> {
         if self.url_file.is_none() && !self.url_stdin {
             return Ok(None);
         }
-        let file = self.url_file.clone();
-        // Stdin can block indefinitely; read off the runtime so Ctrl-C stays responsive.
-        let url = read_input("destination URL", move || Self::read_url(file.as_deref())).await?;
+        let url = read_hidden(console, "destination URL", self.url_file.clone(), 8192).await?;
+        if url.len() > 8192 {
+            return Err(CliError::new(
+                ErrorKind::Input,
+                "the destination URL must be at most 8192 bytes",
+            ));
+        }
+        let url = String::from_utf8(url).map_err(|_| {
+            CliError::new(ErrorKind::Input, "the destination URL must be UTF-8 text")
+        })?;
         Ok(Some(url.trim().to_owned()))
-    }
-
-    /// Reads at most 8 KiB, more than any webhook URL needs.
-    fn read_url(file: Option<&Path>) -> io::Result<String> {
-        let input: Box<dyn Read> = if let Some(path) = file {
-            Box::new(std::fs::File::open(path)?)
-        } else {
-            Box::new(io::stdin())
-        };
-        let mut url = String::new();
-        input.take(8192).read_to_string(&mut url)?;
-        Ok(url)
     }
 }
 
@@ -276,7 +269,7 @@ impl NotificationCommand {
                     .iter()
                     .find(|destination| destination.name.as_str() == args.name);
                 let settings = args.apply(client, current.map(|d| &d.settings)).await?;
-                let url = args.url().await?;
+                let url = args.url(console).await?;
                 if current.is_none() && url.is_none() {
                     return Err(CliError::new(
                         ErrorKind::Input,

@@ -1,22 +1,20 @@
 //! Secret values come from a file or stdin, never shell arguments or output.
 use crate::{
     commands::resolve_application,
+    deployments::Target,
+    environments::{EnvironmentArgs, NamedEnvironment},
     error::{CliError, ErrorKind, Result},
     output::{
         Console,
         reports::{NameDeletionReport, StoredSecretReport, StoredSecretsReport},
     },
-    support::{TerminalMode, read_input},
+    support::read_hidden,
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
     ApplicationView, Client, EnvironmentAccess, MAX_SECRET_VALUE_BYTES, SecretAccess,
 };
-use rustix::termios::{LocalModes, Termios};
-use std::{
-    io::{self, BufRead, IsTerminal, Read},
-    path::PathBuf,
-};
+use std::path::PathBuf;
 
 // `app secret` subcommands; `///` on variants and fields is user-facing help.
 #[derive(Debug, Subcommand)]
@@ -216,7 +214,13 @@ impl SecretAction {
                         ),
                     )
                     .await?;
-                let value = Self::read_value(console, file.clone()).await?;
+                let value = read_hidden(
+                    console,
+                    "secret value",
+                    file.clone(),
+                    MAX_SECRET_VALUE_BYTES as u64,
+                )
+                .await?;
                 if value.is_empty() || value.len() > MAX_SECRET_VALUE_BYTES {
                     return Err(CliError::new(
                         ErrorKind::Input,
@@ -265,52 +269,6 @@ impl SecretAction {
         }
         Ok(())
     }
-    /// Reads the value from `file` verbatim, or from stdin without one
-    /// trailing newline, so `echo value |` stores `value`. A terminal is
-    /// asked for one line, without echoing it. Reads at most the limit plus a
-    /// CRLF and one byte, so input still too long once the newline is
-    /// dropped is detected rather than cut short. Reads run off the runtime,
-    /// since stdin can block indefinitely and Ctrl-C must stay responsive.
-    async fn read_value(console: &mut Console, file: Option<PathBuf>) -> Result<Vec<u8>> {
-        let stdin = file.is_none();
-        let terminal = stdin && io::stdin().is_terminal();
-        // Dropped with this future, so echo also returns when Ctrl-C
-        // interrupts the read.
-        let _hidden = if terminal {
-            console.prompt("Secret value (hidden): ")?;
-            let hide = |mode: &mut Termios| {
-                mode.local_modes.remove(LocalModes::ECHO);
-                mode.local_modes.insert(LocalModes::ECHONL);
-            };
-            Some(TerminalMode::enable(hide).map_err(|error| {
-                CliError::new(
-                    ErrorKind::General,
-                    format!("could not hide terminal input: {error}"),
-                )
-            })?)
-        } else {
-            None
-        };
-        let mut value = read_input("secret", move || {
-            let input: Box<dyn Read> = match file {
-                Some(path) => Box::new(std::fs::File::open(path)?),
-                None => Box::new(io::stdin()),
-            };
-            let mut input = io::BufReader::new(input.take(MAX_SECRET_VALUE_BYTES as u64 + 3));
-            let mut bytes = Vec::new();
-            if terminal {
-                input.read_until(b'\n', &mut bytes)?;
-            } else {
-                input.read_to_end(&mut bytes)?;
-            }
-            Ok(bytes)
-        })
-        .await?;
-        if stdin && value.pop_if(|byte| *byte == b'\n').is_some() {
-            value.pop_if(|byte| *byte == b'\r');
-        }
-        Ok(value)
-    }
 }
 
 // `env secret` subcommands; `///` on variants and fields is user-facing help.
@@ -319,39 +277,46 @@ pub(crate) enum GeneratedSecretAction {
     /// List the environment's generated secrets.
     ///
     /// It shows each secret's version, never its value.
-    List,
+    List(EnvironmentArgs),
     /// Generate a new value for a generated secret.
     ///
     /// Use it to rotate a value, or to replace one that `secrets recover-key`
     /// discarded. The next deployment uses it; running services keep theirs
     /// until then. Needs `secrets:write`.
-    Regenerate(SecretChange),
+    Regenerate(GeneratedSecretChange),
     /// Delete a generated secret that nothing uses.
     ///
     /// It fails while the configuration or a deployment still uses the secret.
     /// A later deployment that mounts it generates a new value. Needs
     /// `secrets:write`.
-    Delete(SecretChange),
+    Delete(GeneratedSecretChange),
+}
+
+// A generated secret of one named environment to delete or regenerate.
+#[derive(Debug, Args)]
+pub(crate) struct GeneratedSecretChange {
+    #[command(flatten)]
+    target: NamedEnvironment,
+    #[command(flatten)]
+    change: SecretChange,
 }
 
 impl GeneratedSecretAction {
-    /// Runs a generated-secret action for the named environment of
-    /// `application`, or its only environment.
-    pub(crate) async fn run(
-        &self,
-        client: &Client,
-        console: &mut Console,
-        application: &str,
-        environment: Option<&str>,
-    ) -> Result<()> {
-        let (application, environment) =
-            crate::environments::select(client, application, environment).await?;
+    /// Runs a generated-secret action: `list` for the named environment of
+    /// the application, or its only one; the others for the named one.
+    pub(crate) async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
+        let (application, environment) = match self {
+            Self::List(target) => target.resolve(client).await?,
+            Self::Regenerate(change) | Self::Delete(change) => {
+                change.target.resolve(client).await?
+            }
+        };
         let id = environment.id.as_str();
         let metadata = client.secrets(id).await?;
         let (verb, change) = match self {
-            Self::List => return console.emit(&metadata),
-            Self::Regenerate(change) => ("Regenerate", change),
-            Self::Delete(change) => ("Delete", change),
+            Self::List(_) => return console.emit(&metadata),
+            Self::Regenerate(change) => ("Regenerate", &change.change),
+            Self::Delete(change) => ("Delete", &change.change),
         };
         let name = &change.name;
         let current = metadata.iter().find(|secret| secret.name == *name);
@@ -392,7 +357,7 @@ pub(crate) enum KeyAction {
     /// Needs `system:operate`.
     RecoverKey {
         /// Skip the confirmation prompt.
-        #[arg(long)]
+        #[arg(long, short)]
         yes: bool,
     },
 }
