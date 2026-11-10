@@ -13,16 +13,22 @@ pub use node::{Node, NodeListener};
 pub use proxy::ProxyListener;
 pub use whois::{LookupTimedOut, TailnetLookup, Whois};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    collections::BTreeMap, io::ErrorKind, net::SocketAddr, path::PathBuf, process::Stdio,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    net::TcpStream,
     process::Command,
 };
 
 /// Allows certificate issuance time while bounding non-interactive commands.
 const COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
+/// A live loopback listener accepts at once; this only bounds a stuck one.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The `tailscale` CLI, pointed at the node's `tailscaled` socket.
 #[derive(Clone)]
@@ -43,6 +49,72 @@ struct Status {
 struct NodeStatus {
     #[serde(rename = "DNSName")]
     dns_name: String,
+}
+
+/// The node's TCP ports in `tailscale serve status --json`, by number.
+#[derive(Default, Deserialize)]
+struct ServeStatus {
+    #[serde(rename = "TCP", default)]
+    tcp: BTreeMap<u16, PortHandler>,
+}
+
+#[derive(Deserialize)]
+struct PortHandler {
+    /// `<host>:<port>` a TCP forward sends connections to.
+    #[serde(rename = "TCPForward")]
+    tcp_forward: Option<String>,
+}
+
+/// How the node serves one TCP port.
+#[derive(Debug, Eq, PartialEq)]
+enum PortUse {
+    Unserved,
+    /// Forwarded to this address, such as another piqueld's listener.
+    Forwarded(SocketAddr),
+    /// Served some other way, such as a web handler, which piqueld can't
+    /// tell is in use.
+    Other,
+}
+
+impl ServeStatus {
+    /// How `port` is served.
+    fn port(&self, port: u16) -> PortUse {
+        match self.tcp.get(&port) {
+            None => PortUse::Unserved,
+            Some(handler) => handler
+                .tcp_forward
+                .as_deref()
+                .and_then(|target| target.parse().ok())
+                .map_or(PortUse::Other, PortUse::Forwarded),
+        }
+    }
+
+    /// Fails unless piqueld may take `port` over: it is unserved, or
+    /// forwards to an address that refuses connections, such as that of a
+    /// daemon that crashed without removing it. Only a refusal shows the
+    /// owner is gone: a timeout may be a live owner that is stuck.
+    async fn check_takeover(&self, port: u16) -> Result<()> {
+        match self.port(port) {
+            PortUse::Unserved => Ok(()),
+            PortUse::Forwarded(target) => {
+                let in_use = format!(
+                    "tailnet HTTPS port {port} already forwards to {target}; stop that process or set another tailscale.https_port"
+                );
+                match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(target)).await {
+                    Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
+                        tracing::info!(port, %target, "replacing the tailnet HTTPS port's stale forward");
+                        Ok(())
+                    }
+                    Ok(Ok(_)) => bail!("{in_use} (it still accepts connections)"),
+                    Ok(Err(error)) => Err(anyhow::Error::new(error).context(in_use)),
+                    Err(elapsed) => Err(anyhow::Error::new(elapsed).context(in_use)),
+                }
+            }
+            PortUse::Other => bail!(
+                "tailnet HTTPS port {port} is already in the node's Serve configuration; remove it or set another tailscale.https_port"
+            ),
+        }
+    }
 }
 
 impl Cli {
@@ -118,6 +190,15 @@ impl Cli {
             .context("invalid tailscale status")
     }
 
+    /// The node's Serve configuration; empty output means nothing is served.
+    async fn serve_status(&self) -> Result<ServeStatus> {
+        let output = self.run(&["serve", "status", "--json"]).await?;
+        if output.trim_ascii().is_empty() {
+            return Ok(ServeStatus::default());
+        }
+        serde_json::from_slice(&output).context("invalid tailscale serve status")
+    }
+
     /// Fetches the certificate for the node's name and returns its expiry.
     /// tailscaled caches it in the node state and renews it before expiry.
     async fn certificate_expiry_ms(&self, dns_name: &str) -> Result<i64> {
@@ -165,5 +246,42 @@ mod tests {
         .unwrap();
         assert_eq!(status.backend_state, "Running");
         assert_eq!(status.node.unwrap().dns_name, "piqueld.tail.ts.net.");
+    }
+
+    /// A port forwarding to a live listener is refused, and one whose
+    /// listener refuses connections is taken over, as is an unserved port. A
+    /// port whose owner can't be reached, or served any other way, is
+    /// refused.
+    #[tokio::test]
+    async fn only_unserved_or_stale_ports_are_taken_over() {
+        let bind = || tokio::net::TcpListener::bind("127.0.0.1:0");
+        let listener = bind().await.unwrap();
+        let live = listener.local_addr().unwrap();
+        // Its daemon is gone: nothing listens there any more.
+        let stale = bind().await.unwrap().local_addr().unwrap();
+        let status: ServeStatus = serde_json::from_str(&format!(
+            r#"{{"TCP":{{
+                "7001":{{"TCPForward":"{live}","TerminateTLS":"node.ts.net","ProxyProtocol":2}},
+                "7002":{{"TCPForward":"{stale}"}},
+                "443":{{"HTTPS":true}}
+            }},"Web":{{}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(status.port(7001), PortUse::Forwarded(live));
+        let refused = status.check_takeover(7001).await.unwrap_err().to_string();
+        assert!(refused.contains("still accepts connections"), "{refused}");
+        status.check_takeover(7002).await.unwrap();
+        // TEST-NET-1 never answers: a timeout or an unreachable network.
+        let unreachable: ServeStatus =
+            serde_json::from_str(r#"{"TCP":{"7004":{"TCPForward":"192.0.2.1:7"}}}"#).unwrap();
+        let refused = unreachable.check_takeover(7004).await.unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("192.0.2.1:7"),
+            "{refused:#}"
+        );
+        status.check_takeover(7003).await.unwrap();
+        status.check_takeover(443).await.unwrap_err();
+        let empty: ServeStatus = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.port(7001), PortUse::Unserved);
     }
 }
