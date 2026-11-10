@@ -743,7 +743,8 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     assert_eq!(accepted.operation_id, replay.operation_id);
     let operation = harness.operation(&accepted.operation_id).await;
     harness.finish(&operation).await;
-    assert!(harness.pulls().await > pulls);
+    // It prepared again, and reused the image of the unchanged commit.
+    assert_eq!(harness.pulls().await, pulls);
     input.spec.services[0].source = fixture.failing_source();
     let failed = harness.apply(input, Some(1)).await;
     harness.scan().await;

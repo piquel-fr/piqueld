@@ -137,6 +137,19 @@ impl EditorContext {
             .or_else(|| self.environment_manifest())
     }
 
+    /// Whether the shown environment's next deployment builds a service
+    /// from Git, as far as its manifest is known (see `next_manifest`).
+    fn builds_from_git(self) -> bool {
+        self.next_manifest().is_some_and(|manifest| {
+            manifest
+                .to_manifest()
+                .spec
+                .services
+                .iter()
+                .any(|service| matches!(service.source, piqueld_client::Source::Git { .. }))
+        })
+    }
+
     /// Service names of the manifest the shown environment deploys, or of
     /// the saved one while that is unknown.
     fn environment_services(self) -> Vec<String> {
@@ -601,11 +614,13 @@ impl EditorContext {
 
     /// Deploys the saved generation to `environment`, then runs `accepted`.
     /// `revision` fetches the repository manifest from another branch or
-    /// commit than the environment's, for this deployment only.
+    /// commit than the environment's, for this deployment only. `rebuild`
+    /// builds every image from Git again, even one that could be reused.
     fn deploy(
         self,
         environment: String,
         revision: Option<ManifestRevision>,
+        rebuild: bool,
         accepted: impl FnOnce() + 'static,
     ) {
         let generation = self.saved.with_untracked(|saved| saved.generation);
@@ -614,7 +629,7 @@ impl EditorContext {
                 let (environment, revision) = (environment.clone(), revision.clone());
                 async move {
                     client
-                        .deploy_environment(&environment, generation, revision.as_ref())
+                        .deploy_environment(&environment, generation, revision.as_ref(), rebuild)
                         .await
                 }
             },

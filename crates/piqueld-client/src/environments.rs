@@ -241,7 +241,9 @@ impl Client {
 
     /// Deploys an environment from its source, conditioned on the inspected
     /// revision. `revision` fetches a repository manifest from another branch
-    /// or commit than the environment's, once.
+    /// or commit than the environment's, once. `rebuild` builds every Git
+    /// source again, instead of reusing the image an earlier build produced
+    /// from the same commit and build settings.
     /// # Errors
     /// Returns transport, API, or revision conflict errors.
     pub async fn deploy_environment(
@@ -249,6 +251,7 @@ impl Client {
         id: &str,
         expected: u64,
         revision: Option<&ManifestRevision>,
+        rebuild: bool,
     ) -> Result<AcceptedOperation, ClientError> {
         let (branch, commit) = match revision {
             None => (None, None),
@@ -256,7 +259,15 @@ impl Client {
             Some(ManifestRevision::Commit(commit)) => (None, Some(commit.as_str())),
         };
         self.generated
-            .deploy_environment(id, branch, commit, Some(expected), None, None)
+            .deploy_environment(
+                id,
+                branch,
+                commit,
+                Some(expected),
+                None,
+                rebuild.then_some(true),
+                None,
+            )
             .data()
             .await
     }

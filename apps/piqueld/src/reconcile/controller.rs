@@ -557,7 +557,8 @@ impl<D: DockerApi> Controller<D> {
             Arc::clone(&self.mutations),
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone())
-        .with_build_priority(&application.environment.kind);
+        .with_build_priority(&application.environment.kind)
+        .with_rebuild(self.store.rebuild_requested(&operation.id).await?);
         let (manifest, snapshot) = self.deployment_manifest(operation, tracking).await?;
         let runtime = runtime.with_snapshot(snapshot);
         // A rename changes display metadata without rewriting deployment history.

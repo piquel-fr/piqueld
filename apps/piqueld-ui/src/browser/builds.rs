@@ -176,6 +176,12 @@ fn BuildCard(
                         }}
                     </strong>
                     <span class="tag">{move || record.get().service}</span>
+                    {move || {
+                        record
+                            .get()
+                            .reused_build
+                            .map(|_| view! { <span class="tag">"Reused"</span> })
+                    }}
                     <span class="meta">{move || build_summary_time(&record.get())}</span>
                 },
             )} <div class="expander-body" hidden={move || !opened.get()}>
@@ -227,6 +233,14 @@ fn BuildCard(
                             </dd> <dt>"Duration"</dt> <dd>{duration}</dd> {source_details(b.source)}
                             <dt>"Resolved commit"</dt> <dd>{code_or(b.commit, "Not resolved")}</dd>
                             <dt>"Image"</dt> <dd>{code_or(b.image_id, "Not produced")}</dd>
+                            {b
+                                .reused_build
+                                .map(|earlier| {
+                                    view! {
+                                        <dt>"Reused from"</dt>
+                                        <dd>{format!("Build #{earlier}")}</dd>
+                                    }
+                                })}
                             <dt>"Retained output"</dt>
                             <dd>{Bytes::from_i64(b.log_bytes).to_string()}</dd>
                         </dl>

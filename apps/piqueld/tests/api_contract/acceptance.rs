@@ -20,14 +20,14 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     // A one-time manifest revision needs a repository-backed manifest.
     let revision = piqueld_client::ManifestRevision::Branch("feature".into());
     let unbacked = client
-        .deploy_environment(&first.environment_id, 2, Some(&revision))
+        .deploy_environment(&first.environment_id, 2, Some(&revision), false)
         .await
         .unwrap_err();
     assert!(
         matches!(unbacked, ClientError::Api { error, .. } if error.details.to_string().contains("manifest_repository_required"))
     );
     let refreshed = client
-        .deploy_environment(&first.environment_id, 2, None)
+        .deploy_environment(&first.environment_id, 2, None, false)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
@@ -67,7 +67,7 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     assert_eq!(deletion.generation, 3);
     assert!(
         client
-            .deploy_environment(&first.environment_id, 3, None)
+            .deploy_environment(&first.environment_id, 3, None, false)
             .await
             .is_err()
     );
@@ -226,7 +226,7 @@ async fn receipt_failure_rolls_back_acceptance_and_expired_keys_are_reusable() {
     let accepted = keyed.apply_and_deploy(&request).await.unwrap();
     execute(&database, "UPDATE request_receipts SET expires_at_ms=0").await;
     let refreshed = keyed
-        .deploy_environment(&accepted.environment_id, 1, None)
+        .deploy_environment(&accepted.environment_id, 1, None, false)
         .await
         .unwrap();
     assert_ne!(refreshed.operation_id, accepted.operation_id);
@@ -358,7 +358,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     );
     let refreshed = api
         .client
-        .deploy_environment(&accepted.environment_id, 2, None)
+        .deploy_environment(&accepted.environment_id, 2, None, false)
         .await
         .unwrap();
     assert_eq!(refreshed.generation, 2);
@@ -376,7 +376,7 @@ async fn mutations_require_preconditions_but_reconcile_uses_current_intent() {
     assert_eq!(reconciled.operation_id, deletion.operations[0].operation_id);
     assert!(
         api.client
-            .deploy_environment(&accepted.environment_id, 2, None)
+            .deploy_environment(&accepted.environment_id, 2, None, false)
             .await
             .is_err()
     );
@@ -398,7 +398,7 @@ async fn environments_stay_stopped_until_started_or_deployed() {
     );
 
     let deployed = client
-        .deploy_environment(id, saved.generation, None)
+        .deploy_environment(id, saved.generation, None, false)
         .await
         .unwrap();
     let stop = client.stop_environment(id, None).await.unwrap();
@@ -410,7 +410,7 @@ async fn environments_stay_stopped_until_started_or_deployed() {
 
     client.stop_environment(id, None).await.unwrap();
     let redeployed = client
-        .deploy_environment(id, saved.generation, None)
+        .deploy_environment(id, saved.generation, None, false)
         .await
         .unwrap();
     assert_ne!(redeployed.operation_id, deployed.operation_id);
@@ -660,7 +660,7 @@ async fn event_kinds_list_each_recorded_kind_once_in_name_order() {
     let deployed = client.apply_and_deploy(&request).await.unwrap();
     // Deploying again records a second `refresh_requested`.
     client
-        .deploy_environment(&deployed.environment_id, 1, None)
+        .deploy_environment(&deployed.environment_id, 1, None, false)
         .await
         .unwrap();
     let kinds = client.event_kinds().await.unwrap();

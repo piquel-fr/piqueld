@@ -61,8 +61,12 @@ report!(Page<BuildRecord>, self, out, {
             || build.service.clone(),
             |job| format!("job {job} ({})", build.service),
         );
+        // A build that used an earlier build's image names it.
+        let reused = build
+            .reused_build
+            .map_or_default(|earlier| format!("  reused #{earlier}"));
         out.line(format_args!(
-            "{}  {}  {}  {:?}  {}",
+            "{}  {}  {}  {:?}  {}{reused}",
             build.id, build.environment_id, subject, build.state, build.started_at_ms
         ))?;
     }

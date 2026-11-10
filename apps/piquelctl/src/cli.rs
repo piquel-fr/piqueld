@@ -735,12 +735,13 @@ pub(crate) struct DeployArgs {
     #[command(flatten)]
     pub(crate) target: TargetArgs,
     #[command(flatten)]
-    pub(crate) revision: RevisionArgs,
+    pub(crate) overrides: DeployOverrides,
 }
 
-// One-time manifest revision overrides for deployments.
+// What one deployment does differently, without saving anything: the
+// revision its manifest is fetched from, and whether it builds again.
 #[derive(Debug, Args)]
-pub(crate) struct RevisionArgs {
+pub(crate) struct DeployOverrides {
     /// Fetch the repository manifest from this branch, for this deployment only.
     ///
     /// The environment keeps following its own branch.
@@ -750,9 +751,16 @@ pub(crate) struct RevisionArgs {
     /// deployment only.
     #[arg(long, value_name = "SHA")]
     pub(crate) commit: Option<String>,
+    /// Build every service's image from Git again.
+    ///
+    /// Without it, a service whose commit and build settings an earlier
+    /// build of the application already built reuses that build's image.
+    /// A rebuild also pulls newer base images.
+    #[arg(long)]
+    pub(crate) rebuild: bool,
 }
 
-impl RevisionArgs {
+impl DeployOverrides {
     /// The one-time manifest revision, if overridden.
     pub(crate) fn revision(&self) -> Option<piqueld_client::ManifestRevision> {
         self.branch

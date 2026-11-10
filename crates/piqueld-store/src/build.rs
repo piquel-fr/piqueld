@@ -3,11 +3,44 @@ use super::auth::access::scope_json;
 use super::{Paging, Store, StoreError, days_ago_ms, decode_name, now_ms};
 use piqueld_core::access::Scope;
 use piqueld_core::{
-    ApplicationId, EnvironmentId,
+    ApplicationId, BuildInputs, EnvironmentId,
     api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
     manifest::ValidatedSource as Source,
+    resource::Sha256Digest,
 };
 use sqlx::{QueryBuilder, Sqlite};
+
+/// A succeeded build whose image another build may reuse; see
+/// [`Store::reusable_builds`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReusableBuild {
+    /// The build that produced the image.
+    pub id: i64,
+    /// The image it produced.
+    pub image: Sha256Digest,
+}
+
+/// How a build ended: its terminal state, and the image of a succeeded one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildOutcome {
+    /// The terminal state.
+    pub state: BuildState,
+    /// The image the build produced or reused.
+    pub image: Option<String>,
+    /// The earlier build whose image it reused instead of building.
+    pub reused_build: Option<i64>,
+}
+impl BuildOutcome {
+    /// A build that ended in `state` without an image.
+    #[must_use]
+    pub const fn without_image(state: BuildState) -> Self {
+        Self {
+            state,
+            image: None,
+            reused_build: None,
+        }
+    }
+}
 
 /// `builds` row read by the build listing.
 #[derive(sqlx::FromRow)]
@@ -23,6 +56,7 @@ struct BuildRow {
     finished_at_ms: Option<i64>,
     commit_hash: Option<String>,
     image_id: Option<String>,
+    reused_build_id: Option<i64>,
     exit_code: Option<i64>,
     log_bytes: i64,
     log_truncated: i64,
@@ -53,6 +87,7 @@ impl BuildRow {
             finished_at_ms: self.finished_at_ms,
             commit: self.commit_hash,
             image_id: self.image_id,
+            reused_build: self.reused_build_id,
             exit_code: self.exit_code,
             log_bytes: self.log_bytes,
             log_truncated: self.log_truncated != 0,
@@ -198,7 +233,8 @@ impl Store {
         .map_err(StoreError::database)?;
         Ok(())
     }
-    /// Marks a running build finished with a terminal state and optional image ID.
+    /// Marks a running build finished with `outcome`: its terminal state,
+    /// its image, and the build it reused that image from, if any.
     /// Already finished builds are left unchanged; `Running` is invalid input.
     ///
     /// # Errors
@@ -206,10 +242,9 @@ impl Store {
     pub async fn finish_build(
         &self,
         id: i64,
-        state: BuildState,
-        image: Option<&str>,
+        outcome: &BuildOutcome,
     ) -> Result<(), StoreError> {
-        let state = match state {
+        let state = match outcome.state {
             BuildState::Running => return Err(StoreError::InvalidInput),
             BuildState::Succeeded => "succeeded",
             BuildState::Failed => "failed",
@@ -217,15 +252,61 @@ impl Store {
         };
         let now = now_ms();
         self.write(sqlx::query!(
-            "UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",
+            "UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3,reused_build_id=?4 WHERE id=?5 AND state='running'",
             state,
             now,
-            image,
+            outcome.image,
+            outcome.reused_build,
             id
         ))
         .await
         .map_err(StoreError::database)?;
         Ok(())
+    }
+    /// The succeeded builds of `environment`'s application whose image a
+    /// build of `source` at `commit` may reuse, newest first: those that
+    /// checked out the same commit with the same [`BuildInputs`], whichever
+    /// branch or environment they built for. A build that itself reused an
+    /// image is reported as the build that produced it.
+    ///
+    /// Callers check that the image is still present.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn reusable_builds(
+        &self,
+        environment: &EnvironmentId,
+        source: &Source,
+        commit: &str,
+    ) -> Result<Vec<ReusableBuild>, StoreError> {
+        let inputs = BuildInputs::new(source, Some(commit));
+        let environment = environment.as_str();
+        sqlx::query!(
+            r#"SELECT id AS "id!",source_json,image_id AS "image_id!",reused_build_id FROM builds
+               WHERE commit_hash=?1 AND state='succeeded' AND job IS NULL AND image_id IS NOT NULL
+               AND environment_id IN (SELECT id FROM environments WHERE application_id=
+                   (SELECT application_id FROM environments WHERE id=?2))
+               ORDER BY id DESC"#,
+            commit,
+            environment
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .into_iter()
+        .filter_map(|row| {
+            let source = match serde_json::from_str::<Source>(&row.source_json) {
+                Ok(source) => source,
+                Err(error) => return Some(Err(StoreError::corrupt(error))),
+            };
+            (BuildInputs::new(&source, Some(commit)) == inputs).then(|| {
+                Ok(ReusableBuild {
+                    id: row.reused_build_id.unwrap_or(row.id),
+                    image: Sha256Digest::parse(row.image_id).map_err(StoreError::corrupt)?,
+                })
+            })
+        })
+        .collect()
     }
     /// Names of the jobs an operation already ran successfully. Retries and
     /// restarts skip them, so each job succeeds at most once per operation.
@@ -303,7 +384,7 @@ impl Store {
         }
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT id,environment_id,operation_id,service,job,source_json,state,started_at_ms,\
-             finished_at_ms,commit_hash,image_id,exit_code,log_bytes,log_truncated,log_expired \
+             finished_at_ms,commit_hash,image_id,reused_build_id,exit_code,log_bytes,log_truncated,log_expired \
              FROM builds WHERE id<",
         );
         query.push_bind(before);
@@ -441,6 +522,16 @@ impl Store {
 mod tests {
     use super::*;
     use piqueld_core::manifest::ApplicationTemplate;
+
+    /// A build that succeeded and produced `image`.
+    fn succeeded(image: &str) -> BuildOutcome {
+        BuildOutcome {
+            state: BuildState::Succeeded,
+            image: Some(image.into()),
+            reused_build: None,
+        }
+    }
+
     struct Fixture {
         _temp: tempfile::TempDir,
         store: Store,
@@ -495,6 +586,93 @@ mod tests {
         }
     }
 
+    /// A Git source on `branch`, built with the build argument `MODE=mode`.
+    fn git_source(branch: &str, mode: &str) -> Source {
+        Source::Git {
+            repository: piqueld_core::manifest::SourceRepository::Git(
+                piqueld_core::manifest::GitRepository {
+                    url: "https://example.com/notes.git".into(),
+                    branch: branch.into(),
+                    commit: None,
+                },
+            ),
+            build: piqueld_core::manifest::ValidatedBuild::Docker {
+                dockerfile: "Dockerfile".into(),
+                context: ".".into(),
+                args: [("MODE".into(), mode.into())].into(),
+                target: None,
+            },
+        }
+    }
+
+    /// A full commit hash or an image ID's hexadecimal part, of `digit`s.
+    fn hex(digit: char, length: usize) -> String {
+        digit.to_string().repeat(length)
+    }
+
+    /// Records a build of `source` at commit `commit`s for `environment`,
+    /// ended with `outcome`.
+    async fn record(
+        fixture: &Fixture,
+        environment: &EnvironmentId,
+        source: &Source,
+        commit: char,
+        outcome: BuildOutcome,
+    ) -> i64 {
+        let store = &fixture.store;
+        let id = store
+            .start_build(environment, &fixture.operation, "web", source, None)
+            .await
+            .unwrap();
+        store.build_commit(id, &hex(commit, 40)).await.unwrap();
+        store.finish_build(id, &outcome).await.unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn only_the_applications_builds_of_the_same_commit_and_settings_are_reusable() {
+        let fixture = Fixture::new().await;
+        let store = &fixture.store;
+        let image = |digit| format!("sha256:{}", hex(digit, 64));
+        let release = git_source("main", "release");
+        let ours = &fixture.environment;
+        let built = record(&fixture, ours, &release, 'c', succeeded(&image('a'))).await;
+        // Other build settings, another commit, a failed build, and another
+        // application's build of the same inputs.
+        let debug = git_source("main", "debug");
+        record(&fixture, ours, &debug, 'c', succeeded(&image('b'))).await;
+        record(&fixture, ours, &release, 'd', succeeded(&image('b'))).await;
+        let failed = BuildOutcome::without_image(BuildState::Failed);
+        record(&fixture, ours, &release, 'c', failed).await;
+        let other = crate::testing::template("other", "[spec]");
+        let theirs = store
+            .saved_production(&store.save_template(other, false).await)
+            .await;
+        record(&fixture, &theirs, &release, 'c', succeeded(&image('b'))).await;
+
+        // The branch a commit was built from doesn't matter.
+        let preview = git_source("feat/notes", "release");
+        let reusable = |source| async move {
+            store
+                .reusable_builds(ours, source, &hex('c', 40))
+                .await
+                .unwrap()
+        };
+        let original = ReusableBuild {
+            id: built,
+            image: Sha256Digest::parse(image('a')).unwrap(),
+        };
+        assert_eq!(reusable(&preview).await, std::slice::from_ref(&original));
+
+        // A build that reused the image names the build that produced it.
+        let reused = BuildOutcome {
+            reused_build: Some(built),
+            ..succeeded(&image('a'))
+        };
+        record(&fixture, ours, &preview, 'c', reused).await;
+        assert_eq!(reusable(&release).await, [original.clone(), original]);
+    }
+
     #[tokio::test]
     async fn build_metadata_obeys_the_writer_gate() {
         let Fixture {
@@ -502,9 +680,10 @@ mod tests {
         } = Fixture::new().await;
         let writer = store.writers.lock().await;
         let blocked = std::time::Duration::from_millis(50);
+        let failed = BuildOutcome::without_image(BuildState::Failed);
         let (commit, finish, recover) = tokio::join!(
             tokio::time::timeout(blocked, store.build_commit(id, "commit")),
-            tokio::time::timeout(blocked, store.finish_build(id, BuildState::Failed, None)),
+            tokio::time::timeout(blocked, store.finish_build(id, &failed)),
             tokio::time::timeout(blocked, store.recover_builds()),
         );
         assert!(commit.is_err(), "commit metadata bypassed the writer gate");
@@ -513,7 +692,7 @@ mod tests {
         drop(writer);
         store.build_commit(id, "commit").await.unwrap();
         store
-            .finish_build(id, BuildState::Failed, None)
+            .finish_build(id, &BuildOutcome::without_image(BuildState::Failed))
             .await
             .unwrap();
         store.recover_builds().await.unwrap();
@@ -543,7 +722,7 @@ mod tests {
                 store.build_commit(other, "commit").await?;
             }
             store
-                .finish_build(other, BuildState::Succeeded, Some("sha256:fixture"))
+                .finish_build(other, &succeeded("sha256:fixture"))
                 .await
         };
         tokio::try_join!(output, metadata).unwrap();
@@ -669,7 +848,7 @@ mod tests {
         );
         assert!(second.previous_offset.is_none());
         store
-            .finish_build(id, BuildState::Succeeded, Some("sha256:fixture"))
+            .finish_build(id, &succeeded("sha256:fixture"))
             .await
             .unwrap();
         store

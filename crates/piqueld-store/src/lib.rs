@@ -28,6 +28,7 @@ pub use auth::{
     DirectoryView, Invitation, NewCredential, NewInvitation, NewPasskey, PasskeyOwner,
     SecurityEvent,
 };
+pub use build::{BuildOutcome, ReusableBuild};
 pub use journal::JournalAction;
 pub use observability::DESTINATION_CHANGED;
 pub use observability::{ContainerCursors, DestinationError, RetryError};

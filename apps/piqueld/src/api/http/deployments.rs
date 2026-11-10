@@ -55,11 +55,14 @@ pub(super) struct DeployQuery {
     branch: Option<String>,
     /// Fetch the repository manifest from this full commit, without saving it.
     commit: Option<String>,
+    /// Build every Git source again, even one whose image could be reused.
+    #[serde(default)]
+    rebuild: bool,
 }
 
 impl QueryParams for DeployQuery {
     const INVALID_CODE: &'static str = "query_invalid";
-    const INVALID_MESSAGE: &'static str = "expected_generation must be an integer, force must be true or false, and branch or commit may appear once";
+    const INVALID_MESSAGE: &'static str = "expected_generation must be an integer, force and rebuild must be true or false, and branch or commit may appear once";
 }
 
 impl DeployQuery {
@@ -81,6 +84,10 @@ impl DeployQuery {
 /// Deploys an environment from its source: the application's saved
 /// configuration, or the repository manifest at the environment's branch (or
 /// the one-time `branch`/`commit`).
+///
+/// A Git source whose commit and build settings an earlier build of the
+/// application already built reuses that build's image while it is still
+/// present; `rebuild=true` builds every Git source again.
 ///
 /// Returns 202 with the accepted durable operation. Requires
 /// `expected_generation` unless `force=true`; a stale generation fails with 409.
@@ -107,6 +114,7 @@ pub(super) async fn deploy(
         crate::api::Mutation::Deploy {
             id: EnvironmentId::parse(id)?,
             revision: query.revision()?,
+            rebuild: query.rebuild,
         },
         query.expected_generation,
         query.force,

@@ -222,6 +222,33 @@ impl Store {
         serde_json::from_str(&origin).map_err(StoreError::corrupt)
     }
 
+    /// Makes deployment `id` build every Git source, even one whose image
+    /// it could reuse (see [`Self::reusable_builds`]).
+    pub(super) async fn request_rebuild_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &str,
+    ) -> Result<(), StoreError> {
+        sqlx::query!("UPDATE deployments SET rebuild=1 WHERE id=?1", id)
+            .execute(&mut **tx)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(())
+    }
+
+    /// Whether deployment `id` was requested with a rebuild.
+    /// # Errors
+    /// Returns storage or absence errors.
+    pub async fn rebuild_requested(&self, id: &str) -> Result<bool, StoreError> {
+        Ok(
+            sqlx::query_scalar!("SELECT rebuild FROM deployments WHERE id=?1", id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(StoreError::database)?
+                .ok_or(StoreError::NotFound)?
+                != 0,
+        )
+    }
+
     /// Whether deployment `id` ever succeeded.
     /// # Errors
     /// Returns storage or absence errors.

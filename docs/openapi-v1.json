@@ -1434,6 +1434,12 @@
             "description": "Source operation ID, retained even after operation pruning.",
             "type": "string"
           },
+          "reused_build": {
+            "description": "The earlier build whose image this build reused instead of building,\nbecause its commit and build settings were the same.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
           "service": {
             "description": "Logical service name; for job runs, the service whose container the job reuses.",
             "type": "string"
@@ -4846,6 +4852,12 @@
                     "operation_id": {
                       "description": "Source operation ID, retained even after operation pruning.",
                       "type": "string"
+                    },
+                    "reused_build": {
+                      "description": "The earlier build whose image this build reused instead of building,\nbecause its commit and build settings were the same.",
+                      "format": "int64",
+                      "nullable": true,
+                      "type": "integer"
                     },
                     "service": {
                       "description": "Logical service name; for job runs, the service whose container the job reuses.",
@@ -27786,7 +27798,7 @@
     },
     "/api/v1/environments/{id}/deploy": {
       "post": {
-        "description": "Returns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nA promoted environment fails with 409 `environment_promoted`; it deploys\nonly by promotion. `branch` or `commit` for an environment without a\nrepository branch fails with 422.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
+        "description": "A Git source whose commit and build settings an earlier build of the\napplication already built reuses that build's image while it is still\npresent; `rebuild=true` builds every Git source again.\n\nReturns 202 with the accepted durable operation. Requires\n`expected_generation` unless `force=true`; a stale generation fails with 409.\nA promoted environment fails with 409 `environment_promoted`; it deploys\nonly by promotion. `branch` or `commit` for an environment without a\nrepository branch fails with 422.\nRepeating a request with the same `Idempotency-Key` returns the original\nresponse.",
         "operationId": "deployEnvironment",
         "parameters": [
           {
@@ -27833,6 +27845,15 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Build every Git source again, even one whose image could be reused.",
+            "in": "query",
+            "name": "rebuild",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {

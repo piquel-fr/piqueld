@@ -76,6 +76,7 @@ impl ControllerHarness {
                 Mutation::Deploy {
                     id: id.clone(),
                     revision,
+                    rebuild: false,
                 },
                 None,
                 true,

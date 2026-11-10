@@ -477,10 +477,20 @@ impl Store {
                 Self::set_branch_on(tx, &current, branch, now).await?;
                 Self::environment_accepted(tx, id).await
             }
-            Mutation::Deploy { id, revision } => {
-                let current = Self::checked_environment_on(tx, &id, expected).await?;
-                let operation = Self::deploy_revision_on(tx, &current, revision.as_ref()).await?;
-                Ok(Self::operation_accepted(&operation))
+            // Boxed: it would otherwise grow every acceptance future.
+            Mutation::Deploy {
+                id,
+                revision,
+                rebuild,
+            } => {
+                Box::pin(Self::deploy_on(
+                    tx,
+                    &id,
+                    revision.as_ref(),
+                    rebuild,
+                    expected,
+                ))
+                .await
             }
             Mutation::SetSync { id, enabled } => Self::set_sync_on(tx, id, enabled, now).await,
             Mutation::SetTelemetry { id, granted } => {
@@ -504,6 +514,25 @@ impl Store {
                 Box::pin(self.execute_preview_on(tx, mutation, now)).await
             }
         }
+    }
+
+    /// Deploys environment `id` from its source, at `revision` when given,
+    /// after checking the revision precondition against its application.
+    /// With `rebuild`, the deployment builds every Git source, even one whose
+    /// image it could reuse.
+    async fn deploy_on(
+        tx: &mut Transaction<'_, Sqlite>,
+        id: &EnvironmentId,
+        revision: Option<&piqueld_core::manifest::ManifestRevision>,
+        rebuild: bool,
+        expected: Option<u64>,
+    ) -> Result<Accepted, StoreError> {
+        let current = Self::checked_environment_on(tx, id, expected).await?;
+        let operation = Self::deploy_revision_on(tx, &current, revision).await?;
+        if rebuild {
+            Self::request_rebuild_on(tx, &operation.id).await?;
+        }
+        Ok(Self::operation_accepted(&operation))
     }
 
     /// Changes where an environment's releases come from, or promotes a

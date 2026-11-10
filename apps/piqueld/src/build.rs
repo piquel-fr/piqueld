@@ -1,6 +1,6 @@
 //! Durable attempt lifecycle and output sink, independent of the executor.
 use piqueld_core::{EnvironmentId, api::BuildState, manifest::ValidatedSource as Source};
-use piqueld_store::{Store, StoreError};
+use piqueld_store::{BuildOutcome, Store, StoreError};
 use std::sync::Arc;
 
 /// A bounded persistent output sink usable by any build executor.
@@ -61,16 +61,16 @@ enum Completion {
     /// The build has not finished; dropping it records `Interrupted`.
     Running,
     /// A terminal state was chosen but its write has not succeeded yet.
-    Pending(BuildState, Option<String>),
+    Pending(BuildOutcome),
     /// The terminal state is stored; nothing is left to record.
     Persisted,
 }
 impl Completion {
-    /// Returns the terminal state `Drop` still needs to persist, if any.
-    fn retry(self) -> Option<(BuildState, Option<String>)> {
+    /// Returns the outcome `Drop` still needs to persist, if any.
+    fn retry(self) -> Option<BuildOutcome> {
         match self {
-            Self::Running => Some((BuildState::Interrupted, None)),
-            Self::Pending(state, image) => Some((state, image)),
+            Self::Running => Some(BuildOutcome::without_image(BuildState::Interrupted)),
+            Self::Pending(outcome) => Some(outcome),
             Self::Persisted => None,
         }
     }
@@ -96,16 +96,45 @@ impl BuildAttempt {
     }
     /// Persists the terminal state and, on success, the built image ID.
     pub(crate) async fn finish(
-        mut self,
+        self,
         state: BuildState,
         image: Option<&str>,
     ) -> Result<(), StoreError> {
-        let image = image.map(str::to_owned);
-        self.completion = Completion::Pending(state, image.clone());
+        self.complete(BuildOutcome {
+            state,
+            image: image.map(str::to_owned),
+            reused_build: None,
+        })
+        .await
+    }
+    /// Finishes the build as succeeded with the image `earlier` produced,
+    /// and says so in its output: nothing was built.
+    pub(crate) async fn reuse(
+        self,
+        earlier: &piqueld_store::ReusableBuild,
+    ) -> Result<(), StoreError> {
         self.log
-            .store
-            .finish_build(self.log.id, state, image.as_deref())
+            .append(
+                format!(
+                    "Reusing the image of build #{}: the commit and build settings are the same. \
+                     Deploy with a rebuild to build it again.\n",
+                    earlier.id
+                )
+                .as_bytes(),
+                piqueld_core::api::LogStream::Stdout,
+            )
             .await?;
+        self.complete(BuildOutcome {
+            state: BuildState::Succeeded,
+            image: Some(earlier.image.to_string()),
+            reused_build: Some(earlier.id),
+        })
+        .await
+    }
+    /// Persists `outcome`, which `Drop` retries if the write fails.
+    async fn complete(mut self, outcome: BuildOutcome) -> Result<(), StoreError> {
+        self.completion = Completion::Pending(outcome.clone());
+        self.log.store.finish_build(self.log.id, &outcome).await?;
         self.completion = Completion::Persisted;
         Ok(())
     }
@@ -114,18 +143,13 @@ impl Drop for BuildAttempt {
     /// Spawns a best-effort write of any unpersisted terminal state. If that also
     /// fails, startup recovery marks the build interrupted.
     fn drop(&mut self) {
-        let Some((state, image)) =
-            std::mem::replace(&mut self.completion, Completion::Persisted).retry()
+        let Some(outcome) = std::mem::replace(&mut self.completion, Completion::Persisted).retry()
         else {
             return;
         };
         let log = self.log.clone();
         tokio::spawn(async move {
-            if let Err(error) = log
-                .store
-                .finish_build(log.id, state, image.as_deref())
-                .await
-            {
+            if let Err(error) = log.store.finish_build(log.id, &outcome).await {
                 tracing::error!(build_id=log.id,error=?error,"failed to record build completion; startup recovery will mark it interrupted");
             }
         });
@@ -138,13 +162,15 @@ mod tests {
 
     #[test]
     fn completion_retry_preserves_pending_terminal_result() {
-        assert_eq!(
-            Completion::Pending(BuildState::Succeeded, Some("sha256:image".into())).retry(),
-            Some((BuildState::Succeeded, Some("sha256:image".into())))
-        );
+        let reused = BuildOutcome {
+            state: BuildState::Succeeded,
+            image: Some("sha256:image".into()),
+            reused_build: Some(7),
+        };
+        assert_eq!(Completion::Pending(reused.clone()).retry(), Some(reused));
         assert_eq!(
             Completion::Running.retry(),
-            Some((BuildState::Interrupted, None))
+            Some(BuildOutcome::without_image(BuildState::Interrupted))
         );
         assert_eq!(Completion::Persisted.retry(), None);
     }
