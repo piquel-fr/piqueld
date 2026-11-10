@@ -1263,6 +1263,61 @@ fn non_terminal_progress_prints_a_line_per_step_change() {
     );
 }
 
+/// Without a terminal, a rollout's step prints a line as its new tasks run,
+/// and its last line says how long no task served.
+#[test]
+fn non_terminal_progress_prints_a_rollouts_new_tasks_and_downtime() {
+    // A stop-first rollout: the old task stops at 2 s, the new one runs at 5.2 s.
+    let lane = |id: &str, current: bool, spans: &[(&str, i64)]| {
+        let spans: Vec<_> = spans
+            .iter()
+            .map(|(state, from)| json!({"state": state, "from_ms": from}))
+            .collect();
+        let state = spans.last().unwrap()["state"].clone();
+        json!({"id": id, "slot": 1, "current": current, "state": state, "spans": spans})
+    };
+    let wait = |state: &str, tasks: Value| {
+        json!({
+            "phase": "wait_for_service", "resource": "web", "state": state,
+            "action_id": "a1", "started_at_ms": 1_000, "tasks": tasks, "monitor_seconds": 5
+        })
+    };
+    let old = lane("old", false, &[("running", 1_000), ("shutdown", 2_000)]);
+    let running = operation("running");
+    let mut succeeded = operation("succeeded");
+    succeeded["finished_at_ms"] = json!(9_000);
+    let mut done = wait(
+        "succeeded",
+        json!([
+            old,
+            lane("new", true, &[("preparing", 2_000), ("running", 5_200)])
+        ]),
+    );
+    done["finished_at_ms"] = json!(9_000);
+    let timelines = [
+        timeline(
+            &running,
+            &json!([wait(
+                "running",
+                json!([old, lane("new", true, &[("preparing", 2_000)])])
+            )]),
+        ),
+        timeline(&running, &json!([wait("running", done["tasks"].clone())])),
+        timeline(&succeeded, &json!([done])),
+    ];
+    let server = start_server(true, 1, move |_| Reply::timelines(&timelines));
+    let output = run_human(&server, &["operation", "operation-01"]);
+    server.finish();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "operation-01: running\n\
+         operation-01: Wait for service web · running · 0/1 new task running\n\
+         operation-01: Wait for service web · running · 1/1 new task running\n\
+         operation-01: Wait for service web · succeeded · 8.0 s  down 3.2 s\n\
+         operation-01: succeeded · 9.0 s\n"
+    );
+}
+
 /// With `--json`, each step change is a `step` event carrying the step, and
 /// stdout keeps only the result.
 #[test]
