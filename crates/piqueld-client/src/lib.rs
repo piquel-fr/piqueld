@@ -37,7 +37,7 @@ pub mod exec;
 pub mod observability;
 /// Generated OpenAPI document retrieval.
 pub mod openapi;
-/// Operation inspection contracts.
+/// Operation inspection contracts, and their timelines of steps.
 pub mod operations;
 /// Preview lifecycle and branch state contracts.
 pub mod previews;
@@ -51,6 +51,7 @@ mod client;
 mod editing;
 mod generated;
 mod secrets;
+mod sse;
 
 /// Permissions and grants.
 pub use piqueld_core::access;

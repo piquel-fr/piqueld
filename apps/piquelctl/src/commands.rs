@@ -7,7 +7,7 @@ use crate::{
     environments,
     error::{CliError, ErrorKind, Result},
     output::{
-        Console, ProgressTask, TaskOutcome,
+        Console, Progress, ProgressTask, TaskOutcome,
         reports::{
             ApplicationDeletionReport, ApplicationRow, Connection, DoctorReport, ManifestReport,
             Named, ShowReport, StatusReport, ValidManifestReport,
@@ -19,9 +19,12 @@ use crate::{
     },
 };
 use futures_util::StreamExt;
+use http::StatusCode;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, ApplyOptions, Client, ClientError,
-    ListApplicationsOptions, Operation, OperationState, Page, Phase, observability::DiagnosticCode,
+    ListApplicationsOptions, Operation, OperationState, Page,
+    observability::DiagnosticCode,
+    operations::{Timeline, TimelineStream},
 };
 use serde_json::json;
 use std::{cell::Cell, collections::BTreeSet, path::Path, time::Duration};
@@ -590,13 +593,14 @@ pub(crate) async fn resolve_application(
     Ok(client.application(summary.id.as_str()).await?)
 }
 
-/// One wait for the daemon, with its progress task. While it lives,
-/// `--wait-timeout` bounds the command instead of `--timeout` (see
-/// [`Waiting`]). Polls back off from `POLL_INTERVAL` to `MAX_POLL_INTERVAL`,
-/// and, once the daemon answered, failures that polling again may fix, such
-/// as the daemon restarting, are shown as progress instead of ending the wait.
-pub(crate) struct Wait {
-    pub(crate) progress: ProgressTask,
+/// One wait for the daemon, reporting through `progress`: a spinner task,
+/// or an operation's timeline. While it lives, `--wait-timeout` bounds the
+/// command instead of `--timeout` (see [`Waiting`]). Reads back off from
+/// `POLL_INTERVAL` to `MAX_POLL_INTERVAL`, and, once the daemon answered,
+/// failures that reading again may fix, such as the daemon restarting, are
+/// shown as progress instead of ending the wait.
+pub(crate) struct Wait<P = ProgressTask> {
+    pub(crate) progress: P,
     interval: Duration,
     /// Whether the daemon answered a read yet: until then, a failure is more
     /// likely a wrong endpoint than a restart, and ends the wait.
@@ -605,36 +609,9 @@ pub(crate) struct Wait {
 }
 
 impl Wait {
+    /// Starts a wait shown as a spinner task labelled `label`.
     pub(crate) fn start(console: &mut Console, label: &str) -> Self {
-        Self {
-            progress: console.start_task(label),
-            interval: POLL_INTERVAL,
-            answered: Cell::new(false),
-            _waiting: Waiting::start(),
-        }
-    }
-
-    /// `result`'s value, or `None` after a failure that polling again may
-    /// fix, once the daemon answered a read of this wait.
-    pub(crate) fn read<T>(&self, result: std::result::Result<T, ClientError>) -> Result<Option<T>> {
-        match result.map_err(CliError::from) {
-            Ok(value) => {
-                self.answered.set(true);
-                Ok(Some(value))
-            }
-            Err(error) if error.is_unavailable() && self.answered.get() => {
-                Waiting::failed(error.code_name());
-                self.progress.update(&format!("{error}; retrying"));
-                Ok(None)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Sleeps until the next poll.
-    pub(crate) async fn pause(&mut self) {
-        time::sleep(self.interval).await;
-        self.interval = (self.interval * 2).min(MAX_POLL_INTERVAL);
+        Self::new(console.start_task(label))
     }
 
     /// The code of `operation`'s failure when it is one the daemon retries
@@ -647,12 +624,49 @@ impl Wait {
             .and_then(DiagnosticCode::parse)
             .filter(|code| code.retryable())
     }
+}
+
+impl<P: Progress> Wait<P> {
+    pub(crate) fn new(progress: P) -> Self {
+        Self {
+            progress,
+            interval: POLL_INTERVAL,
+            answered: Cell::new(false),
+            _waiting: Waiting::start(),
+        }
+    }
+
+    /// `result`'s value, or `None` after a failure that reading again may
+    /// fix, once the daemon answered a read of this wait.
+    pub(crate) fn read<T>(
+        &self,
+        result: std::result::Result<T, impl Into<CliError>>,
+    ) -> Result<Option<T>> {
+        match result.map_err(Into::into) {
+            Ok(value) => {
+                self.answered.set(true);
+                Ok(Some(value))
+            }
+            Err(error) if error.is_unavailable() && self.answered.get() => {
+                Waiting::failed(error.code_name());
+                self.progress.show(&format!("{error}; retrying"));
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Sleeps until the next read.
+    pub(crate) async fn pause(&mut self) {
+        time::sleep(self.interval).await;
+        self.interval = (self.interval * 2).min(MAX_POLL_INTERVAL);
+    }
 
     /// Whether the daemon retries `operation`'s failure on its own: its code
     /// is retryable, and it is still its environment's latest operation. A
     /// deleted environment retries nothing.
     pub(crate) async fn retried(&self, client: &Client, operation: &Operation) -> Result<bool> {
-        let Some(code) = Self::retryable(operation) else {
+        let Some(code) = Wait::retryable(operation) else {
             return Ok(false);
         };
         let detail = match client
@@ -671,7 +685,7 @@ impl Wait {
             .is_some_and(|latest| latest.id == operation.id);
         if latest {
             Waiting::failed(code.to_string());
-            self.progress.update(&format!(
+            self.progress.show(&format!(
                 "attempt {} failed with {code}; the daemon retries it",
                 operation.attempt
             ));
@@ -680,8 +694,9 @@ impl Wait {
     }
 }
 
-/// Polls an operation with a progress task until it is terminal. Returns an
-/// `ErrorKind::Operation` error unless it succeeded or was superseded.
+/// Follows an operation's timeline, showing its steps live, until it is
+/// terminal. Returns an `ErrorKind::Operation` error unless it succeeded or
+/// was superseded.
 pub(crate) async fn wait_for_operation(
     console: &mut Console,
     client: &Client,
@@ -696,59 +711,146 @@ pub(crate) async fn wait_for_operation(
 /// Whether a terminal operation's caller is done waiting.
 pub(crate) enum Settled<T> {
     Done(T),
-    /// Keep polling; the message is shown as progress.
+    /// Keep waiting; the message is shown as progress.
     Waiting(String),
 }
 
-/// Polls an operation like [`wait_for_operation`], through a [`Wait`]. A
-/// failure the daemon retries on its own keeps the wait going. Once it
-/// succeeded or was superseded, `settle` decides whether waiting is over;
-/// while it is not, the operation is polled again, so a retry that ends
-/// differently counts.
+/// Follows an operation like [`wait_for_operation`], through a [`Wait`]
+/// shown as its timeline. A failure the daemon retries on its own keeps the
+/// wait going, until the timeline shows the retry. Once it succeeded or was
+/// superseded, `settle` decides whether waiting is over; while it is not,
+/// `settle` runs again each `SETTLE_INTERVAL`, or as soon as the timeline
+/// changes, so a retry that ends differently counts.
 pub(crate) async fn wait_for_operation_until<T>(
     console: &mut Console,
     client: &Client,
     operation_id: &str,
     mut settle: impl AsyncFnMut(Operation) -> Result<Settled<T>>,
 ) -> Result<T> {
-    let mut wait = Wait::start(console, operation_id);
+    let mut wait = Wait::new(console.follow_timeline(operation_id));
+    let mut timelines = TimelineFollower::new(client, operation_id);
+    let mut timeline = timelines.next(&mut wait).await?;
     loop {
-        let Some(operation) = wait.read(client.operation(operation_id).await)? else {
-            wait.pause().await;
-            continue;
-        };
-        if !operation.state.terminal() {
-            wait.progress
-                .update(&OperationProgress::message(&operation));
-        } else if !wait.retried(client, &operation).await? {
-            let outcome = OperationProgress::outcome(&operation);
-            let message = OperationProgress::message(&operation);
-            let settled = match finish_operation(operation) {
-                Ok(operation) => settle(operation).await,
-                Err(error) => {
-                    wait.progress.finish(outcome, &message);
-                    return Err(error);
-                }
-            };
-            match settled {
-                Ok(Settled::Done(value)) => {
-                    wait.progress.finish(outcome, &message);
-                    return Ok(value);
-                }
-                Ok(Settled::Waiting(waiting)) => wait.progress.update(&waiting),
-                Err(error) if error.is_unavailable() => {
-                    wait.progress.update(&format!("{error}; retrying"));
-                }
-                Err(error) => {
-                    wait.progress
-                        .finish(TaskOutcome::Failed, &error.to_string());
-                    return Err(error);
-                }
-            }
-            time::sleep(SETTLE_INTERVAL).await;
+        wait.progress.update(&timeline);
+        if !timeline.operation.state.terminal() || wait.retried(client, &timeline.operation).await?
+        {
+            timeline = timelines.next(&mut wait).await?;
             continue;
         }
-        wait.pause().await;
+        let outcome = OperationProgress::outcome(&timeline.operation);
+        let settled = match finish_operation(timeline.operation.clone()) {
+            Ok(operation) => wait.read(settle(operation).await),
+            Err(error) => {
+                wait.progress.finish(outcome, None);
+                return Err(error);
+            }
+        };
+        match settled {
+            Ok(Some(Settled::Done(value))) => {
+                wait.progress.finish(outcome, None);
+                return Ok(value);
+            }
+            Ok(Some(Settled::Waiting(waiting))) => wait.progress.show(&waiting),
+            Ok(None) => {}
+            Err(error) => {
+                wait.progress
+                    .finish(TaskOutcome::Failed, Some(&error.to_string()));
+                return Err(error);
+            }
+        }
+        if let Ok(next) = time::timeout(SETTLE_INTERVAL, timelines.next(&mut wait)).await {
+            timeline = next?;
+        }
+    }
+}
+
+/// Follows an operation's timeline from its stream, or by polling every
+/// `POLL_INTERVAL` when the daemon refuses the stream for having too many
+/// open. Its reads go through a [`Wait`]: once the daemon answered, a
+/// stream that fails or ends is reopened.
+struct TimelineFollower<'a> {
+    client: &'a Client,
+    operation_id: &'a str,
+    source: TimelineSource,
+}
+
+/// Where a [`TimelineFollower`] reads timelines from.
+enum TimelineSource {
+    /// No stream is open: the next read opens one.
+    Closed,
+    Streaming(TimelineStream),
+    /// Polling instead; the next poll is due at this instant.
+    Polling(time::Instant),
+}
+
+impl<'a> TimelineFollower<'a> {
+    /// How long a stream may stay silent before it counts as dropped: the
+    /// daemon sends a keep-alive every 15 seconds.
+    const IDLE: Duration = Duration::from_secs(45);
+
+    fn new(client: &'a Client, operation_id: &'a str) -> Self {
+        Self {
+            client,
+            operation_id,
+            source: TimelineSource::Closed,
+        }
+    }
+
+    /// The operation's timeline as it next changed; the first call returns
+    /// it as it is. Reads go through `wait`, so once the daemon answered, a
+    /// failure is retried after `wait` pauses; an ended stream is reopened
+    /// then too. Cancel-safe: a cancelled call loses nothing received.
+    async fn next<P: Progress>(&mut self, wait: &mut Wait<P>) -> Result<Timeline> {
+        loop {
+            let next = match &mut self.source {
+                TimelineSource::Closed => {
+                    match self
+                        .client
+                        .operation_timeline_stream(self.operation_id)
+                        .await
+                    {
+                        Err(ClientError::Api { status, .. })
+                            if status == StatusCode::SERVICE_UNAVAILABLE =>
+                        {
+                            self.source = TimelineSource::Polling(time::Instant::now());
+                        }
+                        opened => match wait.read(opened)? {
+                            Some(stream) => self.source = TimelineSource::Streaming(stream),
+                            None => wait.pause().await,
+                        },
+                    }
+                    continue;
+                }
+                // Silence past the keep-alives counts as the stream ending.
+                TimelineSource::Streaming(stream) => {
+                    match time::timeout(Self::IDLE, stream.next())
+                        .await
+                        .ok()
+                        .flatten()
+                    {
+                        Some(next) => next,
+                        None => {
+                            self.source = TimelineSource::Closed;
+                            wait.pause().await;
+                            continue;
+                        }
+                    }
+                }
+                TimelineSource::Polling(due) => {
+                    time::sleep_until(*due).await;
+                    *due = time::Instant::now() + POLL_INTERVAL;
+                    self.client.operation_timeline(self.operation_id).await
+                }
+            };
+            if let Some(timeline) = wait.read(next)? {
+                return Ok(timeline);
+            }
+            // The stream ends after a failure.
+            if matches!(self.source, TimelineSource::Streaming(_)) {
+                self.source = TimelineSource::Closed;
+            }
+            wait.pause().await;
+        }
     }
 }
 
@@ -822,24 +924,22 @@ where
 /// Maps operations onto progress-task messages and outcomes.
 struct OperationProgress;
 impl OperationProgress {
-    /// One-line progress text.
+    /// One-line progress text: its state, and what it is doing.
     ///
     /// ```text
-    /// running, phase "pulling_images", resource "web"  →  running · Pulling images · web
+    /// running, phase "remove_service", resource "web"  →  running · Remove web
     /// ```
     fn message(operation: &Operation) -> String {
-        let mut phase = operation.phase.map_or("", Phase::as_str).replace('_', " ");
-        if let Some(first) = phase.get_mut(..1) {
-            first.make_ascii_uppercase();
+        let mut message = operation.state.to_string();
+        if let Some(phase) = operation.phase {
+            message.push_str(" · ");
+            message.push_str(phase.label());
         }
-        format!(
-            "{} · {phase}{}",
-            operation.state,
-            operation
-                .resource
-                .as_ref()
-                .map_or_else(String::new, |r| format!(" · {r}"))
-        )
+        if let Some(resource) = &operation.resource {
+            message.push(' ');
+            message.push_str(resource);
+        }
+        message
     }
     /// Superseded operations are shown as skipped rather than failed.
     fn outcome(operation: &Operation) -> TaskOutcome {

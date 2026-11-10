@@ -91,6 +91,54 @@ impl Phase {
     pub const fn concurrent(self) -> bool {
         matches!(self, Self::BuildGit | Self::ResolveImage)
     }
+
+    /// What a step of this phase does, as people read it, followed by the
+    /// resource it acts on, if any: `Build` api, `Wait for` web. The
+    /// dashboard and `piquelctl` name steps this way.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Preparing => "Prepare",
+            Self::FetchManifest => "Fetch manifest",
+            Self::BuildGit => "Build",
+            Self::ResolveImage => "Resolve",
+            Self::Planning => "Plan",
+            Self::RunJob => "Job",
+            Self::RemoveJobs => "Remove jobs",
+            Self::EnsureNetwork => "Create network",
+            Self::EnsureVolume => "Create volume",
+            Self::EnsureService => "Update",
+            Self::WaitForService => "Wait for",
+            Self::WaitForServiceRemoval => "Wait for removal of",
+            Self::RemoveService => "Remove",
+            Self::RemoveNetwork => "Remove network",
+            Self::RetainVolume => "Keep volume",
+            Self::DetachNetwork => "Detach",
+            Self::RemoveVolumes => "Remove volumes",
+            Self::RemoveSecrets => "Remove secrets",
+            Self::Routing => "Route",
+            Self::Observation => "Observe",
+            Self::EnsureSwarm => "Set up Swarm",
+            Self::RemoveImage => "Remove image",
+            Self::IngressCreateNetwork => "Create ingress network",
+            Self::IngressStartGateway => "Start gateway",
+            Self::IngressStopGateway => "Stop gateway",
+            Self::IngressRemoveContainer => "Remove container",
+            Self::IngressPullImage => "Pull gateway image",
+            Self::IngressReplaceGateway => "Replace gateway",
+            Self::IngressStartTunnel => "Start tunnel",
+            Self::IngressStartTailnet => "Start tailnet node",
+            Self::IngressRecoverGateway => "Recover gateway",
+            Self::IngressConfigureRoutes => "Load routes",
+            Self::IngressDnsCreate => "Create DNS records",
+            Self::IngressDnsUpdate => "Update DNS records",
+            Self::IngressDnsDelete => "Delete DNS records",
+            Self::IngressCertificateIssue => "Issue certificate",
+            Self::IngressCertificateRenew => "Renew certificate",
+            Self::IngressCertificateDelete => "Delete certificate",
+            Self::IngressCertificateChallengeDelete => "Delete certificate challenge",
+        }
+    }
 }
 
 impl crate::manifest::ValidatedSource {
@@ -199,10 +247,28 @@ impl Step {
             return Some(0);
         }
         let expected = self.expected_ms?;
-        let elapsed = self
-            .started_at_ms
-            .map_or(0, |started| u64::try_from(now_ms - started).unwrap_or(0));
-        Some(expected.saturating_sub(elapsed))
+        Some(expected.saturating_sub(self.duration_ms(now_ms).unwrap_or(0)))
+    }
+
+    /// How long it ran, or has been running at `now_ms`; `None` before it
+    /// started.
+    #[must_use]
+    pub fn duration_ms(&self, now_ms: i64) -> Option<u64> {
+        let started = self.started_at_ms?;
+        let ended = self.finished_at_ms.unwrap_or(now_ms);
+        Some(u64::try_from(ended - started).unwrap_or(0))
+    }
+
+    /// How long it usually takes, when it succeeded in noticeably more or
+    /// less time than that: half of it, and a second at least.
+    #[must_use]
+    pub fn unusual_ms(&self) -> Option<u64> {
+        if self.state != StepState::Succeeded {
+            return None;
+        }
+        let expected = self.expected_ms?;
+        let took = self.duration_ms(self.finished_at_ms?)?;
+        (took.abs_diff(expected) >= (expected / 2).max(1_000)).then_some(expected)
     }
 }
 
@@ -340,20 +406,49 @@ impl Timeline {
             return None;
         }
         let mut known = false;
-        let mut sequential = 0u64;
-        let mut concurrent = 0u64;
-        for step in self.steps.iter().filter(|step| !step.state.finished()) {
-            let Some(remaining) = step.remaining_ms(now_ms) else {
-                continue;
-            };
-            known = true;
-            if step.key.phase.concurrent() {
-                concurrent = concurrent.max(remaining);
-            } else {
-                sequential += remaining;
-            }
-        }
-        known.then_some(sequential + concurrent)
+        let remaining = Self::span(
+            self.steps
+                .iter()
+                .filter(|step| !step.state.finished())
+                .filter_map(|step| {
+                    let remaining = step.remaining_ms(now_ms)?;
+                    known = true;
+                    Some((step.key.phase, remaining))
+                }),
+        );
+        known.then_some(remaining)
+    }
+
+    /// How long its steps usually take altogether, counted like
+    /// [`Self::remaining_ms`]: `None` unless every step succeeded and has
+    /// an expectation, since the steps of a failed run are not the usual ones.
+    #[must_use]
+    pub fn usual_ms(&self) -> Option<u64> {
+        let steps = self
+            .steps
+            .iter()
+            .map(|step| match step.state {
+                StepState::Succeeded => Some((step.key.phase, step.expected_ms?)),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        (!steps.is_empty()).then(|| Self::span(steps))
+    }
+
+    /// How long `steps`, each a phase and a duration, take one after
+    /// another, except sources, which are prepared at once.
+    fn span(steps: impl IntoIterator<Item = (Phase, u64)>) -> u64 {
+        let (concurrent, sequential) = steps.into_iter().fold(
+            (0u64, 0u64),
+            |(concurrent, sequential), (phase, duration)| {
+                if phase.concurrent() {
+                    (concurrent.max(duration), sequential)
+                } else {
+                    (concurrent, sequential + duration)
+                }
+            },
+        );
+        concurrent + sequential
     }
 
     /// The step an event of a started action belongs to.
@@ -684,6 +779,42 @@ mod tests {
             states(&timeline),
             [(Phase::EnsureService, StepState::Forecast)]
         );
+    }
+
+    #[test]
+    fn only_noticeably_unusual_durations_and_clean_runs_have_a_usual_time() {
+        let mut timeline = timeline(&[
+            (Phase::BuildGit, "api", 30_000),
+            (Phase::BuildGit, "web", 20_000),
+            (Phase::EnsureService, "api", 1_000),
+        ]);
+        apply(
+            &mut timeline,
+            vec![
+                action("action_started", "a1", Phase::BuildGit, "api", 0),
+                action("action_started", "a2", Phase::BuildGit, "web", 0),
+                action("action_succeeded", "a1", Phase::BuildGit, "api", 50_000),
+                action("action_succeeded", "a2", Phase::BuildGit, "web", 21_000),
+                action("action_started", "a3", Phase::EnsureService, "api", 50_000),
+            ],
+        );
+        let unusual: Vec<_> = timeline.steps.iter().map(Step::unusual_ms).collect();
+        // 20 s over its 30 s is unusual; 1 s over 20 s is not.
+        assert_eq!(unusual, [Some(30_000), None, None]);
+        // Every step must have succeeded.
+        assert_eq!(timeline.usual_ms(), None);
+        apply(
+            &mut timeline,
+            vec![action(
+                "action_succeeded",
+                "a3",
+                Phase::EnsureService,
+                "api",
+                51_200,
+            )],
+        );
+        // The sources build at once, then the service updates.
+        assert_eq!(timeline.usual_ms(), Some(31_000));
     }
 
     #[test]
