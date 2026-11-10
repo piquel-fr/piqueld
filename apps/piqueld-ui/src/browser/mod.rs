@@ -571,6 +571,7 @@ impl DashboardSnapshot {
                 .applications_with(&ListApplicationsOptions {
                     cursor: cursor.clone(),
                     limit: Some(PAGE_LIMIT),
+                    name: None,
                 })
                 .await?;
             let next_cursor = page.next_cursor.clone();

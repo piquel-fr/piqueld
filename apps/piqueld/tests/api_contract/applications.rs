@@ -486,7 +486,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     }
     assert!(
         service
-            .applications(&piqueld_core::access::Scope::All, None, None)
+            .applications(&piqueld_core::access::Scope::All, None, None, None)
             .await
             .unwrap()
             .items
@@ -505,6 +505,14 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
     else {
         panic!("expected saved configuration")
     };
+    // The list finds an application by its exact name.
+    for (name, found) in [("notes", 1), ("note", 0)] {
+        let listed = service
+            .applications(&piqueld_core::access::Scope::All, Some(name), None, None)
+            .await
+            .unwrap();
+        assert_eq!(listed.items.len(), found, "{name}");
+    }
     assert!(matches!(
         service
             .accept(
@@ -575,7 +583,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
     ));
     assert!(matches!(
         service
-            .applications(&piqueld_core::access::Scope::All, None, Some(0))
+            .applications(&piqueld_core::access::Scope::All, None, None, Some(0))
             .await,
         Err(ApplicationError::InvalidPagination)
     ));

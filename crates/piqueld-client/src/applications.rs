@@ -12,10 +12,12 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-/// Cursor and page-size options for listing applications.
+/// Cursor, page-size and name options for listing applications.
 pub struct ListApplicationsOptions {
     /// Cursor returned by a previous page.
     pub cursor: Option<String>,
+    /// Only the application with exactly this name, if any.
+    pub name: Option<String>,
     /// Maximum number of items to return, from 1 through 100.
     pub limit: Option<u16>,
 }
@@ -39,7 +41,7 @@ impl Client {
             .await
     }
 
-    /// Lists a page of applications using cursor and limit options.
+    /// Lists a page of applications using cursor, limit and name options.
     ///
     /// # Errors
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
@@ -51,7 +53,11 @@ impl Client {
             check_page_limit("application list", limit)?;
         }
         self.generated
-            .list_applications(options.cursor.as_deref(), options.limit.map(u32::from))
+            .list_applications(
+                options.cursor.as_deref(),
+                options.limit.map(u32::from),
+                options.name.as_deref(),
+            )
             .data()
             .await
     }

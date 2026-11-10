@@ -382,6 +382,7 @@ async fn application_queries_are_percent_encoded() {
         .applications_with(&ListApplicationsOptions {
             cursor: Some("a&b c".into()),
             limit: Some(3),
+            name: None,
         })
         .await
         .unwrap();
@@ -402,6 +403,7 @@ async fn application_limits_outside_server_range_are_rejected_before_transport()
             .applications_with(&ListApplicationsOptions {
                 cursor: None,
                 limit: Some(limit),
+                name: None,
             })
             .await
             .expect_err("invalid application limit should fail locally");

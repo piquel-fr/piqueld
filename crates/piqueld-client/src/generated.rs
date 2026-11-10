@@ -186,11 +186,13 @@ impl Client {
     Arguments:
     - `cursor`: `next_cursor` from a previous page.
     - `limit`: Page size.
+    - `name`: Only the application with exactly this name, if any.
     */
     pub async fn list_applications<'a>(
         &'a self,
         cursor: Option<&'a str>,
         limit: Option<u32>,
+        name: Option<&'a str>,
     ) -> Result<
         ResponseValue<
             piqueld_core::api::Envelope<
@@ -215,6 +217,7 @@ impl Client {
             )
             .query(&progenitor_client::QueryParam::new("cursor", &cursor))
             .query(&progenitor_client::QueryParam::new("limit", &limit))
+            .query(&progenitor_client::QueryParam::new("name", &name))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {

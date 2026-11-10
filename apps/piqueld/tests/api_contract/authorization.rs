@@ -26,6 +26,18 @@ async fn grants_hide_applications_and_name_missing_permissions() {
         .map(|item| item["id"].as_str().unwrap())
         .collect();
     assert_eq!(listed, [f.blog.as_str()]);
+    // Filtering by a hidden application's name finds nothing either.
+    let (status, body) = f
+        .router
+        .call(
+            &f.deployer,
+            "GET",
+            "/api/v1/applications?name=shop",
+            none.clone(),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["data"]["items"], serde_json::json!([]));
     for uri in [
         format!("/api/v1/applications/{}", f.shop),
         format!("/api/v1/environments/{}", f.shop_production),

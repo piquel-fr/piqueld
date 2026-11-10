@@ -119,7 +119,7 @@ when the complete normalized manifest is needed.
 | GET | `/api/v1/system/checks` | Installation checks, each `pass`, `warn`, `fail` or `skip` with a next step (`system:read`); see [`piquelctl doctor`](cli.md#installation-checks) |
 | POST | `/api/v1/system/dns/refresh` | Check DNS provider credentials and zones now (`system:operate`); returns `DnsStatus`, empty without `system:read` |
 | GET | `/api/v1/openapi.json` | Generated API schema |
-| GET | `/api/v1/applications` | Paginated application summaries (up to 100 per page) |
+| GET | `/api/v1/applications?name=…` | Paginated application summaries (up to 100 per page); `name` returns only the application with exactly that name |
 | GET | `/api/v1/applications/{id}` | Full latest accepted application intent and its environments, with `drift`: how they differ from the environments the saved manifest [declares](manifest.md#declared-environments) |
 | POST | `/api/v1/applications/plan` | Plan a manifest without pulling images; `environment=ID` selects the environment to compare with |
 | POST | `/api/v1/applications/apply` | Save configuration by name, converging the environments it [declares](manifest.md#declared-environments); `?deploy=true` also deploys its only environment, or every declared one that builds (`operation_ids`) |

@@ -21,12 +21,13 @@ use piqueld_core::{
 
 impl ApplicationService {
     /// Lists saved application summaries and their environments without
-    /// observing the runtime.
+    /// observing the runtime, only the one named `name` when it is given.
     /// # Errors
     /// Returns invalid pagination or storage errors.
     pub async fn applications(
         &self,
         visible: &Scope,
+        name: Option<&str>,
         cursor: Option<&str>,
         limit: Option<u16>,
     ) -> Result<Page<ApplicationSummary>, ApplicationError> {
@@ -35,7 +36,7 @@ impl ApplicationService {
             return Err(ApplicationError::InvalidPagination);
         }
         self.store
-            .list_summaries(visible, cursor, usize::from(limit))
+            .list_summaries(visible, name, cursor, usize::from(limit))
             .await
             .map_err(|error| match error {
                 StoreError::InvalidInput | StoreError::InvalidInputSource(_) => {
