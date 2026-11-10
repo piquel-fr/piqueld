@@ -85,7 +85,7 @@ impl Harness {
     async fn route(&self, host: &str, visibility: &str) -> (EnvironmentId, ValidatedRoute) {
         let name = host.trim_start_matches("*.").split('.').next().unwrap();
         let app = application(name, host, "body");
-        let (id, _) = request_deployment(&self.store, app.clone()).await;
+        let (id, _) = request_deployment(&self.store, crate::api::Actor::Daemon, app.clone()).await;
         let mut manifest = app.to_manifest();
         manifest.spec.routes[0].visibility = visibility.parse().unwrap();
         let route = manifest.validate().unwrap().spec().routes[0].clone();
@@ -292,6 +292,89 @@ async fn records_are_written_once_applied_and_never_on_foreign_names() {
         conflict.message.unwrap().contains("A 198.51.100.1"),
         "conflict names the record"
     );
+}
+
+/// Of two installations claiming a free name at once, one that sees the
+/// other's claim withdraws its own and writes no addresses.
+#[tokio::test]
+async fn a_name_claimed_at_the_same_time_is_left_to_the_other_installation() {
+    let harness = Harness::new(true).await;
+    let rival = Record::Txt("other-installation".into());
+    harness
+        .provider
+        .rival("_piqueld.www.example.com", rival.clone());
+    harness.applied("www.example.com").await;
+    assert!(harness.pass().await);
+    assert_eq!(
+        harness.provider.dump(),
+        [format!("_piqueld.www.example.com {rival}")]
+    );
+    let conflict = harness.state("www.example.com");
+    assert_eq!(conflict.state, DnsRecordState::DnsConflict);
+    assert!(
+        conflict
+            .message
+            .unwrap()
+            .starts_with("Another installation claimed"),
+        "conflict says why"
+    );
+    // Withdrawing is not a failure of the action.
+    let events = harness.store.events(None, None, 100).await.unwrap().items;
+    assert!(events.iter().all(|event| event.kind != "action_failed"));
+}
+
+/// A claim that lost a race but could not be deleted then is deleted by a
+/// later pass, instead of leaving both claims in conflict for good.
+#[tokio::test]
+async fn a_claim_whose_withdrawal_failed_is_withdrawn_by_the_next_pass() {
+    let harness = Harness::new(true).await;
+    let rival = Record::Txt("other-installation".into());
+    let owner = "_piqueld.www.example.com";
+    harness.provider.rival(owner, rival.clone());
+    harness.provider.fail(Some(Outage::Delete));
+    harness.applied("www.example.com").await;
+    assert!(!harness.pass().await);
+    assert_eq!(
+        harness.provider.dump(),
+        [harness.owner("www.example.com"), format!("{owner} {rival}")]
+    );
+
+    harness.provider.fail(None);
+    assert!(harness.pass().await);
+    assert_eq!(harness.provider.dump(), [format!("{owner} {rival}")]);
+    let conflict = harness.state("www.example.com");
+    assert_eq!(conflict.state, DnsRecordState::DnsConflict);
+    // Withdrawn for good: the next pass only reports the other's claim.
+    assert!(harness.pass().await);
+    assert!(harness.ingress.withdrawing.lock().is_empty());
+}
+
+/// With a provider that stages changes, a withdrawal whose publish failed
+/// is published by the next pass, though the claim is no longer listed.
+#[tokio::test]
+async fn a_staged_withdrawal_is_published_by_the_next_pass() {
+    let harness = Harness::new(true).await;
+    harness.provider.mimic(Mimics::Ovh);
+    let rival = Record::Txt("other-installation".into());
+    let owner = "_piqueld.www.example.com";
+    harness.provider.rival(owner, rival.clone());
+    harness.provider.fail(Some(Outage::Publish));
+    harness.applied("www.example.com").await;
+    assert!(!harness.pass().await);
+    assert_eq!(harness.provider.dump(), [format!("{owner} {rival}")]);
+
+    harness.provider.fail(None);
+    harness.provider.changes();
+    assert!(harness.pass().await);
+    assert_eq!(harness.provider.changes(), ["publish"]);
+    assert_eq!(
+        harness.state("www.example.com").state,
+        DnsRecordState::DnsConflict
+    );
+    assert!(harness.ingress.withdrawing.lock().is_empty());
+    // Published for good: the next pass only reports the other's claim.
+    assert!(harness.pass().await);
+    assert_eq!(harness.provider.changes(), Vec::<String>::new());
 }
 
 #[tokio::test]

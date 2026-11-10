@@ -84,8 +84,9 @@ nothing does.
   (`ignore_loaded_certificates`), so it never depends on it. Automatic HTTPS
   is off on the private servers.
 - A wildcard host matches every name one label below its parent, except the
-  exact hostnames of any listener: exact routes, and the webhook and
-  dashboard hostnames. A private route's name therefore stays out of a public
+  exact hostnames of any listener and the installation's own: exact routes,
+  and every hostname in `installation_hostnames` (the website, dashboard and
+  webhook hostnames). A private route's name therefore stays out of a public
   wildcard even while private ingress is off.
 
 The private servers exist only while private ingress is enabled, and private
@@ -97,12 +98,18 @@ network may set the client address with a PROXY protocol header
 (`proxy_protocol` with `fallback_policy: ignore`); anyone else's header is
 ignored and their own address is used.
 
-Application networks come from Swarm's default address pools. A pool
-overlapping the tailnet ranges would let application containers pass for
-tailnet clients, so the private listener stays off until the pools are read
-from `docker info` and verified outside them. Its health then names the pool:
-`Swarm address pool <pool> overlaps the tailnet ranges the private listener
-trusts; …`. A successful check is cached for the process's lifetime.
+An ingress network overlapping the tailnet ranges would let its containers
+pass for tailnet clients. While the private listener is configured, the
+gateway therefore checks each ingress network's subnets before attaching it.
+Unlike an unavailable network, whose environment keeps its accepted routes, an
+overlapping one withdraws all of that environment's routes, so the network is
+detached even if it was attached before. Its deployment fails with `ingress
+network subnet <subnet> overlaps the tailnet ranges the private listener
+trusts; …`, and other environments are unaffected. A network with no subnet
+fails the check too. As a backstop, any attached network that isn't verified
+this pass and whose subnets overlap the tailnet ranges or are unknown is
+detached before Caddy loads a configuration or starts, even if its
+environment's routes are retained.
 
 ## Networks
 
@@ -143,8 +150,10 @@ come from the bridge's gateway.
 
 On the private listener, the client address is the tailnet address from the
 apps node's PROXY header. On the tunnel listener, it is `Cf-Connecting-IP`,
-trusted only from the edge network; tunnel routes set `X-Forwarded-For` to it
-and `X-Forwarded-Proto` to `https`.
+trusted only from the edge network; tunnel routes set `X-Forwarded-For` to it,
+`X-Forwarded-Proto` to `https`, and `X-Forwarded-Host` to the requested host.
+Caddy would otherwise keep the `X-Forwarded-Host` that `cloudflared` passes
+through from the client, since the edge network is trusted.
 
 ## Configuration changes and replacement
 
@@ -225,7 +234,7 @@ when the key changes. Later starts reuse the node state. Without a key, the
 node's login URL is logged once at warning level, and status reports that it
 needs login.
 
-The node starts after the gateway has converged and the pool check has passed.
+The node starts after the gateway has converged.
 Its status comes from the LocalAPI's `/localapi/v0/status`: the backend state,
 MagicDNS name and tailnet addresses. Changes are `ingress_start_tailnet`
 journal actions, and the node is removed when ingress or `[ingress.private]`
@@ -455,7 +464,13 @@ records go on `*.<parent>`.
   present and no other TXT record is at its name. An unowned hostname with A,
   AAAA or CNAME records, or another claim, is never written and reports
   `dns_conflict` with the records found, until they are removed; a foreign
-  claim appearing later turns an owned name into a conflict too. Other record
+  claim appearing later turns an owned name into a conflict too. After
+  creating its claim, piqueld reads the name again before writing addresses:
+  if another installation claimed it at the same time, it deletes its own
+  claim and reports `dns_conflict`. If that deletion, or publishing it,
+  fails, later passes retry it (remembered in memory, so not across a
+  restart); a claim that was established before a foreign one appeared is
+  kept. Other record
   types at the hostname are left alone. Claimed hostnames are kept in the
   `dns_records` table from before the first write until their records are
   deleted, so a route removed while the daemon was down is still cleaned up.

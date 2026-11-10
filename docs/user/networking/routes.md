@@ -281,7 +281,7 @@ To keep an environment, such as `staging`, off the internet, make its routes
 
 Your service receives requests from the gateway, not from the client. The
 gateway adds the client's address in `X-Forwarded-For`, and sets
-`X-Forwarded-Proto` and `X-Forwarded-Host`. It replaces any `X-Forwarded-For`
+`X-Forwarded-Proto` and `X-Forwarded-Host`. It replaces any of these headers
 the client sent.
 
 Trust those headers only when they come from the gateway. While the gateway is

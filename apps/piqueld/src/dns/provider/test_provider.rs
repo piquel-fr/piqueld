@@ -16,6 +16,8 @@ struct State {
     outage: Option<Outage>,
     /// Every change made through the provider, such as `delete A 192.0.2.1`.
     changes: Vec<String>,
+    /// A record another client writes right after the next write to its name.
+    rival: Option<(String, Record)>,
 }
 
 /// The real provider a [`TestProvider`] behaves like.
@@ -35,6 +37,8 @@ pub(crate) enum Outage {
     All,
     /// Only publishing.
     Publish,
+    /// Only deleting.
+    Delete,
 }
 
 /// An in-memory provider serving fixed zones.
@@ -81,6 +85,12 @@ impl TestProvider {
         state.next += 1;
         let id = state.next;
         state.records.insert(id, (name.into(), record));
+    }
+
+    /// Has another client write `record` at `name` right after this
+    /// provider's next write there, as in a race.
+    pub(crate) fn rival(&self, name: &str, record: Record) {
+        self.state.lock().rival = Some((name.into(), record));
     }
 
     /// Every record, as `name kind content` lines in ID order.
@@ -139,6 +149,11 @@ impl TestProvider {
         };
         state.changes.push(format!("write {name} {record}"));
         state.records.insert(id, (name.into(), record.clone()));
+        if let Some((_, rival)) = state.rival.take_if(|(rival, _)| rival == name) {
+            state.next += 1;
+            let next = state.next;
+            state.records.insert(next, (name.into(), rival));
+        }
         Ok(RecordId(id.to_string()))
     }
 
@@ -149,6 +164,9 @@ impl TestProvider {
 
     fn remove(&self, id: &RecordId) -> Result<(), ApiError> {
         let mut state = self.state()?;
+        if state.outage == Some(Outage::Delete) {
+            return Err(ApiError::Unsupported("delete failed"));
+        }
         if let Some((name, record)) = state.records.remove(&id.0.parse().unwrap()) {
             state.changes.push(format!("delete {name} {record}"));
         }

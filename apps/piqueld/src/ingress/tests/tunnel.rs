@@ -123,7 +123,7 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
     let edge = ["172.20.0.0/16".to_owned()];
     let configuration = ingress.build_configuration(
         &table,
-        &ingress.exact_hostnames(&table),
+        &ingress.exact_hostnames(&table).await.unwrap(),
         Some(&edge),
         Some(&edge),
     );
@@ -165,7 +165,11 @@ async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
         .unwrap();
     assert_eq!(
         proxy["headers"]["request"]["set"],
-        json!({"X-Forwarded-For":["{http.vars.client_ip}"],"X-Forwarded-Proto":["https"]})
+        json!({
+            "X-Forwarded-For":["{http.vars.client_ip}"],
+            "X-Forwarded-Proto":["https"],
+            "X-Forwarded-Host":["{http.request.hostport}"]
+        })
     );
     // Private routes' backends keep the PROXY header's client address.
     let private = servers["private"]["routes"]
@@ -321,7 +325,7 @@ impl Scenario {
             super::application(
                 "echo",
                 "echo.example.test",
-                "{http.request.header.X-Forwarded-For} {http.request.header.X-Forwarded-Proto}",
+                "{http.request.header.X-Forwarded-For} {http.request.header.X-Forwarded-Proto} {http.request.header.X-Forwarded-Host}",
             ),
         )
         .await;
@@ -393,8 +397,9 @@ impl Scenario {
     }
 
     /// From the edge network, as `cloudflared`, public routes answer with
-    /// `Cf-Connecting-IP` as the client address and private routes do not
-    /// exist. From an application's network, the listener refuses even public
+    /// `Cf-Connecting-IP` as the client address and the requested host, not
+    /// the client's, in `X-Forwarded-Host`; private routes do not exist.
+    /// From an application's network, the listener refuses even public
     /// routes, so no forged `Cf-Connecting-IP` reaches a backend.
     async fn only_cloudflared_reaches_the_tunnel_listener(
         &self,
@@ -415,6 +420,8 @@ impl Scenario {
                 "Cf-Connecting-IP: 203.0.113.7",
                 "-H",
                 "X-Forwarded-For: 198.51.100.1",
+                "-H",
+                "X-Forwarded-Host: forged.example.test",
                 &format!("http://{gateway}:8080/"),
             ]
             .map(str::to_owned)
@@ -423,7 +430,10 @@ impl Scenario {
         let (code, output) = self
             .curl(&ingress.name, &request(&ingress.name, "echo.example.test"))
             .await;
-        assert_eq!((code, output.as_str()), (0, "203.0.113.7 https 200"));
+        assert_eq!(
+            (code, output.as_str()),
+            (0, "203.0.113.7 https echo.example.test 200")
+        );
         // The private route is deployed, but never served here.
         let (code, output) = self
             .curl(&ingress.name, &request(&ingress.name, "admin.example.test"))

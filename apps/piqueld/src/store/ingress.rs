@@ -96,6 +96,12 @@ impl Store {
         .is_some())
     }
 
+    /// The hostnames reserved for the installation itself, which wildcard
+    /// routes leave alone.
+    pub(crate) async fn reserved_hostnames(&self) -> Result<Vec<Hostname>, StoreError> {
+        Self::installation_hostnames(&self.pool).await
+    }
+
     /// Loads the hostnames reserved for the installation itself.
     async fn installation_hostnames<'e>(
         executor: impl SqliteExecutor<'e>,
