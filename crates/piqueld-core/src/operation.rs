@@ -105,10 +105,13 @@ pub struct Operation {
     pub consecutive_failures: u64,
     /// Current lifecycle state.
     pub state: OperationState,
-    /// Current execution phase, retained on failure.
+    /// The phase of the latest step the current attempt journaled, retained
+    /// on failure: an action, or a recorded plan (`preparing`, `planning`).
+    /// Absent while the operation is requested.
     #[serde(default)]
     pub phase: Option<Phase>,
-    /// Logical or Docker resource currently being processed.
+    /// The resource of that step: a service's manifest name, another
+    /// resource's Docker name, or what blocks a recorded plan.
     #[serde(default)]
     pub resource: Option<String>,
     /// Stable failure code, when present.

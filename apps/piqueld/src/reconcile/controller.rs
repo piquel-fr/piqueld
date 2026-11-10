@@ -340,6 +340,13 @@ impl<D: DockerApi> Controller<D> {
             };
             let plan = Plan::from_request(&runtime_request, &observed);
             self.check_plan(operation, &plan).await?;
+            let steps = plan.steps();
+            if recorded.as_ref() != Some(&steps) {
+                self.store
+                    .record_plan(&operation.id, steps.clone(), PlanCoverage::Runtime, None)
+                    .await?;
+                recorded = Some(steps);
+            }
             if operation.kind != OperationKind::Delete {
                 self.publish(operation, &request, &plan, deadline).await?;
             }
@@ -347,14 +354,6 @@ impl<D: DockerApi> Controller<D> {
                 // Replan after cutover before dropping old ingress attachments.
                 continue;
             }
-            let steps = plan.steps();
-            if recorded.as_ref() != Some(&steps) {
-                self.store
-                    .record_plan(&operation.id, steps.clone(), PlanCoverage::Runtime)
-                    .await?;
-            }
-            // Unless the next plan differs, it is this one without its first step.
-            recorded = Some(steps.into_iter().skip(1).collect());
             let action = plan.actions.iter().find(|action| action.kind.runs());
             let Some(action) = action else {
                 if operation.kind != OperationKind::Delete
@@ -376,6 +375,13 @@ impl<D: DockerApi> Controller<D> {
                 deadline,
             )
             .await?;
+            // Unless the next plan differs, it is this one without the step
+            // just run.
+            if let Some(steps) = &mut recorded
+                && !steps.is_empty()
+            {
+                steps.remove(0);
+            }
             if matches!(action.kind, piqueld_core::ActionKind::WaitForService { .. }) {
                 deadline = tokio::time::Instant::now() + self.retry.convergence_timeout;
             }
@@ -433,9 +439,6 @@ impl<D: DockerApi> Controller<D> {
         operation: &Operation,
         cancellation: &CancellationToken,
     ) -> Result<PlanRequest, OperationError> {
-        self.store
-            .progress(&operation.id, Phase::Preparing, None)
-            .await?;
         let application = self.store.get(&operation.environment_id).await?;
         if operation.kind == OperationKind::Delete {
             return Ok(self.delete_request(&operation.environment_id));
@@ -465,39 +468,47 @@ impl<D: DockerApi> Controller<D> {
         if routes.is_empty() && !self.store.has_routes(&operation.environment_id).await? {
             return Ok(());
         }
-        self.store
-            .progress(&operation.id, Phase::Routing, None)
-            .await?;
         // Staging rejects an operation that a newer request replaced while it
         // waited, including behind another application's gateway update.
-        if let Some(ingress) = &self.ingress {
-            Box::pin(ingress.apply(operation, routes, ready))
+        let staging = async {
+            if let Some(ingress) = &self.ingress {
+                Box::pin(ingress.apply(operation, routes, ready))
+                    .await
+                    .map_err(|error| match error.downcast_ref::<StoreError>() {
+                        Some(StoreError::IllegalTransition) => OperationError::Superseded,
+                        _ => OperationError::Ingress(error),
+                    })?;
+            } else {
+                self.store
+                    .stage_routes(
+                        &operation.environment_id,
+                        routes,
+                        ready,
+                        Some(&operation.id),
+                    )
+                    .await
+                    .map_err(|error| match error {
+                        StoreError::IllegalTransition => OperationError::Superseded,
+                        other => other.into(),
+                    })?;
+                let table = self.store.served_table().await?;
+                self.store.acknowledge_routes(&table).await?;
+            }
+            Ok(())
+        };
+        // Each pass stages the routes again; only putting new ones in
+        // service is a step of the operation.
+        if ready && self.store.applied_routes(&operation.environment_id).await? != routes {
+            self.journaled(&operation.id, Phase::Routing, None, staging)
                 .await
-                .map_err(|error| match error.downcast_ref::<StoreError>() {
-                    Some(StoreError::IllegalTransition) => OperationError::Superseded,
-                    _ => OperationError::Ingress(error),
-                })?;
         } else {
-            self.store
-                .stage_routes(
-                    &operation.environment_id,
-                    routes,
-                    ready,
-                    Some(&operation.id),
-                )
-                .await
-                .map_err(|error| match error {
-                    StoreError::IllegalTransition => OperationError::Superseded,
-                    other => other.into(),
-                })?;
-            let table = self.store.served_table().await?;
-            self.store.acknowledge_routes(&table).await?;
+            staging.await
         }
-        Ok(())
     }
 
-    /// Records the planning phase (naming the first blocking resource, if any) and
-    /// rejects blocked plans with their classified error.
+    /// Rejects a blocked plan with its classified error, after recording it
+    /// with the first resource that blocks it, which the operation's phase
+    /// then names.
     pub(super) async fn check_plan(
         &self,
         operation: &Operation,
@@ -508,18 +519,22 @@ impl<D: DockerApi> Controller<D> {
             blocked = plan.is_blocked(),
             "observation planned"
         );
-        let resource = plan
+        let Some(blocked_by) = plan
             .diagnostics
             .iter()
             .find(|diagnostic| diagnostic.blocking)
-            .map(|diagnostic| diagnostic.resource.as_str());
+        else {
+            return Ok(());
+        };
         self.store
-            .progress(&operation.id, Phase::Planning, resource)
+            .record_plan(
+                &operation.id,
+                plan.steps(),
+                PlanCoverage::Runtime,
+                Some(blocked_by.resource.as_str()),
+            )
             .await?;
-        if plan.is_blocked() {
-            return Err(BlockedPlan::of(plan).error());
-        }
-        Ok(())
+        Err(BlockedPlan::of(plan).error())
     }
 
     /// Resolves the operation's deployable target, reusing a previously saved one.
@@ -571,7 +586,7 @@ impl<D: DockerApi> Controller<D> {
         )
         .with_progress(Arc::clone(&self.store), operation.id.clone())
         .with_build_priority(&application.environment.kind);
-        let (manifest, snapshot) = self.deployment_manifest(operation, tracking).await?;
+        let (manifest, snapshot) = Box::pin(self.deployment_manifest(operation, tracking)).await?;
         let runtime = runtime.with_snapshot(snapshot);
         // A rename changes display metadata without rewriting deployment history.
         let manifest =

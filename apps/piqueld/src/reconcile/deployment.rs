@@ -37,6 +37,27 @@ impl<D: DockerApi> Controller<D> {
     /// are marked fetched as-is. A local snapshot (`preview deploy --local`)
     /// is fetched the same way, from its own repository instead of the
     /// branch, which must still be the application's.
+    /// Checks out `repository` for its manifest, as a journaled step of
+    /// `operation`.
+    async fn fetch_manifest(
+        &self,
+        operation: &Operation,
+        repository: &piqueld_core::manifest::GitRepository,
+    ) -> Result<crate::git::Checkout, OperationError> {
+        let fetch = async {
+            self.sources
+                .checkouts()
+                .checkout(repository, None)
+                .await
+                .map_err(|error| {
+                    tracing::error!(?error, "manifest repository fetch failed");
+                    OperationError::ManifestFetchFailed(error)
+                })
+        };
+        self.journaled(&operation.id, Phase::FetchManifest, None, Box::pin(fetch))
+            .await
+    }
+
     pub(super) async fn deployment_manifest(
         &self,
         operation: &Operation,
@@ -74,23 +95,10 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
             return Ok((rendering.application, None));
         };
-        self.store
-            .progress(&operation.id, Phase::FetchManifest, None)
-            .await?;
-        let checkout = self
-            .sources
-            .checkouts()
-            .checkout(
-                source
-                    .as_ref()
-                    .map_or(&backing.repository, |source| &source.repository),
-                None,
-            )
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, "manifest repository fetch failed");
-                OperationError::ManifestFetchFailed(error)
-            })?;
+        let repository = source
+            .as_ref()
+            .map_or(&backing.repository, |source| &source.repository);
+        let checkout = self.fetch_manifest(operation, repository).await?;
         let (template, fetched, mut warnings) = Box::pin(self.fetched_template(
             operation,
             &environment.environment().kind,

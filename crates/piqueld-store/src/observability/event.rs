@@ -68,9 +68,10 @@ impl Store {
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
             error_code,phase,resource,created_at_ms,scope,diagnostic_id,diagnostic_json)
-            SELECT e.application_id,o.environment_id,o.id,o.generation,o.attempt,?1,?2,o.error_code,o.phase,
-            o.resource,?3,?4,?5,?6
-            FROM operations o LEFT JOIN environments e ON e.id=o.environment_id
+            SELECT e.application_id,o.environment_id,o.id,o.generation,o.attempt,?1,?2,o.error_code,p.phase,
+            p.resource,?3,?4,?5,?6
+            FROM operations o JOIN operation_progress p ON p.operation_id=o.id
+            LEFT JOIN environments e ON e.id=o.environment_id
             WHERE o.id=?7",
             kind,
             message,
@@ -88,7 +89,9 @@ impl Store {
 
     /// Records the steps operation `id` plans to run next, as a
     /// `plan_recorded` event its timeline replaces earlier plans of the same
-    /// `coverage` with.
+    /// `coverage` with. Its phase is the coverage's, so the operation's
+    /// phase shows it planning, and its resource is what blocks the plan, if
+    /// anything does.
     ///
     /// # Errors
     /// Returns storage errors.
@@ -97,17 +100,22 @@ impl Store {
         id: &str,
         steps: Vec<StepKey>,
         coverage: PlanCoverage,
+        blocked_by: Option<&str>,
     ) -> Result<(), StoreError> {
         let detail = serde_json::to_string(&EventDetail::Planned { steps, coverage })
             .map_err(StoreError::corrupt)?;
+        let phase = coverage.phase().as_str();
         let now = now_ms();
         self.write(sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,
-            created_at_ms,detail_json,actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
+            phase,resource,created_at_ms,detail_json,actor_user_id,actor_credential_id,
+            actor_operator_uid,actor_system)
             SELECT e.application_id,o.environment_id,o.id,o.generation,o.attempt,'plan_recorded',?1,?2,
-            o.actor_user_id,o.actor_credential_id,o.actor_operator_uid,o.actor_system
+            ?3,?4,o.actor_user_id,o.actor_credential_id,o.actor_operator_uid,o.actor_system
             FROM operations o LEFT JOIN environments e ON e.id=o.environment_id
-            WHERE o.id=?3",
+            WHERE o.id=?5",
+            phase,
+            blocked_by,
             now,
             detail,
             id,

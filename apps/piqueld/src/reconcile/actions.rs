@@ -49,13 +49,6 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
-        self.store
-            .progress(
-                &operation.id,
-                action.kind.phase(),
-                Some(action.kind.resource_name()),
-            )
-            .await?;
         let journal = self
             .store
             .begin_action(

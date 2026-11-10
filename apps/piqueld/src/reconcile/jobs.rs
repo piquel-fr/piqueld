@@ -68,6 +68,7 @@ impl<D: DockerApi> Controller<D> {
                     })
                     .collect(),
                 PlanCoverage::Preparation,
+                None,
             )
             .await?;
         let ownership = self.ownership_labels(&operation.environment_id);
@@ -160,9 +161,6 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<(), OperationError> {
         let name = job.logical_name.as_str();
-        self.store
-            .progress(&operation.id, Phase::RunJob, Some(name))
-            .await?;
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(&self.store),
             &operation.environment_id,
