@@ -1178,6 +1178,18 @@ pub(super) fn DeploymentPage(operation: String) -> impl IntoView {
     }
     let live = LiveTimeline::follow(operation.clone());
     let progress = live.progress();
+    // Starting or reconciling the environment runs this operation again.
+    let signals = context.signals();
+    Effect::new(move |_| {
+        signals.detail.with(|detail| {
+            if let Some(latest) = detail
+                .as_ref()
+                .and_then(|detail| detail.latest_operation.as_ref())
+            {
+                live.resume(latest);
+            }
+        });
+    });
     let shown = ShownDeployment::new();
     Effect::new({
         let environment = environment.clone();

@@ -106,6 +106,25 @@ impl LiveTimeline {
         self.live.get()
     }
 
+    /// Follows the timeline again once `operation`, as the page last polled
+    /// it, ran again after its timeline ended: starting, stopping or
+    /// reconciling an environment runs its latest operation again under its
+    /// ID, often between two polls, so a newer attempt counts too.
+    pub(super) fn resume(self, operation: &Operation) {
+        let shown = self
+            .timeline
+            .with_untracked(|t| t.as_ref().map(|t| t.operation.attempt));
+        let again =
+            !operation.state.terminal() || shown.is_some_and(|attempt| operation.attempt > attempt);
+        if again
+            && operation.id == self.operation.get_value()
+            && !self.live.get_untracked()
+            && self.stream.with_value(Option::is_none)
+        {
+            self.connect();
+        }
+    }
+
     /// Whether the component following the timeline is still mounted.
     fn alive(self) -> bool {
         self.alive.try_with_value(Alive::get).unwrap_or(false)
@@ -248,14 +267,19 @@ impl RunningDeployment {
         this
     }
 
-    /// Follows `operation` while it runs, unless it is followed already.
+    /// Follows `operation` while it runs, unless it is followed already;
+    /// an operation that runs again under its ID is followed again.
     pub(super) fn saw(self, operation: &Operation) {
-        if !operation.state.terminal()
-            && self
-                .operation
-                .with_untracked(|followed| followed.as_deref() != Some(operation.id.as_str()))
+        if operation.state.terminal() {
+            return;
+        }
+        if self
+            .operation
+            .with_untracked(|followed| followed.as_deref() != Some(operation.id.as_str()))
         {
             self.operation.set(Some(operation.id.clone()));
+        } else if let Some(live) = self.live.get_untracked() {
+            live.resume(operation);
         }
     }
 
@@ -980,33 +1004,48 @@ fn EventFeed(operation: String, live: Memo<bool>) -> impl IntoView {
     };
     let url = format!("{API_PREFIX}/events/stream?operation_id={operation}");
     let history = operation_events(&operation);
-    stream.set_value(EventStream::open(
-        &url,
-        &["event"],
-        move |_, data| {
-            let Ok(event) = serde_json::from_str::<Event>(data) else {
-                return;
-            };
-            let first = pending
-                .try_update_value(|pending| {
-                    pending.push(event);
-                    pending.len() == 1
-                })
-                .unwrap_or(false);
-            if first {
-                request_animation_frame(flush);
-            }
-        },
-        // The history the feed shows stays as it is.
-        || {},
-    ));
+    // The newest event received, which a reopened stream resumes after.
+    let last = StoredValue::new(0_i64);
+    let open = move || {
+        let url = match last.get_value() {
+            0 => url.clone(),
+            id => format!("{url}&cursor=v1:{id}"),
+        };
+        stream.set_value(EventStream::open(
+            &url,
+            &["event"],
+            move |_, data| {
+                let Ok(event) = serde_json::from_str::<Event>(data) else {
+                    return;
+                };
+                last.set_value(event.id);
+                let first = pending
+                    .try_update_value(|pending| {
+                        pending.push(event);
+                        pending.len() == 1
+                    })
+                    .unwrap_or(false);
+                if first {
+                    request_animation_frame(flush);
+                }
+            },
+            // The history the feed shows stays as it is.
+            || {},
+        ));
+    };
+    open();
     let alive = Alive::new();
     Effect::new(move |_| {
-        if !live.get() {
+        if live.get() {
+            // The operation runs again: follow its new events.
+            if stream.with_value(Option::is_none) {
+                open();
+            }
+        } else {
             let alive = alive.clone();
             spawn_local(async move {
                 TimeoutFuture::new(2_000).await;
-                if alive.get() {
+                if alive.get() && !live.get_untracked() {
                     stream.set_value(None);
                 }
             });
