@@ -388,9 +388,10 @@ impl<D: DockerApi> Controller<D> {
 
     /// The tasks of `service`'s rollout: those it wants running or that run,
     /// and those already part of it (`seen`), so their shutdown is recorded
-    /// but tasks of earlier rollouts are not.
+    /// but tasks of earlier rollouts are not. Ordered by slot and ID, so
+    /// Docker listing them in another order is no change.
     fn rollout_tasks(service: &ObservedService, seen: &[RolloutTask]) -> Vec<RolloutTask> {
-        service
+        let mut tasks: Vec<_> = service
             .tasks
             .iter()
             .filter(|task| {
@@ -405,7 +406,9 @@ impl<D: DockerApi> Controller<D> {
                 state: task.state,
                 healthy: task.healthy,
             })
-            .collect()
+            .collect();
+        tasks.sort_by(|a, b| (a.slot, &a.id).cmp(&(b.slot, &b.id)));
+        tasks
     }
 
     /// Reads application state until Docker responds or the convergence deadline expires.
