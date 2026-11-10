@@ -175,7 +175,9 @@ export async function steadyDeployment(page: Page, durations: Record<string, [nu
     const operation = new URL(route.request().url()).searchParams.get('operation_id');
     const url = new URL(`/api/v1/events?operation_id=${operation}&limit=100`, route.request().url()).toString();
     const events = (await (await route.fetch({ url })).json()).data.items;
-    const start = Date.parse(fixedDate);
+    // An instant, not the runner's local time, so every machine draws the
+    // same clock in the browser.
+    const start = Date.parse('2026-10-24T09:41:07Z');
     events.forEach((event: Record<string, any>, index: number) =>
       Object.assign(event, { created_at_ms: start + index * 1_000, resource: named(event.resource), message: named(event.message) }));
     await route.fulfill(stream('event', events));
