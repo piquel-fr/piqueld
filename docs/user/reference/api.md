@@ -493,11 +493,14 @@ for each missing image, since promoting it would fail. Plans of an earlier
 `release` work for any environment.
 
 Mutation endpoints accept an optional `Idempotency-Key` (1–128 ASCII letters,
-digits, `-`, `_`, `.`, or `:`; 400 `invalid_request` otherwise). The CLI generates one UUID per command and reuses
-it for transport retries. The daemon atomically stores the accepted response and a
-fingerprint of the normalized request in SQLite for 24 hours. A matching retry
-returns the original response before checking the current generation, even after
-restart, failure, or supersession. It never restarts the operation. Different input,
+digits, `-`, `_`, `.`, or `:`; 400 `invalid_request` otherwise). The CLI generates one UUID per command, or
+sends `--request-id`, and reuses it for transport retries. The daemon atomically
+stores the accepted response and a fingerprint of the normalized request in
+SQLite for 24 hours. The fingerprint leaves out the preconditions a caller
+inspects beforehand, `X-Expected-Generation` and the expected application ID,
+so a rerun that inspected the application again still matches. A matching
+request returns the original response before checking the current generation,
+even after restart, failure, or supersession. It never restarts the operation. Different input,
 or another account, under the same key returns 409 `request_id_conflict`. Expired keys are treated as
 new requests subject to current preconditions. Receipts contain no manifests or
 raw request bodies, and do not guarantee exactly-once Docker effects. Force is

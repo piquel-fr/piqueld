@@ -153,6 +153,19 @@ pub(crate) struct Cli {
     #[arg(long, global = true, help_heading = GLOBAL)]
     pub(crate) noninteractive: bool,
 
+    /// Make a change to an application, environment or preview safe to run
+    /// again: it is made only once.
+    ///
+    /// Run the same command with the same ID, such as after losing the
+    /// connection, and the daemon returns the earlier result instead of
+    /// making the change again, within 24 hours. Secret, notification,
+    /// account, token and sign-in commands, and `preview prune`, ignore it,
+    /// so rerunning one makes its change again. Use a new ID, of up to 128 letters, digits, `-`,
+    /// `_`, `.` or `:`, for each command you mean to run. Defaults to
+    /// `PIQUELD_REQUEST_ID`, else a new ID each time.
+    #[arg(long, global = true, value_name = "ID", value_parser = parse_request_id, help_heading = GLOBAL)]
+    pub(crate) request_id: Option<String>,
+
     #[command(subcommand)]
     pub(crate) command: Command,
 }
@@ -672,6 +685,16 @@ pub(crate) struct OperationArgs {
     /// Show the operation's current state instead of waiting for it to end.
     #[arg(long)]
     pub(crate) no_wait: bool,
+}
+
+/// Accepts a request ID the daemon accepts: 1 to 128 ASCII letters, digits,
+/// `-`, `_`, `.` or `:`.
+pub(crate) fn parse_request_id(value: &str) -> std::result::Result<String, String> {
+    if piqueld_client::is_request_id(value) {
+        Ok(value.to_owned())
+    } else {
+        Err("use 1 to 128 letters, digits, `-`, `_`, `.` or `:`".into())
+    }
 }
 
 /// Parses a positive integer duration with an optional unit (`ms`, `s`, `m`, `h`,

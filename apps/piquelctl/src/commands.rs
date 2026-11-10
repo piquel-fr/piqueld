@@ -204,8 +204,9 @@ async fn build_logs(
 
 /// Builds the API client from resolved connection settings: TCP for `--url`, else the
 /// Unix socket (default path if unset), plus insecure-HTTP opt-in, saved or
-/// `PIQUELD_TOKEN` credentials, the per-request timeout, and a fresh request ID.
-/// Fails on invalid endpoint input before any request is sent.
+/// `PIQUELD_TOKEN` credentials, the per-request timeout, and the request ID:
+/// `--request-id`, `PIQUELD_REQUEST_ID`, or a fresh one. Fails on invalid
+/// endpoint input or request ID before any request is sent.
 pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
     let client = match &cli.url {
         Some(url) => Client::tcp(url)?,
@@ -217,9 +218,17 @@ pub(crate) fn build_client(cli: &Cli) -> Result<Client> {
         client
     };
     let client = crate::auth::Credentials::attach(cli, client)?;
-    Ok(client
-        .with_timeout(cli.timeout)
-        .with_request_id(uuid::Uuid::now_v7().to_string()))
+    let request_id = match (&cli.request_id, std::env::var("PIQUELD_REQUEST_ID")) {
+        (Some(id), _) => id.clone(),
+        (None, Ok(id)) => crate::cli::parse_request_id(&id).map_err(|problem| {
+            CliError::new(
+                ErrorKind::Input,
+                format!("invalid PIQUELD_REQUEST_ID: {problem}"),
+            )
+        })?,
+        (None, Err(_)) => uuid::Uuid::now_v7().to_string(),
+    };
+    Ok(client.with_timeout(cli.timeout).with_request_id(request_id))
 }
 
 /// Reports daemon status together with the transport that was used.

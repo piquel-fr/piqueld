@@ -876,6 +876,8 @@ fn apply_deploy_retries_a_dropped_request_with_the_same_identity() {
     let output = run(
         &server,
         &[
+            "--request-id",
+            "agent-run-7",
             "app",
             "apply",
             "--deploy",
@@ -901,6 +903,8 @@ fn apply_deploy_retries_a_dropped_request_with_the_same_identity() {
         .headers
         .get("idempotency-key")
         .expect("command has a replay identity");
+    // Sent as is, so rerunning the command replays it.
+    assert_eq!(key, "agent-run-7");
     assert_eq!(Some(key), second.headers.get("idempotency-key"));
 }
 

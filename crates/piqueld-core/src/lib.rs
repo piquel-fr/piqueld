@@ -48,7 +48,7 @@ pub use names::{
     ApplicationName, ApplicationNameError, EnvironmentName, EnvironmentNameError, GitBranch,
     GitBranchError, JobName, JobNameError, PreviewSlot, PreviewSlotError, PreviewSlug,
     PreviewSlugError, RouteName, RouteNameError, ServiceName, ServiceNameError, VolumeName,
-    VolumeNameError,
+    VolumeNameError, is_request_id,
 };
 pub use operation::{ApplicationState, Operation, OperationKind, OperationState};
 pub use planner::{

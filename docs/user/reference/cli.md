@@ -954,11 +954,20 @@ application currently has the name, or creates it if absent. Validation, resourc
 ownership, and rename busy/name-collision checks still apply. `app show` reports intent
 and active target generations and separate runtime health.
 
-The CLI retains one automatic transport retry, using the same command UUID in
-`Idempotency-Key`. SQLite receipts replay the original acceptance response for
-24 hours across daemon restarts. Replays do not restart failed or superseded work;
-a separately invoked command gets a new UUID. This includes forced requests:
-a transport retry cannot overwrite changes accepted after the original command.
+Each command has a request ID, a new UUID unless `--request-id ID` or
+`PIQUELD_REQUEST_ID` gives one, sent as `Idempotency-Key` with its change; the
+CLI's one automatic transport retry sends the same. Only changes to
+applications, environments and previews honor it: secret, notification,
+account, token and sign-in commands, and `preview prune`, make their change
+again when rerun. SQLite receipts replay the
+original acceptance response for 24 hours across daemon restarts, to the same
+account. So when a command loses its connection, run it again with the same
+`--request-id`: it returns the earlier result and never repeats the change,
+even though the rerun inspects the application again and finds it changed.
+The same ID with a different change, or with `--force` added, fails with
+`request_id_conflict`. Replays do not restart failed or superseded work, and a
+command run without the same ID gets a new one. This includes forced requests:
+a retry cannot overwrite changes accepted after the original command.
 
 Rename checks the inspected generation and name availability. It rejects pending
 or running operations and deletion intent. It preserves identity, services,

@@ -212,6 +212,16 @@ pub fn is_label(value: &str, lengths: RangeInclusive<usize>) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// Whether `value` can be a request ID, the `Idempotency-Key` of a
+/// mutation: 1 to 128 ASCII letters, digits, `-`, `_`, `.` or `:`.
+#[must_use]
+pub fn is_request_id(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+}
+
 /// [`is_label`] without uppercase letters: the form of piqueld's IDs, names,
 /// and hostnames.
 pub(crate) fn is_lowercase_label(value: &str, lengths: RangeInclusive<usize>) -> bool {
