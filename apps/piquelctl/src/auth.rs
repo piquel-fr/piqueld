@@ -79,6 +79,7 @@ impl Credentials {
     /// a symbolic link, anything but a regular file, a file another user
     /// owns, and one with any group or other permission bits.
     fn read_at(path: &Path) -> Result<Self> {
+        use rustix::fs::OFlags;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let refuse = |problem: &str| {
             CliError::new(
@@ -88,7 +89,9 @@ impl Credentials {
         };
         let opened = std::fs::OpenOptions::new()
             .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
+            // Without NONBLOCK, opening a FIFO would wait for a writer
+            // instead of reaching the regular-file check.
+            .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits().cast_signed())
             .open(path);
         let file = match opened {
             Ok(file) => file,
@@ -579,9 +582,20 @@ mod tests {
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
         let link = dir.path().join("credentials.json");
         std::os::unix::fs::symlink(&real, &link).unwrap();
+        let fifo = dir.path().join("fifo.json");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
         for (path, problem) in [
             (link, "must not be a symbolic link"),
             (dir.path().to_owned(), "must be a regular file"),
+            // Refused without waiting for a writer.
+            (fifo, "must be a regular file"),
         ] {
             let error = Credentials::read_at(&path).err().expect("refused");
             assert!(error.to_string().ends_with(problem), "{error}");
