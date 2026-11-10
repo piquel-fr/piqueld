@@ -30,6 +30,14 @@ and the convergence loop records the runtime plan (`PlanCoverage::Runtime`)
 only when it differs from the previous one without the step just run, so a
 deployment records a handful, not one per action.
 
+While the convergence loop waits for a service, each observation compares
+the service's tasks (those desired or live, and those already seen, so their
+shutdown shows) with the previous one, and records an `action_progressed`
+event on the wait's action only when one changed: a handful per task, not
+one per poll. A task is `current` when its specification equals the
+service's, which is how Swarm itself decides what to replace.
+`Step::gaps` derives when no task served from those spans.
+
 Expectations come from the store in two indexed reads: the environment's
 last five successful operations of the same kind, then their succeeded
 actions, whose medians are each step's `expected_ms` and whose latest

@@ -60,3 +60,37 @@ async fn deployments_record_their_steps_and_forecast_the_next_one() {
         "{deployed:#?}"
     );
 }
+
+#[tokio::test]
+async fn waiting_for_a_rollout_records_its_tasks_as_they_start_and_run() {
+    use piqueld_core::resource::TaskState;
+    let harness = ControllerHarness::new().await;
+    harness
+        .docker
+        .slow_services
+        .lock()
+        .await
+        // The convergence loop observes once before it waits.
+        .insert("web".into(), 3);
+    let operation = harness.apply(manifest(), Some(0)).await;
+    harness.finish(&operation).await;
+    let timeline = harness
+        .applications()
+        .timeline(&operation.id)
+        .await
+        .unwrap();
+    let wait = timeline
+        .steps
+        .iter()
+        .find(|step| step.key.phase == Phase::WaitForService)
+        .expect("the deployment waited for web");
+    assert!(!wait.tasks.is_empty(), "{wait:#?}");
+    for lane in &wait.tasks {
+        assert!(lane.task.current);
+        let states: Vec<_> = lane.spans.iter().map(|span| span.state).collect();
+        assert_eq!(states, [TaskState::Starting, TaskState::Running]);
+    }
+    assert!(wait.monitor_seconds.is_some());
+    // A new service has nothing to replace, so nothing stopped serving.
+    assert_eq!(wait.gaps(), []);
+}

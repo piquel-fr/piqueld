@@ -1,7 +1,7 @@
 //! Persist intent before a runtime request and record its observed outcome afterward.
 use super::{Attribution, EnvironmentId, Store, StoreError, new_id, now_ms};
-use piqueld_core::Phase;
 use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
+use piqueld_core::{EventDetail, Phase};
 use sqlx::{Sqlite, Transaction};
 
 /// Handle to one journaled runtime request, recorded in `active_actions` until
@@ -168,7 +168,7 @@ impl Store {
         .execute(&mut **tx)
         .await
         .map_err(StoreError::database)?;
-        Self::action_event_on(tx, action, "action_started", None, None, None).await
+        Self::action_event_on(tx, action, "action_started", None, None, None, None).await
     }
     /// Records that attempt `retry` is about to be sent to the runtime.
     /// Fails with `StoreError::IllegalTransition` if the action is no longer active.
@@ -194,7 +194,16 @@ impl Store {
         if changed != 1 {
             return Err(StoreError::IllegalTransition);
         }
-        Self::action_event_on(&mut tx, action, "action_requested", Some(retry), None, None).await?;
+        Self::action_event_on(
+            &mut tx,
+            action,
+            "action_requested",
+            Some(retry),
+            None,
+            None,
+            None,
+        )
+        .await?;
         tx.commit().await.map_err(StoreError::database)
     }
     /// Records a retryable failure and the backoff before the next attempt.
@@ -222,6 +231,7 @@ impl Store {
             Some(i64::from(retry)),
             Some(diagnostic),
             Some(&message),
+            None,
         )
         .await?;
         let delay_ms = i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
@@ -232,6 +242,30 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+    /// Records what an open action observed while it runs
+    /// (`action_progressed`), e.g. a service's tasks while it waits for a
+    /// rollout.
+    ///
+    /// # Errors
+    /// Returns storage errors.
+    pub async fn action_progress(
+        &self,
+        action: &JournalAction,
+        detail: &EventDetail,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::action_event_on(
+            &mut tx,
+            action,
+            "action_progressed",
+            None,
+            None,
+            None,
+            Some(detail),
+        )
+        .await?;
         tx.commit().await.map_err(StoreError::database)
     }
     /// Records the action's final outcome (`action_succeeded`, or
@@ -280,6 +314,7 @@ impl Store {
             None,
             diagnostic.as_ref(),
             None,
+            None,
         )
         .await?;
         sqlx::query!("DELETE FROM active_actions WHERE id=?1", action.id,)
@@ -298,6 +333,7 @@ impl Store {
         retry: Option<i64>,
         diagnostic: Option<&Diagnostic>,
         message: Option<&str>,
+        detail: Option<&EventDetail>,
     ) -> Result<(), StoreError> {
         let diagnostic = diagnostic.cloned().map(|mut d| {
             if action.environment_id.is_none() {
@@ -326,12 +362,16 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .map_err(StoreError::corrupt)?;
+        let detail = detail
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(StoreError::corrupt)?;
         let phase = action.phase.as_str();
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
             error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,
-            diagnostic_json,actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
-            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            diagnostic_json,actor_user_id,actor_credential_id,actor_operator_uid,actor_system,detail_json)
+            VALUES((SELECT application_id FROM environments WHERE id=?1),?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             action.environment_id,
             action.operation_id,
             action.generation,
@@ -352,6 +392,7 @@ impl Store {
             action.actor_credential_id,
             action.actor_operator_uid,
             action.actor_system,
+            detail,
         )
         .execute(&mut **tx)
         .await

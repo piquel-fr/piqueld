@@ -3,7 +3,18 @@ use super::{
     Operation, OperationError,
 };
 use piqueld_core::Phase;
+use piqueld_core::timeline::RolloutTask;
+use piqueld_core::{EventDetail, ObservedService};
 use piqueld_store::JournalAction;
+
+/// How [`Controller::wait_service`] waits: for the service to converge, or
+/// to be removed when `removed`, under the action `journal`; it stops waiting
+/// once the environment's stopped state no longer matches `stopped`.
+pub(super) struct Wait<'a> {
+    pub(super) journal: &'a JournalAction,
+    pub(super) removed: bool,
+    pub(super) stopped: bool,
+}
 
 /// Decrypted values keyed by their immutable Docker secret names.
 pub(super) type SecretValues = Vec<(String, zeroize::Zeroizing<Vec<u8>>)>;
@@ -72,11 +83,21 @@ impl<D: DockerApi> Controller<D> {
                 }
             }
             ActionKind::WaitForService { service } => {
-                self.wait_service(operation, service, false, stopped, cancellation, deadline)
+                let wait = Wait {
+                    journal: &journal,
+                    removed: false,
+                    stopped,
+                };
+                self.wait_service(operation, service, wait, cancellation, deadline)
                     .await
             }
             ActionKind::WaitForServiceRemoval { service } => {
-                self.wait_service(operation, service, true, stopped, cancellation, deadline)
+                let wait = Wait {
+                    journal: &journal,
+                    removed: true,
+                    stopped,
+                };
+                self.wait_service(operation, service, wait, cancellation, deadline)
                     .await
             }
             _ => Ok(()),
@@ -312,12 +333,16 @@ impl<D: DockerApi> Controller<D> {
         &self,
         operation: &Operation,
         name: &str,
-        removed: bool,
-        stopped: bool,
+        Wait {
+            journal,
+            removed,
+            stopped,
+        }: Wait<'_>,
         cancellation: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<(), OperationError> {
         let mut poll = SERVICE_POLL;
+        let mut tasks = Vec::new();
         loop {
             if self.store.is_stopped(&operation.environment_id).await? != stopped {
                 return Ok(());
@@ -325,7 +350,21 @@ impl<D: DockerApi> Controller<D> {
             let observed = self
                 .observe_with_retry(operation, cancellation, deadline)
                 .await?;
-            match observed.services.iter().find(|s| s.name == name) {
+            let service = observed.services.iter().find(|s| s.name == name);
+            if !removed && let Some(service) = service {
+                let seen = Self::rollout_tasks(service, &tasks);
+                if seen != tasks {
+                    let detail = EventDetail::Rollout {
+                        tasks: seen.clone(),
+                        monitor_seconds: service
+                            .rollout
+                            .map_or(0, |rollout| rollout.monitor_seconds),
+                    };
+                    self.store.action_progress(journal, &detail).await?;
+                    tasks = seen;
+                }
+            }
+            match service {
                 None if removed => return Ok(()),
                 None => {
                     return Err(OperationError::DockerRequestFailed(
@@ -345,6 +384,28 @@ impl<D: DockerApi> Controller<D> {
             Self::pause(cancellation, poll.min(remaining)).await?;
             poll = poll.saturating_mul(2).min(SERVICE_POLL_MAX);
         }
+    }
+
+    /// The tasks of `service`'s rollout: those it wants running or that run,
+    /// and those already part of it (`seen`), so their shutdown is recorded
+    /// but tasks of earlier rollouts are not.
+    fn rollout_tasks(service: &ObservedService, seen: &[RolloutTask]) -> Vec<RolloutTask> {
+        service
+            .tasks
+            .iter()
+            .filter(|task| {
+                task.desired_running
+                    || task.state.is_live()
+                    || seen.iter().any(|seen| seen.id == task.id)
+            })
+            .map(|task| RolloutTask {
+                id: task.id.clone(),
+                slot: task.slot,
+                current: task.current,
+                state: task.state,
+                healthy: task.healthy,
+            })
+            .collect()
     }
 
     /// Reads application state until Docker responds or the convergence deadline expires.

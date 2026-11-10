@@ -14,9 +14,11 @@ impl BollardDocker {
     ///
     /// `healthy` carries the container healthcheck verdict for running tasks;
     /// it is `None` when the task has no healthcheck, has not converged to a
-    /// verdict yet, or its container could not be inspected.
+    /// verdict yet, or its container could not be inspected. `template` is
+    /// the service's current task specification.
     pub(super) fn observe_task(
         task: &bollard::models::Task,
+        template: Option<&bollard::models::TaskSpec>,
         healthy: Option<bool>,
     ) -> ObservedTask {
         let state = Self::task_state(task);
@@ -36,6 +38,11 @@ impl BollardDocker {
             healthy,
             desired_running: task.desired_state == Some(bollard::models::TaskState::RUNNING),
             diagnostic,
+            id: task.id.clone().unwrap_or_default(),
+            slot: task.slot.and_then(|slot| u64::try_from(slot).ok()),
+            // Swarm replaces exactly the tasks whose specification differs
+            // from the service's.
+            current: task.spec.is_some() && task.spec.as_ref() == template,
         }
     }
 
@@ -485,6 +492,7 @@ mod tests {
             healthy,
             desired_running: true,
             diagnostic: None,
+            ..ObservedTask::default()
         }
     }
 

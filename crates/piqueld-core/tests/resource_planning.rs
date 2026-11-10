@@ -98,6 +98,7 @@ fn observed(desired: &piqueld_core::resource::ResolvedApplication) -> ObservedAp
                     healthy: Some(true),
                     desired_running: true,
                     diagnostic: None,
+                    ..ObservedTask::default()
                 }],
                 convergence: Convergence::Converged,
             })

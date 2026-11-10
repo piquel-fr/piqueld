@@ -9,6 +9,7 @@
 //! successful operation ([`StepState::Forecast`]).
 
 use crate::observability::Diagnostic;
+use crate::resource::TaskState;
 use crate::{Event, EventDetail, Operation, OperationState, Phase, names::string_enum};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -250,6 +251,70 @@ pub struct Step {
     /// Why it failed, or why its latest request did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<Diagnostic>,
+    /// While it waits for a service to roll out: the service's Swarm tasks,
+    /// old and new, as they moved through their states.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskLane>,
+    /// How long Swarm watches each new task once it runs, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_seconds: Option<u32>,
+}
+
+/// One Swarm task of a rolling-out service, as one observation saw it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct RolloutTask {
+    /// Docker task ID.
+    pub id: String,
+    /// The replica slot it fills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u64>,
+    /// Whether it runs the service's new specification.
+    pub current: bool,
+    /// Its Docker state.
+    pub state: TaskState,
+    /// Its health check verdict, once it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+}
+
+/// One Swarm task's states over a rollout.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct TaskLane {
+    /// The task as last observed.
+    #[serde(flatten)]
+    pub task: RolloutTask,
+    /// Its states in order, each from when it was first observed.
+    pub spans: Vec<TaskSpan>,
+}
+
+/// A task's state from when it was first observed in it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct TaskSpan {
+    /// The Docker state.
+    pub state: TaskState,
+    /// The health check verdict, once it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+    /// Since when, in Unix milliseconds.
+    pub from_ms: i64,
+}
+
+impl TaskSpan {
+    /// Whether the task serves requests during this span.
+    #[must_use]
+    pub fn serving(self) -> bool {
+        self.state == TaskState::Running && self.healthy != Some(false)
+    }
+}
+
+/// When no task of a rolling-out service served requests.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+pub struct Gap {
+    /// When the last serving task stopped serving, in Unix milliseconds.
+    pub from_ms: i64,
+    /// When a task served again; `None` while none does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_ms: Option<i64>,
 }
 
 impl Step {
@@ -266,7 +331,82 @@ impl Step {
             retries: 0,
             expected_ms,
             diagnostic: None,
+            tasks: Vec::new(),
+            monitor_seconds: None,
         }
+    }
+
+    /// Records an observation, at `at_ms`, of the service's tasks while
+    /// this step waits for it: a span for each task whose state changed.
+    fn observe(&mut self, tasks: &[RolloutTask], monitor_seconds: u32, at_ms: i64) {
+        self.monitor_seconds = Some(monitor_seconds);
+        for task in tasks {
+            let span = TaskSpan {
+                state: task.state,
+                healthy: task.healthy,
+                from_ms: at_ms,
+            };
+            match self.tasks.iter_mut().find(|lane| lane.task.id == task.id) {
+                Some(lane) => {
+                    let changed = lane.spans.last().is_none_or(|last| {
+                        (last.state, last.healthy) != (span.state, span.healthy)
+                    });
+                    if changed {
+                        lane.spans.push(span);
+                    }
+                    lane.task = task.clone();
+                }
+                None => self.tasks.push(TaskLane {
+                    task: task.clone(),
+                    spans: vec![span],
+                }),
+            }
+        }
+    }
+
+    /// When no task of the service served requests while this step waited
+    /// for it, from the first observation on; a stop-first rollout has one.
+    #[must_use]
+    pub fn gaps(&self) -> Vec<Gap> {
+        // Every moment a task's serving changed, in order.
+        let mut changes: Vec<(i64, bool)> = self
+            .tasks
+            .iter()
+            .flat_map(|lane| {
+                let mut serving = false;
+                lane.spans.iter().filter_map(move |span| {
+                    let now = span.serving();
+                    (now != serving).then(|| {
+                        serving = now;
+                        (span.from_ms, now)
+                    })
+                })
+            })
+            .collect();
+        changes.sort_by_key(|(at, starts)| (*at, !starts));
+        let mut gaps = Vec::new();
+        let mut serving = 0usize;
+        let mut started = false;
+        for (at, starts) in changes {
+            if starts {
+                if serving == 0
+                    && let Some(gap) = gaps.last_mut().filter(|gap: &&mut Gap| gap.to_ms.is_none())
+                {
+                    gap.to_ms = Some(at);
+                }
+                serving += 1;
+                started = true;
+            } else {
+                serving = serving.saturating_sub(1);
+                if serving == 0 && started {
+                    gaps.push(Gap {
+                        from_ms: at,
+                        to_ms: None,
+                    });
+                }
+            }
+        }
+        gaps
     }
 
     /// How much longer it should take at `now_ms`: its expected duration
@@ -383,6 +523,15 @@ impl Timeline {
                     "action_requested" => {
                         step.retries = event.retry.unwrap_or(1).saturating_sub(1);
                         step.state = StepState::Running;
+                    }
+                    "action_progressed" => {
+                        if let Some(EventDetail::Rollout {
+                            tasks,
+                            monitor_seconds,
+                        }) = &event.detail
+                        {
+                            step.observe(tasks, *monitor_seconds, event.created_at_ms);
+                        }
                     }
                     "action_retry" => {
                         step.state = StepState::Retrying;
@@ -769,6 +918,86 @@ mod tests {
         assert_eq!(timeline.remaining_ms(10_000), Some(25_000));
         // A step running over its expectation counts as about to end.
         assert_eq!(timeline.remaining_ms(40_000), Some(5_000));
+    }
+
+    fn rollout(at: i64, tasks: &[(&str, bool, TaskState)]) -> Event {
+        Event {
+            kind: "action_progressed".into(),
+            action_id: Some("wait".into()),
+            created_at_ms: at,
+            detail: Some(EventDetail::Rollout {
+                tasks: tasks
+                    .iter()
+                    .map(|(id, current, state)| RolloutTask {
+                        id: (*id).into(),
+                        slot: Some(1),
+                        current: *current,
+                        state: *state,
+                        healthy: None,
+                    })
+                    .collect(),
+                monitor_seconds: 5,
+            }),
+            ..Event::default()
+        }
+    }
+
+    #[test]
+    fn rollouts_record_each_task_state_and_when_none_served() {
+        use TaskState::{Preparing, Running, Shutdown};
+        let mut timeline = timeline(&[]);
+        apply(
+            &mut timeline,
+            vec![
+                action("action_started", "wait", Phase::WaitForService, "web", 0),
+                // Stop-first: the old task stops before the new one runs.
+                rollout(100, &[("old", false, Running)]),
+                rollout(200, &[("old", false, Shutdown), ("new", true, Preparing)]),
+                rollout(300, &[("old", false, Shutdown), ("new", true, Preparing)]),
+                rollout(900, &[("old", false, Shutdown), ("new", true, Running)]),
+            ],
+        );
+        let step = &timeline.steps[0];
+        assert_eq!(step.monitor_seconds, Some(5));
+        let lanes: Vec<_> = step
+            .tasks
+            .iter()
+            .map(|lane| {
+                let spans: Vec<_> = lane
+                    .spans
+                    .iter()
+                    .map(|span| (span.state, span.from_ms))
+                    .collect();
+                (lane.task.id.as_str(), lane.task.current, spans)
+            })
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                ("old", false, vec![(Running, 100), (Shutdown, 200)]),
+                ("new", true, vec![(Preparing, 200), (Running, 900)]),
+            ]
+        );
+        assert_eq!(
+            step.gaps(),
+            [Gap {
+                from_ms: 200,
+                to_ms: Some(900)
+            }]
+        );
+
+        // Start-first: the old task serves until the new one does.
+        let mut start_first = self::timeline(&[]);
+        apply(
+            &mut start_first,
+            vec![
+                action("action_started", "wait", Phase::WaitForService, "web", 0),
+                rollout(100, &[("old", false, Running), ("new", true, Preparing)]),
+                rollout(500, &[("old", false, Running), ("new", true, Running)]),
+                rollout(600, &[("old", false, Shutdown), ("new", true, Running)]),
+            ],
+        );
+        assert_eq!(start_first.steps[0].gaps(), []);
     }
 
     #[test]

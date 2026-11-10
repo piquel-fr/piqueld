@@ -7570,6 +7570,36 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "What a service's Swarm tasks are doing while an action waits for it\nto roll out (`action_progressed`), recorded when that changes.",
+            "properties": {
+              "monitor_seconds": {
+                "description": "How long Swarm watches each new task once it runs, in seconds.",
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "tasks": {
+                "description": "The tasks of this rollout: running and starting ones, and those\nit stops.",
+                "items": {
+                  "$ref": "#/components/schemas/RolloutTask"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "rollout"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "tasks",
+              "monitor_seconds",
+              "type"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -10864,6 +10894,41 @@
         ],
         "type": "string"
       },
+      "RolloutTask": {
+        "description": "One Swarm task of a rolling-out service, as one observation saw it.",
+        "properties": {
+          "current": {
+            "description": "Whether it runs the service's new specification.",
+            "type": "boolean"
+          },
+          "healthy": {
+            "description": "Its health check verdict, once it has one.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Docker task ID.",
+            "type": "string"
+          },
+          "slot": {
+            "description": "The replica slot it fills.",
+            "format": "int64",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TaskState",
+            "description": "Its Docker state."
+          }
+        },
+        "required": [
+          "id",
+          "current",
+          "state"
+        ],
+        "type": "object"
+      },
       "RolloutValue": {
         "additionalProperties": false,
         "properties": {
@@ -11951,6 +12016,13 @@
                 "nullable": true,
                 "type": "integer"
               },
+              "monitor_seconds": {
+                "description": "How long Swarm watches each new task once it runs, in seconds.",
+                "format": "int32",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
               "retries": {
                 "description": "Requests retried after a retryable failure.",
                 "format": "int64",
@@ -11966,6 +12038,13 @@
               "state": {
                 "$ref": "#/components/schemas/StepState",
                 "description": "Where it stands."
+              },
+              "tasks": {
+                "description": "While it waits for a service to roll out: the service's Swarm tasks,\nold and new, as they moved through their states.",
+                "items": {
+                  "$ref": "#/components/schemas/TaskLane"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -12302,6 +12381,72 @@
           "message"
         ],
         "type": "object"
+      },
+      "TaskLane": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RolloutTask",
+            "description": "The task as last observed."
+          },
+          {
+            "properties": {
+              "spans": {
+                "description": "Its states in order, each from when it was first observed.",
+                "items": {
+                  "$ref": "#/components/schemas/TaskSpan"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "spans"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "One Swarm task's states over a rollout."
+      },
+      "TaskSpan": {
+        "description": "A task's state from when it was first observed in it.",
+        "properties": {
+          "from_ms": {
+            "description": "Since when, in Unix milliseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "healthy": {
+            "description": "The health check verdict, once it has one.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TaskState",
+            "description": "The Docker state."
+          }
+        },
+        "required": [
+          "state",
+          "from_ms"
+        ],
+        "type": "object"
+      },
+      "TaskState": {
+        "description": "Lifecycle state of an observed Docker task.",
+        "enum": [
+          "new",
+          "pending",
+          "assigned",
+          "accepted",
+          "preparing",
+          "starting",
+          "running",
+          "complete",
+          "failed",
+          "rejected",
+          "shutdown",
+          "unknown"
+        ],
+        "type": "string"
       },
       "TelemetryDestinationStatus": {
         "description": "One collector receiving the daemon's telemetry.",

@@ -305,7 +305,7 @@ impl BollardDocker {
                         let healthy = Self::task_container(task).and_then(|container| {
                             health_by_container.get(container).copied().flatten()
                         });
-                        Self::observe_task(task, healthy)
+                        Self::observe_task(task, spec.task_template.as_ref(), healthy)
                     })
                     .collect::<Vec<_>>();
                 Some(Self::observe_service(
