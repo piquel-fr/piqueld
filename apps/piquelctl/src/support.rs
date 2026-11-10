@@ -36,7 +36,8 @@ pub(crate) struct PageArgs {
     pub(crate) limit: u16,
 }
 
-/// Set while a blocking operator read is in progress; see `read_input`.
+/// Set while a blocking operator read or an `exec` session is in progress;
+/// see `interactive`.
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Wakes the timeout supervisor in `main` when `INTERACTION_ACTIVE` flips.
 static INTERACTION_CHANGED: Notify = Notify::const_new();
@@ -49,8 +50,9 @@ fn set_interaction(active: bool) {
     INTERACTION_CHANGED.notify_one();
 }
 
-/// Returns whether an interactive prompt is currently waiting for operator
-/// input; the surrounding command timeout must not consume budget meanwhile.
+/// Returns whether an interactive prompt or session is currently waiting on
+/// the operator; the surrounding command timeout must not consume budget
+/// meanwhile.
 pub(crate) fn interaction_active() -> bool {
     INTERACTION_ACTIVE.load(Ordering::SeqCst)
 }
@@ -60,17 +62,25 @@ pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
 
+/// Runs `session`, a prompt or an `exec` session, as operator time, which
+/// the command timeout doesn't count. If the command is dropped meanwhile,
+/// the flag stays set, so `main` exits the process directly: a blocking stdin
+/// reader cannot be cancelled.
+pub(crate) async fn interactive<T>(session: impl Future<Output = T>) -> T {
+    set_interaction(true);
+    let output = session.await;
+    set_interaction(false);
+    output
+}
+
 /// Runs a blocking read of operator input off the async runtime, so the
-/// command supervisor in `main` keeps handling Ctrl-C. The command timeout is
-/// suspended while the read is open; `main` exits the process directly if the
-/// command fails mid-read, because the blocking reader cannot be cancelled.
+/// command supervisor in `main` keeps handling Ctrl-C, as operator time (see
+/// [`interactive`]).
 pub(crate) async fn read_input<T: Send + 'static>(
     what: &str,
     read: impl FnOnce() -> io::Result<T> + Send + 'static,
 ) -> Result<T> {
-    set_interaction(true);
-    let result = tokio::task::spawn_blocking(read).await;
-    set_interaction(false);
+    let result = interactive(tokio::task::spawn_blocking(read)).await;
     result.map_err(io::Error::other).flatten().map_err(|error| {
         CliError::new(
             ErrorKind::General,

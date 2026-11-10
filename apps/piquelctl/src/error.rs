@@ -7,7 +7,10 @@ use crate::{
 use piqueld_client::{ClientError, PlanView, PreviewLimitReached, TransportFailure};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use std::{fmt, io};
+use std::{
+    fmt,
+    io::{self, IsTerminal},
+};
 
 /// Failure classes, each mapped to a stable process exit code.
 #[derive(Clone, Copy, Debug)]
@@ -29,7 +32,7 @@ pub(crate) enum ErrorKind {
     /// The daemon rejected the credential, or it lacks the access needed
     /// (HTTP 401 or 403, exit 7).
     Unauthorized,
-    /// Ctrl-C (exit 130, the shell convention for SIGINT).
+    /// Ctrl-C, SIGTERM or SIGHUP (exit 130, the shell convention for SIGINT).
     Interrupted,
 }
 
@@ -95,7 +98,7 @@ pub(crate) enum CliCode {
     OperationFailed,
     /// `piquelctl doctor` found a failed installation check.
     ChecksFailed,
-    /// Ctrl-C.
+    /// Ctrl-C, SIGTERM or SIGHUP.
     Interrupted,
 }
 
@@ -231,14 +234,39 @@ impl CliError {
         self
     }
 
-    /// Waits for Ctrl-C, then returns the `Interrupted` error with `message`.
-    /// Commands that handle Ctrl-C themselves race it with their work.
+    /// Waits until the command is asked to stop, by Ctrl-C, SIGTERM, or
+    /// SIGHUP when its terminal closes, then returns the `Interrupted` error
+    /// with the signal and `message`. Commands race it with their work, so
+    /// ending drops them, which restores a raw terminal.
     pub(crate) async fn on_interrupt(message: &'static str) -> Self {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => Self::new(ErrorKind::Interrupted, message),
+        use tokio::signal::unix::{SignalKind, signal};
+        let signal = async {
+            let mut terminate = signal(SignalKind::terminate())?;
+            // SIGHUP is handled only to restore a terminal on standard input.
+            // Handling it replaces an inherited `SIG_IGN`, which would make a
+            // command run with `nohup` or `trap '' HUP` exit when its terminal
+            // closes. `nohup` redirects a terminal stdin, so it is left alone.
+            let mut hangup = io::stdin()
+                .is_terminal()
+                .then(|| signal(SignalKind::hangup()))
+                .transpose()?;
+            let hung_up = async {
+                match hangup.as_mut() {
+                    Some(hangup) => hangup.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
+            Ok::<_, io::Error>(tokio::select! {
+                result = tokio::signal::ctrl_c() => result.map(|()| "Ctrl-C")?,
+                _ = terminate.recv() => "SIGTERM",
+                _ = hung_up => "SIGHUP",
+            })
+        };
+        match signal.await {
+            Ok(signal) => Self::new(ErrorKind::Interrupted, format!("{signal}: {message}")),
             Err(error) => Self::new(
                 ErrorKind::General,
-                format!("could not install Ctrl-C handler: {error}"),
+                format!("could not install signal handlers: {error}"),
             ),
         }
     }
