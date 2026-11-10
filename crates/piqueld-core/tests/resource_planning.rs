@@ -716,13 +716,13 @@ fn service_steps(desired: &ResolvedApplication, observed: &ObservedApplication) 
     reconcile_plan(desired, observed)
         .actions
         .iter()
-        .filter_map(|action| {
-            let service = desired
+        .filter(|action| {
+            desired
                 .services
                 .iter()
-                .find(|service| service.name.as_str() == action.kind.resource_name())?;
-            Some(format!("{} {}", action.kind.name(), service.logical_name))
+                .any(|service| service.logical_name.as_str() == action.kind.resource_name())
         })
+        .map(|action| format!("{} {}", action.kind.name(), action.kind.resource_name()))
         .collect()
 }
 
@@ -809,12 +809,7 @@ fn active_repair_stops_at_a_dependency_still_converging() {
         .map(|action| action.kind.resource_name().to_owned())
     };
     assert_eq!(repair(&["server"]), None);
-    let web = desired
-        .services
-        .iter()
-        .find(|service| service.logical_name.as_str() == "web")
-        .unwrap();
-    assert_eq!(repair(&["server", "web"]), Some(web.name.to_string()));
+    assert_eq!(repair(&["server", "web"]), Some("web".to_owned()));
 }
 
 #[test]

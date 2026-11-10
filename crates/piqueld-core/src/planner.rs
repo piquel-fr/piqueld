@@ -116,8 +116,10 @@ pub enum ActionKind {
     },
     /// Wait for a service to converge.
     WaitForService {
-        /// Service whose convergence is awaited.
+        /// Docker name of the service whose convergence is awaited.
         service: String,
+        /// Its name in the manifest, which names the step in history.
+        logical_name: crate::ServiceName,
     },
     /// Wait for a service to be removed.
     WaitForServiceRemoval {
@@ -148,18 +150,20 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// Resource named by this action, without configuration or secret values.
+    /// Resource named by this action, without configuration or secret
+    /// values: a desired service by its name in the manifest, other
+    /// resources by their Docker name.
     #[must_use]
     pub fn resource_name(&self) -> &str {
         match self {
             Self::EnsureNetwork { network } => network.name.as_str(),
             Self::EnsureVolume { volume } => volume.name.as_str(),
-            Self::EnsureService { service } => service.name.as_str(),
+            Self::EnsureService { service } => service.logical_name.as_str(),
+            Self::WaitForService { logical_name, .. } => logical_name.as_str(),
             Self::RemoveService { name }
             | Self::RemoveNetwork { name }
             | Self::RetainVolume { name } => name,
-            Self::WaitForService { service }
-            | Self::WaitForServiceRemoval { service }
+            Self::WaitForServiceRemoval { service }
             | Self::ResolveImage { service, .. }
             | Self::BuildGit { service } => service,
             Self::RunJob { job } => job,
@@ -272,7 +276,7 @@ impl fmt::Display for ActionKind {
             Self::EnsureNetwork { network } => ("ENSURE NETWORK", network.name.as_str()),
             Self::EnsureVolume { volume } => ("ENSURE VOLUME", volume.name.as_str()),
             Self::EnsureService { service } => ("ENSURE SERVICE", service.logical_name.as_str()),
-            Self::WaitForService { service } => ("WAIT SERVICE", service.as_str()),
+            Self::WaitForService { logical_name, .. } => ("WAIT SERVICE", logical_name.as_str()),
             Self::WaitForServiceRemoval { service } => ("WAIT SERVICE REMOVAL", service.as_str()),
             Self::RemoveService { name } => ("REMOVE SERVICE", name.as_str()),
             Self::RemoveNetwork { name } => ("REMOVE NETWORK", name.as_str()),
@@ -306,12 +310,13 @@ impl PlanAction {
         Self { kind, reason }
     }
 
-    /// Creates a non-mutating service convergence wait.
+    /// Creates a non-mutating convergence wait for `service`.
     #[must_use]
-    pub fn wait_for_service(service: &str) -> Self {
+    pub fn wait_for_service(service: &crate::DesiredService) -> Self {
         Self::new(
             ActionKind::WaitForService {
-                service: service.into(),
+                service: service.name.to_string(),
+                logical_name: service.logical_name.clone(),
             },
             ActionReason::ConvergencePending,
         )
@@ -619,7 +624,7 @@ impl Plan {
             ActionKind::EnsureService { service } => {
                 dependencies.contains(service.logical_name.as_str())
             }
-            ActionKind::WaitForService { service } => target.services.iter().any(|desired| {
+            ActionKind::WaitForService { service, .. } => target.services.iter().any(|desired| {
                 desired.name.as_str() == service
                     && dependencies.contains(desired.logical_name.as_str())
             }),
@@ -700,7 +705,7 @@ impl Plan {
                     && !stopped.contains(service.name.as_str())
             }
             ActionKind::RemoveService { name } => !services.contains(name),
-            ActionKind::WaitForService { service } => {
+            ActionKind::WaitForService { service, .. } => {
                 !stopped.contains(service)
                     && (!services.contains(service)
                         || !observed.services.iter().any(|found| {
@@ -917,7 +922,7 @@ impl Plan {
                             ready = false;
                             waits.push((
                                 service.logical_name.as_str(),
-                                PlanAction::wait_for_service(service.name.as_str()),
+                                PlanAction::wait_for_service(service),
                             ));
                         }
                         Convergence::Failed => {
@@ -954,7 +959,7 @@ impl Plan {
             }
             waits.push((
                 service.logical_name.as_str(),
-                PlanAction::wait_for_service(service.name.as_str()),
+                PlanAction::wait_for_service(service),
             ));
         }
         // The controller executes the first action and replans, so waiting
@@ -1224,7 +1229,7 @@ impl Plan {
                 .collect::<BTreeSet<_>>();
             let prepares = |action: &PlanAction| match &action.kind {
                 ActionKind::EnsureService { service } => dependencies.contains(&service.name),
-                ActionKind::WaitForService { service } => dependencies
+                ActionKind::WaitForService { service, .. } => dependencies
                     .iter()
                     .any(|dependency| dependency.as_str() == service),
                 ActionKind::RemoveService { .. }

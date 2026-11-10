@@ -212,13 +212,18 @@
                 ],
                 "type": "string"
               },
+              "logical_name": {
+                "$ref": "#/components/schemas/ServiceName",
+                "description": "Its name in the manifest, which names the step in history."
+              },
               "service": {
-                "description": "Service whose convergence is awaited.",
+                "description": "Docker name of the service whose convergence is awaited.",
                 "type": "string"
               }
             },
             "required": [
               "service",
+              "logical_name",
               "action"
             ],
             "type": "object"

@@ -82,7 +82,7 @@ impl<D: DockerApi> Controller<D> {
                     Err(error) => Err(error),
                 }
             }
-            ActionKind::WaitForService { service } => {
+            ActionKind::WaitForService { service, .. } => {
                 let wait = Wait {
                     journal: &journal,
                     removed: false,

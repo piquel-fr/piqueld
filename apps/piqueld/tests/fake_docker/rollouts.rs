@@ -493,7 +493,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     let events = harness.store.events(None, None, 100).await.unwrap().items;
     assert!(events.iter().any(|event| event.kind == "resource_mutated"
         && event.phase.map(piqueld_core::Phase::as_str) == Some("ensure_service")
-        && event.resource.as_deref() == Some(after.services[0].name.as_str())));
+        && event.resource.as_deref() == Some(after.services[0].logical_name.as_str())));
     assert!(
         !serde_json::to_string(&events)
             .unwrap()
