@@ -1554,7 +1554,7 @@ async fn a_disabled_apps_node_is_unconfirmed_until_it_is_removed() {
 }
 
 /// Disabled ingress removes its edge network once no gateway container is
-/// left, but only its own installation's.
+/// left, but only its own installation's, and is disabled either way.
 #[tokio::test]
 async fn disabled_ingress_removes_its_own_edge_network() {
     for (owner, removed) in [(None, true), (Some("instance-other"), false)] {
@@ -1590,8 +1590,7 @@ async fn disabled_ingress_removes_its_own_edge_network() {
             })
         })
         .await;
-        let result = engine.ingress(false).stop_gateway().await;
-        assert_eq!(result.is_ok(), removed, "{result:?}");
+        engine.ingress(false).stop_gateway().await.unwrap();
         let expected: &[&str] = if removed { &["edge-id"] } else { &[] };
         assert_eq!(*deleted.lock(), expected);
     }

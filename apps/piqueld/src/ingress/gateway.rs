@@ -138,7 +138,9 @@ impl Ingress {
     /// apps node and `cloudflared` in a single action when ingress is disabled. Every removal is
     /// attempted, so a failing one never keeps another serving; the first
     /// failure is returned. Once they are all gone, removes the edge network
-    /// they joined. Records nothing if none exist.
+    /// they joined, as best-effort cleanup: ingress is disabled whether or
+    /// not it goes, so a failure, or a network another installation owns,
+    /// is only logged. Records nothing if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
         let mut existing = Vec::new();
         let mut failure = None;
@@ -170,11 +172,15 @@ impl Ingress {
         if let Some(failure) = failure {
             return Err(failure);
         }
-        self.remove_edge_network().await
+        if let Err(error) = self.remove_edge_network().await {
+            tracing::warn!(network=%self.name, error=format!("{error:#}"), "managed ingress edge network not removed");
+        }
+        Ok(())
     }
 
     /// Removes the edge network [`Self::ensure_edge_network`] created, in its
-    /// own action. Records nothing if it doesn't exist.
+    /// own action, which records a failure. Records nothing if it doesn't
+    /// exist, and refuses one this installation doesn't own.
     async fn remove_edge_network(&self) -> Result<()> {
         let Some(network) = self
             .docker
