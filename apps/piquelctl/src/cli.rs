@@ -166,7 +166,7 @@ impl Cli {
 // Account selection and authentication transport options.
 #[derive(Debug, Args)]
 pub(crate) struct AuthArgs {
-    /// Act as this saved login, by account ID or username, in any case.
+    /// Act as this saved login, by account ID, or by username ignoring case.
     ///
     /// Defaults to the login you saved last for this daemon. `PIQUELD_TOKEN`
     /// takes precedence over saved logins.
