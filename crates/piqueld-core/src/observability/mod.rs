@@ -19,7 +19,7 @@ string_enum! {
 }
 
 /// Safe structured explanation of a failure. Never contains raw engine payloads.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 pub struct Diagnostic {
     /// Stable occurrence identity shared with responses and logs.
     pub id: String,

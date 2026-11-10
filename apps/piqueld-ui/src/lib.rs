@@ -12,6 +12,7 @@ pub mod overview;
 pub mod secrets;
 pub mod state;
 pub mod terminal;
+pub mod timeline;
 
 #[cfg(target_arch = "wasm32")]
 mod browser;

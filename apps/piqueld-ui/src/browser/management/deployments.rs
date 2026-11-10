@@ -10,6 +10,7 @@ use super::super::{
     Alive, ClientErrorExt, confirm, document_hidden, live_row, operation_events, release_link,
 };
 use super::releases::ReleaseCard;
+use super::timeline::{OperationTimeline, PlannedSteps};
 use super::{EditorContext, editor};
 use crate::changes::{ChangeDisplay, Mark};
 use crate::deployments::{Attempts, DeploymentList, Promotion};
@@ -830,30 +831,16 @@ fn PlanDetails(plan: PlanView) -> impl IntoView {
                 <h3>"Planned actions"</h3>
             </div>
             {plan.runtime_coverage.note().map(|note| view! { <p class="hint">{note}</p> })}
-            {if plan.plan.actions.is_empty() {
-                (plan.runtime_coverage == RuntimeCoverage::Complete)
-                    .then(|| view! { <p class="hint">"No runtime actions are required."</p> })
-                    .into_any()
-            } else {
-                view! {
-                    <ul class="stack-sm">
-                        {plan
-                            .plan
-                            .actions
-                            .into_iter()
-                            .map(|action| {
-                                view! {
-                                    <li class="btn-group">
-                                        {badge(Tone::Neutral, action.kind.name().replace('_', " "))}
-                                        <code>{action.kind.resource_name().to_owned()}</code>
-                                    </li>
-                                }
-                            })
-                            .collect_view()}
-                    </ul>
+            {
+                let steps = plan.plan.steps();
+                if steps.is_empty() {
+                    (plan.runtime_coverage == RuntimeCoverage::Complete)
+                        .then(|| view! { <p class="hint">"No runtime actions are required."</p> })
+                        .into_any()
+                } else {
+                    view! { <PlannedSteps steps={steps} /> }.into_any()
                 }
-                    .into_any()
-            }}
+            }
         </section>
         <section>
             <div class="section-header">
@@ -1068,11 +1055,13 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
     let opened = RwSignal::new(selected);
     let tab = RwSignal::new("Details");
     let tabs = TabSet::new("Deployment sections", tab);
+    let timeline_requested = RwSignal::new(false);
     let attempts_requested = RwSignal::new(false);
     let events_requested = RwSignal::new(false);
     Effect::new(move |_| {
         if opened.get() {
             match tab.get() {
+                "Timeline" => timeline_requested.set(true),
                 "Attempts" => attempts_requested.set(true),
                 "Events" => events_requested.set(true),
                 _ => {}
@@ -1080,6 +1069,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
         }
     });
     let events_of = op.id.clone();
+    let timeline_of = op.id.clone();
     view! {
         <article class="expander" class:selected={selected}>
             {expander_summary(
@@ -1116,7 +1106,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
             <div class="expander-body" hidden={move || !opened.get()}>
                 {tabs
                     .bar(
-                        &["Details", "Snapshot", "Attempts", "Events"],
+                        &["Details", "Timeline", "Snapshot", "Attempts", "Events"],
                         Some(Callback::new(move |tab| context.tab_hidden(tab))),
                     )}
                 {tabs
@@ -1177,7 +1167,9 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                                         <dt>"Attempts"</dt>
                                         <dd>{op.attempt}</dd>
                                         <dt>"Phase"</dt>
-                                        <dd>{op.phase.map_or("Waiting", piqueld_client::Phase::as_str)}</dd>
+                                        <dd>
+                                            {op.phase.map_or("Waiting", piqueld_client::Phase::as_str)}
+                                        </dd>
                                         {op
                                             .resource
                                             .map(|resource| {
@@ -1216,6 +1208,15 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                                         })}
                                 </div>
                             }
+                        },
+                    )}
+                {tabs
+                    .panel(
+                        "Timeline",
+                        view! {
+                            <Show when={move || timeline_requested.get()}>
+                                <OperationTimeline operation={timeline_of.clone()} />
+                            </Show>
                         },
                     )}
                 {tabs.panel("Snapshot", view! { <DeploymentSnapshot deployment={deployment} /> })}

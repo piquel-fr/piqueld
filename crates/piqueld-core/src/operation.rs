@@ -151,6 +151,7 @@ string_enum! {
     /// What a journaled runtime action does, recorded on its events and on the
     /// operation it belongs to. The stored names predate this type and stay as
     /// they are, so history and analytics group old and new actions together.
+    #[derive(Hash)]
     pub enum Phase {
         /// Prepare an operation's target: everything before planning.
         Preparing => "preparing",

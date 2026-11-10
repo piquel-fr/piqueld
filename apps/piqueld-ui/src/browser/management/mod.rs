@@ -12,6 +12,7 @@ mod secrets;
 mod services;
 mod settings;
 mod terminal;
+mod timeline;
 mod variables;
 
 use super::format::timestamp;
@@ -1380,8 +1381,8 @@ fn ApplicationOverview() -> impl IntoView {
     }
 }
 
-/// One environment or preview: its runtime, deployments, secrets, logs, and
-/// history. An environment's overview renames and deletes it; a preview's
+/// One environment or preview: its running deployment, followed live, then
+/// its runtime, deployments, secrets, logs, and history. An environment's overview renames and deletes it; a preview's
 /// shows its branch and deletes it.
 #[component]
 fn EnvironmentPage() -> impl IntoView {
@@ -1451,6 +1452,7 @@ fn EnvironmentPage() -> impl IntoView {
             </div>
         </header>
         <EditorFeedback />
+        <timeline::LiveDeployment />
         {tabs.bar(&ENVIRONMENT_TABS, Some(Callback::new(move |tab| context.tab_hidden(tab))))}
         {tabs
             .panel(

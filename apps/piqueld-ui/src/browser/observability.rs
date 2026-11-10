@@ -345,7 +345,7 @@ fn words(identifier: &str) -> String {
 /// repeats its kind; else the resource it concerns, else its phase (action
 /// events name their action there, such as `ensure_swarm`); else its kind as
 /// words.
-fn headline(event: &Event) -> String {
+pub(super) fn headline(event: &Event) -> String {
     let kind = words(&event.kind);
     event
         .message
@@ -358,7 +358,7 @@ fn headline(event: &Event) -> String {
 
 /// The event's kind as a badge, toned by its outcome: failures, successes
 /// and recoveries stand out; the rest is neutral.
-fn kind_badge(event: &Event) -> AnyView {
+pub(super) fn kind_badge(event: &Event) -> AnyView {
     let kind = event.kind.as_str();
     let tone = if event.error_code.is_some()
         || kind.contains("fail")

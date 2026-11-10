@@ -68,7 +68,7 @@ pub(crate) enum Event<'a> {
     Step {
         task: &'a str,
         #[serde(flatten)]
-        step: &'a piqueld_client::operations::Step,
+        step: &'a piqueld_client::timeline::Step,
     },
     /// The command's failure, shaped like the API's error envelope.
     Error(crate::error::ErrorBody<'a>),

@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use piqueld_client::{
     OperationKind, OperationState,
     observability::Elapsed,
-    operations::{Step, StepState, Timeline},
+    timeline::{Step, StepState, Timeline},
 };
 use std::{collections::HashMap, fmt, io, sync::Arc, time::Duration};
 
@@ -348,15 +348,20 @@ impl View {
         }
     }
 
-    /// How long the operation took, or has run at `now_ms`, and how long
-    /// its steps usually take: `52.3 s (usual 48.0 s)`.
+    /// How long the operation took, or has run at `now_ms`, and, once every
+    /// step succeeded, how long its steps usually take: `52.3 s (usual
+    /// 48.0 s)`. The steps of a failed run are not the usual ones.
     fn total(&self, now_ms: i64) -> Option<String> {
         let timeline = self.timeline.as_ref()?;
         let operation = &timeline.operation;
         let took = Elapsed::from_millis(
             operation.finished_at_ms.unwrap_or(now_ms) - operation.started_at_ms?,
         );
-        Some(match timeline.usual_ms() {
+        let succeeded = timeline
+            .steps
+            .iter()
+            .all(|step| step.state == StepState::Succeeded);
+        Some(match timeline.usual_ms().filter(|_| succeeded) {
             Some(usual) => format!("{took} (usual {})", Elapsed(Duration::from_millis(usual))),
             None => took.to_string(),
         })
@@ -382,11 +387,7 @@ impl StepLabel<'_> {
 
 impl fmt::Display for StepLabel<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0.key.phase.label())?;
-        match &self.0.key.resource {
-            Some(resource) => write!(formatter, " {resource}"),
-            None => Ok(()),
-        }
+        self.0.key.fmt(formatter)
     }
 }
 

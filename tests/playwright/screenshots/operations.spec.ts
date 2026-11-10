@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { rewrite } from '../fixtures.js';
-import { test, audit, deliveries, destination, errors, manifest, notifications, Piquelctl, shoot, telemetryGrant } from './docs.js';
+import type { Route } from '@playwright/test';
+import { deploymentCards, environmentTab, expect, rewrite, toggleDeployment } from '../fixtures.js';
+import { test, audit, deliveries, destination, environment, errors, manifest, notifications, Piquelctl, shoot, telemetryGrant } from './docs.js';
 
 // docs/user/operations: a deployment that fails, what it notifies, the
 // audit trail, and a telemetry receiver.
@@ -23,6 +24,39 @@ test('history', async ({ page, cli, account }) => {
   await (await Piquelctl.signIn(page, cli)).applyFailing(await broken());
   await errors(page, 2);
   await shoot(page, 'operations/errors', page.locator('article.event').last());
+});
+
+test('deployment timeline', async ({ page, cli, account }) => {
+  void account;
+  // The fake engine runs each step in a few milliseconds, never the same
+  // number: show each lasting as long every time, the wait for the service
+  // longer than usual.
+  const durations: Record<string, [number, number]> = {
+    resolving_image: [1_400, 1_600], planning: [200, 200], ensure_network: [300, 300],
+    ensure_service: [900, 1_000], wait_for_service: [9_400, 6_200], routing: [400, 400],
+  };
+  await page.route(url => url.pathname.endsWith('/timeline/stream'), async (route: Route) => {
+    const url = route.request().url().replace(/\/stream$/, '');
+    const timeline = (await (await route.fetch({ url })).json()).data;
+    let at = timeline.operation.started_at_ms;
+    for (const step of timeline.steps) {
+      const [took, usual] = durations[step.phase] ?? [500, 500];
+      Object.assign(step, { started_at_ms: at, finished_at_ms: at + took, expected_ms: usual });
+      at += took;
+    }
+    timeline.operation.finished_at_ms = at;
+    await route.fulfill({ contentType: 'text/event-stream', body: `event: timeline\ndata: ${JSON.stringify(timeline)}\n\n` });
+  });
+  await (await Piquelctl.signIn(page, cli)).apply(await manifest(firstApp));
+  await environment(page, 'hello', 'production');
+  await environmentTab(page, 'Deployments').click();
+  const deployment = deploymentCards(page).first();
+  await toggleDeployment(deployment);
+  await deployment.getByRole('tab', { name: 'Timeline', exact: true }).click();
+  // The last step is shown once the timeline arrived.
+  await expect(deployment.getByRole('region', { name: 'Step detail' }).getByRole('heading')).toBeVisible();
+  await deployment.evaluate(card => Promise.all(card.getAnimations({ subtree: true }).map(animation => animation.finished)));
+  await shoot(page, 'operations/deployment-timeline', deployment, deployment);
 });
 
 test('notifications', async ({ page, cli, account }) => {

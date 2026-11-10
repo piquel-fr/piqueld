@@ -178,7 +178,7 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await expect(preview).toBeVisible();
   await expect(preview).toContainText('volumes.data');
   await expect(preview).toContainText('services.web.source');
-  await expect(preview).toContainText('resolve image');
+  await expect(preview).toContainText('Resolve image web');
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
 

@@ -10,6 +10,7 @@ mod management;
 mod notifications;
 mod observability;
 mod runtime;
+mod stream;
 mod ui;
 
 use dashboard::{ApplicationsPage, OverviewPage, Sidebar};

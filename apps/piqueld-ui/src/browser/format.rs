@@ -18,6 +18,11 @@ pub(super) fn timestamp(milliseconds: i64) -> String {
         .into()
 }
 
+/// Local time of day, `HH:MM:SS`.
+pub(super) fn clock(milliseconds: i64) -> String {
+    date(milliseconds).clock()
+}
+
 /// Compact age such as "4 min ago" or "in 3 d"; from a week on, the date.
 pub(super) fn relative(milliseconds: i64) -> String {
     Age::at(milliseconds, now_ms()).label().unwrap_or_else(|| {
@@ -33,4 +38,21 @@ pub(super) fn relative(milliseconds: i64) -> String {
 )]
 fn date(milliseconds: i64) -> js_sys::Date {
     js_sys::Date::new(&JsValue::from_f64(milliseconds as f64))
+}
+
+/// Time of day of a browser date.
+pub(super) trait Clock {
+    /// Its local time of day, `HH:MM:SS`.
+    fn clock(&self) -> String;
+}
+
+impl Clock for js_sys::Date {
+    fn clock(&self) -> String {
+        format!(
+            "{:02}:{:02}:{:02}",
+            self.get_hours(),
+            self.get_minutes(),
+            self.get_seconds()
+        )
+    }
 }

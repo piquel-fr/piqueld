@@ -7,7 +7,7 @@ dependencies, rollout order and monitor window, and resource limits. Each settin
 the database without changing running containers.
 
 **Preview** opens a dialog with the planned changes, the variable values it
-renders, the planned actions (saying so when network, volume and service changes
+renders, the steps deploying it runs, by stage (saying so when network, volume and service changes
 wait for image resolution and builds, which the deployment plans), each service's
 effective rollout order (derived or explicit) and monitor window, and plan warnings. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
@@ -164,8 +164,10 @@ titled by what brought it: "Deployment" for one built from the environment's
 source, "Promotion from \<environment>", "Restore", "Automatic rollback" or
 "Release redeployed", tagged with the configuration revision it deploys, and
 marked **Current target** or **Last successful**. Expanding one shows its
-details, the configuration it captured (**Snapshot**), each time piqueld tried
-it (**Attempts**) and its events (**Events**), without leaving the page.
+details, its steps (**Timeline**, see [deployment
+timelines](#deployment-timelines)), the configuration it captured
+(**Snapshot**), each time piqueld tried it (**Attempts**) and its events
+(**Events**), without leaving the page.
 Expanding a deployment that succeeded offers **Restore**, unless it is the
 newest and already current, so you can also return to it after a newer
 deployment failed. Once confirmed, it deploys the deployment again exactly as it
@@ -482,6 +484,42 @@ final completed output loads. Opening shows the newest output; Load older output
 prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
+
+## Deployment timelines
+
+A deployment's timeline shows each of its steps on one time axis, so you can
+see what it is doing, what is left, and which step took longer than usual.
+
+While a deployment runs, its environment's or preview's page shows it above
+the tabs, from the moment the page sees it start. Its header has its state,
+one segment per step, the steps done and running, how long it has run, about
+how long is left, and how long it usually takes. The browser tab's title
+shows the share of steps done, then ✓ once it is deployed. **Hide steps**
+folds the rest away; **Close** removes the panel once the deployment ended.
+
+Steps are grouped by stage: **Prepare** (fetching the manifest, building and
+resolving sources, planning), **Jobs**, and **Roll out**. Each step that
+started has a bar from its start to its end, growing while it runs, and a
+dashed outline of how long it usually takes: the median of the same step in
+the environment's last five successful deployments. A step taking notably
+longer than usual is outlined in amber, and so is its duration. Steps left
+are placed where they should run. Until a deployment has built its sources,
+the steps of its environment's previous successful deployment stand in for
+its rollout, marked as a forecast; steps that appear once it plans them flash
+briefly.
+
+The step running is shown below the steps: how long it usually takes and has
+taken, its attempt, how many requests it retried, and why it failed. A build
+or a job also shows the end of its output, read again every 2 seconds while
+it runs, with `logs:read`. Select another step to show it instead, and
+**Follow live** to return to the running one. With `events:read`, **Live
+events** lists the deployment's events as they are recorded, newest first.
+
+A deployment's **Timeline** tab, in its environment's **Deployments** tab,
+shows the same steps, live while it runs. **Preview** lists the steps
+deploying would run the same way, without times.
+
+![The Timeline tab of a deployment of hello/production: its steps by stage on a time axis, each bar beside the dashed outline of its usual duration, and the detail of its last step](../images/operations/deployment-timeline.png)
 
 See [history and diagnostics](operations/history.md) for history, daemon
 statistics and analytics, [telemetry](operations/telemetry.md) for telemetry

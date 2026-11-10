@@ -33,11 +33,16 @@ message, and who caused it.
 
 To follow a deployment's steps in the dashboard:
 
-1. On the environment's **Deployments** tab, select the deployment to expand
-   it.
-2. Select **Events**, which lists its steps, newest first, with the same
-   filters as the Events page. **Attempts** lists each time piqueld tried it,
-   with a link to that attempt's events.
+- While a deployment runs, its environment's page shows it above the tabs:
+  how many of its steps are done, how long it has run, about how long is
+  left, and how long it usually takes. Its steps and its events follow,
+  live. The browser tab's title shows its progress, then ✓ once it is
+  deployed. See [deployment timelines](../dashboard.md#deployment-timelines).
+- Afterwards, on the environment's **Deployments** tab, select the deployment
+  to expand it. **Timeline** shows its steps the same way. **Events** lists
+  every event, newest first, with the same filters as the Events page.
+  **Attempts** lists each time piqueld tried it, with a link to that
+  attempt's events.
 
 With `piquelctl`, run `piquelctl operation <operation-id>`, which also waits
 for it to finish.
