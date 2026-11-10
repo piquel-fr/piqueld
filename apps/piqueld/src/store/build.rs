@@ -237,13 +237,14 @@ impl Store {
         Ok(())
     }
     /// Deletes output of builds finished before the retention window, keeping
-    /// their metadata and flagging the output as expired.
+    /// their metadata and flagging the output as expired. Builds already
+    /// flagged are skipped.
     pub(crate) async fn prune_build_logs(&self) -> Result<(), StoreError> {
         let cutoff = days_ago_ms(self.build_history.log_retention_days.into());
         let (_writer, mut tx) = self.begin_immediate().await?;
-        sqlx::query!("DELETE FROM build_log_chunks WHERE build_id IN (SELECT id FROM builds WHERE finished_at_ms<?1)",cutoff).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM build_log_chunks WHERE build_id IN (SELECT id FROM builds WHERE finished_at_ms<?1 AND log_expired=0)",cutoff).execute(&mut *tx).await.map_err(StoreError::database)?;
         sqlx::query!(
-            "UPDATE builds SET log_expired=1,log_bytes=0 WHERE finished_at_ms<?1",
+            "UPDATE builds SET log_expired=1,log_bytes=0 WHERE finished_at_ms<?1 AND log_expired=0",
             cutoff
         )
         .execute(&mut *tx)
