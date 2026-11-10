@@ -863,7 +863,8 @@ bytes. The old forward `offset` query and combined `text` response are removed.
 Migration expires previously captured unstructured output while retaining build
 metadata. Truncation and expiration are explicit. Output retains the configured
 prefix, defaults to 4 MiB per attempt and expires 30 days after completion.
-Metadata survives operation pruning and is deleted with its environment.
+Metadata is deleted once deployment history pruning removes its operation and
+its output has expired.
 
 See [history and diagnostics](../operations/history.md) for history, daemon
 statistics and analytics, [telemetry](../operations/telemetry.md) for telemetry

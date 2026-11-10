@@ -199,6 +199,11 @@ It runs the release of the deployment it restored.
 
 - **Restoring fails with `deployment_not_restorable`.** That deployment never
   succeeded. Restore one that did.
+- **The deployment to restore isn't listed.** piqueld removed it from the
+  [deployment history](../operations/history.md#how-long-history-is-kept), and
+  it can't be restored any more. A preview keeps only its current, latest and
+  newest successful deployments, so it can only go back to the newest one that
+  succeeded.
 - **Restoring fails with `image_unavailable`.** piqueld removed one of the
   deployment's images, and can't pull it again from a registry. The error
   names the service and image. piqueld keeps the images of each environment's

@@ -1,4 +1,5 @@
-//! Build records outlive operation retention; output is chunked and bounded.
+//! Build records outlive their output, until deployment history prunes their
+//! operation; output is chunked and bounded.
 use super::auth::access::scope_json;
 use super::{Paging, Store, StoreError, days_ago_ms, decode_name, now_ms};
 use piqueld_core::access::Scope;

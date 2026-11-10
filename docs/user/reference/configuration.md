@@ -158,7 +158,9 @@ without them, which status reports as unlimited replicas. Previews are never del
 
 `[build_history]` bounds persisted build output: `log_max_bytes` defaults to
 4194304 (maximum 64 MiB), and `log_retention_days` to 30 (1–3650). Build metadata
-remains until the application is deleted. Expiration removes output chunks while
+remains until its deployment is pruned from
+[deployment history](../operations/history.md#how-long-history-is-kept) and its
+output has expired. Expiration removes output chunks while
 retaining the attempt and an explicit expired indicator.
 
 `[images]` controls cleanup of the images this installation builds. It keeps

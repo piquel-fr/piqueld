@@ -622,7 +622,8 @@ pub struct DnsConfig {
 }
 
 /// How much output of each build is kept, and for how long. Builds
-/// themselves are listed until their environment is deleted.
+/// themselves are listed until deployment history pruning removes their
+/// operation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct BuildHistoryConfig {
@@ -895,6 +896,21 @@ pub struct RetentionConfig {
     /// operation and those in its deployment history or with job cleanup
     /// pending.
     pub finished_operation_days: u64,
+    /// Days each environment's deployment history is kept; `0` keeps it
+    /// forever. A deployment is removed only once it is older than this and
+    /// beyond the newest `deployments_per_environment`, never while it is
+    /// its environment's current or latest deployment or one of its newest
+    /// `images.keep_deployments` successful ones, or one a remaining
+    /// deployment restored. Previews keep only those, of their deployments
+    /// that finished over an hour ago. Releases no remaining deployment uses
+    /// are removed beyond each application's newest 50, and build and job
+    /// records once their deployment is gone and their output expired. `0`
+    /// here or in `deployments_per_environment` stops all of this pruning,
+    /// of previews, releases and build records too.
+    pub deployment_days: u64,
+    /// Deployments each environment keeps however old they are; `0` keeps
+    /// every deployment, release and build record, as for `deployment_days`.
+    pub deployments_per_environment: u32,
     /// Days application events are kept; `0` keeps them forever. Deleting an
     /// application also removes its events.
     pub event_days: u64,
@@ -909,6 +925,8 @@ impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             finished_operation_days: 10,
+            deployment_days: 90,
+            deployments_per_environment: 50,
             event_days: 90,
             daemon_event_days: 90,
             audit_days: 365,

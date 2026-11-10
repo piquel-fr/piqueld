@@ -24,6 +24,7 @@ impl Store {
     pub fn with_observability(mut self, config: &piqueld_config::DaemonConfig) -> Self {
         self.daemon_event_days = config.retention.daemon_event_days;
         self.audit_days = config.retention.audit_days;
+        self.deployment_retention = super::history::DeploymentRetention::new(config);
         self
     }
     /// Returns a snapshot cached for five seconds to avoid expensive per-request scans.

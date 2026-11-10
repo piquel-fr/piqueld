@@ -234,7 +234,8 @@ test('restoring a deployment', async ({ page, daemon, cli, passkeys }) => {
   await toggleDeployment(deployments.nth(1));
   // Let its chevron finish turning.
   await deployments.nth(1).evaluate(card => Promise.all(card.getAnimations({ subtree: true }).map(animation => animation.finished)));
-  await shoot(page, 'applications/restore', deployments.nth(1));
+  // Down to the hint that ends the history, which would otherwise be cut.
+  await shoot(page, 'applications/restore', page.getByText('Older deployments are removed once past', { exact: false }));
   await environmentTab(page, 'Overview').click();
   const rollback = page.locator('section.card', { has: page.getByRole('heading', { name: 'Rollback' }) });
   await rollback.getByLabel('When a rollout fails').selectOption('automatic');

@@ -280,7 +280,8 @@ impl Store {
         let Some(mut origin) = json.as_deref().map(decode).transpose()? else {
             return Ok(None);
         };
-        // Restores name earlier deployments, kept until the preview is gone.
+        // Restores name earlier deployments, which history pruning keeps while
+        // a deployment restored them.
         while let DeploymentOrigin::Restore { deployment, .. } = &origin {
             let json = sqlx::query_scalar!(
                 "SELECT origin_json FROM deployments WHERE id=?1",

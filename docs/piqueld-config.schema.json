@@ -49,7 +49,7 @@
     },
     "BuildHistoryConfig": {
       "additionalProperties": false,
-      "description": "How much output of each build is kept, and for how long. Builds\nthemselves are listed until their environment is deleted.",
+      "description": "How much output of each build is kept, and for how long. Builds\nthemselves are listed until deployment history pruning removes their\noperation.",
       "properties": {
         "log_max_bytes": {
           "default": 4194304,
@@ -451,6 +451,20 @@
           "default": 90,
           "description": "Days events not tied to an application, such as those about shared\ninfrastructure, are kept; `0` keeps them forever.",
           "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deployment_days": {
+          "default": 90,
+          "description": "Days each environment's deployment history is kept; `0` keeps it\nforever. A deployment is removed only once it is older than this and\nbeyond the newest `deployments_per_environment`, never while it is\nits environment's current or latest deployment or one of its newest\n`images.keep_deployments` successful ones, or one a remaining\ndeployment restored. Previews keep only those, of their deployments\nthat finished over an hour ago. Releases no remaining deployment uses\nare removed beyond each application's newest 50, and build and job\nrecords once their deployment is gone and their output expired. `0`\nhere or in `deployments_per_environment` stops all of this pruning,\nof previews, releases and build records too.",
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deployments_per_environment": {
+          "default": 50,
+          "description": "Deployments each environment keeps however old they are; `0` keeps\nevery deployment, release and build record, as for `deployment_days`.",
+          "format": "int32",
           "minimum": 0,
           "type": "integer"
         },

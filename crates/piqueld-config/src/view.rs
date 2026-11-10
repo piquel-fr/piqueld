@@ -147,7 +147,14 @@ impl DaemonConfig {
     fn retention_view(&self) -> Group {
         let (retention, builds) = (&self.retention, &self.build_history);
         group([
-            ("Deployment history", "Until application deletion".into()),
+            (
+                "Deployment history (days)",
+                retention.deployment_days.to_string(),
+            ),
+            (
+                "Deployments per environment",
+                retention.deployments_per_environment.to_string(),
+            ),
             (
                 "Other finished operations (days)",
                 retention.finished_operation_days.to_string(),
