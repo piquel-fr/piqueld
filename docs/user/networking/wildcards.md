@@ -110,7 +110,9 @@ DNS provider:
 2. It waits until every nameserver of the zone serves the record, for up to
    10 minutes.
 3. The certificate authority checks the record and issues the certificate.
-4. piqueld deletes the record, even when issuing fails.
+4. piqueld deletes the record, even when issuing fails. If it can't, or the
+   daemon stops first, it deletes the record on its next attempt, also after a
+   restart.
 
 Your DNS credentials never leave the daemon: the gateway gets the
 certificates, not the credentials. With a

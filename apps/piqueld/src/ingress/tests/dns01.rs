@@ -9,11 +9,8 @@ use crate::{
         Dns,
         provider::{DnsProvider, Record, challtestsrv::Challtestsrv},
     },
-    ingress::{
-        Ingress,
-        certificates::{CertificateName, Certificates, Challenge},
-        node::proxy_relay,
-    },
+    ingress::{Ingress, certificates::Certificates, node::proxy_relay},
+    store::ingress::AcmeChallenge,
 };
 use hickory_resolver::{
     Resolver,
@@ -728,10 +725,12 @@ impl Scenario {
         );
     }
 
-    /// A challenge record whose deletion failed earlier is deleted before
-    /// the next attempt creates its own. `challtestsrv` clears every value at
-    /// a name, so deleting it afterwards would also remove the new record and
-    /// fail validation.
+    /// A saved challenge record whose deletion failed earlier, or was cut
+    /// short by a restart, is deleted at the start of the next pass, before
+    /// its order creates a record of its own. `challtestsrv` clears every
+    /// value at a name, so deleting it afterwards would also remove the new
+    /// record and fail validation. The successful order then forgets its own
+    /// record too.
     async fn dns01_leftover(&self, ingress: &Ingress, now: i64) {
         let dns = &ingress.certificates.dns;
         let hostname = Hostname::parse("x.leftover.example.test").unwrap();
@@ -747,10 +746,13 @@ impl Scenario {
             )
             .await
             .unwrap();
-        ingress.certificates.replace_leftover(
-            &CertificateName::Wildcard(hostname.parent().unwrap()),
-            Some(Challenge { provider, zone, id }),
-        );
+        let leftover = AcmeChallenge {
+            name: "_acme-challenge.leftover.example.test".into(),
+            zone: zone.name,
+            value: "stale".into(),
+            record_id: Some(id.0),
+        };
+        ingress.store.save_acme_challenge(&leftover).await.unwrap();
         ingress
             .maintain_certificates(&[hostname.into()].into(), now, &CancellationToken::new())
             .await;
@@ -768,6 +770,7 @@ impl Scenario {
             self.txt("_acme-challenge.leftover.example.test").await,
             [] as [String; 0]
         );
+        assert_eq!(ingress.store.acme_challenges().await.unwrap(), []);
     }
 
     /// Unneeded certificates are kept until they expire, then deleted.
