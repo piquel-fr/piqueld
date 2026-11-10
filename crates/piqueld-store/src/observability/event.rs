@@ -5,10 +5,11 @@ use crate::{
     now_ms,
 };
 use piqueld_core::{
-    Event, EventActor,
+    Event, EventActor, EventDetail,
     api::Page,
     observability::{Diagnostic, EventFilter, EventScope},
     sync::SystemActor,
+    timeline::{PlanCoverage, StepKey},
 };
 use sqlx::{QueryBuilder, Sqlite, Transaction};
 
@@ -80,6 +81,37 @@ impl Store {
             id,
         )
         .execute(&mut **tx)
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
+    /// Records the steps operation `id` plans to run next, as a
+    /// `plan_recorded` event its timeline replaces earlier plans of the same
+    /// `coverage` with.
+    ///
+    /// # Errors
+    /// Returns storage errors.
+    pub async fn record_plan(
+        &self,
+        id: &str,
+        steps: Vec<StepKey>,
+        coverage: PlanCoverage,
+    ) -> Result<(), StoreError> {
+        let detail = serde_json::to_string(&EventDetail::Planned { steps, coverage })
+            .map_err(StoreError::corrupt)?;
+        let now = now_ms();
+        self.write(sqlx::query!(
+            "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,
+            created_at_ms,detail_json,actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
+            SELECT e.application_id,o.environment_id,o.id,o.generation,o.attempt,'plan_recorded',?1,?2,
+            o.actor_user_id,o.actor_credential_id,o.actor_operator_uid,o.actor_system
+            FROM operations o LEFT JOIN environments e ON e.id=o.environment_id
+            WHERE o.id=?3",
+            now,
+            detail,
+            id,
+        ))
         .await
         .map_err(StoreError::database)?;
         Ok(())

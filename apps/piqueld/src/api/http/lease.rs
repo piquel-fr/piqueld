@@ -81,6 +81,19 @@ impl Lease {
             || Instant::now() >= self.next
     }
 
+    /// Waits until `ready` resolves or a recheck is due: the daemon shuts
+    /// down, access changes, or [`RECHECK`] passes.
+    pub(super) async fn wait(&self, ready: impl Future) {
+        // A clone, so the change stays unseen for `due`.
+        let mut changes = self.changes.clone();
+        tokio::select! {
+            _ = ready => {}
+            () = self.state.shutdown().cancelled() => {}
+            _ = changes.changed() => {}
+            () = tokio::time::sleep_until(self.next) => {}
+        }
+    }
+
     /// Rechecks the caller's access now: its tailnet binding, then `check`,
     /// which must re-read the caller's access through the store, refusing an
     /// ended credential.

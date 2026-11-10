@@ -220,6 +220,38 @@ async fn event_stream_replays_after_cursor_and_rejects_pruned_history() {
     assert_eq!(response.status, StatusCode::GONE);
 }
 
+/// A timeline stream sends the operation's whole timeline, then sends it
+/// again as soon as an event changes it.
+#[tokio::test]
+async fn timeline_stream_sends_the_timeline_then_each_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let app = api.deploy().await;
+    let response = api
+        .router()
+        .open(request(&format!(
+            "/api/v1/operations/{}/timeline/stream",
+            app.operation_id
+        )))
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let mut body = response.into_body();
+    let first = tokio::time::timeout(Duration::from_secs(2), read_stream(&mut body, Some("\n\n")))
+        .await
+        .unwrap();
+    assert!(first.starts_with("event: timeline\n"), "{first}");
+    assert!(first.contains(r#""state":"requested""#), "{first}");
+    api.finish_operation(&app.operation_id, None).await;
+    let next = tokio::time::timeout(
+        Duration::from_secs(2),
+        read_stream(&mut body, Some(r#""state":"succeeded""#)),
+    )
+    .await
+    .unwrap();
+    assert!(next.contains("event: timeline\n"), "{next}");
+}
+
 /// A command refused when it starts, after its connection was authorized
 /// and audited as allowed, is audited and counted as a refusal too.
 #[tokio::test]

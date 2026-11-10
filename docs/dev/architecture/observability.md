@@ -18,6 +18,28 @@ An event's `phase` is a `Phase`: what the journaled action does, typed in
 is journaled under `ActionKind::phase`, so the plan and the journal use one
 vocabulary.
 
+### Timelines
+
+An operation's [timeline](../../user/reference/api.md#operation-timelines) is
+a projection of the journal, never stored: `piqueld_core::timeline::Timeline`
+folds an operation's events with `Timeline::apply`. Action events fill in
+the steps started; `plan_recorded` events, whose detail lists the steps the
+operation plans next, replace the steps left. Source preparation records
+one plan of its sources and jobs one of their runs (`PlanCoverage::Preparation`),
+and the convergence loop records the runtime plan (`PlanCoverage::Runtime`)
+only when it differs from the previous one without the step just run, so a
+deployment records a handful, not one per action.
+
+Expectations come from the store in two indexed reads: the environment's
+last five successful operations of the same kind, then their succeeded
+actions, whose medians are each step's `expected_ms` and whose latest
+operation's steps are the forecast.
+
+Every writer leaves the store's writer queue through a guard that marks a
+`watch` channel changed (`Store::written`). Event and timeline streams wait
+on it, rather than polling, and read again at most every 100 ms; a timeline
+stream applies only the events newer than its cursor.
+
 Secret writes and deletions record `secret_saved` and `secret_deleted` events with
 the logical name as their resource; history never contains values. Removing a
 secret's Docker versions is a journaled `remove_secrets` action, whether it follows

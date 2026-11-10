@@ -156,6 +156,8 @@ when the complete normalized manifest is needed.
 | POST | `/api/v1/previews/{id}/restore` | Restore an earlier, succeeded deployment of the preview exactly, as for an [environment](#restoring-a-deployment); 202 with `AcceptedOperation` |
 | DELETE | `/api/v1/previews/{id}` | Delete the preview and every volume it created; 202 with `AcceptedOperation` |
 | GET | `/api/v1/operations/{id}` | Inspect progress, attempt count, and safe diagnostics |
+| GET | `/api/v1/operations/{id}/timeline` | The operation's [timeline](#operation-timelines): its steps, done and left |
+| GET | `/api/v1/operations/{id}/timeline/stream` | Follow the timeline live through SSE |
 | GET | `/api/v1/events` | Paginated informational history, oldest first |
 | GET | `/api/v1/events/kinds` | The distinct kinds of the events the caller may read, in name order, to filter the history by `kind` |
 | GET | `/api/v1/events/stream` | Replay and follow history as server-sent events; see [event history](#event-history) |
@@ -817,6 +819,42 @@ Streams recheck the caller's access while open (see
 stops arriving, and a caller that lost access entirely receives a terminal
 `access_ended` message whose data is the refusal's `ErrorBody`. Streams end
 without a message when the daemon shuts down; reconnect with `Last-Event-ID`.
+
+Streams read history again right after each write to the database, at most
+every 100 ms, so new events arrive as they are committed.
+
+### Operation timelines
+
+An operation's timeline lists its steps, each named by its `phase` and
+`resource` like the actions in its history, in the order they run: those it
+ran and is running, then those left. It needs `apps:read` on the operation's
+application, and shows every step, including failures of shared
+infrastructure that the event history only shows with `system:read`.
+
+| Field | Meaning |
+| --- | --- |
+| `operation` | The operation, as of the newest event applied |
+| `steps[].state` | `forecast`, `planned`, `running`, `retrying`, `succeeded`, `failed`, or `interrupted` |
+| `steps[].started_at_ms`, `finished_at_ms` | When the step started and ended |
+| `steps[].expected_ms` | The median duration of the same step in the environment's last five successful operations of the same kind |
+| `steps[].action_id` | The journaled action: filter events by it for its requests and retries |
+| `steps[].diagnostic` | Why the step failed, or why its latest request did |
+| `promoted_at_ms` | When the operation's target was promoted |
+| `cursor` | The newest event applied |
+
+Steps left come from the operation's latest recorded plan: a
+`plan_recorded` event whose `detail` lists the steps it plans next. It
+records one when it starts preparing its sources, one before its jobs, and
+one each time its runtime plan changes. Until it has planned that far, the
+steps of the environment's previous successful operation stand in, as
+`forecast`.
+
+`GET /api/v1/operations/{id}/timeline/stream` sends a `timeline` message with
+the whole timeline at once, then again each time an event changes it, at
+most every 100 ms. A running step's progress between messages is the time
+since it started. It ends like the event stream, with `stream_error` or
+`access_ended`, or without a message when the daemon shuts down; reconnecting
+sends the whole timeline again.
 
 ### URL readiness
 

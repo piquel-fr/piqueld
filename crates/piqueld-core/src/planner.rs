@@ -228,6 +228,22 @@ impl ActionKind {
         }
     }
 
+    /// Whether executing the plan runs this action: a retained volume is
+    /// only reported.
+    #[must_use]
+    pub const fn runs(&self) -> bool {
+        !matches!(self, Self::RetainVolume { .. })
+    }
+
+    /// The timeline step running this action is journaled as.
+    #[must_use]
+    pub fn step(&self) -> crate::timeline::StepKey {
+        crate::timeline::StepKey {
+            phase: self.phase(),
+            resource: Some(self.resource_name().to_owned()),
+        }
+    }
+
     /// The phase this action is journaled as when it runs.
     #[must_use]
     pub const fn phase(&self) -> crate::Phase {
@@ -411,6 +427,16 @@ impl Plan {
         self.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.blocking)
+    }
+
+    /// The steps executing the plan runs, in order.
+    #[must_use]
+    pub fn steps(&self) -> Vec<crate::timeline::StepKey> {
+        self.actions
+            .iter()
+            .filter(|action| action.kind.runs())
+            .map(|action| action.kind.step())
+            .collect()
     }
 
     /// Returns whether the plan contains runtime mutations.

@@ -6170,6 +6170,48 @@
         ],
         "type": "object"
       },
+      "Envelope_Timeline": {
+        "description": "Successful API response envelope.",
+        "properties": {
+          "data": {
+            "description": "An operation's steps, folded from its events.",
+            "properties": {
+              "cursor": {
+                "description": "The newest event applied: the stream resumes after it.",
+                "format": "int64",
+                "type": "integer"
+              },
+              "operation": {
+                "$ref": "#/components/schemas/Operation",
+                "description": "The operation, as of the newest event applied."
+              },
+              "promoted_at_ms": {
+                "description": "When the operation's target was promoted, in Unix milliseconds.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "steps": {
+                "description": "Its steps: those started, in the order they started, then those left,\nin the order they are expected to run.",
+                "items": {
+                  "$ref": "#/components/schemas/Step"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "operation",
+              "steps",
+              "cursor"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
       "Envelope_Vec_DeletedPreview": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -7497,6 +7539,34 @@
             },
             "required": [
               "field",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The steps an operation plans to run next (`plan_recorded`), replacing\nthose it planned before for the same `coverage`.",
+            "properties": {
+              "coverage": {
+                "$ref": "#/components/schemas/PlanCoverage",
+                "description": "Which of the operation's steps the plan lists."
+              },
+              "steps": {
+                "description": "The steps, in the order they are planned to run.",
+                "items": {
+                  "$ref": "#/components/schemas/StepKey"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "planned"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "steps",
+              "coverage",
               "type"
             ],
             "type": "object"
@@ -9433,6 +9503,14 @@
           "reason"
         ],
         "type": "object"
+      },
+      "PlanCoverage": {
+        "description": "Which of an operation's steps a recorded plan lists.",
+        "enum": [
+          "preparation",
+          "runtime"
+        ],
+        "type": "string"
       },
       "PlanDiagnostic": {
         "additionalProperties": false,
@@ -11821,6 +11899,114 @@
         ],
         "type": "object"
       },
+      "Step": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/StepKey",
+            "description": "What it does and on what."
+          },
+          {
+            "properties": {
+              "action_id": {
+                "description": "The journaled action running it, once started; filter events by it\nfor its full history.",
+                "nullable": true,
+                "type": "string"
+              },
+              "attempt": {
+                "description": "The operation attempt that ran it, once started.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "diagnostic": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Diagnostic"
+                      }
+                    ],
+                    "description": "Why it failed, or why its latest request did."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
+              "expected_ms": {
+                "description": "How long it usually takes: the median of the same step in the\nenvironment's recent successful operations.",
+                "format": "int64",
+                "minimum": 0,
+                "nullable": true,
+                "type": "integer"
+              },
+              "finished_at_ms": {
+                "description": "When it ended, in Unix milliseconds.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "retries": {
+                "description": "Requests retried after a retryable failure.",
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "description": "When it started, in Unix milliseconds.",
+                "format": "int64",
+                "nullable": true,
+                "type": "integer"
+              },
+              "state": {
+                "$ref": "#/components/schemas/StepState",
+                "description": "Where it stands."
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "One step of an operation."
+      },
+      "StepKey": {
+        "description": "What a step does and on what: a journaled action's identity.",
+        "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/Phase",
+            "description": "What the step does."
+          },
+          "resource": {
+            "description": "The logical or Docker resource it acts on, when it names one.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "phase"
+        ],
+        "type": "object"
+      },
+      "StepState": {
+        "description": "Where one step stands.",
+        "enum": [
+          "forecast",
+          "planned",
+          "running",
+          "retrying",
+          "succeeded",
+          "failed",
+          "interrupted"
+        ],
+        "type": "string"
+      },
       "StoredSecret": {
         "allOf": [
           {
@@ -12369,6 +12555,39 @@
         "required": [
           "width",
           "height"
+        ],
+        "type": "object"
+      },
+      "Timeline": {
+        "description": "An operation's steps, folded from its events.",
+        "properties": {
+          "cursor": {
+            "description": "The newest event applied: the stream resumes after it.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/Operation",
+            "description": "The operation, as of the newest event applied."
+          },
+          "promoted_at_ms": {
+            "description": "When the operation's target was promoted, in Unix milliseconds.",
+            "format": "int64",
+            "nullable": true,
+            "type": "integer"
+          },
+          "steps": {
+            "description": "Its steps: those started, in the order they started, then those left,\nin the order they are expected to run.",
+            "items": {
+              "$ref": "#/components/schemas/Step"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation",
+          "steps",
+          "cursor"
         ],
         "type": "object"
       },
@@ -31213,6 +31432,150 @@
           }
         },
         "summary": "Get an operation",
+        "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/operations/{id}/timeline": {
+      "get": {
+        "description": "Its steps: those it ran and is running, from its events, then those\nleft, from its latest plan or, before it planned that far, from its\nenvironment's previous successful operation. Each step has how long it\nusually takes, from the environment's recent successful operations.",
+        "operationId": "getOperationTimeline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_Timeline"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Gets an operation's timeline.",
+        "x-piqueld-access": "apps:read"
+      }
+    },
+    "/api/v1/operations/{id}/timeline/stream": {
+      "get": {
+        "description": "Sends a `timeline` message with the whole timeline at once, then again\neach time one of the operation's events changes it, at most every 100 ms.\nA running step's progress between messages is the time since it started.\nThe stream ends with a `stream_error` message when history can no longer\nbe read, with an `access_ended` message whose data is the `ErrorBody` of\nthe request that would now be refused once the caller loses access, and\nwithout a message when the daemon shuts down. Reconnecting sends the\nwhole timeline again.",
+        "operationId": "streamOperationTimeline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "SSE of `timeline` messages, each a whole `Timeline`"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "TCP authority or browser origin is not trusted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Structured, sanitized error"
+          }
+        },
+        "summary": "Streams an operation's timeline as server-sent events.",
         "x-piqueld-access": "apps:read"
       }
     },

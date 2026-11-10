@@ -586,6 +586,11 @@
       "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::EventKinds>"
     },
     {
+      "schema": "Envelope_Timeline",
+      "name": "EnvelopeTimeline",
+      "rustType": "piqueld_core::api::Envelope<piqueld_core::timeline::Timeline>"
+    },
+    {
       "schema": "Envelope_DeploymentAnalytics",
       "name": "EnvelopeDeploymentAnalytics",
       "rustType": "piqueld_core::api::Envelope<piqueld_core::observability::DeploymentAnalytics>"

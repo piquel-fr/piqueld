@@ -1258,7 +1258,7 @@ impl Store {
     }
 
     /// Holds the writer queue, as a long write would, until the guard drops.
-    pub async fn hold_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    pub async fn hold_writer(&self) -> crate::Writer<'_> {
         self.writers.lock().await
     }
 

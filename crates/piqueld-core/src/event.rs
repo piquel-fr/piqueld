@@ -71,6 +71,14 @@ pub enum EventDetail {
         /// The part of the configuration it changed.
         field: crate::edit::EditedField,
     },
+    /// The steps an operation plans to run next (`plan_recorded`), replacing
+    /// those it planned before for the same `coverage`.
+    Planned {
+        /// The steps, in the order they are planned to run.
+        steps: Vec<crate::timeline::StepKey>,
+        /// Which of the operation's steps the plan lists.
+        coverage: crate::timeline::PlanCoverage,
+    },
 }
 
 /// Who caused an event: exactly one kind of actor.

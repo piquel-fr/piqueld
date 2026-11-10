@@ -5,6 +5,7 @@ use super::{
 use crate::application::RuntimeBoundary;
 use piqueld_core::Phase;
 use piqueld_core::api::DeploymentOrigin;
+use piqueld_core::timeline::{PlanCoverage, StepKey};
 use piqueld_docker::JobRuns;
 use std::sync::Arc;
 
@@ -311,6 +312,9 @@ impl<D: DockerApi> Controller<D> {
             timeout_seconds = self.retry.convergence_timeout.as_secs(),
             "convergence started"
         );
+        // The steps the last recorded plan has left, so a plan is recorded
+        // only when it changes.
+        let mut recorded: Option<Vec<StepKey>> = None;
         loop {
             self.check_current(operation).await?;
             if cancellation.is_cancelled() {
@@ -343,9 +347,15 @@ impl<D: DockerApi> Controller<D> {
                 // Replan after cutover before dropping old ingress attachments.
                 continue;
             }
-            let action = plan.actions.iter().find(|action| {
-                !matches!(action.kind, piqueld_core::ActionKind::RetainVolume { .. })
-            });
+            let steps = plan.steps();
+            if recorded.as_ref() != Some(&steps) {
+                self.store
+                    .record_plan(&operation.id, steps.clone(), PlanCoverage::Runtime)
+                    .await?;
+            }
+            // Unless the next plan differs, it is this one without its first step.
+            recorded = Some(steps.into_iter().skip(1).collect());
+            let action = plan.actions.iter().find(|action| action.kind.runs());
             let Some(action) = action else {
                 if operation.kind != OperationKind::Delete
                     && !self

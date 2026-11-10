@@ -11,6 +11,7 @@ use super::{
 };
 use crate::build::BuildLog;
 use piqueld_core::Phase;
+use piqueld_core::timeline::{PlanCoverage, StepKey};
 use piqueld_core::{
     DesiredJobRun, ResolvedApplication,
     api::{BuildState, DeploymentOrigin, LogStream},
@@ -57,6 +58,18 @@ impl<D: DockerApi> Controller<D> {
             })
             .map(|job| job.for_operation(&operation.id))
             .collect::<Vec<_>>();
+        self.store
+            .record_plan(
+                &operation.id,
+                jobs.iter()
+                    .map(|job| StepKey {
+                        phase: Phase::RunJob,
+                        resource: Some(job.logical_name.to_string()),
+                    })
+                    .collect(),
+                PlanCoverage::Preparation,
+            )
+            .await?;
         let ownership = self.ownership_labels(&operation.environment_id);
         // A run left by an earlier operation must not overlap this deployment,
         // even one without jobs. This operation's own runs are kept only while

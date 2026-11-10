@@ -5,6 +5,7 @@ use crate::reconcile::ImagesInUse;
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::Phase;
+use piqueld_core::timeline::{PlanCoverage, StepKey};
 use piqueld_core::{
     EnvironmentId, EnvironmentKind, InstanceId, NormalizedApplication, ResolutionSet,
     compile_application,
@@ -209,15 +210,25 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
                 .filter(|service| !reusable.sources.contains_key(&service.name))
                 .map(|service| (service.name.clone(), service.source.clone()))
                 .collect::<Vec<_>>();
-            if let Some((store, id)) = &self.progress
-                && !pending.is_empty()
-            {
-                let names = pending
+            if let Some((store, id)) = &self.progress {
+                let steps = pending
                     .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                store.progress(id, Phase::Preparing, Some(&names)).await?;
+                    .map(|(name, source)| StepKey {
+                        phase: source.phase(),
+                        resource: Some(name.to_string()),
+                    })
+                    .collect();
+                store
+                    .record_plan(id, steps, PlanCoverage::Preparation)
+                    .await?;
+                if !pending.is_empty() {
+                    let names = pending
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    store.progress(id, Phase::Preparing, Some(&names)).await?;
+                }
             }
             let sources = stream::iter(
                 pending
@@ -330,11 +341,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         (piqueld_core::ServiceName, ResolvedSource),
         (piqueld_core::ServiceName, Phase, BoundaryError),
     > {
-        let phase = if matches!(source, Source::Git { .. }) {
-            Phase::BuildGit
-        } else {
-            Phase::ResolveImage
-        };
+        let phase = source.phase();
         let journal = if let Some((store, id)) = &self.progress {
             Some(
                 store

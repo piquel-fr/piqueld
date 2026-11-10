@@ -49,6 +49,7 @@ mod status;
 mod stopped;
 mod sync;
 mod telemetry;
+mod timeline;
 pub use sync::{BranchHead, SyncApplication};
 
 use piqueld_core::{
@@ -589,7 +590,7 @@ pub struct Store {
     /// Secret master key file, stored next to the database as `secrets.key`.
     secret_key_path: std::path::PathBuf,
     /// Process-wide writer queue serializing `BEGIN IMMEDIATE` transactions.
-    writers: std::sync::Arc<tokio::sync::Mutex<()>>,
+    writers: std::sync::Arc<Writers>,
     /// Database file path, used to report on-disk size.
     database_path: std::path::PathBuf,
     /// When this store was opened, used to report daemon uptime.
@@ -827,13 +828,7 @@ impl Store {
     /// transaction under concurrent reconciliation.
     async fn begin_immediate(
         &self,
-    ) -> Result<
-        (
-            tokio::sync::MutexGuard<'_, ()>,
-            Transaction<'static, Sqlite>,
-        ),
-        StoreError,
-    > {
+    ) -> Result<(Writer<'_>, Transaction<'static, Sqlite>), StoreError> {
         let writer = self.writers.lock().await;
         let tx = self
             .pool
@@ -841,6 +836,13 @@ impl Store {
             .await
             .map_err(StoreError::database)?;
         Ok((writer, tx))
+    }
+
+    /// Changes after each write to the database: a stream following it
+    /// waits on this, instead of polling, then reads what is new.
+    #[must_use]
+    pub fn written(&self) -> tokio::sync::watch::Receiver<()> {
+        self.writers.written.subscribe()
     }
 
     /// A pooled connection for reads that need no consistent snapshot.
@@ -862,6 +864,46 @@ impl Store {
     ) -> Result<SqliteQueryResult, sqlx::Error> {
         let _writer = self.writers.lock().await;
         query.execute(&self.pool).await
+    }
+}
+
+/// The process-wide writer queue: it serializes `BEGIN IMMEDIATE`
+/// transactions, and wakes [`Store::written`] receivers each time a writer
+/// leaves it.
+struct Writers {
+    queue: tokio::sync::Mutex<()>,
+    written: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for Writers {
+    fn default() -> Self {
+        Self {
+            queue: tokio::sync::Mutex::default(),
+            written: tokio::sync::watch::Sender::new(()),
+        }
+    }
+}
+
+impl Writers {
+    /// Waits for this writer's turn.
+    async fn lock(&self) -> Writer<'_> {
+        Writer {
+            _turn: self.queue.lock().await,
+            written: &self.written,
+        }
+    }
+}
+
+/// A writer's turn in the queue. Dropping it, once its transaction committed
+/// or rolled back, wakes readers following the database.
+pub struct Writer<'a> {
+    _turn: tokio::sync::MutexGuard<'a, ()>,
+    written: &'a tokio::sync::watch::Sender<()>,
+}
+
+impl Drop for Writer<'_> {
+    fn drop(&mut self) {
+        self.written.send_replace(());
     }
 }
 
