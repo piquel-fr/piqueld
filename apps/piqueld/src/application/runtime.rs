@@ -4,6 +4,7 @@ use super::{BoundaryError, RuntimeBoundary};
 use crate::reconcile::ImagesInUse;
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
+use piqueld_core::Phase;
 use piqueld_core::{
     EnvironmentId, EnvironmentKind, InstanceId, NormalizedApplication, ResolutionSet,
     compile_application,
@@ -216,9 +217,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
                     .map(|(name, _)| name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                store
-                    .progress(id, "preparing_sources", Some(&names))
-                    .await?;
+                store.progress(id, Phase::Preparing, Some(&names)).await?;
             }
             let sources = stream::iter(
                 pending
@@ -329,12 +328,12 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         source: Source,
     ) -> Result<
         (piqueld_core::ServiceName, ResolvedSource),
-        (piqueld_core::ServiceName, &'static str, BoundaryError),
+        (piqueld_core::ServiceName, Phase, BoundaryError),
     > {
         let phase = if matches!(source, Source::Git { .. }) {
-            "building_git"
+            Phase::BuildGit
         } else {
-            "resolving_image"
+            Phase::ResolveImage
         };
         let journal = if let Some((store, id)) = &self.progress {
             Some(

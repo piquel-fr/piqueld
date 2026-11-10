@@ -4,6 +4,7 @@ use super::{
     ApplicationState, EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError,
     decode_name, new_id, now_ms,
 };
+use piqueld_core::Phase;
 use piqueld_core::observability::{DeploymentFailure, DiagnosticCode};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -38,7 +39,7 @@ impl OperationRow {
             attempt: u64::try_from(self.attempt).map_err(StoreError::corrupt)?,
             consecutive_failures: u64::try_from(self.consecutive_failures)
                 .map_err(StoreError::corrupt)?,
-            phase: self.phase,
+            phase: self.phase.as_deref().map(decode_name).transpose()?,
             resource: self.resource,
             error_code: self.error_code,
             error_message: self.error_message,
@@ -363,9 +364,10 @@ impl Store {
     pub async fn progress(
         &self,
         id: &str,
-        phase: &str,
+        phase: Phase,
         resource: Option<&str>,
     ) -> Result<(), StoreError> {
+        let phase = phase.as_str();
         let changed = self.write(sqlx::query!("UPDATE operations SET phase=?1,resource=?2 WHERE id=?3 AND state='running' AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",phase,resource,id)).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             return Err(StoreError::IllegalTransition);

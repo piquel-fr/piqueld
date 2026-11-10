@@ -161,7 +161,7 @@ fn runtime_status_card(
                                         </span>
                                         {op
                                             .phase
-                                            .map(|phase| view! { <span class="muted">{phase}</span> })}
+                                            .map(|phase| view! { <span class="muted">{phase.as_str()}</span> })}
                                         <span class="muted">{when(op.updated_at_ms)}</span>
                                     </span>
                                 }

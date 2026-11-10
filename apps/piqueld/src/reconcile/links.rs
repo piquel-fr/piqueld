@@ -2,6 +2,7 @@
 //! environments they link are in.
 
 use super::{Controller, DockerApi, DockerError, OperationError, StoreError};
+use piqueld_core::Phase;
 use piqueld_core::{EnvironmentId, ObservedApplication, resource::APPLICATION_LABEL};
 
 impl<D: DockerApi> Controller<D> {
@@ -36,7 +37,7 @@ impl<D: DockerApi> Controller<D> {
         let instance = self.store.instance_id();
         let ownership = self.ownership_labels(id);
         for (service, network) in observed.revoked_links(instance, id, &granted) {
-            self.journaled_link_change(operation_id, "detach_network", service, || {
+            self.journaled_link_change(operation_id, Phase::DetachNetwork, service, || {
                 self.docker.detach_network(service, network, &ownership)
             })
             .await?;
@@ -58,7 +59,7 @@ impl<D: DockerApi> Controller<D> {
                 continue;
             }
             let ownership = self.ownership_labels(&importer);
-            self.journaled_link_change(operation_id, "remove_network", &network.name, || {
+            self.journaled_link_change(operation_id, Phase::RemoveNetwork, &network.name, || {
                 self.docker.remove_network(&network.name, &ownership)
             })
             .await?;
@@ -97,7 +98,7 @@ impl<D: DockerApi> Controller<D> {
     async fn journaled_link_change<F: Future<Output = Result<(), DockerError>>>(
         &self,
         operation_id: &str,
-        action: &str,
+        action: Phase,
         resource: &str,
         change: impl FnOnce() -> F,
     ) -> Result<(), OperationError> {

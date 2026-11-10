@@ -265,7 +265,7 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         result.actions = sqlx::query!(
-            "SELECT phase,COUNT(*) AS \"count!: i64\",AVG(duration_ms) AS \"mean?: f64\"
+            "SELECT phase AS \"phase!\",COUNT(*) AS \"count!: i64\",AVG(duration_ms) AS \"mean?: f64\"
             FROM events
             WHERE duration_ms IS NOT NULL AND phase IS NOT NULL AND (?1 IS NULL OR environment_id=?1) AND created_at_ms BETWEEN ?2 AND ?3 AND ((scope='application' AND (?4 IS NULL OR application_id IN (SELECT value FROM json_each(?4)))) OR (scope='daemon' AND ?5)) GROUP BY phase
             ORDER BY phase",
@@ -279,12 +279,14 @@ impl Store {
         .await
         .map_err(StoreError::database)?
         .into_iter()
-        .map(|r| ActionDuration {
-            phase: r.phase.unwrap_or_default(),
-            count: r.count,
-            mean_ms: r.mean.unwrap_or(0.0),
+        .map(|r| {
+            Ok(ActionDuration {
+                phase: super::decode_name(&r.phase)?,
+                count: r.count,
+                mean_ms: r.mean.unwrap_or(0.0),
+            })
         })
-        .collect();
+        .collect::<Result<_, StoreError>>()?;
         result.failures = sqlx::query!(
             "SELECT error_code,COUNT(DISTINCT COALESCE(diagnostic_id,CAST(id AS TEXT))) AS \"count!: i64\"
             FROM events

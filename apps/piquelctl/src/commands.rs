@@ -21,7 +21,7 @@ use crate::{
 use futures_util::StreamExt;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, ApplyOptions, Client, ClientError,
-    ListApplicationsOptions, Operation, OperationState, Page, observability::DiagnosticCode,
+    ListApplicationsOptions, Operation, OperationState, Page, Phase, observability::DiagnosticCode,
 };
 use serde_json::json;
 use std::{cell::Cell, collections::BTreeSet, path::Path, time::Duration};
@@ -828,7 +828,7 @@ impl OperationProgress {
     /// running, phase "pulling_images", resource "web"  →  running · Pulling images · web
     /// ```
     fn message(operation: &Operation) -> String {
-        let mut phase = operation.phase.as_deref().unwrap_or("").replace('_', " ");
+        let mut phase = operation.phase.map_or("", Phase::as_str).replace('_', " ");
         if let Some(first) = phase.get_mut(..1) {
             first.make_ascii_uppercase();
         }

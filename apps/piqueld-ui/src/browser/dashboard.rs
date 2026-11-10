@@ -897,7 +897,7 @@ fn RecentDeployments() -> impl IntoView {
                                                             <td>{operation_badge(op.state)}</td>
                                                             <td class="num">{format!("#{}", op.generation)}</td>
                                                             <td class="muted">
-                                                                {op.phase.clone().unwrap_or_else(|| "—".into())}
+                                                                {op.phase.map_or("—", piqueld_client::Phase::as_str)}
                                                             </td>
                                                             <td class="muted">{when(op.created_at_ms)}</td>
                                                         </tr>

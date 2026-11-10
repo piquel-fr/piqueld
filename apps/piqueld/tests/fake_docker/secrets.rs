@@ -87,12 +87,15 @@ async fn application_deletion_journals_secret_cleanup_failures() {
     let phases = |kind: &str| {
         events
             .iter()
-            .filter(|event| event.kind == kind && event.phase.as_deref() == Some("remove_secrets"))
+            .filter(|event| {
+                event.kind == kind
+                    && event.phase.map(piqueld_core::Phase::as_str) == Some("remove_secrets")
+            })
             .count()
     };
     assert_eq!(phases("action_requested"), 1, "{events:#?}");
     assert!(events.iter().any(|event| event.kind == "action_failed"
-        && event.phase.as_deref() == Some("remove_secrets")
+        && event.phase.map(piqueld_core::Phase::as_str) == Some("remove_secrets")
         && event.error_code.as_deref() == Some("docker_request_failed")));
     assert!(harness.store.get(&first.environment_id).await.is_ok());
 }
@@ -166,9 +169,10 @@ async fn missing_secret_key_fails_rollout_before_docker_mutation() {
     assert!(harness.docker.secrets.lock().await.is_empty());
     let events = harness.operation_events(&deployment.id).await;
     let service = |kind: &str| {
-        events
-            .iter()
-            .find(|event| event.kind == kind && event.phase.as_deref() == Some("ensure_service"))
+        events.iter().find(|event| {
+            event.kind == kind
+                && event.phase.map(piqueld_core::Phase::as_str) == Some("ensure_service")
+        })
     };
     let failed = service("action_failed").expect("service action failed");
     assert_eq!(

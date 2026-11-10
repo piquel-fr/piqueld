@@ -728,7 +728,7 @@ impl<D: DockerApi> Controller<D> {
             .store
             .begin_action(
                 Some(operation_id),
-                action.kind.name(),
+                action.kind.phase(),
                 Some(action.kind.resource_name()),
             )
             .await?;

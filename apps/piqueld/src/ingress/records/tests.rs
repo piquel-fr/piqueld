@@ -149,7 +149,11 @@ impl Harness {
         events
             .into_iter()
             .filter(|event| event.kind == "action_started")
-            .map(|event| event.phase.unwrap_or_default())
+            .map(|event| {
+                event
+                    .phase
+                    .map_or_else(String::new, |phase| phase.to_string())
+            })
             .collect()
     }
 

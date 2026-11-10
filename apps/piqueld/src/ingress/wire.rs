@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
+use piqueld_core::Phase;
 use piqueld_core::observability::DiagnosticCode;
 use piqueld_store::JournalAction;
 use serde_json::Value;
@@ -105,7 +106,7 @@ impl super::Ingress {
     /// `update`, attributed to the deployment the pass serves (see
     /// `requester`). Callers decide from reads first and open an action only
     /// when a change is needed, so unchanged passes record no history.
-    pub(super) async fn journal(&self, phase: &str, resource: &str) -> Result<Journaled<'_>> {
+    pub(super) async fn journal(&self, phase: Phase, resource: &str) -> Result<Journaled<'_>> {
         let requester = self.requester.lock().await.clone();
         self.begin(
             requester.as_deref(),
@@ -122,7 +123,7 @@ impl super::Ingress {
     pub(super) async fn journal_as(
         &self,
         code: DiagnosticCode,
-        phase: &str,
+        phase: Phase,
         resource: &str,
     ) -> Result<Journaled<'_>> {
         self.begin(None, code, phase, resource).await
@@ -133,7 +134,7 @@ impl super::Ingress {
         &self,
         requester: Option<&str>,
         code: DiagnosticCode,
-        phase: &str,
+        phase: Phase,
         resource: &str,
     ) -> Result<Journaled<'_>> {
         let action = self

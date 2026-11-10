@@ -22,6 +22,7 @@ use crate::application::{BoundaryError, RuntimeBoundary};
 pub use admission::Expensive;
 pub use exec::ExecSession;
 pub use history::ManifestExport;
+use piqueld_core::Phase;
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::Grants,
@@ -484,7 +485,7 @@ impl ApplicationService {
                 .begin_application_action(
                     actor.attribution(),
                     environment,
-                    "remove_secrets",
+                    Phase::RemoveSecrets,
                     Some(name),
                 )
                 .await?;

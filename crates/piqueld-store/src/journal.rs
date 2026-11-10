@@ -1,5 +1,6 @@
 //! Persist intent before a runtime request and record its observed outcome afterward.
 use super::{Attribution, EnvironmentId, Store, StoreError, new_id, now_ms};
+use piqueld_core::Phase;
 use piqueld_core::observability::{Diagnostic, DiagnosticCode, EventScope};
 use sqlx::{Sqlite, Transaction};
 
@@ -15,7 +16,7 @@ pub struct JournalAction {
     operation_id: Option<String>,
     environment_id: Option<String>,
     generation: Option<i64>,
-    phase: String,
+    phase: Phase,
     resource: Option<String>,
     attempt: Option<i64>,
     started_at_ms: i64,
@@ -29,13 +30,13 @@ pub struct JournalAction {
 }
 impl JournalAction {
     /// A daemon-scoped action outside any operation, starting now.
-    fn daemon(phase: &str, resource: Option<&str>) -> Self {
+    fn daemon(phase: Phase, resource: Option<&str>) -> Self {
         Self {
             id: new_id("action"),
             operation_id: None,
             environment_id: None,
             generation: None,
-            phase: phase.to_owned(),
+            phase,
             resource: resource.map(str::to_owned),
             attempt: None,
             started_at_ms: now_ms(),
@@ -56,7 +57,7 @@ impl Store {
     pub async fn begin_action(
         &self,
         operation: Option<&str>,
-        phase: &str,
+        phase: Phase,
         resource: Option<&str>,
     ) -> Result<JournalAction, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -84,7 +85,7 @@ impl Store {
     pub async fn begin_daemon_action(
         &self,
         requested_by: Option<&str>,
-        phase: &str,
+        phase: Phase,
         resource: Option<&str>,
     ) -> Result<JournalAction, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -103,7 +104,7 @@ impl Store {
         &self,
         actor: Attribution<'_>,
         application: &EnvironmentId,
-        phase: &str,
+        phase: Phase,
         resource: Option<&str>,
     ) -> Result<JournalAction, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -146,6 +147,7 @@ impl Store {
         tx: &mut Transaction<'_, Sqlite>,
         action: &JournalAction,
     ) -> Result<(), StoreError> {
+        let phase = action.phase.as_str();
         sqlx::query!(
             "INSERT INTO active_actions(id,operation_id,environment_id,generation,phase,resource,attempt,started_at_ms,
             actor_user_id,actor_credential_id,actor_operator_uid,actor_system)
@@ -154,7 +156,7 @@ impl Store {
             action.operation_id,
             action.environment_id,
             action.generation,
-            action.phase,
+            phase,
             action.resource,
             action.attempt,
             action.started_at_ms,
@@ -324,6 +326,7 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .map_err(StoreError::corrupt)?;
+        let phase = action.phase.as_str();
         sqlx::query!(
             "INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,
             error_code,phase,resource,created_at_ms,scope,action_id,retry,duration_ms,diagnostic_id,
@@ -336,7 +339,7 @@ impl Store {
             kind,
             message,
             code,
-            action.phase,
+            phase,
             action.resource,
             now,
             scope,

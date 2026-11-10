@@ -1900,7 +1900,7 @@ fn analytics_reads_one_environment_over_a_relative_window() {
             "incomplete": true, "deployments": 3, "succeeded": 2, "failed": 1,
             "failed_attempts": 2, "retry_attempts": 1, "action_retries": 0,
             "mean_duration_ms": 65_400.0,
-            "actions": [{"phase": "pull", "count": 4, "mean_ms": 12_340.0}],
+            "actions": [{"phase": "resolving_image", "count": 4, "mean_ms": 12_340.0}],
             "failures": [{"code": "image_pull_failed", "count": 1}]
         }))
     });
@@ -1923,7 +1923,7 @@ fn analytics_reads_one_environment_over_a_relative_window() {
         "Environment: notes / staging",
         "Deployments: 3 (2 succeeded, 1 failed by their latest attempt)",
         "Mean attempt duration: 1 min 5 s",
-        "PHASE  ACTIONS  MEAN DURATION\npull   4        12.3 s\n",
+        "PHASE            ACTIONS  MEAN DURATION\nresolving_image  4        12.3 s\n",
         "image_pull_failed  1",
     ] {
         assert!(stdout.contains(line), "{stdout}");

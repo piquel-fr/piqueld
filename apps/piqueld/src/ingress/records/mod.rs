@@ -40,6 +40,7 @@
 use super::{Ingress, Ticks, wire::Journaled};
 use anyhow::{Context, Result};
 use piqueld_config::dns::provider::{DnsProvider, Found, Record, RecordId, Zone};
+use piqueld_core::Phase;
 use piqueld_core::{
     api::DnsRecordState,
     manifest::{Hostname, RouteHostname, Visibility},
@@ -409,7 +410,7 @@ impl Ingress {
                     delete,
                     ..Changes::default()
                 };
-                self.change_records("ingress_dns_delete", &site, None, &changes)
+                self.change_records(Phase::IngressDnsDelete, &site, None, &changes)
                     .await?;
             }
             self.store.release_dns_records(hostname).await?;
@@ -439,14 +440,14 @@ impl Ingress {
         let changes = Changes::between(&current, desired);
         if !owned {
             let written = self
-                .change_records("ingress_dns_create", &site, Some(&ours), &changes)
+                .change_records(Phase::IngressDnsCreate, &site, Some(&ours), &changes)
                 .await?;
             if let Written::ClaimTaken(claim) = written {
                 self.withdrawing.lock().insert(hostname.clone());
                 return self.withdraw(&site, vec![claim]).await;
             }
         } else if !changes.is_empty() || republish {
-            self.change_records("ingress_dns_update", &site, None, &changes)
+            self.change_records(Phase::IngressDnsUpdate, &site, None, &changes)
                 .await?;
         }
         Ok(RouteDns::new(DnsRecordState::Managed, None))
@@ -461,7 +462,7 @@ impl Ingress {
             delete: claims,
             ..Changes::default()
         };
-        self.change_records("ingress_dns_delete", site, None, &changes)
+        self.change_records(Phase::IngressDnsDelete, site, None, &changes)
             .await?;
         self.withdrawing.lock().remove(site.hostname);
         Ok(RouteDns::new(
@@ -476,7 +477,7 @@ impl Ingress {
     /// until it publishes them.
     async fn change_records(
         &self,
-        phase: &str,
+        phase: Phase,
         site: &Site<'_>,
         claim: Option<&Record>,
         changes: &Changes,
@@ -496,7 +497,7 @@ impl Ingress {
         if stages {
             self.store.track_dns_records(site.hostname, false).await?;
         }
-        tracing::info!(hostname=%site.hostname, phase, "changed route DNS records");
+        tracing::info!(hostname=%site.hostname, phase=%phase, "changed route DNS records");
         Ok(written)
     }
 

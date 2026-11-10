@@ -194,7 +194,12 @@ async fn job_field_edit_replaces_jobs_in_order_and_validates_atomically() {
         .iter()
         .find(|event| event.kind == "application_edited")
         .unwrap();
-    assert_eq!(recorded.phase.as_deref(), Some("jobs"));
+    assert_eq!(
+        recorded.detail,
+        Some(piqueld_core::EventDetail::Edited {
+            field: piqueld_core::edit::EditedField::Jobs
+        })
+    );
 }
 
 #[tokio::test]
@@ -810,7 +815,12 @@ async fn typed_edits_record_safe_field_history() {
         .iter()
         .find(|e| e.kind == "application_edited")
         .unwrap();
-    assert_eq!(recorded.phase.as_deref(), Some("service"));
+    assert_eq!(
+        recorded.detail,
+        Some(piqueld_core::EventDetail::Edited {
+            field: piqueld_core::edit::EditedField::Service
+        })
+    );
     assert_eq!(recorded.resource.as_deref(), Some("web"));
     assert_eq!(recorded.generation, Some(2));
     assert!(

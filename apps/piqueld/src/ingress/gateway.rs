@@ -18,6 +18,7 @@ use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
 use hyper::Method;
 use piqueld_config::directories::PrivateFile;
+use piqueld_core::Phase;
 use piqueld_core::{
     DockerNetworkName,
     manifest::ValidatedRoute,
@@ -177,7 +178,7 @@ impl Ingress {
             }
         }
         if !existing.is_empty() {
-            let journal = self.journal("ingress_stop_gateway", &self.name).await?;
+            let journal = self.journal(Phase::IngressStopGateway, &self.name).await?;
             let mut result = Ok(());
             for name in &existing {
                 if let Err(error) = self.remove_container(&journal, name).await {
@@ -194,7 +195,7 @@ impl Ingress {
         if self.named_container(name).await?.is_none() {
             return Ok(());
         }
-        let journal = self.journal("ingress_remove_container", name).await?;
+        let journal = self.journal(Phase::IngressRemoveContainer, name).await?;
         let result = self.remove_container(&journal, name).await;
         journal.finish(result).await
     }
@@ -297,7 +298,9 @@ impl Ingress {
                 "gateway egress network configuration conflicts"
             );
         } else {
-            let journal = self.journal("ingress_create_network", &self.name).await?;
+            let journal = self
+                .journal(Phase::IngressCreateNetwork, &self.name)
+                .await?;
             let result = self
                 .docker
                 .send(
@@ -544,7 +547,7 @@ impl Ingress {
         {
             return self.replace_gateway(table, networks, &spec).await;
         }
-        let journal = self.journal("ingress_start_gateway", &self.name).await?;
+        let journal = self.journal(Phase::IngressStartGateway, &self.name).await?;
         let result = async {
             match &current {
                 None => self.create_container(&journal, &self.name, &spec).await?,
@@ -572,7 +575,7 @@ impl Ingress {
         &self,
         name: &str,
         spec: &Value,
-        phase: &str,
+        phase: Phase,
         prepare: impl Future<Output = Result<()>>,
     ) -> Result<()> {
         let current = self.named_container(name).await?;
@@ -614,7 +617,7 @@ impl Ingress {
     /// Pulls a pinned image in its own action, bounded to three minutes.
     async fn pull_image(&self, image: &str) -> Result<()> {
         use bollard::query_parameters::CreateImageOptionsBuilder;
-        let journal = self.journal("ingress_pull_image", image).await?;
+        let journal = self.journal(Phase::IngressPullImage, image).await?;
         let result = async {
             journal.request().await?;
             tokio::time::timeout(Duration::from_mins(3), async {
@@ -709,7 +712,9 @@ impl Ingress {
                 "deferring gateway replacement until retained route networks are repaired or routes are withdrawn");
             return Ok(());
         }
-        let journal = self.journal("ingress_replace_gateway", &self.name).await?;
+        let journal = self
+            .journal(Phase::IngressReplaceGateway, &self.name)
+            .await?;
         let result = self.cut_over(&journal, table, networks, spec).await;
         journal.finish(result).await?;
         if let Err(error) = self.remove_stale_container(&self.previous_name()).await {
@@ -855,7 +860,9 @@ impl Ingress {
         {
             return Ok(());
         }
-        let journal = self.journal("ingress_recover_gateway", &self.name).await?;
+        let journal = self
+            .journal(Phase::IngressRecoverGateway, &self.name)
+            .await?;
         let result = self.restore_gateway(&journal).await;
         journal.finish(result).await
     }
@@ -1145,7 +1152,9 @@ impl Ingress {
         {
             return Ok(());
         }
-        let journal = self.journal("ingress_configure_routes", &self.name).await?;
+        let journal = self
+            .journal(Phase::IngressConfigureRoutes, &self.name)
+            .await?;
         let result = async {
             for network in &exposing {
                 self.detach(&journal, network).await?;
@@ -1247,7 +1256,7 @@ mod tests {
         .await;
         let ingress = engine.ingress(true);
         let journal = ingress
-            .journal("ingress_start_gateway", "gateway")
+            .journal(piqueld_core::Phase::IngressStartGateway, "gateway")
             .await
             .unwrap();
         let result = ingress.start_container(&journal).await;

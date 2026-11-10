@@ -484,6 +484,7 @@ struct EventRow {
     duration_ms: Option<i64>,
     request_id: Option<String>,
     diagnostic_json: Option<String>,
+    detail_json: Option<String>,
     actor_user_id: Option<String>,
     actor_credential_id: Option<String>,
     actor_operator_uid: Option<i64>,
@@ -545,7 +546,7 @@ impl EventRow {
         let mut query = QueryBuilder::new(
             "SELECT id, application_id, environment_id, operation_id, generation, attempt, kind, message, error_code, \
              phase, resource, created_at_ms, scope, action_id, retry, retry_delay_ms, duration_ms, \
-             request_id, diagnostic_json, actor_user_id, actor_credential_id, actor_operator_uid, \
+             request_id, diagnostic_json, detail_json, actor_user_id, actor_credential_id, actor_operator_uid, \
              actor_system FROM events WHERE id",
         );
         query
@@ -640,7 +641,7 @@ impl EventRow {
             kind: self.kind,
             message: self.message,
             error_code: self.error_code,
-            phase: self.phase,
+            phase: self.phase.as_deref().map(decode_name).transpose()?,
             resource: self.resource,
             created_at_ms: self.created_at_ms,
             scope: decode_name(&self.scope)?,
@@ -669,6 +670,11 @@ impl EventRow {
             )?,
             diagnostic: self
                 .diagnostic_json
+                .map(|json| serde_json::from_str(&json))
+                .transpose()
+                .map_err(StoreError::corrupt)?,
+            detail: self
+                .detail_json
                 .map(|json| serde_json::from_str(&json))
                 .transpose()
                 .map_err(StoreError::corrupt)?,

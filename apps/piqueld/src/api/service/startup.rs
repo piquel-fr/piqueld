@@ -4,6 +4,7 @@ use super::ApplicationService;
 use crate::{operations::OperationError, reconcile::Controller};
 use anyhow::Context;
 use piqueld_config::DaemonConfig;
+use piqueld_core::Phase;
 use piqueld_core::manifest::Hostname;
 use piqueld_docker::{BollardDocker, DockerApi};
 use piqueld_store::{Store, StoreError};
@@ -168,7 +169,10 @@ impl ApplicationService {
         auto_initialize: bool,
         cancellation: &CancellationToken,
     ) -> Result<bool, StoreError> {
-        let action = self.store.begin_action(None, "ensure_swarm", None).await?;
+        let action = self
+            .store
+            .begin_action(None, Phase::EnsureSwarm, None)
+            .await?;
         let mut delay = Duration::from_secs(1);
         let mut attempt = 0_u32;
         let error = loop {

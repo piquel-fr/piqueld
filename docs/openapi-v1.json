@@ -84,8 +84,8 @@
             "type": "number"
           },
           "phase": {
-            "description": "Action phase.",
-            "type": "string"
+            "$ref": "#/components/schemas/Phase",
+            "description": "Action phase."
           }
         },
         "required": [
@@ -3234,6 +3234,24 @@
         "description": "A Docker volume name, distinct from its logical volume name.",
         "type": "string"
       },
+      "EditedField": {
+        "description": "The part of an application's configuration a typed edit changed, as\nits history records it.",
+        "enum": [
+          "name",
+          "repository",
+          "services",
+          "service",
+          "volumes",
+          "routes",
+          "jobs",
+          "exports",
+          "imports",
+          "secrets",
+          "variables",
+          "environments"
+        ],
+        "type": "string"
+      },
       "Envelope_AcceptedOperation": {
         "description": "Successful API response envelope.",
         "properties": {
@@ -4252,6 +4270,25 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "detail": {
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/EventDetail"
+                      }
+                    ],
+                    "description": "Structured facts specific to the event's kind."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
+              },
               "diagnostic": {
                 "oneOf": [
                   {
@@ -4329,9 +4366,23 @@
                 "type": "string"
               },
               "phase": {
-                "description": "Execution phase at the time of the event.",
-                "nullable": true,
-                "type": "string"
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Phase"
+                      }
+                    ],
+                    "description": "Execution phase at the time of the event."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "request_id": {
                 "description": "Correlated API request identity.",
@@ -4525,9 +4576,23 @@
                 "description": "Requested change."
               },
               "phase": {
-                "description": "Current execution phase, retained on failure.",
-                "nullable": true,
-                "type": "string"
+                "oneOf": [
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Phase"
+                      }
+                    ],
+                    "description": "Current execution phase, retained on failure."
+                  },
+                  {
+                    "enum": [
+                      null
+                    ],
+                    "nullable": true,
+                    "type": "string"
+                  }
+                ]
               },
               "resource": {
                 "description": "Logical or Docker resource currently being processed.",
@@ -5082,6 +5147,25 @@
                       "format": "int64",
                       "type": "integer"
                     },
+                    "detail": {
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/EventDetail"
+                            }
+                          ],
+                          "description": "Structured facts specific to the event's kind."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
+                    },
                     "diagnostic": {
                       "oneOf": [
                         {
@@ -5159,9 +5243,23 @@
                       "type": "string"
                     },
                     "phase": {
-                      "description": "Execution phase at the time of the event.",
-                      "nullable": true,
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/Phase"
+                            }
+                          ],
+                          "description": "Execution phase at the time of the event."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
                     },
                     "request_id": {
                       "description": "Correlated API request identity.",
@@ -5375,9 +5473,23 @@
                       "description": "Requested change."
                     },
                     "phase": {
-                      "description": "Current execution phase, retained on failure.",
-                      "nullable": true,
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/components/schemas/Phase"
+                            }
+                          ],
+                          "description": "Current execution phase, retained on failure."
+                        },
+                        {
+                          "enum": [
+                            null
+                          ],
+                          "nullable": true,
+                          "type": "string"
+                        }
+                      ]
                     },
                     "resource": {
                       "description": "Logical or Docker resource currently being processed.",
@@ -7141,6 +7253,25 @@
             "format": "int64",
             "type": "integer"
           },
+          "detail": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EventDetail"
+                  }
+                ],
+                "description": "Structured facts specific to the event's kind."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
           "diagnostic": {
             "oneOf": [
               {
@@ -7218,9 +7349,23 @@
             "type": "string"
           },
           "phase": {
-            "description": "Execution phase at the time of the event.",
-            "nullable": true,
-            "type": "string"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Phase"
+                  }
+                ],
+                "description": "Execution phase at the time of the event."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "request_id": {
             "description": "Correlated API request identity.",
@@ -7328,6 +7473,31 @@
             "required": [
               "actor",
               "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "EventDetail": {
+        "description": "Structured facts an event records beyond its common fields, tagged by\n`detail`.",
+        "oneOf": [
+          {
+            "description": "A typed configuration edit (`application_edited`).",
+            "properties": {
+              "detail": {
+                "enum": [
+                  "edited"
+                ],
+                "type": "string"
+              },
+              "field": {
+                "$ref": "#/components/schemas/EditedField",
+                "description": "The part of the configuration it changed."
+              }
+            },
+            "required": [
+              "field",
+              "detail"
             ],
             "type": "object"
           }
@@ -8987,9 +9157,23 @@
             "description": "Requested change."
           },
           "phase": {
-            "description": "Current execution phase, retained on failure.",
-            "nullable": true,
-            "type": "string"
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Phase"
+                  }
+                ],
+                "description": "Current execution phase, retained on failure."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
           },
           "resource": {
             "description": "Logical or Docker resource currently being processed.",
@@ -9158,6 +9342,51 @@
           "audit:read",
           "telemetry:grant",
           "notifications:manage"
+        ],
+        "type": "string"
+      },
+      "Phase": {
+        "description": "What a journaled runtime action does, recorded on its events and on the\noperation it belongs to. The stored names predate this type and stay as\nthey are, so history and analytics group old and new actions together.",
+        "enum": [
+          "preparing",
+          "fetching_manifest",
+          "building_git",
+          "resolving_image",
+          "planning",
+          "run_job",
+          "remove_jobs",
+          "ensure_network",
+          "ensure_volume",
+          "ensure_service",
+          "wait_for_service",
+          "wait_for_service_removal",
+          "remove_service",
+          "remove_network",
+          "retain_volume",
+          "detach_network",
+          "remove_volumes",
+          "remove_secrets",
+          "routing",
+          "observation",
+          "ensure_swarm",
+          "remove_image",
+          "ingress_create_network",
+          "ingress_start_gateway",
+          "ingress_stop_gateway",
+          "ingress_remove_container",
+          "ingress_pull_image",
+          "ingress_replace_gateway",
+          "ingress_start_tunnel",
+          "ingress_start_tailnet",
+          "ingress_recover_gateway",
+          "ingress_configure_routes",
+          "ingress_dns_create",
+          "ingress_dns_update",
+          "ingress_dns_delete",
+          "ingress_certificate_issue",
+          "ingress_certificate_renew",
+          "ingress_certificate_delete",
+          "ingress_certificate_challenge_delete"
         ],
         "type": "string"
       },

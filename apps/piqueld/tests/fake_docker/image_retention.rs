@@ -69,7 +69,8 @@ async fn cleanup_removes_only_this_installations_unretained_builds() {
     let removed = events
         .iter()
         .filter(|event| {
-            event.phase.as_deref() == Some("remove_image") && event.kind == "action_succeeded"
+            event.phase.map(piqueld_core::Phase::as_str) == Some("remove_image")
+                && event.kind == "action_succeeded"
         })
         .filter_map(|event| event.resource.as_deref())
         .collect::<Vec<_>>();

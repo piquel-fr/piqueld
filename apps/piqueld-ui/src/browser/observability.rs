@@ -352,7 +352,7 @@ fn headline(event: &Event) -> String {
         .clone()
         .filter(|message| !message.is_empty() && *message != kind)
         .or_else(|| event.resource.clone())
-        .or_else(|| event.phase.clone())
+        .or_else(|| event.phase.map(|phase| phase.to_string()))
         .unwrap_or(kind)
 }
 
@@ -396,7 +396,7 @@ fn EventCard(
     // Context worth a glance, without repeating the headline.
     let unless_title = |value: &Option<String>| value.clone().filter(|value| *value != title);
     let meta = [
-        unless_title(&event.phase),
+        unless_title(&event.phase.map(|phase| phase.to_string())),
         unless_title(&event.resource),
         event.attempt.map(|attempt| format!("attempt {attempt}")),
         event
@@ -410,7 +410,7 @@ fn EventCard(
         ("Scope", Some(event.scope.as_str().to_owned())),
         ("Message", event.message.clone()),
         ("Resource", event.resource.clone()),
-        ("Phase", event.phase.clone()),
+        ("Phase", event.phase.map(|phase| phase.to_string())),
         ("Attempt", event.attempt.map(|attempt| attempt.to_string())),
         ("Request", event.retry.map(|retry| retry.to_string())),
         ("Duration", event.duration_ms.map(|ms| format!("{ms} ms"))),
@@ -944,7 +944,7 @@ fn analytics(a: DeploymentAnalytics) -> AnyView {
                                     .map(|r| {
                                         view! {
                                             <tr>
-                                                <td>{r.phase}</td>
+                                                <td>{r.phase.as_str()}</td>
                                                 <td class="num">{r.count}</td>
                                                 <td class="num">
                                                     {Elapsed::from_millis_f64(r.mean_ms).to_string()}

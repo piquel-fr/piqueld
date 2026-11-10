@@ -2,6 +2,7 @@ use super::{
     ActionKind, CancellationToken, Controller, Convergence, DockerApi, DockerError, Duration,
     Operation, OperationError,
 };
+use piqueld_core::Phase;
 use piqueld_store::JournalAction;
 
 /// Decrypted values keyed by their immutable Docker secret names.
@@ -40,7 +41,7 @@ impl<D: DockerApi> Controller<D> {
         self.store
             .progress(
                 &operation.id,
-                action.kind.name(),
+                action.kind.phase(),
                 Some(action.kind.resource_name()),
             )
             .await?;
@@ -48,7 +49,7 @@ impl<D: DockerApi> Controller<D> {
             .store
             .begin_action(
                 Some(&operation.id),
-                action.kind.name(),
+                action.kind.phase(),
                 Some(action.kind.resource_name()),
             )
             .await?;
@@ -114,7 +115,7 @@ impl<D: DockerApi> Controller<D> {
     pub(super) async fn journaled<T>(
         &self,
         operation: &str,
-        phase: &str,
+        phase: Phase,
         resource: Option<&str>,
         request: impl Future<Output = Result<T, OperationError>>,
     ) -> Result<T, OperationError> {
@@ -394,7 +395,7 @@ impl<D: DockerApi> Controller<D> {
                 Some(action) => action,
                 None => journal.insert(
                     self.store
-                        .begin_action(Some(&operation.id), "observation", None)
+                        .begin_action(Some(&operation.id), Phase::Observation, None)
                         .await?,
                 ),
             };

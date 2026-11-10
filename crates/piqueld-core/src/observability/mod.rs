@@ -361,7 +361,7 @@ impl NotificationSubject {
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub struct ActionDuration {
     /// Action phase.
-    pub phase: String,
+    pub phase: crate::Phase,
     /// Completed actions measured.
     pub count: i64,
     /// Mean duration in milliseconds.

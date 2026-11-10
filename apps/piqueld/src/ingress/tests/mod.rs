@@ -9,6 +9,7 @@ use crate::{
     reconcile::Controller,
 };
 use hyper::Method;
+use piqueld_core::Phase;
 use piqueld_core::{
     EnvironmentId, EventActor, NormalizedApplication, OperationState,
     manifest::ApplicationTemplate,
@@ -337,7 +338,7 @@ impl Scenario {
         // Deployment journaled the gateway start; a converged gateway records nothing.
         let history = self.store.events(None, None, 100).await.unwrap().items;
         assert!(history.iter().any(|event| event.kind == "action_succeeded"
-            && event.phase.as_deref() == Some("ingress_start_gateway")));
+            && event.phase.map(piqueld_core::Phase::as_str) == Some("ingress_start_gateway")));
         let retained = history.len();
         self.gateway.synchronize().await.unwrap();
         assert_eq!(
@@ -480,7 +481,7 @@ impl Scenario {
                         .await
                         .unwrap()
                         .phase
-                        .as_deref()
+                        .map(piqueld_core::Phase::as_str)
                         != Some("routing")
                     {
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1147,7 +1148,7 @@ async fn journaled_requests_commit_intent_and_record_sanitized_failures() {
     let engine = Engine::failing().await;
     let ingress = engine.ingress(true);
     let journal = ingress
-        .journal("ingress_create_network", "edge")
+        .journal(Phase::IngressCreateNetwork, "edge")
         .await
         .unwrap();
     let result = ingress
@@ -1185,25 +1186,29 @@ async fn only_gateway_actions_credit_the_deployment_they_serve() {
     let app = application("blog", "blog.example.test", "blog");
     let (_, operation) = request_deployment(&engine.store, actor, app).await;
     *ingress.requester.lock().await = Some(operation);
-    let gateway = ingress.journal("ingress_configure_routes", "gateway");
+    let gateway = ingress.journal(Phase::IngressConfigureRoutes, "gateway");
     gateway.await.unwrap().finish(Ok(())).await.unwrap();
-    let records = ingress.journal_as(DiagnosticCode::DnsRecordsFailed, "dns", "blog");
+    let records = ingress.journal_as(
+        DiagnosticCode::DnsRecordsFailed,
+        Phase::IngressDnsCreate,
+        "blog",
+    );
     records.await.unwrap().finish(Ok(())).await.unwrap();
 
     let events = engine.history().await;
-    let actor = |phase: &str| {
+    let actor = |phase: Phase| {
         let started = events
             .iter()
-            .find(|event| event.kind == "action_started" && event.phase.as_deref() == Some(phase));
+            .find(|event| event.kind == "action_started" && event.phase == Some(phase));
         started.unwrap().actor.clone()
     };
     assert_eq!(
-        actor("ingress_configure_routes"),
+        actor(Phase::IngressConfigureRoutes),
         Some(EventActor::System {
             actor: piqueld_core::sync::SystemActor::SyncPoll
         })
     );
-    assert_eq!(actor("dns"), None);
+    assert_eq!(actor(Phase::IngressDnsCreate), None);
 }
 
 #[tokio::test]

@@ -330,8 +330,10 @@ async fn job_prerequisites_keep_the_link_network_of_a_new_import() {
             .operation_events(&operation.id)
             .await
             .iter()
-            .any(|event| event.phase.as_deref() == Some("remove_network")
-                && event.resource.as_deref() == Some(network.as_str())),
+            .any(
+                |event| event.phase.map(piqueld_core::Phase::as_str) == Some("remove_network")
+                    && event.resource.as_deref() == Some(network.as_str())
+            ),
         "repair removed the link network"
     );
     *harness.docker.conflicting_job.lock().await = None;
