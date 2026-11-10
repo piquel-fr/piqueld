@@ -131,6 +131,38 @@ fn dynamic_controls_are_escaped_and_log_whitespace_is_preserved() {
 }
 
 #[test]
+fn tables_align_columns_by_escaped_display_width() {
+    let output = Capture::default();
+    let mut writer = output.writer();
+    let mut human = HumanWriter::new(writer.as_mut());
+    let rows = [
+        ["web", "日本", "x"],
+        ["a\x1b", "b", ""],
+        ["db", "c", "long last"],
+    ];
+    human
+        .table(&rows, "No rows.", ["NAME", "VALUE", "LAST"], |row| {
+            row.map(str::to_owned)
+        })
+        .unwrap();
+    human
+        .table(&[] as &[[&str; 1]], "No rows.", ["NAME"], |row| {
+            row.map(str::to_owned)
+        })
+        .unwrap();
+    // `日本` is four columns wide, and the escaped `\u{1b}` widens `a`
+    // to seven; a row ending in an empty cell has no trailing spaces.
+    assert_eq!(
+        output.text(),
+        "NAME     VALUE  LAST\n\
+         web      日本   x\n\
+         a\\u{1b}  b\n\
+         db       c      long last\n\
+         No rows.\n"
+    );
+}
+
+#[test]
 fn json_keeps_original_log_values_without_human_escaping() {
     let stdout = Capture::default();
     let mut console =
@@ -566,10 +598,10 @@ fn route_list_shows_visibility_dns_records_and_unready_causes() {
     console.emit(&rows).unwrap();
     let text = stdout.text();
     for expected in [
-        "admin.example.com  -  staging  private  pending  web:3000  managed  A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1",
-        "  Waiting for the gateway configuration to be applied",
-        "example.com  web  staging  public  ready  web:3000  manual  A/AAAA -> this server's public addresses",
-        "www.example.com  -  staging  public  ready  web:3000  dns_conflict  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
+        "admin.example.com  -     staging      private     pending  web:3000     managed       A/AAAA -> 100.64.0.1, fd7a:115c:a1e0::1\n\
+         \x20 Waiting for the gateway configuration to be applied\n\
+         example.com        web   staging      public      ready    web:3000     manual        A/AAAA -> this server's public addresses\n",
+        "www.example.com    -     staging      public      ready    web:3000     dns_conflict  CNAME (proxied) -> 6ff42ae2-765d-4adf-8112-31c55c1551ef.cfargotunnel.com",
     ] {
         assert!(text.contains(expected), "{text}");
     }

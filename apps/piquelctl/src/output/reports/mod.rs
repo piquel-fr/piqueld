@@ -1,5 +1,5 @@
 //! Typed command results. Human-only context never leaks into JSON schemas.
-use super::HumanWriter;
+use super::{Escaped, HumanWriter};
 use crate::support::join_or;
 use piqueld_client::{
     ActionReason, ActionRisk, ApplicationView, DeploymentOrigin, EnvironmentChange,
@@ -9,6 +9,7 @@ use piqueld_client::{
     sync::{SyncState, short_commit},
 };
 use std::{collections::BTreeMap, io};
+use unicode_width::UnicodeWidthStr;
 
 // Implements `Report` with the block as `render_human`. The JSON is the value
 // itself, what it dereferences to, or one of its fields:
@@ -371,22 +372,79 @@ fn snapshot_origin(snapshot: &LocalSnapshot) -> String {
     }
 }
 
+/// One table row: its cells, and an optional note written on its own
+/// indented line beneath it. Callers without notes return the cells alone.
+pub(crate) struct Row<const N: usize> {
+    pub(crate) cells: [String; N],
+    pub(crate) note: Option<String>,
+}
+
+impl<const N: usize> From<[String; N]> for Row<N> {
+    fn from(cells: [String; N]) -> Self {
+        Self { cells, note: None }
+    }
+}
+
+impl<const N: usize> Row<N> {
+    /// The cells, each padded to its column's display width and two spaces
+    /// apart, without trailing whitespace.
+    ///
+    /// ```text
+    /// web     /etc/app.conf  0644  repository app.conf
+    /// worker  /run/key       0400  inline, 12 bytes
+    /// ```
+    fn aligned(&self, widths: &[usize; N]) -> String {
+        let mut line = String::new();
+        for (column, (cell, width)) in self.cells.iter().zip(widths).enumerate() {
+            if column > 0 {
+                line.push_str("  ");
+            }
+            line.push_str(cell);
+            line.extend(std::iter::repeat_n(' ', width - cell.width()));
+        }
+        line.truncate(line.trim_end().len());
+        line
+    }
+}
+
 impl HumanWriter<'_> {
-    /// Writes `empty` when there are no `rows`, else the `heading` line and
-    /// each row.
-    pub(crate) fn table<T>(
+    /// Writes `empty` when there are no `rows`, else the bold `headings` and
+    /// one line of cells per row, each column as wide as its widest cell.
+    /// Cells are escaped before they are measured, so escaped control
+    /// characters can't misalign the columns.
+    pub(crate) fn table<T, R: Into<Row<N>>, const N: usize>(
         &mut self,
         rows: &[T],
         empty: &str,
-        heading: &str,
-        mut row: impl FnMut(&mut Self, &T) -> io::Result<()>,
+        headings: [&str; N],
+        row: impl Fn(&T) -> R,
     ) -> io::Result<()> {
         if rows.is_empty() {
             return self.line(empty);
         }
-        self.heading(heading)?;
-        for item in rows {
-            row(self, item)?;
+        let headings = Row::from(headings.map(|heading| Escaped(heading).to_string()));
+        let rows = rows
+            .iter()
+            .map(|item| {
+                let row = row(item).into();
+                Row {
+                    cells: row.cells.map(|cell| Escaped(cell).to_string()),
+                    note: row.note,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut widths = [0; N];
+        for row in std::iter::once(&headings).chain(&rows) {
+            for (width, cell) in widths.iter_mut().zip(&row.cells) {
+                *width = (*width).max(cell.width());
+            }
+        }
+        writeln!(self.writer, "\x1b[1m{}\x1b[0m", headings.aligned(&widths))?;
+        for row in &rows {
+            writeln!(self.writer, "{}", row.aligned(&widths))?;
+            if let Some(note) = &row.note {
+                self.line(format_args!("  {note}"))?;
+            }
         }
         Ok(())
     }

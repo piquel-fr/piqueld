@@ -32,6 +32,8 @@ serde_json.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 uuid.workspace = true
+# Display widths of human table cells.
+unicode-width.workspace = true
 
 [lints]
 workspace = true

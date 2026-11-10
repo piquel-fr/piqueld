@@ -133,8 +133,8 @@ In the dashboard, the application's **Routes** tab lists the route in
 
 ```console
 $ piquelctl app route list notes
-HOSTNAME  NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS
-admin.example.com  -  production  private  ready  admin:3000  manual  A/AAAA -> 100.101.102.103, fd7a:115c:a1e0::5a01:4c3d
+HOSTNAME           NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS     RECORDS
+admin.example.com  -     production   private     ready  admin:3000   manual  A/AAAA -> 100.101.102.103, fd7a:115c:a1e0::5a01:4c3d
 ```
 
 `ready` means the hostname resolves to exactly the node's addresses, and that

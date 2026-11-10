@@ -378,13 +378,13 @@ report!(ProfilesReport<'_>, self, out, {
     out.table(
         &self.profiles,
         "No profiles configured.",
-        "NAME  ENDPOINT",
-        |out, profile| {
+        ["NAME", "ENDPOINT"],
+        |profile| {
             let marker = if profile.default { "  (default)" } else { "" };
-            out.line(format_args!(
-                "{}  {}{marker}",
-                profile.name, profile.endpoint
-            ))
+            [
+                profile.name.to_string(),
+                format!("{}{marker}", profile.endpoint),
+            ]
         },
     )
 });

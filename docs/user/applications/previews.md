@@ -181,9 +181,9 @@ state. With `piquelctl`:
 
 ```console
 $ piquelctl preview list blog
-BRANCH  SLOT  SLUG  STATE  BRANCH STATE  SYNC  SYNCED  LAST OPERATION  ID
-feat/login  -  blog-feat-login-09b526  ready  local  following  3c1922b70fbd  succeeded operation-01a16d97ef6f7d428a26bb376408270c  preview-01a16d974c7f7300b014f01379224355
-feat/login  agent-2  blog-feat-login-agent-2-a89589  ready  exists  following  3c1922b70fbd  succeeded operation-01a16d98b0ac7d409995feeac2fbd5ee  preview-01a16d98b0aa74f38af94b59963c8fb6
+BRANCH      SLOT     SLUG                            STATE  BRANCH STATE  SYNC       SYNCED        LAST OPERATION                                        ID
+feat/login  -        blog-feat-login-09b526          ready  local         following  3c1922b70fbd  succeeded operation-01a16d97ef6f7d428a26bb376408270c  preview-01a16d974c7f7300b014f01379224355
+feat/login  agent-2  blog-feat-login-agent-2-a89589  ready  exists        following  3c1922b70fbd  succeeded operation-01a16d98b0ac7d409995feeac2fbd5ee  preview-01a16d98b0aa74f38af94b59963c8fb6
 ```
 
 For a preview of a branch, the branch state compares the branch in the
