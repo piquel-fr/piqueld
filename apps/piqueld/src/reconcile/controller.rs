@@ -24,7 +24,13 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), StoreError> {
         let started = std::time::Instant::now();
         tracing::info!("operation started");
-        let result = self.run_operation_inner(operation, cancellation).await;
+        let result = {
+            // Once superseded, an operation is no longer a retention root,
+            // but its jobs and services may still start on its images, so
+            // cleanup waits until it stops.
+            let _in_use = self.images_in_use().await;
+            self.run_operation_inner(operation, cancellation).await
+        };
         // Finished deployments change the retention roots.
         self.images.request_cleanup();
         {
@@ -541,9 +547,6 @@ impl<D: DockerApi> Controller<D> {
             return Err(StoreError::Corrupt.into());
         }
         let tracking = application.tracking()?;
-        // Cleanup can't remove the images this preparation reuses, pulls, or
-        // builds until its target is saved and they are retention roots.
-        let _in_use = self.images_in_use().await;
         let runtime = crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
             &self.store,

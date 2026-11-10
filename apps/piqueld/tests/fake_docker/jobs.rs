@@ -759,6 +759,24 @@ async fn superseded_job_run_is_stopped() {
     assert_eq!(harness.started_jobs().await, ["migrate"]);
 }
 
+/// Image cleanup waits while an operation runs: once superseded, it is no
+/// retention root, but its job may still be starting on its image.
+#[tokio::test]
+async fn image_cleanup_waits_for_a_running_operation() {
+    let harness = ControllerHarness::new().await;
+    harness.docker.hold_jobs.store(true, Ordering::SeqCst);
+    harness.apply(migration(), None).await;
+    let cancellation = CancellationToken::new();
+    let (scanned, ()) = tokio::join!(harness.controller.scan(&cancellation), async {
+        harness.wait_for_job_starts(1).await;
+        assert!(!harness.controller.clean_images().await.unwrap());
+        // Superseded, the operation stops its job and finishes.
+        harness.apply(manifest(), None).await;
+    });
+    scanned.unwrap();
+    assert!(harness.controller.clean_images().await.unwrap());
+}
+
 #[tokio::test]
 async fn job_timeout_keeps_output_and_stops_the_run() {
     let harness = ControllerHarness::new().await;

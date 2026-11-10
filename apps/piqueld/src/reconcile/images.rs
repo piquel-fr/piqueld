@@ -10,14 +10,14 @@ use tokio::sync::{Notify, OwnedRwLockReadGuard, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
 /// Cleanup's schedule and state, and the lock that keeps it from removing an
-/// image a preparation is about to record.
+/// image an operation or promotion still uses.
 pub(super) struct ImageRetention {
-    /// Held shared by each preparation and promotion, from before it
-    /// resolves, builds, or checks images until its target is saved, and
-    /// exclusively by cleanup while it reads the retention roots and removes
-    /// images. Cleanup only tries to take it, so it never delays a
-    /// deployment for long. Shared with the runtime boundary, which accepts
-    /// promotions.
+    /// Held shared by each running operation, from start to finish, and by
+    /// each promotion and restore, from before it checks images until its
+    /// target is saved; exclusively by cleanup while it reads the retention
+    /// roots and removes images. Cleanup only tries to take it, so it runs
+    /// between operations and delays one by at most a pass. Shared with
+    /// the runtime boundary, which accepts promotions.
     in_use: Arc<RwLock<()>>,
     /// Successful deployments per environment whose images are kept.
     keep_deployments: u32,
@@ -51,9 +51,9 @@ impl ImageRetention {
     }
 }
 
-/// Proof that cleanup isn't running and won't start: hold it from before
-/// choosing the images a deployment uses until its target is saved, after
-/// which its images are retention roots.
+/// Proof that cleanup isn't running and won't start. Operations hold it until
+/// they stop; promotions and restores from before choosing their images until
+/// their target is saved, after which those images are retention roots.
 pub struct ImagesInUse {
     _guard: OwnedRwLockReadGuard<()>,
 }
@@ -111,7 +111,7 @@ impl<D: DockerApi> Controller<D> {
         ImagesInUse::hold(Arc::clone(&self.images.in_use)).await
     }
 
-    /// The lock preparations and promotions hold against cleanup, for the
+    /// The lock operations and promotions hold against cleanup, for the
     /// runtime boundary.
     pub(super) fn images_lock(&self) -> Arc<RwLock<()>> {
         Arc::clone(&self.images.in_use)
@@ -126,8 +126,8 @@ impl<D: DockerApi> Controller<D> {
     /// Removes each image this installation built that no retention root
     /// keeps, by ID or repository digest, and no container uses, one by one,
     /// by ID, then health probe configs no service mounts. Returns `false`
-    /// without doing anything while a preparation may be recording images;
-    /// the next request or period cleans up instead.
+    /// without doing anything while an operation runs or a promotion may be
+    /// recording images; the next request or period cleans up instead.
     ///
     /// # Errors
     /// Returns storage errors, or Docker errors listing images or pruning
