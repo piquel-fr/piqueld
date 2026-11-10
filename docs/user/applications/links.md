@@ -51,8 +51,8 @@ Then export and import the service, and deploy each application:
 ```console
 piquelctl app export set auth api --applications notes
 piquelctl app import add notes auth api
-piquelctl --timeout 5m app deploy auth
-piquelctl --timeout 5m app deploy notes
+piquelctl app deploy auth
+piquelctl app deploy notes
 ```
 
 `--applications` takes a comma-separated list.
@@ -91,7 +91,7 @@ piquelctl --timeout 5m app deploy notes
 2. Deploy it:
 
    ```console
-   piquelctl --timeout 5m app apply --file auth.toml --deploy
+   piquelctl app apply --file auth.toml --deploy
    ```
 
 3. In `notes`, import `api`. Add at the end of `notes.toml`:
@@ -105,7 +105,7 @@ piquelctl --timeout 5m app deploy notes
 4. Deploy it:
 
    ```console
-   piquelctl --timeout 5m app apply --file notes.toml --deploy
+   piquelctl app apply --file notes.toml --deploy
    ```
 
 ### Reach the service

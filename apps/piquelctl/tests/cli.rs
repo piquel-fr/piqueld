@@ -1451,19 +1451,122 @@ fn logout_without_a_credential_sends_nothing() {
 }
 
 #[test]
-fn timeout_and_ctrl_c_end_only_the_local_wait() {
-    let timeout_server = start_server(false, 1, move |request| {
-        assert_eq!(request.path, "/api/v1/operations/operation-01");
-        Reply::json(operation("requested"))
+fn waits_ride_out_an_unavailable_daemon_and_retried_failures() {
+    let mut polls = 0;
+    let server = start_server(false, 5, move |request| match request.path.as_str() {
+        "/api/v1/operations/operation-01" => {
+            polls += 1;
+            match polls {
+                1 => Reply::json(operation("running")),
+                2 => Reply::status(
+                    "503 Service Unavailable",
+                    &json!({"code": "unavailable", "message": "restarting"}),
+                ),
+                3 => {
+                    let mut failed = operation("failed");
+                    failed["error_code"] = json!("swarm_manager_unavailable");
+                    Reply::json(failed)
+                }
+                _ => Reply::json(operation("succeeded")),
+            }
+        }
+        // Still the latest operation, so the daemon retries its failure.
+        "/api/v1/environments/app-notes-01/detail" => {
+            Reply::json(detail("operation-01", true, "ready"))
+        }
+        path => panic!("unexpected path {path}"),
     });
-    let output = run_with_timeout(&timeout_server, &["operation", "operation-01"], "50ms");
+    // `--timeout` bounds each request, not the wait.
+    let output = run_with_timeout(&server, &["operation", "operation-01"], "100ms");
+    let value = assert_json_success(&output);
+    assert_eq!(value["state"], "succeeded");
+    let _ = server.finish();
+}
+
+#[test]
+fn a_retryable_failure_is_waited_on_only_while_it_is_the_latest_operation() {
+    for (latest, exit, code) in [
+        // The daemon keeps retrying: the wait times out, naming the failure.
+        ("operation-01", 4, "timeout"),
+        // A newer operation replaced it, so nothing retries it.
+        ("operation-02", 5, "operation_failed"),
+    ] {
+        let server = start_server(false, usize::MAX, move |request| {
+            match request.path.as_str() {
+                "/api/v1/operations/operation-01" => {
+                    let mut failed = operation("failed");
+                    failed["error_code"] = json!("swarm_manager_unavailable");
+                    Reply::json(failed)
+                }
+                "/api/v1/environments/app-notes-01/detail" => {
+                    Reply::json(detail(latest, true, "ready"))
+                }
+                path => panic!("unexpected path {path}"),
+            }
+        });
+        let output = run(
+            &server,
+            &["--wait-timeout", "1s", "operation", "operation-01"],
+        );
+        server.stop();
+        assert_eq!(output.status.code(), Some(exit), "{output:?}");
+        let error = support::json_error(&output);
+        assert_eq!(error["code"], code);
+        if exit == 4 {
+            assert_eq!(
+                error["details"]["last_error_code"],
+                "swarm_manager_unavailable"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_wait_that_never_reached_the_daemon_fails_at_once() {
+    let started = std::time::Instant::now();
+    let output = support::command()
+        .args(["--json", "--socket", "/nonexistent/piqueld.sock"])
+        .args(["operation", "operation-01"])
+        .output()
+        .expect("piquelctl process");
+    assert!(started.elapsed() < Duration::from_secs(10), "{output:?}");
     assert_eq!(output.status.code(), Some(4));
     let error = support::json_error(&output);
-    assert_eq!(error["code"], "timeout");
-    assert_eq!(error["message"], "command timed out after 50ms");
-    assert_eq!(error["details"]["timeout"], "50ms");
-    assert_eq!(error["details"]["timeout_source"], "flag --timeout");
-    let _ = timeout_server.finish();
+    assert_eq!(error["code"], "connection_failed");
+    assert_eq!(error["details"]["endpoint_source"], "flag --socket");
+}
+
+#[test]
+fn timeout_and_ctrl_c_end_only_the_local_wait() {
+    for (flag, source) in [
+        (true, "flag --wait-timeout"),
+        (false, "environment variable PIQUELD_WAIT_TIMEOUT"),
+    ] {
+        let timeout_server = start_server(false, 1, move |request| {
+            assert_eq!(request.path, "/api/v1/operations/operation-01");
+            Reply::json(operation("requested"))
+        });
+        let mut command = timeout_server.command();
+        if flag {
+            command.args(["--wait-timeout", "50ms"]);
+        } else {
+            command.env("PIQUELD_WAIT_TIMEOUT", "50ms");
+        }
+        let output = command
+            .args(["--json", "operation", "operation-01"])
+            .output()
+            .expect("piquelctl process");
+        assert_eq!(output.status.code(), Some(4));
+        let error = support::json_error(&output);
+        assert_eq!(error["code"], "timeout");
+        assert_eq!(
+            error["message"],
+            "stopped waiting after 50ms (--wait-timeout); the operation goes on"
+        );
+        assert_eq!(error["details"]["timeout"], "50ms");
+        assert_eq!(error["details"]["timeout_source"], source);
+        let _ = timeout_server.finish();
+    }
 
     let interrupt_server = start_server(false, usize::MAX, move |request| {
         assert_eq!(request.path, "/api/v1/operations/operation-01");
@@ -3636,16 +3739,23 @@ fn wait_never_follows_a_newer_deployment_and_fails_or_times_out_with_its_code() 
         (vec!["failed"], pending(), "10s", 5, "operation_failed"),
         (vec!["succeeded"], retried, "10s", 5, "operation_failed"),
         (vec!["succeeded"], no_urls, "10s", 1, "failed"),
-        // Ready only once routes are: the timeout ends the local wait.
+        // Ready only once routes are: `--wait-timeout` ends the local wait.
         (vec!["running"], pending(), "500ms", 4, "timeout"),
     ];
     for (states, detail, timeout, code, error_code) in cases {
         let newer = detail["latest_operation"]["id"] == "operation-02";
         let server = wait_server(states, vec![detail]);
-        let output = run_with_timeout(
+        let output = run(
             &server,
-            &["env", "wait", "app-notes-01", "--ready", "routes"],
-            timeout,
+            &[
+                "--wait-timeout",
+                timeout,
+                "env",
+                "wait",
+                "app-notes-01",
+                "--ready",
+                "routes",
+            ],
         );
         server.stop();
         assert_eq!(output.status.code(), Some(code), "{error_code}");
@@ -3668,8 +3778,12 @@ fn wait_needs_the_runtime_observed() {
     }]);
     for ready in [&[][..], &["--ready", "routes"]] {
         let server = wait_server(vec!["succeeded"], vec![unobserved.clone()]);
-        let arguments = [&["env", "wait", "app-notes-01"][..], ready].concat();
-        let output = run_with_timeout(&server, &arguments, "500ms");
+        let arguments = [
+            &["--wait-timeout", "500ms", "env", "wait", "app-notes-01"][..],
+            ready,
+        ]
+        .concat();
+        let output = run(&server, &arguments);
         server.stop();
         assert_eq!(output.status.code(), Some(4), "{ready:?}: {output:?}");
         assert_eq!(support::json_error(&output)["code"], "timeout");

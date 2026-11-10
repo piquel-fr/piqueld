@@ -97,7 +97,7 @@ manifest. To connect an application you already run, skip creating it.
 ```console
 piquelctl app create blog
 piquelctl app repository connect blog https://github.com/example/blog.git infra/piqueld.toml --branch main
-piquelctl --timeout 10m app deploy blog
+piquelctl app deploy blog
 ```
 
 Use your repository's URL instead of `https://github.com/example/blog.git`.

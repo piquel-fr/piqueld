@@ -84,7 +84,8 @@ pub(crate) enum CliCode {
     ConnectionFailed,
     /// One request exceeded `--timeout`.
     RequestTimeout,
-    /// The whole command exceeded `--timeout`; server-side work goes on.
+    /// The whole command exceeded `--timeout`, or a wait `--wait-timeout`;
+    /// server-side work goes on.
     Timeout,
     /// The answer is not a valid piqueld API response.
     InvalidResponse,
@@ -289,6 +290,23 @@ impl CliError {
     /// Marks the error as a whole-command timeout.
     pub(crate) fn command_timeout(self) -> Self {
         self.diagnostic(Diagnostic::CommandTimeout)
+    }
+
+    /// Whether the daemon was unreachable or busy, or a request timed out:
+    /// failures that trying again later may fix.
+    pub(crate) const fn is_unavailable(&self) -> bool {
+        matches!(self.kind, ErrorKind::Unavailable)
+    }
+
+    /// The stable code: the daemon's, or the CLI's own, as `--json` reports it.
+    pub(crate) fn code_name(&self) -> String {
+        match &self.code {
+            Code::Api(code) => code.clone(),
+            Code::Cli(code) => serde_json::to_value(code)
+                .ok()
+                .and_then(|code| code.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+        }
     }
 
     /// Whether one request exceeded `--timeout`.

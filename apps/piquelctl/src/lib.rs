@@ -22,9 +22,10 @@ mod support;
 
 use clap::{CommandFactory, FromArgMatches};
 use cli::Cli;
-use error::{CliError, ErrorKind, ErrorReport};
+use error::{CliCode, CliError, ErrorKind, ErrorReport};
 use output::{Console, reports::ProfilesReport};
-use std::{process::ExitCode, time::Duration};
+use std::{num::NonZeroU64, process::ExitCode, time::Duration};
+use support::Waiting;
 use tokio::time::Instant;
 
 /// Parses arguments, then dispatches in three stages:
@@ -149,10 +150,12 @@ fn usage_error(error: &clap::Error) -> ExitCode {
 }
 
 /// Bounds `command` by `--timeout` while excluding interactive prompts and
-/// sessions: operator time must not consume the network-phase budget. Ends
-/// it on Ctrl-C, SIGTERM or SIGHUP; dropping it restores a raw terminal and
-/// closes its connections. The command future stays polled even while a
-/// prompt is open so its completion and signal handling keep making progress.
+/// sessions: operator time must not consume the network-phase budget. Waits
+/// for the daemon are excluded too, and each is bounded by `--wait-timeout`
+/// instead. Ends it on Ctrl-C, SIGTERM or SIGHUP; dropping it restores a raw
+/// terminal and closes its connections. The command future stays polled even
+/// while a prompt is open so its completion and signal handling keep making
+/// progress.
 async fn run_with_timeout<T>(
     cli: &Cli,
     command: impl Future<Output = Result<T, CliError>>,
@@ -162,18 +165,34 @@ async fn run_with_timeout<T>(
     tokio::pin!(command, interrupt);
     let mut deadline = checked_deadline(Instant::now(), cli.timeout)
         .map_err(|error| error.configuration(cli.connection_sources.timeout.to_string()))?;
-    // Set while an interactive prompt is open; think time is excluded by
-    // shifting the deadline once the prompt closes again.
-    let mut interaction_started: Option<Instant> = None;
+    // Checked now, not once a mutation was accepted and a wait starts.
+    checked_deadline(Instant::now(), cli.wait_timeout)
+        .map_err(|error| error.configuration(cli.connection_sources.wait_timeout.to_string()))?;
+    // Set while an interactive prompt is open or the command waits; that
+    // time is excluded by shifting the deadline once it ends.
+    let mut suspended: Option<Instant> = None;
+    // The current wait's number and its own deadline.
+    let mut wait: Option<(NonZeroU64, Instant)> = None;
     loop {
-        match (support::interaction_active(), interaction_started) {
-            (true, None) => interaction_started = Some(Instant::now()),
+        let waiting = Waiting::current();
+        match (
+            support::interaction_active() || waiting.is_some(),
+            suspended,
+        ) {
+            (true, None) => suspended = Some(Instant::now()),
             (false, Some(started)) => {
                 deadline = checked_deadline(deadline, started.elapsed())?;
-                interaction_started = None;
+                suspended = None;
             }
             _ => {}
         }
+        wait = match (waiting, wait) {
+            (Some(current), Some((number, until))) if current == number => Some((number, until)),
+            (Some(current), _) => {
+                Some((current, checked_deadline(Instant::now(), cli.wait_timeout)?))
+            }
+            (None, _) => None,
+        };
         tokio::select! {
             // Requests share the `--timeout` budget, so one can time out at the
             // command's own deadline, and either branch can then win. Once the
@@ -182,7 +201,7 @@ async fn run_with_timeout<T>(
                 return match result {
                     Err(error)
                         if error.is_request_timeout()
-                            && interaction_started.is_none()
+                            && suspended.is_none()
                             && Instant::now() >= deadline =>
                     {
                         Err(timeout_error(cli.timeout))
@@ -191,17 +210,22 @@ async fn run_with_timeout<T>(
                 };
             }
             error = &mut interrupt => return Err(error),
-            // An interaction started or finished; re-evaluate from the top.
+            // An interaction or wait started or finished; re-evaluate from the top.
             () = support::interaction_changed() => {}
-            // The deadline is suspended while an interactive prompt is open.
-            () = tokio::time::sleep_until(deadline),
-                if !support::interaction_active() =>
-            {
+            // The deadline is suspended while a prompt is open or the command waits.
+            () = tokio::time::sleep_until(deadline), if suspended.is_none() => {
                 // The guard above is evaluated when the branch is registered.
-                // A prompt can become active afterwards, so recheck before
+                // A prompt or wait can start afterwards, so recheck before
                 // treating the elapsed deadline as a command timeout.
-                if !support::interaction_active() {
+                if !support::interaction_active() && Waiting::current().is_none() {
                     return Err(timeout_error(cli.timeout));
+                }
+            }
+            () = tokio::time::sleep_until(wait.map_or(deadline, |(_, until)| until)),
+                if wait.is_some() =>
+            {
+                if Waiting::current() == wait.map(|(number, _)| number) {
+                    return Err(wait_timeout_error(cli));
                 }
             }
         }
@@ -214,6 +238,31 @@ fn checked_deadline(start: Instant, duration: Duration) -> Result<Instant, CliEr
     start
         .checked_add(duration)
         .ok_or_else(|| CliError::new(ErrorKind::Input, "timeout is too large"))
+}
+
+/// A wait that exceeded `--wait-timeout`. The daemon goes on with the
+/// operation, so it is reported like a command timeout, with the timeout,
+/// its source, and the last failure the wait went on through, such as one
+/// the daemon kept retrying.
+fn wait_timeout_error(cli: &Cli) -> CliError {
+    let timeout = support::format_duration(cli.wait_timeout);
+    let last = Waiting::last_failure();
+    let mut details = serde_json::json!({
+        "timeout": timeout,
+        "timeout_source": cli.connection_sources.wait_timeout.to_string(),
+    });
+    if let Some(code) = &last {
+        details["last_error_code"] = code.as_str().into();
+    }
+    CliError::new(
+        ErrorKind::Unavailable,
+        format!(
+            "stopped waiting after {timeout} (--wait-timeout); the operation goes on{}",
+            last.map_or_else(String::new, |code| format!(", and last failed with {code}"))
+        ),
+    )
+    .code(CliCode::Timeout)
+    .with_details(details)
 }
 
 /// Whole-command timeout error, tagged so the report shows timeout sources and hints.

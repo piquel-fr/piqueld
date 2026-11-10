@@ -63,7 +63,7 @@ one to try a change before it reaches staging, then delete it.
    With `piquelctl`:
 
    ```console
-   $ piquelctl --timeout 10m preview create blog --branch feat/login
+   $ piquelctl preview create blog --branch feat/login
    Preview blog-feat-login-09b526 of branch feat/login (preview-01a16d974c7f7300b014f01379224355) created
    Operation: operation-01a16d974c8073b1b8589cf340a6a8fd succeeded
    URL: https://blog-feat-login-09b526.preview.blog.example.com (web) ready
@@ -86,7 +86,7 @@ without redeploying it. To deploy the branch's latest commit, select
 **Redeploy branch head**, at the top of the preview's page, or run:
 
 ```console
-piquelctl --timeout 10m preview deploy blog feat/login
+piquelctl preview deploy blog feat/login
 ```
 
 While the application [deploys on push](deploy-on-push.md#deploy-every-push),
@@ -99,7 +99,7 @@ holds, without committing or pushing it:
 
 ```console
 $ cd ~/src/blog
-$ piquelctl --timeout 10m preview deploy blog --local
+$ piquelctl preview deploy blog --local
 snapshot: succeeded · 535 bytes against 3c1922b70fbd: 0 unpushed commits and the snapshot [0s]
 Info: sending uncommitted files: draft.html, index.html
 upload: succeeded · uploaded [0s]
@@ -137,7 +137,7 @@ person or agent. In the dashboard, fill in **Slot (optional)** in **New
 preview**. With `piquelctl`, pass `--slot`:
 
 ```console
-$ piquelctl --timeout 10m preview create blog --branch feat/login --slot agent-2
+$ piquelctl preview create blog --branch feat/login --slot agent-2
 Preview blog-feat-login-agent-2-a89589 of branch feat/login (slot agent-2) (preview-01a16d98b0aa74f38af94b59963c8fb6) created
 Operation: operation-01a16d98b0ac7d409995feeac2fbd5ee succeeded
 URL: https://blog-feat-login-agent-2-a89589.preview.blog.example.com (web) ready

@@ -354,8 +354,8 @@ For example, to give a `staging` environment of `notes` a test SMTP account:
    `piquelctl app apply --file notes.toml`. Then deploy each environment:
 
    ```console
-   piquelctl --timeout 5m env deploy notes staging
-   piquelctl --timeout 5m env deploy notes production
+   piquelctl env deploy notes staging
+   piquelctl env deploy notes production
    ```
 
 5. Once staging no longer mounts `smtp-password`,

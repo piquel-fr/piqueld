@@ -40,7 +40,7 @@ With `piquelctl`:
 ```console
 $ piquelctl env create hello staging
 Environment staging (env-01a16d902a9e7fa2a37914ff1fd0a3d6), deploys from the saved manifest.
-$ piquelctl --timeout 5m env deploy hello staging
+$ piquelctl env deploy hello staging
 ```
 
 In the manifest, [declare it](#declare-environments-in-the-manifest).
@@ -132,8 +132,8 @@ replicas of `web`, and staging one.
 piquelctl app variable set hello web_replicas 1
 piquelctl app variable set hello web_replicas 3 --env production
 piquelctl app service replicas hello web '${{ vars.web_replicas }}'
-piquelctl --timeout 5m env deploy hello staging
-piquelctl --timeout 5m env deploy hello production
+piquelctl env deploy hello staging
+piquelctl env deploy hello production
 ```
 
 In the dashboard or with `piquelctl`, when the manifest doesn't declare
@@ -212,8 +212,8 @@ deleting or renaming them fails with `environment_declared`.
 5. Deploy each environment:
 
    ```console
-   piquelctl --timeout 5m env deploy hello staging
-   piquelctl --timeout 5m env deploy hello production
+   piquelctl env deploy hello staging
+   piquelctl env deploy hello production
    ```
 
 ## Keep an environment on your tailnet
@@ -325,7 +325,7 @@ piquelctl app delete blog
 
    ```console
    piquelctl env create blog staging
-   piquelctl --timeout 10m env deploy blog staging
+   piquelctl env deploy blog staging
    ```
 
 Staging's deployment reads the manifest, which declares both environments.
@@ -391,7 +391,7 @@ With `piquelctl`:
 2. Promote it:
 
    ```console
-   $ piquelctl --timeout 5m env promote blog production
+   $ piquelctl env promote blog production
    Promoting release rel-01a16d95e1627d5191c37f6cf0e8a041 into environment production: promoted from staging's deployment operation-01a16d95dac676919a2e9efe0dc3299b, deployment operation-01a16d964c787761b0128e7898e78122.
    Operation: operation-01a16d964c787761b0128e7898e78122
      State: succeeded
@@ -428,7 +428,7 @@ release**. With `piquelctl`, deploy it to the promoted
 environment by ID:
 
 ```console
-piquelctl --timeout 5m env promote blog production --release <release-id>
+piquelctl env promote blog production --release <release-id>
 ```
 
 Images from a registry are pulled again. Images piqueld built can only be

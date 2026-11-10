@@ -11,6 +11,7 @@ pub fn command() -> Command {
         "PIQUELD_SOCKET",
         "PIQUELD_URL",
         "PIQUELD_TIMEOUT",
+        "PIQUELD_WAIT_TIMEOUT",
         "PIQUELD_TOKEN",
     ] {
         command.env_remove(name);
