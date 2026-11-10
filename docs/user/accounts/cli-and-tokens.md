@@ -109,9 +109,8 @@ carol (01a16b4c-8584-7390-a0cb-b6b2c348ec20)
   events:read on blog
 ```
 
-`--account` takes the account's ID, or its username as it was when you logged
-in, ignoring case. When
-you rename an account with
+`--account` takes the account's ID, or the username saved with the login,
+ignoring case. When you rename an account with
 [`piquelctl account update`](accounts.md#edit-a-profile), its saved login on
 that daemon is renamed too. After a rename on the dashboard, select the login
 by ID, or log in again.
