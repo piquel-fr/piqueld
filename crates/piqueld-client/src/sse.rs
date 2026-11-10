@@ -12,9 +12,17 @@ pub(crate) struct Message {
     pub(crate) data: String,
 }
 
+/// What a server-sent event stream carried next.
+pub(crate) enum Received {
+    /// A message.
+    Message(Message),
+    /// A comment, such as a keep-alive: the server is still there.
+    Comment,
+}
+
 /// Reads server-sent events from a response body. Lines end in `\n` or
-/// `\r\n`; comments, such as keep-alives, and other fields are skipped, and
-/// a message may not exceed the response body limit.
+/// `\r\n`; fields other than `event` and `data` are skipped, and a message
+/// may not exceed the response body limit.
 pub(crate) struct Messages {
     body: ByteStream,
     /// Bytes received, not yet read as lines.
@@ -35,9 +43,9 @@ impl Messages {
         }
     }
 
-    /// The next message, or `None` once the body ended. Cancel-safe: bytes
-    /// received stay buffered for the next call.
-    pub(crate) async fn next(&mut self) -> Option<Result<Message, ClientError>> {
+    /// The next message or comment, or `None` once the body ended.
+    /// Cancel-safe: bytes received stay buffered for the next call.
+    pub(crate) async fn next(&mut self) -> Option<Result<Received, ClientError>> {
         loop {
             while let Some(end) = self.buffer.iter().position(|&byte| byte == b'\n') {
                 let mut line: Vec<u8> = self.buffer.drain(..=end).collect();
@@ -53,9 +61,12 @@ impl Messages {
                     let event = self.event.take();
                     if let Some(data) = self.data.take() {
                         let event = event.unwrap_or_else(|| "message".to_owned());
-                        return Some(Ok(Message { event, data }));
+                        return Some(Ok(Received::Message(Message { event, data })));
                     }
                     continue;
+                }
+                if line.starts_with(':') {
+                    return Some(Ok(Received::Comment));
                 }
                 let (field, value) = line
                     .split_once(':')
@@ -92,7 +103,7 @@ impl Messages {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::Messages;
+    use super::{Messages, Received};
     use bytes::Bytes;
     use progenitor_client::ByteStream;
 
@@ -108,13 +119,16 @@ mod tests {
             chunks,
         ))));
         let mut read = Vec::new();
-        while let Some(message) = messages.next().await {
-            let message = message.unwrap();
-            read.push((message.event, message.data));
+        while let Some(received) = messages.next().await {
+            read.push(match received.unwrap() {
+                Received::Message(message) => (message.event, message.data),
+                Received::Comment => ("comment".to_owned(), String::new()),
+            });
         }
         assert_eq!(
             read,
             [
+                ("comment".to_owned(), String::new()),
                 ("timeline".to_owned(), "{\"a\":\n1}".to_owned()),
                 ("message".to_owned(), "plain".to_owned()),
             ]

@@ -828,7 +828,10 @@ impl<'a> TimelineFollower<'a> {
                         .ok()
                         .flatten()
                     {
-                        Some(next) => next,
+                        // A keep-alive.
+                        Some(Ok(None)) => continue,
+                        Some(Ok(Some(timeline))) => Ok(timeline),
+                        Some(Err(error)) => Err(error),
                         None => {
                             self.source = TimelineSource::Closed;
                             wait.pause().await;

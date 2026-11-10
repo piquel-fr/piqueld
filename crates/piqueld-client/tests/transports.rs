@@ -246,8 +246,10 @@ async fn timeline_streams_outlive_the_request_timeout() {
         .operation_timeline_stream("operation-01")
         .await
         .unwrap();
-    let timeline = stream.next().await.unwrap().unwrap();
+    let timeline = stream.next().await.unwrap().unwrap().unwrap();
     assert_eq!(timeline.operation.id, "operation-01");
+    // A keep-alive tells the caller the daemon is still there.
+    assert!(matches!(stream.next().await, Some(Ok(None))));
     let ended = stream.next().await.unwrap().unwrap_err();
     assert!(
         matches!(&ended, ClientError::Api { status, error } if status.as_u16() == 403 && error.code == "forbidden"),
