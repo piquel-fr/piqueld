@@ -296,8 +296,9 @@ a new token.
   Run `chmod 600` on the credentials file.
 - **"credentials file … must not be a symbolic link", "must be a regular
   file" or "must be owned by you".** `piquelctl` only reads a credentials
-  file that is a regular file you own. Point `PIQUELD_CREDENTIALS_FILE` at
-  the real file, or log in again to create one.
+  file that is a regular file you own, and `login` refuses to save into one
+  it can't read. Point `PIQUELD_CREDENTIALS_FILE` at the real file, or at a
+  new path, or remove the file, then log in again.
 - **"the daemon predates limited tokens" or "it predates limited logins".**
   The daemon is too old to limit access, so `piquelctl` refuses rather than
   getting full access. [Upgrade it](../operations/backups.md#upgrade).
