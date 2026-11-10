@@ -751,7 +751,8 @@ impl<D: DockerApi> Controller<D> {
     /// Prunes daemon events, the audit trail, receipts, expired auth state,
     /// build logs, and local snapshots no preview uses, plus finished
     /// operations and events older than their retention windows. A
-    /// zero-day window disables pruning.
+    /// zero-day window disables pruning. Then removes the secret versions
+    /// nothing can mount any more (see `collect_secret_versions`).
     async fn prune_history(&self, operation_days: u64, event_days: u64) -> Result<(), StoreError> {
         self.store.prune_daemon_events().await?;
         self.store.prune_audit().await?;
@@ -774,7 +775,44 @@ impl<D: DockerApi> Controller<D> {
         if event_days > 0 {
             self.store.prune_events(cutoff(event_days)).await?;
         }
-        Ok(())
+        self.collect_secret_versions().await
+    }
+
+    /// Removes the Docker secrets of the secret versions nothing can mount
+    /// any more (see `Store::unused_secret_versions`), one journaled
+    /// `remove_secrets` daemon action per environment, then their records
+    /// once Docker confirmed. A failed removal keeps the records, so the next
+    /// pass retries it.
+    async fn collect_secret_versions(&self) -> Result<(), StoreError> {
+        for (environment, names) in self.store.unused_secret_versions().await? {
+            let journal = self
+                .store
+                .begin_application_action(
+                    piqueld_store::Attribution::default(),
+                    &environment,
+                    "remove_secrets",
+                    None,
+                )
+                .await?;
+            let ownership = self.ownership_labels(&environment);
+            let removed = self
+                .request_once(&journal, async {
+                    Ok(self.docker.remove_secrets(&names, &ownership).await?)
+                })
+                .await;
+            self.store
+                .finish_action(
+                    &journal,
+                    removed.as_ref().err().map(OperationError::diagnostic),
+                )
+                .await?;
+            if removed.is_ok() {
+                self.store
+                    .forget_secret_versions(&environment, &names)
+                    .await?;
+            }
+        }
+        self.store.forget_uncopied_secret_versions().await
     }
 }
 

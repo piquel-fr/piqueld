@@ -5,6 +5,7 @@
 //! one gets its own Docker secret per version.
 mod deletion;
 pub use deletion::SecretDeletion;
+mod collection;
 mod key;
 mod stored;
 

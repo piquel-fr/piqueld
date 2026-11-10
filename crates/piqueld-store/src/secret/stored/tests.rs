@@ -615,3 +615,78 @@ async fn migration_moves_manual_secrets_to_the_application_store_and_keeps_pins(
         ])
     );
 }
+
+/// The generations of the versions of `name` in `table`, which holds
+/// generated or stored versions or copies.
+async fn generations(store: &Store, table: &str, name: &str) -> Vec<i64> {
+    sqlx::query_scalar(&format!(
+        "SELECT generation FROM {table} WHERE name=?1 ORDER BY generation"
+    ))
+    .bind(name)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn versions_go_once_no_deployment_pins_them_and_they_are_not_current() {
+    let (_temp, store, production, _) = fixture().await;
+    let (application, access) = (template().id().clone(), only([&production]));
+    let put = |expected| {
+        store.put_stored_secret(
+            Daemon,
+            &application,
+            "stripe-prod",
+            expected,
+            b"live".to_vec(),
+            (expected == 0).then_some(&access),
+        )
+    };
+    put(0).await.unwrap();
+    let first = deploy(&store, &production).await.unwrap();
+    let pinning = store.deployments(&production, None, 1).await.unwrap().items[0]
+        .operation
+        .id
+        .clone();
+    put(1).await.unwrap();
+    store
+        .regenerate_secret(Daemon, &production, "session", 1)
+        .await
+        .unwrap();
+    deploy(&store, &production).await.unwrap();
+    // The third is never deployed, and the fourth is current.
+    put(2).await.unwrap();
+    put(3).await.unwrap();
+
+    // The first deployment still pins the first versions.
+    assert!(store.unused_secret_versions().await.unwrap().is_empty());
+    // As if deployment history pruned it.
+    sqlx::query("DELETE FROM operations WHERE id=?1")
+        .bind(&pinning)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let unused = store.unused_secret_versions().await.unwrap();
+    let mut expected = vec![first["session"].clone(), first["stripe-prod"].clone()];
+    expected.sort();
+    assert_eq!(
+        unused,
+        BTreeMap::from([(production.clone(), expected.clone())])
+    );
+
+    store
+        .forget_secret_versions(&production, &expected)
+        .await
+        .unwrap();
+    store.forget_uncopied_secret_versions().await.unwrap();
+    assert!(store.unused_secret_versions().await.unwrap().is_empty());
+    assert_eq!(generations(&store, "secret_versions", "session").await, [2]);
+    assert_eq!(
+        generations(&store, "application_secret_copies", "stripe-prod").await,
+        [2]
+    );
+    assert_eq!(
+        generations(&store, "application_secret_versions", "stripe-prod").await,
+        [2, 4]
+    );
+}

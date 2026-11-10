@@ -15,7 +15,9 @@ history with no environment, without copying configuration values.
 Secret writes and deletions record `secret_saved` and `secret_deleted` events with
 the logical name as their resource; history never contains values. Removing a
 secret's Docker versions is a journaled `remove_secrets` action, whether it follows
-an API deletion (environment-owned, without an operation) or environment deletion.
+an API deletion (environment-owned, without an operation), environment deletion,
+or the history pass collecting versions that aren't current and that no
+deployment pins or target names (environment-owned, attributed to the daemon).
 A missing, unreadable or non-matching master key produces a daemon-scoped
 `secret_storage_unavailable` diagnostic whose causal fact names the key condition.
 Deployments decrypt values before their service request, so this failure is never
