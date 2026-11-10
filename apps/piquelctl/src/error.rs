@@ -19,12 +19,16 @@ pub(crate) enum ErrorKind {
     /// Generation precondition, name ambiguity, blocked plan, or a
     /// superseded deployment (exit 3).
     Conflict,
-    /// Daemon unreachable, gateway errors, or command timeout (exit 4).
+    /// Daemon unreachable, gateway errors, a request timeout or rate limit, or
+    /// command timeout (exit 4).
     Unavailable,
     /// An awaited operation ended unsuccessfully (exit 5).
     Operation,
     /// An installation check failed (exit 6).
     Unhealthy,
+    /// The daemon rejected the credential, or it lacks the access needed
+    /// (HTTP 401 or 403, exit 7).
+    Unauthorized,
     /// Ctrl-C (exit 130, the shell convention for SIGINT).
     Interrupted,
 }
@@ -38,6 +42,7 @@ impl ErrorKind {
             Self::Unavailable => 4,
             Self::Operation => 5,
             Self::Unhealthy => 6,
+            Self::Unauthorized => 7,
             Self::Interrupted => 130,
         }
     }
@@ -45,7 +50,8 @@ impl ErrorKind {
     /// The code of a CLI-side failure of this class with no more specific one.
     const fn code(self) -> CliCode {
         match self {
-            Self::General => CliCode::Failed,
+            // Only API errors are `Unauthorized`, and they keep the daemon's code.
+            Self::General | Self::Unauthorized => CliCode::Failed,
             Self::Input => CliCode::InvalidInput,
             Self::Conflict => CliCode::Conflict,
             Self::Unavailable => CliCode::Unavailable,
@@ -130,18 +136,24 @@ enum Diagnostic {
     Response(Option<http::StatusCode>),
     /// The whole command exceeded `--timeout`.
     CommandTimeout,
+    /// The daemon rejected the credential, or found none (HTTP 401).
+    Unauthenticated,
+    /// The credential lacks the access the request needs (HTTP 403).
+    Forbidden,
 }
 
 impl Diagnostic {
-    /// The CLI code of a failure this diagnostic explains.
-    const fn code(&self) -> CliCode {
+    /// The CLI code of a failure this diagnostic explains; `None` when it
+    /// only explains API errors, which keep the daemon's code.
+    const fn code(&self) -> Option<CliCode> {
         match self {
-            Self::Endpoint => CliCode::InvalidEndpoint,
-            Self::Configuration(_) => CliCode::InvalidConfiguration,
-            Self::Transport(TransportFailure::Timeout) => CliCode::RequestTimeout,
-            Self::Transport(_) => CliCode::ConnectionFailed,
-            Self::Response(_) => CliCode::InvalidResponse,
-            Self::CommandTimeout => CliCode::Timeout,
+            Self::Endpoint => Some(CliCode::InvalidEndpoint),
+            Self::Configuration(_) => Some(CliCode::InvalidConfiguration),
+            Self::Transport(TransportFailure::Timeout) => Some(CliCode::RequestTimeout),
+            Self::Transport(_) => Some(CliCode::ConnectionFailed),
+            Self::Response(_) => Some(CliCode::InvalidResponse),
+            Self::CommandTimeout => Some(CliCode::Timeout),
+            Self::Unauthenticated | Self::Forbidden => None,
         }
     }
 
@@ -149,7 +161,7 @@ impl Diagnostic {
     fn hint(&self, cli: &Cli) -> &'static str {
         match self {
             Self::Endpoint => {
-                "Check the selected endpoint configuration; use a Unix socket or a plain HTTP origin."
+                "Check the selected endpoint: a Unix socket path, or an http:// or https:// origin. To send credentials to a remote daemon over plain HTTP, pass --allow-insecure-http."
             }
             Self::Configuration(_) => {
                 "Check the configuration source above. Profiles require exactly one socket or URL and an optional positive timeout."
@@ -180,6 +192,12 @@ impl Diagnostic {
             Self::Transport(TransportFailure::Exchange) | Self::Response(_) => {
                 "Check that the selected endpoint serves the piqueld API and inspect the daemon logs."
             }
+            Self::Unauthenticated => {
+                "Run `piquelctl login` to sign in again, or set PIQUELD_TOKEN to a valid API token."
+            }
+            Self::Forbidden => {
+                "Use a login or API token with this access, or ask an account owner to grant it."
+            }
         }
     }
 }
@@ -207,10 +225,30 @@ impl CliError {
         self
     }
 
+    /// Replaces the message, keeping the code, request ID and details.
+    pub(crate) fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
+    /// Waits for Ctrl-C, then returns the `Interrupted` error with `message`.
+    /// Commands that handle Ctrl-C themselves race it with their work.
+    pub(crate) async fn on_interrupt(message: &'static str) -> Self {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => Self::new(ErrorKind::Interrupted, message),
+            Err(error) => Self::new(
+                ErrorKind::General,
+                format!("could not install Ctrl-C handler: {error}"),
+            ),
+        }
+    }
+
     /// Attaches a connection diagnostic and its code; the public builders
     /// below wrap this.
     fn diagnostic(mut self, diagnostic: Diagnostic) -> Self {
-        self.code = Code::Cli(diagnostic.code());
+        if let Some(code) = diagnostic.code() {
+            self.code = Code::Cli(code);
+        }
         self.diagnostic = Some(Box::new(diagnostic));
         self
     }
@@ -358,12 +396,24 @@ impl From<ClientError> for CliError {
                     400 | 404 | 413 | 415 | 422 => ErrorKind::Input,
                     // 412 has no current producer; kept for forward compatibility.
                     409 | 412 => ErrorKind::Conflict,
-                    502..=504 => ErrorKind::Unavailable,
+                    401 | 403 => ErrorKind::Unauthorized,
+                    408 | 429 | 502..=504 => ErrorKind::Unavailable,
                     _ => ErrorKind::General,
                 };
-                let diagnostic = (error.code == "invalid_error_response"
-                    || status.is_redirection())
-                .then_some(Diagnostic::Response(Some(status)));
+                let diagnostic = if error.code == "invalid_error_response"
+                    || status.is_redirection()
+                {
+                    Some(Diagnostic::Response(Some(status)))
+                } else {
+                    // Only missing or rejected credentials and missing grants get a
+                    // hint: other 401s and 403s, such as a tailnet-bound token used
+                    // elsewhere or an untrusted client, explain themselves.
+                    match error.code.as_str() {
+                        "authentication_required" => Some(Diagnostic::Unauthenticated),
+                        "permission_denied" | "permission_exceeded" => Some(Diagnostic::Forbidden),
+                        _ => None,
+                    }
+                };
                 Self {
                     kind,
                     code: Code::Api(error.code),
@@ -405,7 +455,8 @@ impl<'a> ErrorReport<'a> {
         }
     }
     /// Only evidence available from configuration and the failed exchange: the
-    /// endpoint (or configuration source), and timeout facts for timeouts. Each
+    /// endpoint (or configuration source), the credential sent for
+    /// authentication failures, and timeout facts for timeouts. Each
     /// is a human label, its JSON key, and its value.
     fn connection_facts(
         &self,
@@ -429,6 +480,13 @@ impl<'a> ErrorReport<'a> {
                 "endpoint_source",
                 cli.connection_sources.endpoint.to_string(),
             ));
+        }
+        if matches!(
+            diagnostic,
+            Diagnostic::Unauthenticated | Diagnostic::Forbidden
+        ) && let Ok((_, source)) = crate::auth::Credentials::token(cli)
+        {
+            facts.push(("  Credential", "credential", source.to_string()));
         }
         if matches!(
             diagnostic,

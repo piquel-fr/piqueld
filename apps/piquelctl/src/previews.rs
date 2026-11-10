@@ -323,18 +323,14 @@ impl DeployArgs {
                 .deploy_local_preview(id, (&branch, self.slot.as_deref()), (file, bundle.length))
                 .await
                 .map_err(|error| match error {
-                    ClientError::Api { error, .. }
-                        if error.code == codes::SNAPSHOT_BASE_UNAVAILABLE =>
-                    {
-                        CliError::new(
-                            ErrorKind::Input,
-                            format!(
-                                "the daemon could not fetch {} from the application's repository; \
-                                 push it, or pass --full-history to upload the whole history",
-                                bundle.snapshot.base.as_deref().unwrap_or("the base"),
-                            ),
-                        )
-                    }
+                    ClientError::Api {
+                        error: ref body, ..
+                    } if body.code == codes::SNAPSHOT_BASE_UNAVAILABLE => CliError::from(error)
+                        .message(format!(
+                            "the daemon could not fetch {} from the application's repository; \
+                             push it, or pass --full-history to upload the whole history",
+                            bundle.snapshot.base.as_deref().unwrap_or("the base"),
+                        )),
                     error => error.into(),
                 })
         }

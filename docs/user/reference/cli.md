@@ -612,11 +612,12 @@ Branch on the exit code, then read the `error` event on stderr:
 | Exit | Meaning | Typical reaction |
 | --- | --- | --- |
 | 0 | Done; for `wait`, as ready as asked | Continue |
-| 2 | Invalid command or input (`usage`, `invalid_input`, API validation codes, `snapshot_too_large`, `snapshot_invalid`) | Fix the command; retrying will not help |
+| 2 | Invalid command or input (`usage`, `invalid_input`, API validation codes, `snapshot_too_large`, `snapshot_invalid`, `snapshot_base_unavailable`) | Fix the command; retrying will not help |
 | 3 | Conflict: `deployment_superseded`, `preview_limit_reached` (its `details` list the previews to delete), a revision precondition | Read the newer state; wait for `details.superseded_by`, or delete a preview |
-| 4 | Unavailable or timed out (`connection_failed`, `timeout`) | Retry the read or `wait`; server-side work was not cancelled |
+| 4 | Unavailable, timed out or rate limited (`connection_failed`, `timeout`, HTTP 408, 429 and 502–504) | Retry the read or `wait`; server-side work was not cancelled |
 | 5 | The deployment failed (`operation_failed`; `details.operation` names the phase and error) | Read `logs`, fix, deploy again |
 | 6 | `doctor` found a failed check (`checks_failed`) | Follow each failed check's `next_step` |
+| 7 | The daemon rejected the credential (HTTP 401, such as `authentication_required`) or it lacks the access (HTTP 403, such as `permission_denied`) | Sign in again with `piquelctl login`, or use a credential with more access |
 
 ## Installation checks
 
@@ -994,7 +995,7 @@ be inspected with `piquelctl operation <id>`.
 
 The commonly useful exit codes are 0 for success or supersession, 1 for a general error, 2 for
 usage or input errors, 3 for conflicts, 4 for unavailable or timed
-out requests, 5 for a failed operation, and 130 when local operation waiting is
+out requests, 5 for a failed operation, 7 for a rejected credential, and 130 when local operation waiting is
 interrupted. `wait` uses the same codes, except that supersession is a
 conflict (3): it waits for one deployment, so another one running is not success.
 
