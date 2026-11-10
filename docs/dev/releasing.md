@@ -159,8 +159,10 @@ piquelctl --version
 
 docs.rs builds the new `piqueld-client` documentation within a few minutes.
 
-The GitHub release lists the archive and `SHA256SUMS`. On a Linux host with
-systemd and Docker Engine, the install script installs the new version:
+The GitHub release lists the archive and `SHA256SUMS`. On a disposable Linux
+host with systemd and Docker Engine, the install script installs the new
+version. On a host that already runs piqueld, it replaces the service's unit
+and restarts the daemon, so keep your changes to the unit in a drop-in:
 
 ```console
 curl -fsSL https://piqueld.dev/install.sh | sh
