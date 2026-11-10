@@ -9,7 +9,7 @@
 //! successful operation ([`StepState::Forecast`]).
 
 use crate::observability::Diagnostic;
-use crate::{Event, EventDetail, Operation, Phase, names::string_enum};
+use crate::{Event, EventDetail, Operation, OperationState, Phase, names::string_enum};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -265,6 +265,12 @@ impl Timeline {
             return;
         }
         self.cursor = event.id;
+        if event
+            .attempt
+            .is_some_and(|attempt| !self.current_attempt(attempt))
+        {
+            return;
+        }
         if let Some(EventDetail::Planned { steps, coverage }) = &event.detail {
             self.plan(steps, *coverage);
             return;
@@ -298,6 +304,31 @@ impl Timeline {
                 }
             }
         }
+    }
+
+    /// Updates the operation as read after its events changed it. Once it is
+    /// requested or runs again, the steps earlier attempts started are
+    /// dropped.
+    pub fn set_operation(&mut self, operation: Operation) {
+        self.operation = operation;
+        let steps = std::mem::take(&mut self.steps);
+        self.steps = steps
+            .into_iter()
+            .filter(|step| {
+                step.attempt
+                    .is_none_or(|attempt| self.current_attempt(attempt))
+            })
+            .collect();
+    }
+
+    /// Whether `attempt` is the operation's current run. A timeline shows
+    /// only that: running an operation again, e.g. to start a stopped
+    /// environment, starts over, and while it is requested again its latest
+    /// attempt is the run before.
+    fn current_attempt(&self, attempt: u64) -> bool {
+        attempt > self.operation.attempt
+            || (attempt == self.operation.attempt
+                && self.operation.state != OperationState::Requested)
     }
 
     /// How much longer the operation should take at `now_ms`: the steps left
@@ -426,7 +457,7 @@ impl PlanCoverage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EnvironmentId, OperationKind, OperationState};
+    use crate::{EnvironmentId, OperationKind};
 
     fn key(phase: Phase, resource: &str) -> StepKey {
         StepKey {
@@ -608,6 +639,51 @@ mod tests {
         assert_eq!(timeline.remaining_ms(10_000), Some(25_000));
         // A step running over its expectation counts as about to end.
         assert_eq!(timeline.remaining_ms(40_000), Some(5_000));
+    }
+
+    #[test]
+    fn another_attempt_starts_over() {
+        let mut timeline = timeline(&[]);
+        apply(
+            &mut timeline,
+            vec![
+                action("action_started", "a1", Phase::BuildGit, "web", 1),
+                action("action_failed", "a1", Phase::BuildGit, "web", 2),
+            ],
+        );
+        // Requested again, its latest attempt is the run before.
+        let mut requested = timeline.operation.clone();
+        requested.state = OperationState::Requested;
+        timeline.set_operation(requested.clone());
+        assert_eq!(timeline.steps.len(), 0, "{:?}", timeline.steps);
+        let mut retried = requested;
+        retried.state = OperationState::Running;
+        retried.attempt = 2;
+        timeline.set_operation(retried);
+        // Events of the earlier attempt no longer apply.
+        let mut late = action("action_started", "a3", Phase::EnsureService, "web", 3);
+        late.id = timeline.cursor + 1;
+        late.operation_id = Some("op".into());
+        late.attempt = Some(1);
+        timeline.apply(&late);
+        assert_eq!(timeline.steps.len(), 0);
+    }
+
+    #[test]
+    fn a_requested_operation_shows_none_of_its_previous_run() {
+        let mut timeline = timeline(&[(Phase::EnsureService, "web", 2_000)]);
+        timeline.operation.state = OperationState::Requested;
+        apply(
+            &mut timeline,
+            vec![
+                action("action_started", "a1", Phase::EnsureService, "web", 1),
+                action("action_succeeded", "a1", Phase::EnsureService, "web", 2),
+            ],
+        );
+        assert_eq!(
+            states(&timeline),
+            [(Phase::EnsureService, StepState::Forecast)]
+        );
     }
 
     #[test]

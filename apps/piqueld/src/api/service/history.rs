@@ -82,7 +82,7 @@ impl ApplicationService {
         }
         let advanced = timeline.cursor > from;
         if advanced {
-            timeline.operation = self.store.operation(&timeline.operation.id).await?;
+            timeline.set_operation(self.store.operation(&timeline.operation.id).await?);
         }
         Ok(advanced)
     }
