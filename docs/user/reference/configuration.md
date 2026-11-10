@@ -170,7 +170,9 @@ images are never removed. Builds are tagged `piqueld-build/<instance>:<image ID>
 where `<instance>` is the installation's ID that `piquelctl status` prints, so
 `docker image prune` leaves them. `docker image prune --all` still removes any
 that no container uses, and restoring or rolling back to one then fails with
-`image_unavailable`. See
+`image_unavailable`. Images built before piqueld tagged builds stay untagged,
+so `docker image prune` can still remove them until `keep_deployments` newer
+deployments replace them. See
 [image retention](../../dev/architecture/docker-reconciliation.md#image-retention).
 
 ```toml

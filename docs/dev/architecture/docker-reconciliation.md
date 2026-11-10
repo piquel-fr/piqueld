@@ -331,7 +331,8 @@ force and without its untagged parents. Cleanup never runs a broad prune.
 Each build is also tagged `piqueld-build/<instance ID>:<image ID hex>`, so an
 operator's `docker image prune` doesn't take it for a dangling image and break
 restoring or rolling back to it. Removing the image by ID removes that tag,
-its only one.
+its only one unless someone tagged the image too: Docker then refuses to
+remove it without force, and cleanup keeps it.
 
 An image is kept while a retention root uses it:
 

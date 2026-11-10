@@ -204,6 +204,16 @@ pub struct ImageBuild<'a> {
 }
 
 impl ImageBuild<'_> {
+    /// The repository and tag naming the image `id` this build produced,
+    /// `piqueld-build/<owner>:<id's hex digits>`, so `docker image prune`
+    /// doesn't take it for a dangling image and break restoring or rolling
+    /// back to it. Cleanup removes the image by ID, which removes this tag
+    /// too, unless someone tagged the image as well.
+    fn tag(&self, id: &piqueld_core::Sha256Digest) -> (String, String) {
+        let hex = id.as_str().trim_start_matches("sha256:");
+        (format!("piqueld-build/{}", self.owner), hex.to_owned())
+    }
+
     /// Docker CLI options labelling the image for its owner, then selecting
     /// build arguments, in name order and passed verbatim, then the target
     /// stage.
@@ -213,16 +223,6 @@ impl ImageBuild<'_> {
     ///   -> --label io.piqueld.managed=true --label io.piqueld.instance=instance-1
     ///      --build-arg A=1 --build-arg B=x=y --target runtime
     /// ```
-    /// The repository and tag naming the image `id` this build produced,
-    /// `piqueld-build/<owner>:<id's hex digits>`, so `docker image prune`
-    /// doesn't take it for a dangling image and break restoring or rolling
-    /// back to it. Cleanup removes the image by ID, which removes this, its
-    /// only tag.
-    fn tag(&self, id: &piqueld_core::Sha256Digest) -> (String, String) {
-        let hex = id.as_str().trim_start_matches("sha256:");
-        (format!("piqueld-build/{}", self.owner), hex.to_owned())
-    }
-
     fn options(&self) -> impl Iterator<Item = String> {
         let labels = [
             format!("{MANAGED_LABEL}=true"),
