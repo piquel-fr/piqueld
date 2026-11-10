@@ -282,6 +282,21 @@ pub struct DnsError {
     source: ApiError,
 }
 
+impl DnsError {
+    /// Whether the provider can't or won't make this call at all, rather than
+    /// failing this time: it doesn't support it, or the credentials lack the
+    /// permission.
+    pub(crate) fn is_denied(&self) -> bool {
+        match &self.source {
+            ApiError::Unsupported(_) => true,
+            ApiError::Status { status, .. } => {
+                matches!(*status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Why a provider API call failed.
 #[derive(Debug, Error)]
 pub enum ApiError {

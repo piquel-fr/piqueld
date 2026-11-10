@@ -12,6 +12,37 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 /// Routes the gateway serves, keyed by owning environment in a stable order.
 pub(crate) type RoutingTable = BTreeMap<EnvironmentId, Vec<ValidatedRoute>>;
 
+/// A DNS-01 challenge TXT record piqueld creates, saved before it exists and
+/// kept until it is deleted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AcmeChallenge {
+    /// Record name, `_acme-challenge.<domain>`.
+    pub(crate) name: String,
+    /// Name of the zone holding it.
+    pub(crate) zone: Hostname,
+    /// TXT value, which finds the record when its ID is unknown.
+    pub(crate) value: String,
+    /// The provider's ID for the record, once it is created.
+    pub(crate) record_id: Option<String>,
+}
+
+impl AcmeChallenge {
+    /// A stored `acme_challenges` row.
+    fn read(
+        name: String,
+        zone: &str,
+        value: String,
+        record_id: Option<String>,
+    ) -> Result<Self, StoreError> {
+        Ok(Self {
+            name,
+            zone: Hostname::parse(zone).map_err(StoreError::corrupt)?,
+            value,
+            record_id,
+        })
+    }
+}
+
 impl Store {
     /// Finalizes writes to application intent, deployment inputs/targets, or
     /// gateway state, given the environments whose hostnames they may change.
@@ -443,6 +474,63 @@ impl Store {
         .await
         .map_err(StoreError::database)?
             == Some(1))
+    }
+
+    /// Every challenge record not deleted yet.
+    pub(crate) async fn acme_challenges(&self) -> Result<Vec<AcmeChallenge>, StoreError> {
+        sqlx::query!("SELECT name,zone,value,record_id FROM acme_challenges ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(StoreError::database)?
+            .into_iter()
+            .map(|row| AcmeChallenge::read(row.name, &row.zone, row.value, row.record_id))
+            .collect()
+    }
+
+    /// The challenge record named `name`, if it is not deleted yet.
+    pub(crate) async fn acme_challenge(
+        &self,
+        name: &str,
+    ) -> Result<Option<AcmeChallenge>, StoreError> {
+        sqlx::query!(
+            "SELECT name,zone,value,record_id FROM acme_challenges WHERE name=?1",
+            name
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        .map(|row| AcmeChallenge::read(row.name, &row.zone, row.value, row.record_id))
+        .transpose()
+    }
+
+    /// Saves `challenge` before its record is created, or its record's ID
+    /// once it is.
+    pub(crate) async fn save_acme_challenge(
+        &self,
+        challenge: &AcmeChallenge,
+    ) -> Result<(), StoreError> {
+        let zone = challenge.zone.as_str();
+        self.write(sqlx::query!(
+            "INSERT INTO acme_challenges(name,zone,value,record_id) VALUES(?1,?2,?3,?4) ON CONFLICT(name) DO UPDATE SET zone=excluded.zone,value=excluded.value,record_id=excluded.record_id",
+            challenge.name,
+            zone,
+            challenge.value,
+            challenge.record_id
+        ))
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
+    }
+
+    /// Forgets the challenge record named `name` once it is deleted.
+    pub(crate) async fn forget_acme_challenge(&self, name: &str) -> Result<(), StoreError> {
+        self.write(sqlx::query!(
+            "DELETE FROM acme_challenges WHERE name=?1",
+            name
+        ))
+        .await
+        .map_err(StoreError::database)?;
+        Ok(())
     }
 
     /// Forgets `hostname` once its DNS records are deleted.

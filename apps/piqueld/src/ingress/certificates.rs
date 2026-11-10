@@ -32,6 +32,7 @@ use crate::{
         Dns, ZoneError,
         provider::{Record, RecordId, Zone},
     },
+    store::ingress::AcmeChallenge,
 };
 use anyhow::{Context, Result, bail};
 use instant_acme::{
@@ -186,14 +187,6 @@ struct Due {
     renewal: bool,
 }
 
-/// A challenge TXT record piqueld created, through `provider`'s `zone`.
-#[derive(Clone)]
-pub(super) struct Challenge {
-    pub(super) provider: usize,
-    pub(super) zone: Zone,
-    pub(super) id: RecordId,
-}
-
 /// The provider and zone owning a hostname, or why there is none.
 type Owner = Result<(usize, Zone), ZoneError>;
 
@@ -222,12 +215,6 @@ pub(super) struct Certificates {
     /// ACME account, loaded or registered on first use.
     account: tokio::sync::Mutex<Option<Account>>,
     entries: parking_lot::RwLock<BTreeMap<CertificateName, Entry>>,
-    /// Challenge records whose deletion failed, by certificate. The next
-    /// attempt for a name deletes its leftover before creating another, so
-    /// failed cleanups never pile up records: too many TXT values at one name
-    /// make the CA reject the validation. Kept apart from `entries` so that
-    /// retiring a certificate does not forget them.
-    leftovers: parking_lot::Mutex<BTreeMap<CertificateName, Challenge>>,
     /// How long a TXT record may take to reach every authoritative nameserver;
     /// 10 minutes, because OVH propagation is slow.
     pub(super) propagation_timeout: Duration,
@@ -277,7 +264,6 @@ impl Certificates {
             directory,
             account: tokio::sync::Mutex::new(None),
             entries: parking_lot::RwLock::new(entries),
-            leftovers: parking_lot::Mutex::default(),
             propagation_timeout: Duration::from_mins(10),
             #[cfg(test)]
             acme_root: None,
@@ -376,19 +362,6 @@ impl Certificates {
             .unwrap_or(CertificateName::Exact(hostname))
     }
 
-    /// Replaces the leftover challenge record of `name`, returning the old one.
-    pub(super) fn replace_leftover(
-        &self,
-        name: &CertificateName,
-        leftover: Option<Challenge>,
-    ) -> Option<Challenge> {
-        let mut leftovers = self.leftovers.lock();
-        match leftover {
-            Some(leftover) => leftovers.insert(name.clone(), leftover),
-            None => leftovers.remove(name),
-        }
-    }
-
     /// Where the certificate for `name` is stored.
     fn path(&self, name: &CertificateName) -> PathBuf {
         self.directory.join("certificates").join(name.file())
@@ -482,6 +455,8 @@ impl Ingress {
         else {
             return;
         };
+        // Planning discovered the zones that saved challenge records live in.
+        self.delete_leftover_challenges().await;
         for due in due {
             let phase = if due.renewal {
                 "ingress_certificate_renew"
@@ -620,61 +595,130 @@ impl Ingress {
     }
 
     /// Runs the ACME order, deleting its TXT record afterwards whether the
-    /// order succeeded, failed or was interrupted by shutdown. A record whose
-    /// deletion fails is kept as the name's leftover, which the next attempt
-    /// deletes before ordering.
+    /// order succeeded, failed or was interrupted by shutdown. A record left
+    /// by an earlier attempt is deleted first, and the order fails while it
+    /// can't be: too many TXT values at one name make the CA reject the
+    /// validation. A record whose deletion fails here stays saved, and the
+    /// next pass retries it.
     async fn order_certificate(
         &self,
         journal: &Journaled<'_>,
         due: &Due,
         cancellation: &CancellationToken,
     ) -> Result<Stored> {
-        let certificates = &self.certificates;
-        if let Some(leftover) = certificates.replace_leftover(&due.name, None)
-            && let Err(error) = self.delete_challenge(journal, &leftover).await
-        {
-            certificates.replace_leftover(&due.name, Some(leftover));
-            return Err(error.context("delete the challenge record left by an earlier attempt"));
+        let name = due.name.challenge();
+        let dns = &self.certificates.dns;
+        if let Some(leftover) = self.store.acme_challenge(&name).await? {
+            let owner = dns.zone_for(&leftover.zone).await?;
+            self.delete_challenge(journal, &leftover, owner)
+                .await
+                .context("delete the challenge record left by an earlier attempt")?;
         }
-        let mut record = None;
-        let result = self
-            .complete_order(journal, due, cancellation, &mut record)
-            .await;
-        if let Some(id) = record {
-            let challenge = Challenge {
-                provider: due.provider,
-                zone: due.zone.clone(),
-                id,
-            };
-            if let Err(error) = self.delete_challenge(journal, &challenge).await {
-                tracing::warn!(certificate=%due.name, error=format!("{error:#}"), "ACME challenge record could not be deleted; the next attempt retries");
-                certificates.replace_leftover(&due.name, Some(challenge));
+        let result = self.complete_order(journal, due, cancellation).await;
+        let deleted = async {
+            match self.store.acme_challenge(&name).await? {
+                Some(challenge) => {
+                    let owner = (due.provider, due.zone.clone());
+                    self.delete_challenge(journal, &challenge, owner).await
+                }
+                None => Ok(()),
             }
+        }
+        .await;
+        if let Err(error) = deleted {
+            tracing::warn!(certificate=%due.name, error=format!("{error:#}"), "ACME challenge record could not be deleted; the next pass retries");
         }
         result
     }
 
-    /// Deletes and unpublishes a challenge record in the current journal
-    /// action. Retrying after a failed publish converges, since a record that
-    /// is already gone counts as deleted.
-    async fn delete_challenge(&self, journal: &Journaled<'_>, challenge: &Challenge) -> Result<()> {
-        journal.request().await?;
+    /// Deletes the challenge records saved by earlier attempts, such as
+    /// before a restart or for a certificate no longer needed, each in its
+    /// own journal action. Failures are retried on the next pass. A record
+    /// whose zone no provider owns now is kept, unjournaled, until one does.
+    async fn delete_leftover_challenges(&self) {
+        let challenges = match self.store.acme_challenges().await {
+            Ok(challenges) => challenges,
+            Err(error) => {
+                tracing::warn!(error=?error, "could not read leftover ACME challenge records");
+                return;
+            }
+        };
+        for challenge in challenges {
+            let owner = match self.certificates.dns.zone_for(&challenge.zone).await {
+                Ok(owner) => owner,
+                Err(error) => {
+                    tracing::warn!(record=%challenge.name, error=format!("{error:#}"), "leftover ACME challenge record's zone is unknown; keeping it");
+                    continue;
+                }
+            };
+            let result = async {
+                let journal = self
+                    .journal_as(
+                        DiagnosticCode::CertificateRenewalFailed,
+                        "ingress_certificate_challenge_delete",
+                        &challenge.name,
+                    )
+                    .await?;
+                let result = self.delete_challenge(&journal, &challenge, owner).await;
+                journal.finish(result).await
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(record=%challenge.name, error=format!("{error:#}"), "leftover ACME challenge record could not be deleted; will retry");
+            }
+        }
+    }
+
+    /// Deletes and unpublishes a saved challenge record through its zone's
+    /// `owner` (provider index and zone) in the current journal action, then
+    /// forgets it. A record whose creation never returned its ID is found by
+    /// its value, when the provider may list records. Retrying after a failed
+    /// publish converges, since a record that is already gone counts as
+    /// deleted.
+    async fn delete_challenge(
+        &self,
+        journal: &Journaled<'_>,
+        challenge: &AcmeChallenge,
+        (provider, zone): (usize, Zone),
+    ) -> Result<()> {
         let dns = &self.certificates.dns;
-        let provider = dns.provider(challenge.provider);
-        provider
-            .delete_record(dns.http(), &challenge.zone, &challenge.id)
-            .await?;
-        provider.publish(dns.http(), &challenge.zone).await?;
+        let provider = dns.provider(provider);
+        let ids = if let Some(id) = &challenge.record_id {
+            vec![RecordId(id.clone())]
+        } else {
+            match provider.records(dns.http(), &zone, &challenge.name).await {
+                Ok(found) => found
+                    .into_iter()
+                    .filter(|found| found.record == Record::Txt(challenge.value.clone()))
+                    .map(|found| found.id)
+                    .collect(),
+                // A provider that can't or may not list, such as OVH without
+                // `manage_records`, leaves such a record behind. Any other
+                // failure is retried.
+                Err(error) if error.is_denied() => {
+                    tracing::warn!(record=%challenge.name, error=format!("{error:#}"), "could not look for an ACME challenge record created without an ID; it is left in place");
+                    Vec::new()
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        for id in &ids {
+            journal.request().await?;
+            provider.delete_record(dns.http(), &zone, id).await?;
+        }
+        journal.request().await?;
+        provider.publish(dns.http(), &zone).await?;
+        self.store.forget_acme_challenge(&challenge.name).await?;
         Ok(())
     }
 
     /// Orders the certificate, answers its DNS-01 challenge, then finalizes the
-    /// order and downloads the chain. `record` receives the TXT record as soon
-    /// as it exists.
+    /// order and downloads the chain. The TXT record is saved in the store
+    /// before it is created, and its ID once it is.
     ///
     /// ACME steps and the propagation wait stop on `cancellation`. DNS provider
     /// calls are bounded by their HTTP timeout and always complete, so a
-    /// created record always reaches `record`.
+    /// created record's ID is always saved.
     async fn complete_order(
         &self,
         journal: &Journaled<'_>,
@@ -685,7 +729,6 @@ impl Ingress {
             ..
         }: &Due,
         cancellation: &CancellationToken,
-        record: &mut Option<RecordId>,
     ) -> Result<Stored> {
         let account = self.acme_account(journal, cancellation).await?;
         let identifiers = [Identifier::Dns(name.to_string())];
@@ -714,19 +757,26 @@ impl Ingress {
                         .context("the CA offered no DNS-01 challenge")?;
                     let value = challenge.key_authorization().dns_value();
                     let challenge_name = name.challenge();
+                    let mut saved = AcmeChallenge {
+                        name: challenge_name.clone(),
+                        zone: zone.name.clone(),
+                        value: value.clone(),
+                        record_id: None,
+                    };
+                    self.store.save_acme_challenge(&saved).await?;
                     journal.request().await?;
                     let provider = dns.provider(*provider);
-                    *record = Some(
-                        provider
-                            .upsert(
-                                dns.http(),
-                                zone,
-                                &challenge_name,
-                                None,
-                                &Record::Txt(value.clone()),
-                            )
-                            .await?,
-                    );
+                    let id = provider
+                        .upsert(
+                            dns.http(),
+                            zone,
+                            &challenge_name,
+                            None,
+                            &Record::Txt(value.clone()),
+                        )
+                        .await?;
+                    saved.record_id = Some(id.0);
+                    self.store.save_acme_challenge(&saved).await?;
                     provider.publish(dns.http(), zone).await?;
                     cancellation
                         .run_until_cancelled(dns.wait_visible(

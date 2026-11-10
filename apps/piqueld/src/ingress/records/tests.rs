@@ -6,7 +6,7 @@ use crate::{
         test_provider::{Mimics, Outage, TestProvider},
     },
     ingress::tests::{Engine, application, private_config, request_deployment},
-    store::Store,
+    store::{Store, ingress::AcmeChallenge},
 };
 use piqueld_core::{
     EnvironmentId,
@@ -47,7 +47,20 @@ impl Harness {
         manage_records: bool,
         tunnel: Option<TunnelCredentials>,
     ) -> Ingress {
-        let ingress = engine
+        let ingress = Self::undiscovered(engine, provider, manage_records, tunnel);
+        ingress.certificates.dns.discover().await;
+        ingress
+    }
+
+    /// [`Self::ingress`] before it has discovered any zone, as right after
+    /// a restart.
+    fn undiscovered(
+        engine: &Engine,
+        provider: &TestProvider,
+        manage_records: bool,
+        tunnel: Option<TunnelCredentials>,
+    ) -> Ingress {
+        engine
             .ingress(true)
             .with_dns(
                 &crate::config::DnsConfig {
@@ -63,9 +76,7 @@ impl Harness {
             .with_tunnel(&crate::config::TunnelConfig {
                 credentials: tunnel,
             })
-            .with_public_addresses(&[PUBLIC.parse().unwrap()]);
-        ingress.certificates.dns.discover().await;
-        ingress
+            .with_public_addresses(&[PUBLIC.parse().unwrap()])
     }
 
     /// Another manager of this store and zone, as after a restart, before its
@@ -375,6 +386,56 @@ async fn a_staged_withdrawal_is_published_by_the_next_pass() {
     // Published for good: the next pass only reports the other's claim.
     assert!(harness.pass().await);
     assert_eq!(harness.provider.changes(), Vec::<String>::new());
+}
+
+/// Challenge records saved before a restart are deleted by the next pass:
+/// by ID once known, else by value, leaving other TXT values alone.
+#[tokio::test]
+async fn saved_challenge_records_are_deleted_after_a_restart() {
+    let harness = Harness::new(true).await;
+    let txt = |value: &str| Record::Txt(value.into());
+    let created = "_acme-challenge.www.example.com";
+    harness.provider.insert(created, txt("created"));
+    let id = harness.provider.found(created).unwrap()[0].id.clone();
+    let unanswered = "_acme-challenge.example.com";
+    harness.provider.insert(unanswered, txt("unanswered"));
+    harness.provider.insert(unanswered, txt("someone else's"));
+    let zone = Hostname::parse("example.com").unwrap();
+    for (name, value, record_id) in [
+        (created, "created", Some(id.0)),
+        (unanswered, "unanswered", None),
+    ] {
+        let challenge = AcmeChallenge {
+            name: name.into(),
+            zone: zone.clone(),
+            value: value.into(),
+            record_id,
+        };
+        harness.store.save_acme_challenge(&challenge).await.unwrap();
+    }
+    let elsewhere = AcmeChallenge {
+        name: "_acme-challenge.elsewhere.test".into(),
+        zone: Hostname::parse("elsewhere.test").unwrap(),
+        value: "kept".into(),
+        record_id: Some("1".into()),
+    };
+    harness.store.save_acme_challenge(&elsewhere).await.unwrap();
+
+    // Right after a restart, before any zone is discovered.
+    let restarted = Harness::undiscovered(&harness.engine, &harness.provider, true, None);
+    let token = CancellationToken::new();
+    restarted
+        .maintain_certificates(&BTreeSet::new(), 0, &token)
+        .await;
+    assert_eq!(
+        harness.provider.dump(),
+        [format!("{unanswered} {}", txt("someone else's"))]
+    );
+    // A record in a zone no provider owns now is kept, and nothing journaled.
+    assert_eq!(harness.store.acme_challenges().await.unwrap(), [elsewhere]);
+    let mut since = 0;
+    let journaled = harness.journaled(&mut since).await;
+    assert_eq!(journaled, ["ingress_certificate_challenge_delete"; 2]);
 }
 
 #[tokio::test]
