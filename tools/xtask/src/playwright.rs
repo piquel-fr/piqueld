@@ -69,6 +69,10 @@ pub async fn run(workspace: &Workspace, args: &[String]) -> Result<ExitCode> {
                     "PW_TEST_CONNECT_WS_ENDPOINT",
                     format!("ws://127.0.0.1:{port}/"),
                 )
+                // Times the specs format, like the browser's, are UTC, as
+                // on CI, so a screenshot records the same fingerprint on
+                // every machine.
+                .env("TZ", "UTC")
                 .current_dir(&tests),
         )?
         .finish(None, &mut shutdown)
