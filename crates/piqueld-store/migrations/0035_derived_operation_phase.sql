@@ -1,8 +1,9 @@
 -- An operation's current phase and resource are no longer stored on it: they
 -- are those of the latest journaled step of its current attempt (an action,
 -- or a recorded plan), so the event journal stays their only record. A failed
--- operation names its latest failed step, since steps run at once (sources)
--- may finish after it. A requested operation has none until an attempt starts.
+-- operation names its latest failed action, if any, since steps run at once
+-- (sources) may finish after it; a retried request is no failure. A requested
+-- operation has none until an attempt starts.
 CREATE INDEX event_operation_step ON events(operation_id, attempt, id)
     WHERE phase IS NOT NULL;
 
@@ -12,10 +13,10 @@ SELECT o.id AS operation_id,
     CASE WHEN o.state = 'requested' THEN NULL ELSE step.resource END AS resource
 FROM operations o
 LEFT JOIN events step ON step.id = COALESCE(
-    CASE WHEN o.error_code IS NOT NULL THEN (
+    CASE WHEN o.state = 'failed' THEN (
         SELECT failed.id FROM events failed
         WHERE failed.operation_id = o.id AND failed.attempt = o.attempt
-            AND failed.phase IS NOT NULL AND failed.error_code IS NOT NULL
+            AND failed.phase IS NOT NULL AND failed.kind = 'action_failed'
         ORDER BY failed.id DESC LIMIT 1
     ) END,
     (

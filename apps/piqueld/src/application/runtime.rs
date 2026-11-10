@@ -189,9 +189,9 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     /// compiles the application for `environment` against the merged resolutions.
     ///
     /// 1. Collects services lacking a reusable resolution and, during execution,
-    ///    records the `preparing_sources` progress phase with their names.
-    /// 2. Resolves up to four sources concurrently; on failure, records the failing
-    ///    service's phase (`building_git` or `resolving_image`) before returning.
+    ///    records them as the operation's preparation plan.
+    /// 2. Resolves up to four sources concurrently, each a journaled action, so
+    ///    a failure's action names the failing service and its phase.
     /// 3. Compiles the application with the combined resolution set.
     ///
     /// The whole sequence is bounded by `prepare_timeout`.
