@@ -79,6 +79,12 @@ utoipa-axum.workspace = true
 uuid.workspace = true
 x509-parser.workspace = true
 
+# musl builds, such as the static release binaries of `cargo xtask dist`,
+# build OpenSSL from source and link it statically: musl hosts rarely have a
+# static OpenSSL to link.
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { workspace = true, features = ["vendored"] }
+
 [dev-dependencies]
 # Tests and examples build against this crate with its fake Docker engine.
 piqueld = { path = ".", features = ["fake-docker"] }

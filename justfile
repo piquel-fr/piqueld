@@ -83,10 +83,15 @@ boundary:
 publish *ARGS:
     @cargo xtask publish "$@"
 
+# Builds the static release archive the install script installs, and its
+# checksums, into target/dist; see docs/dev/releasing.md. Needs musl-gcc.
+dist:
+    @cargo xtask dist
+
 # Releases the workspace version from the latest main: publishes the crates,
-# tags the commit, creates its GitHub release, and closes its milestone; see
-# docs/dev/releasing.md. `--dry-run` runs the checks and `cargo publish
-# --dry-run`, and only prints the other steps.
+# tags the commit, from which CI creates its GitHub release, and closes its
+# milestone; see docs/dev/releasing.md. `--dry-run` runs the checks and
+# `cargo publish --dry-run`, and only prints the other steps.
 [positional-arguments]
 release *ARGS:
     @cargo xtask release "$@"
@@ -100,8 +105,10 @@ ui-check:
 
 # Release daemon and CLI; the daemon build script compiles the dashboard.
 # Build the shipped binaries together so Cargo can share dependencies and schedule both.
+# The features are the daemon's: `piqueld/embedded-ui` would name the feature of
+# the daemon's dev-dependency on itself, which this build leaves out.
 build-embedded:
-    @cargo build --release --package piqueld --package piquelctl --bin piqueld --bin piquelctl --features piqueld/embedded-ui --locked
+    @cargo build --release --package piqueld --package piquelctl --bin piqueld --bin piquelctl --features embedded-ui --locked
 
 daemon-embedded *ARGS:
     @cargo run --package piqueld --bin piqueld --features embedded-ui -- {{ARGS}}

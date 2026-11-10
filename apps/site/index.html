@@ -521,7 +521,7 @@ pre .b { color: var(--preview); }
 
 .journey p { margin-top: 6px; color: var(--ink-soft); max-width: 60ch; }
 
-.journey pre {
+.journey pre, .command pre {
     margin-top: 14px;
     padding: 16px 18px;
     overflow-x: auto;
@@ -529,6 +529,38 @@ pre .b { color: var(--preview); }
     border-left: 6px solid var(--violet);
     font: 15px/1.6 var(--mono);
 }
+
+/* A command that a click copies. The script at the end of the page reveals its
+   button and marks it `copyable`; without the script, it is plain text. */
+.command { position: relative; margin-top: 14px; }
+
+.command pre { margin-top: 0; }
+
+.hero .command { margin-top: 24px; }
+
+/* The command wraps beside the button rather than scrolling under it. */
+.command.copyable pre {
+    padding-right: 96px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    cursor: copy;
+}
+
+.copy {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    translate: 0 -50%;
+    padding: 6px 12px 4px;
+    color: var(--ink);
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    font: 700 14px/1.4 "Overpass", system-ui, sans-serif;
+    cursor: pointer;
+}
+
+.copy:hover { color: var(--violet); border-color: var(--violet); }
 
 .journey .text-link { display: inline-block; margin-top: 12px; font-size: 16px; }
 
@@ -591,7 +623,7 @@ pre .b { color: var(--preview); }
 
 @media (max-width: 480px) {
     .journey li { gap: 0 16px; }
-    .journey pre { font-size: 13.5px; padding: 14px; }
+    .journey pre, .command pre { font-size: 13.5px; padding: 14px; }
     .panel pre { font-size: 12px; padding: 14px; }
 }
 </style>
@@ -621,8 +653,11 @@ pre .b { color: var(--preview); }
                 </div>
                 <div>
                     <p class="lede">An agent deploys its worktree, uncommitted files included, to a private preview of its own. Staging follows every push; production runs only what you promote.</p>
+                    <div class="command">
+                        <pre><code><span class="cmd">curl</span> <span class="f">-fsSL</span> https://piqueld.dev/<wbr>install.sh | sh</code></pre>
+                        <button class="copy" type="button" aria-live="polite" hidden>Copy</button>
+                    </div>
                     <div class="actions">
-                        <a class="button" href="https://docs.piqueld.dev/user/getting-started/install.html">Install</a>
                         <a class="button" href="https://github.com/sourceorigin-dev/piqueld">Source on GitHub</a>
                         <a class="button" href="https://docs.piqueld.dev">Documentation</a>
                     </div>
@@ -990,13 +1025,15 @@ slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
                 <p>Three stops to your first application.</p>
             </div>
             <ol class="journey">
-                <li>
+                <li id="install">
                     <span class="number" aria-hidden="true">1</span>
                     <div>
                         <h3>Install piqueld</h3>
-                        <p>One daemon and one CLI on a Linux host with Docker. Build them with Cargo, then set them up as a system service as the install guide describes.</p>
-                        <pre><code>cargo install <span class="f">--locked</span> piqueld piquelctl</code></pre>
-                        <a class="text-link" href="https://docs.piqueld.dev/user/getting-started/install.html">Read the install guide</a>
+                        <div class="command">
+                            <pre><code><span class="cmd">curl</span> <span class="f">-fsSL</span> https://piqueld.dev/<wbr>install.sh | sh</code></pre>
+                            <button class="copy" type="button" aria-live="polite" hidden>Copy</button>
+                        </div>
+                        <a class="text-link" href="https://docs.piqueld.dev/user/getting-started/install.html">Install on NixOS, or by hand</a>
                     </div>
                 </li>
                 <li>
@@ -1040,5 +1077,29 @@ slug=$(jq -r .slug &lt;&lt;&lt;<span class="s">"$out"</span>)
     </div>
 </footer>
 
+<script>
+// Copies each command when its button or the command itself is clicked,
+// unless the click ended a selection of part of it. Where the clipboard is
+// unavailable, it selects the command instead, ready to copy by hand.
+for (const command of document.querySelectorAll('.command')) {
+    const code = command.querySelector('code');
+    const button = command.querySelector('.copy');
+    let reset;
+    command.addEventListener('click', async (event) => {
+        if (event.target !== button && !getSelection().isCollapsed) return;
+        try {
+            await navigator.clipboard.writeText(code.textContent);
+            button.textContent = 'Copied';
+        } catch {
+            getSelection().selectAllChildren(code);
+            button.textContent = 'Selected';
+        }
+        clearTimeout(reset);
+        reset = setTimeout(() => { button.textContent = 'Copy'; }, 2000);
+    });
+    command.classList.add('copyable');
+    button.hidden = false;
+}
+</script>
 </body>
 </html>

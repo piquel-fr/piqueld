@@ -55,7 +55,7 @@ so you can give it its own tags and access rules.
 
    In `/etc/piqueld/config.toml`, pass the files to the service with
    `LoadCredential=`, as for the
-   [tailnet auth key](../getting-started/install.md#other-linux-distributions):
+   [tailnet auth key](../getting-started/install.md#pass-files-to-the-daemon):
 
    ```toml
    [ingress]

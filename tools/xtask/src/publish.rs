@@ -1,7 +1,7 @@
 //! `cargo xtask publish`: publishes the workspace's crates to crates.io, with
 //! the prebuilt dashboard the published daemon embeds, and `cargo xtask
-//! release`, which also tags the release and creates it on GitHub. See
-//! docs/dev/releasing.md.
+//! release`, which also tags the release, from which CI creates it on GitHub.
+//! See docs/dev/releasing.md.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -27,9 +27,10 @@ struct Release<'a> {
 impl Release<'_> {
     /// Checks that `HEAD` is the latest `origin/main` and that the version
     /// isn't tagged on `origin` yet. Then publishes the crates, tags `HEAD`
-    /// `v<version>`, pushes the tag, creates its GitHub release, with notes
-    /// listing the pull requests merged since the previous release, and closes
-    /// its minor version's GitHub milestone, such as `v0.2`.
+    /// `v<version>`, and pushes the tag, on which the release workflow
+    /// (`.github/workflows/release.yml`) builds the release binaries and
+    /// creates the GitHub release. Last, closes its minor version's GitHub
+    /// milestone, such as `v0.2`.
     fn run(&self) -> Result<ExitCode> {
         self.check()?;
         let dry_run = self.dry_run.then(|| "--dry-run".to_owned());
@@ -41,18 +42,9 @@ impl Release<'_> {
         let title = format!("piqueld {}", self.version);
         self.step("git", &["tag", "--annotate", &tag, "--message", &title])?;
         self.step("git", &["push", "origin", &tag])?;
-        self.step(
-            "gh",
-            &[
-                "release",
-                "create",
-                &tag,
-                "--verify-tag",
-                "--title",
-                &title,
-                "--generate-notes",
-            ],
-        )?;
+        println!(
+            "pushing {tag} starts the release workflow, which builds the release binaries and creates its GitHub release"
+        );
         let milestone = self.milestone_title()?;
         match self.milestone(&milestone)? {
             Some(number) => self.step(
@@ -156,15 +148,9 @@ impl Release<'_> {
 
 /// Runs [`Release::run`] for `cargo xtask release`, for the workspace version.
 pub fn release(workspace: &Workspace, dry_run: bool) -> Result<ExitCode> {
-    let package_id = daemon_package_id(workspace)?;
-    let version = package_id
-        .rsplit(['#', '@'])
-        .next()
-        .with_context(|| format!("no version in the package ID {package_id}"))?
-        .to_owned();
     Release {
         workspace,
-        version,
+        version: workspace.version()?,
         dry_run,
     }
     .run()
@@ -204,16 +190,6 @@ fn publish(workspace: &Workspace, args: &[String]) -> Result<ExitStatus> {
         .context("run cargo publish")
 }
 
-/// The daemon's package ID, such as `path+file:///…/apps/piqueld#0.1.0`.
-fn daemon_package_id(workspace: &Workspace) -> Result<String> {
-    let output = workspace
-        .cargo()
-        .args(["pkgid", "--package", "piqueld"])
-        .output()
-        .context("run cargo pkgid")?;
-    checked_stdout("cargo pkgid", output)
-}
-
 /// The dashboard bundle in `apps/piqueld/dashboard`, which the daemon's build
 /// script embeds when a packaged crate builds without `embedded-ui`. It is
 /// removed when dropped.
@@ -224,7 +200,7 @@ impl ShippedDashboard {
     /// script's `OUT_DIR/dashboard-dist`.
     fn build(workspace: &Workspace) -> Result<Self> {
         let daemon = workspace.root().join("apps/piqueld");
-        let package_id = daemon_package_id(workspace)?;
+        let package_id = workspace.daemon_package_id()?;
         let mut cargo = workspace
             .cargo()
             .args(["check", "--locked", "--package", "piqueld"])
