@@ -21,12 +21,14 @@ use piqueld_core::api::{
 use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use serde::Deserialize;
 
-/// Cursor pagination for the application list.
+/// Cursor pagination, and a name filter, for the application list.
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(super) struct ListQuery {
     /// `next_cursor` from a previous page.
     cursor: Option<String>,
+    /// Only the application with exactly this name, if any.
+    name: Option<String>,
     /// Page size.
     #[param(minimum = 1, maximum = 100, default = 100)]
     limit: Option<u16>,
@@ -61,6 +63,7 @@ pub(super) async fn list(
             &identity
                 .grants
                 .app_scope(piqueld_core::access::AppPermission::Read),
+            query.name.as_deref(),
             query.cursor.as_deref(),
             query.limit,
         )

@@ -360,13 +360,15 @@ impl Store {
     }
 
     /// Lists live application metadata and environments by ID, within
-    /// `visible`, without reading manifest documents.
+    /// `visible`, without reading manifest documents; only the one named
+    /// `name` when it is given.
     ///
     /// # Errors
     /// Returns a storage error or an invalid pagination error.
     pub async fn list_summaries(
         &self,
         visible: &piqueld_core::access::Scope,
+        name: Option<&str>,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<Page<ApplicationSummary>, StoreError> {
@@ -379,10 +381,11 @@ impl Store {
         let visible = super::auth::access::scope_json(visible);
         let mut tx = self.snapshot().await?;
         let mut rows = sqlx::query!(
-            r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) ORDER BY id LIMIT ?2"#,
+            r#"SELECT id AS "id!",name,generation,delete_intent,created_at_ms,updated_at_ms FROM applications WHERE id>?1 AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR name=?4) ORDER BY id LIMIT ?2"#,
             after,
             paging.fetch,
-            visible
+            visible,
+            name
         )
         .fetch_all(&mut *tx)
         .await

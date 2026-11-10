@@ -13364,6 +13364,15 @@
             }
           },
           {
+            "description": "Only the application with exactly this name, if any.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Page size.",
             "in": "query",
             "name": "limit",

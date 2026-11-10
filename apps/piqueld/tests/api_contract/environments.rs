@@ -273,7 +273,7 @@ async fn previews_compare_with_the_selected_environment() {
     other.metadata.name = "other".into();
     save(&service, other).await;
     let foreign = service
-        .applications(&piqueld_core::access::Scope::All, None, None)
+        .applications(&piqueld_core::access::Scope::All, None, None, None)
         .await
         .unwrap()
         .items;

@@ -532,6 +532,7 @@ pub(crate) async fn fold_applications<T>(
             .applications_with(&ListApplicationsOptions {
                 cursor: cursor.clone(),
                 limit: Some(PAGE_SIZE),
+                name: None,
             })
             .await?;
         for application in page.items {
@@ -551,21 +552,21 @@ pub(crate) async fn fold_applications<T>(
     }
 }
 
-/// Finds the application with exactly this name. More than one match is a conflict.
+/// Finds the application with exactly this name, which only one live
+/// application can have. The name is checked here too: a daemon that
+/// predates the filter ignores it and lists its first page, so a missing
+/// application is then not found rather than mistaken for another.
 async fn find_by_name(client: &Client, name: &str) -> Result<Option<ApplicationSummary>> {
-    let mut matches = fold_applications(client, Vec::new(), |matches, application| {
-        if application.name == name {
-            matches.push(application);
-        }
-    })
-    .await?;
-    match matches.len() {
-        0 | 1 => Ok(matches.pop()),
-        count => Err(CliError::new(
-            ErrorKind::Conflict,
-            format!("application name {name:?} matched {count} applications"),
-        )),
-    }
+    let page = client
+        .applications_with(&ListApplicationsOptions {
+            name: Some(name.to_owned()),
+            ..ListApplicationsOptions::default()
+        })
+        .await?;
+    Ok(page
+        .items
+        .into_iter()
+        .find(|application| application.name == name))
 }
 
 /// Loads an application from a name or ID. Values shaped like an ID are tried as an

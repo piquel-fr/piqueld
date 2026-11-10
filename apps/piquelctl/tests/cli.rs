@@ -788,13 +788,9 @@ fn exec_tty_refuses_without_a_terminal() {
 }
 
 #[test]
-fn show_resolves_name_across_pages_and_id_directly() {
-    let first_server = start_server(false, 4, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(
-            vec![app_summary("app-first-01", "first")],
-            Some("v1:app-first-01"),
-        )),
-        "/api/v1/applications?cursor=v1%3Aapp-first-01&limit=100" => {
+fn show_resolves_a_name_through_the_daemon_and_an_id_directly() {
+    let first_server = start_server(false, 3, move |request| match request.path.as_str() {
+        "/api/v1/applications?name=notes" => {
             Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
         }
         "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
@@ -827,7 +823,7 @@ fn apply_deploy_retries_a_dropped_request_with_the_same_identity() {
     let mut attempts = 0;
     // Over the Unix socket, the default transport; other retries run over TCP.
     let server = start_server(true, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?name=notes" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/apply?deploy=true" => {
             attempts += 1;
             if attempts == 1 {
@@ -874,7 +870,7 @@ fn noninteractive_apply_stops_after_inspection() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 1, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?name=notes" => Reply::json(page(Vec::new(), None)),
         path => panic!("mutation must not be sent; got {path}"),
     });
     let output = run(
@@ -1166,7 +1162,7 @@ fn apply_reports_a_failed_operation_with_exit_5_and_bounded_context() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(true, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?name=notes" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
@@ -1292,7 +1288,7 @@ fn validate_checks_manifests_without_a_daemon_or_profiles() {
 fn delete_reports_named_volume_retention_and_operation_completion() {
     let mut deleting = false;
     let server = start_server(false, 4, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => {
+        "/api/v1/applications?name=notes" => {
             Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
         }
         "/api/v1/applications/app-notes-01" if !deleting => {
@@ -1319,7 +1315,7 @@ fn delete_reports_named_volume_retention_and_operation_completion() {
 fn delete_stops_on_failed_or_cancelled_operation() {
     for state in ["failed", "cancelled"] {
         let server = start_server(false, 5, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => {
+            "/api/v1/applications?name=notes" => {
                 Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
             }
             "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
@@ -1542,20 +1538,14 @@ fn recover_admin_sends_no_credential() {
 /// A name matching no application is an input error, and one matching
 /// several is a conflict.
 #[test]
-fn names_must_match_exactly_one_application() {
+fn names_are_looked_up_by_the_daemon_and_checked() {
+    // A daemon that predates the name filter answers with other applications.
     for (applications, code, expected) in [
         (Vec::new(), 2, "was not found"),
-        (
-            vec![
-                app_summary("app-notes-01", "notes"),
-                app_summary("app-notes-02", "notes"),
-            ],
-            3,
-            "matched 2 applications",
-        ),
+        (vec![app_summary("app-blog-01", "blog")], 2, "was not found"),
     ] {
         let server = start_server(false, 1, move |request| match request.path.as_str() {
-            "/api/v1/applications?limit=100" => Reply::json(page(applications.clone(), None)),
+            "/api/v1/applications?name=notes" => Reply::json(page(applications.clone(), None)),
             path => panic!("unexpected path {path}"),
         });
         let output = run(&server, &["app", "show", "notes"]);
@@ -1769,7 +1759,7 @@ fn apply_defaults_to_saving_without_preview_or_operation_polling() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => {
+        "/api/v1/applications?name=notes" => {
             Reply::json(json!({"items":[app_summary("app-notes-01","notes")],"next_cursor":null}))
         }
         "/api/v1/applications/apply?deploy=false" => {
@@ -1805,7 +1795,7 @@ fn apply_protects_the_inspected_identity_and_revision_with_confirmation_skipped(
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 2, move |request| {
-        if request.path == "/api/v1/applications?limit=100" {
+        if request.path == "/api/v1/applications?name=notes" {
             let mut app = app_summary("app-notes-01", "notes");
             app["generation"] = json!(7);
             return Reply::json(json!({"items":[app],"next_cursor":null}));
@@ -1877,7 +1867,7 @@ fn force_does_not_skip_confirmation_and_explicit_force_is_sent_to_the_endpoint()
         let manifest = write_manifest(&directory);
         let mut mutations = 0;
         let server = start_server(false, if yes { 3 } else { 1 }, move |request| {
-            if request.path == "/api/v1/applications?limit=100" {
+            if request.path == "/api/v1/applications?name=notes" {
                 return Reply::json(page(Vec::new(), None));
             }
             assert_eq!(
@@ -1927,7 +1917,7 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
     let directory = tempdir().unwrap();
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => Reply::json(page(Vec::new(), None)),
+        "/api/v1/applications?name=notes" => Reply::json(page(Vec::new(), None)),
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
@@ -2915,7 +2905,7 @@ fn plan_compares_with_the_named_environment() {
     let directory = tempdir().expect("manifest directory");
     let manifest = write_manifest(&directory);
     let server = start_server(false, 3, move |request| match request.path.as_str() {
-        "/api/v1/applications?limit=100" => {
+        "/api/v1/applications?name=notes" => {
             Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
         }
         "/api/v1/applications/app-notes-01" => Reply::json(two_environment_view()),
