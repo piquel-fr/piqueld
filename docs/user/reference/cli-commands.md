@@ -32,7 +32,7 @@ Global options:
 - `--socket <PATH>`: Connect to the daemon's Unix socket at this path.
 
   It overrides `PIQUELD_SOCKET`, `PIQUELD_URL` and the profile's endpoint. Without any of them, `piquelctl` uses `/run/piqueld/piqueld.sock`.
-- `--account <ACCOUNT>`: Act as this saved login, by username or account ID.
+- `--account <ACCOUNT>`: Act as this saved login, by account ID or username, in any case.
 
   Defaults to the login you saved last for this daemon. `PIQUELD_TOKEN` takes precedence over saved logins.
 - `--allow-insecure-http`: Allow sending credentials over plain HTTP to a remote daemon.
