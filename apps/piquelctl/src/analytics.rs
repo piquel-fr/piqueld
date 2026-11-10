@@ -128,21 +128,20 @@ report!(AnalyticsReport<'_> as DeploymentAnalytics = analytics, self, out, {
     out.table(
         &a.actions,
         "No completed actions in this window.",
-        "PHASE  ACTIONS  MEAN DURATION",
-        |out, action| {
-            out.line(format_args!(
-                "{}  {}  {}",
-                action.phase,
-                action.count,
-                Elapsed::from_millis_f64(action.mean_ms)
-            ))
+        ["PHASE", "ACTIONS", "MEAN DURATION"],
+        |action| {
+            [
+                action.phase.clone(),
+                action.count.to_string(),
+                Elapsed::from_millis_f64(action.mean_ms).to_string(),
+            ]
         },
     )?;
     out.blank()?;
     out.table(
         &a.failures,
         "No failures in this window.",
-        "CODE  OCCURRENCES",
-        |out, failure| out.line(format_args!("{}  {}", failure.code, failure.count)),
+        ["CODE", "OCCURRENCES"],
+        |failure| [failure.code.clone(), failure.count.to_string()],
     )
 });

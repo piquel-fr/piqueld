@@ -49,9 +49,9 @@ Both environments now run the application's manifest:
 
 ```console
 $ piquelctl env list hello
-NAME  STATE  SOURCE  RESOLVED  ID
-production  ready  saved  2  env-01a16d8f99567681ada904f809903067
-staging  ready  saved  2  env-01a16d902a9e7fa2a37914ff1fd0a3d6
+NAME        STATE  SOURCE  RESOLVED  ID
+production  ready  saved   2         env-01a16d8f99567681ada904f809903067
+staging     ready  saved   2         env-01a16d902a9e7fa2a37914ff1fd0a3d6
 ```
 
 `env` commands take the application, then the environment. Commands that act
@@ -334,9 +334,9 @@ first promotion:
 
 ```console
 $ piquelctl env list blog
-NAME  STATE  SOURCE  RESOLVED  ID
-production  not_deployed  promoted from staging  none  env-01a16d95dab27100a7df0f7acf4d907c
-staging  ready  main  1  env-01a16d95dac072e2beee6b3df0553b0c
+NAME        STATE         SOURCE                 RESOLVED  ID
+production  not_deployed  promoted from staging  none      env-01a16d95dab27100a7df0f7acf4d907c
+staging     ready         main                   1         env-01a16d95dac072e2beee6b3df0553b0c
 ```
 
 ### Promote staging to production
@@ -481,9 +481,9 @@ and source. With `piquelctl`:
 
 ```console
 $ piquelctl env list blog
-NAME  STATE  SOURCE  RESOLVED  ID
-production  ready  promoted from staging  1  env-01a16d95dab27100a7df0f7acf4d907c
-staging  ready  main  1  env-01a16d95dac072e2beee6b3df0553b0c
+NAME        STATE  SOURCE                 RESOLVED  ID
+production  ready  promoted from staging  1         env-01a16d95dab27100a7df0f7acf4d907c
+staging     ready  main                   1         env-01a16d95dac072e2beee6b3df0553b0c
 ```
 
 `piquelctl env show blog production` also prints the release the

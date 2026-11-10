@@ -209,8 +209,8 @@ The service's **Files** tab lists its files, and `piquelctl app file list notes`
 lists the application's:
 
 ```text
-SERVICE  TARGET  MODE  SOURCE
-web  /etc/nginx/conf.d/default.conf  0444  inline, 85 bytes
+SERVICE  TARGET                          MODE  SOURCE
+web      /etc/nginx/conf.d/default.conf  0444  inline, 85 bytes
 ```
 
 To see them in the container, [run a command](commands.md):

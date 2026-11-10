@@ -40,16 +40,15 @@ report!(Vec<EnvironmentRow> as [EnvironmentRow], self, out, {
         .map(|row| row.environment.clone())
         .collect::<Vec<_>>();
     let names = Names(&environments);
-    out.table(self, "No environments.", "NAME  STATE  SOURCE  RESOLVED  ID", |out, row| {
+    out.table(self, "No environments.", ["NAME", "STATE", "SOURCE", "RESOLVED", "ID"], |row| {
         let environment = &row.environment;
-        out.line(format_args!(
-            "{}  {}  {}  {}  {}",
-            environment.name,
+        [
+            environment.name.to_string(),
             row.state(),
             names.source(&environment.source),
             resolved_generation(environment),
-            environment.id
-        ))
+            environment.id.to_string(),
+        ]
     })
 });
 
@@ -115,32 +114,43 @@ report!(Vec<PreviewView> as [PreviewView], self, out, {
     out.table(
         self,
         "No previews.",
-        "BRANCH  SLOT  SLUG  STATE  BRANCH STATE  SYNC  SYNCED  LAST OPERATION  ID",
-        |out, view| {
+        [
+            "BRANCH",
+            "SLOT",
+            "SLUG",
+            "STATE",
+            "BRANCH STATE",
+            "SYNC",
+            "SYNCED",
+            "LAST OPERATION",
+            "ID",
+        ],
+        |view| {
             let preview = &view.preview;
-            let slot = preview
-                .preview()
-                .and_then(|identity| identity.slot.as_ref())
-                .map_or("-", |slot| slot.as_str());
-            out.line(format_args!(
-                "{}  {slot}  {}  {}  {}  {}  {}  {}  {}",
+            [
                 preview
                     .preview()
                     .map_or_else(|| preview.name.to_string(), |p| p.branch.to_string()),
-                preview.name,
-                view.status.state,
-                view.branch,
-                view.sync,
+                preview
+                    .preview()
+                    .and_then(|identity| identity.slot.as_ref())
+                    .map_or("-", |slot| slot.as_str())
+                    .into(),
+                preview.name.to_string(),
+                view.status.state.to_string(),
+                view.branch.to_string(),
+                view.sync.to_string(),
                 preview
                     .synced
                     .as_ref()
                     .and_then(|synced| synced.commit.as_deref())
-                    .map_or("-", short_commit),
+                    .map_or("-", short_commit)
+                    .into(),
                 view.latest_operation
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), |op| format!("{} {}", op.state, op.id)),
-                preview.id
-            ))
+                preview.id.to_string(),
+            ]
         },
     )
 });

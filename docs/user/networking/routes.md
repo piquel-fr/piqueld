@@ -157,8 +157,8 @@ from DNS, open its **Routes** tab: **Deployed routes** lists them. With
 
 ```console
 $ piquelctl app route list hello
-HOSTNAME  NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS
-hello.example.com  -  production  public  ready  web:80  manual  A/AAAA -> this server's public addresses
+HOSTNAME           NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS     RECORDS
+hello.example.com  -     production   public      ready  web:80       manual  A/AAAA -> this server's public addresses
 ```
 
 Each route is in one of these states:

@@ -1747,7 +1747,7 @@ fn analytics_reads_one_environment_over_a_relative_window() {
         "Environment: notes / staging",
         "Deployments: 3 (2 succeeded, 1 failed by their latest attempt)",
         "Mean attempt duration: 1 min 5 s",
-        "pull  4  12.3 s",
+        "PHASE  ACTIONS  MEAN DURATION\npull   4        12.3 s\n",
         "image_pull_failed  1",
     ] {
         assert!(stdout.contains(line), "{stdout}");

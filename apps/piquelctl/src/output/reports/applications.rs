@@ -1,7 +1,7 @@
 //! Reports about saved applications: listings, details, their services, routes and links, manifests and plans.
 
 use super::super::HumanWriter;
-use super::{EnvironmentRow, Names};
+use super::{EnvironmentRow, Names, Row};
 use crate::support::join_or;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, Export, FileSource, Import, Page, PlanView, RouteUrl,
@@ -22,68 +22,56 @@ pub(crate) struct ServiceRow<T> {
 }
 
 report!(Vec<ServiceRow<ServiceFile>> as [ServiceRow<ServiceFile>], self, out, {
-    out.table(self, "No files.", "SERVICE  TARGET  MODE  SOURCE", |out, row| {
+    out.table(self, "No files.", ["SERVICE", "TARGET", "MODE", "SOURCE"], |row| {
         let source = match &row.item.source {
             FileSource::Path(path) => format!("repository {path}"),
             FileSource::Content(content) => format!("inline, {} bytes", content.len()),
         };
-        out.line(format_args!(
-            "{}  {}  {}  {source}",
-            row.service, row.item.target, row.item.mode
-        ))
+        [row.service.clone(), row.item.target.clone(), row.item.mode.to_string(), source]
     })
 });
 
 report!(Vec<ServiceRow<SecretMount>> as [ServiceRow<SecretMount>], self, out, {
-    out.table(self, "No secret mounts.", "SERVICE  SECRET  TARGET", |out, row| {
-        out.line(format_args!(
-            "{}  {}  {}",
-            row.service, row.item.name, row.item.target
-        ))
+    out.table(self, "No secret mounts.", ["SERVICE", "SECRET", "TARGET"], |row| {
+        [row.service.clone(), row.item.name.to_string(), row.item.target.clone()]
     })
 });
 
 // `export list` result.
 report!(Vec<Export> as [Export], self, out, {
-    out.table(self, "No exports.", "SERVICE  APPLICATIONS  PREVIEWS", |out, export| {
-        out.line(format_args!(
-            "{}  {}  {}",
-            export.service,
+    out.table(self, "No exports.", ["SERVICE", "APPLICATIONS", "PREVIEWS"], |export| {
+        [
+            export.service.clone(),
             export.applications.join(","),
-            if export.previews { "yes" } else { "no" }
-        ))
+            if export.previews { "yes" } else { "no" }.into(),
+        ]
     })
 });
 
 // `generated-secret list` result.
 report!(Vec<SecretDeclaration> as [SecretDeclaration], self, out, {
-    out.table(self, "No generated secrets declared.", "NAME  GENERATES", |out, secret| {
-        match secret.generate {
+    out.table(self, "No generated secrets declared.", ["NAME", "GENERATES"], |secret| {
+        let generates = match secret.generate {
             SecretGenerator::Random { bytes, encoding } => {
-                out.line(format_args!(
-                    "{}  {bytes} random bytes, {encoding}",
-                    secret.name
-                ))
+                format!("{bytes} random bytes, {encoding}")
             }
-            SecretGenerator::Rsa { bits } => {
-                out.line(format_args!("{}  {bits}-bit RSA key", secret.name))
-            }
-        }
+            SecretGenerator::Rsa { bits } => format!("{bits}-bit RSA key"),
+        };
+        [secret.name.clone(), generates]
     })
 });
 
 // `import list` result.
 report!(Vec<Import> as [Import], self, out, {
-    out.table(self, "No imports.", "NAME  ENVIRONMENT", |out, import| {
-        out.line(format_args!(
-            "{}.{}  {}",
-            import.service,
-            import.application,
+    out.table(self, "No imports.", ["NAME", "ENVIRONMENT"], |import| {
+        [
+            format!("{}.{}", import.service, import.application),
             import
                 .environment
                 .as_ref()
                 .map_or("same name", Template::as_str)
-        ))
+                .into(),
+        ]
     })
 });
 
@@ -99,24 +87,32 @@ report!(Vec<RouteRow> as [RouteRow], self, out, {
     out.table(
         self,
         "No deployed routes.",
-        "HOSTNAME  NAME  ENVIRONMENT  VISIBILITY  STATE  DESTINATION  DNS  RECORDS",
-        |out, row| {
+        [
+            "HOSTNAME",
+            "NAME",
+            "ENVIRONMENT",
+            "VISIBILITY",
+            "STATE",
+            "DESTINATION",
+            "DNS",
+            "RECORDS",
+        ],
+        |row| {
             let route = &row.route;
-            out.line(format_args!(
-                "{}  {}  {}  {}  {}  {}  {}  {}",
-                route.hostname,
-                route.name.as_ref().map_or("-", |name| name.as_str()),
-                row.environment,
-                route.visibility,
-                route.state,
-                route.target,
-                route.dns_state,
-                route.dns
-            ))?;
-            if route.state != "ready" {
-                out.line(format_args!("  {}", route.message))?;
+            Row {
+                cells: [
+                    route.hostname.clone(),
+                    route.name.as_ref().map_or("-", |name| name.as_str()).into(),
+                    row.environment.clone(),
+                    route.visibility.to_string(),
+                    route.state.clone(),
+                    route.target.to_string(),
+                    route.dns_state.to_string(),
+                    route.dns.to_string(),
+                ],
+                // What keeps an unready route from serving.
+                note: (route.state != "ready").then(|| route.message.clone()),
             }
-            Ok(())
         },
     )
 });
@@ -132,18 +128,19 @@ report!(Page<ApplicationRow>, self, out, {
     out.table(
         &self.items,
         "No applications.",
-        "NAME  ENVIRONMENTS  GENERATION  ID",
-        |out, row| {
-            let environments = join_or(
-                row.environments.iter().map(|environment| {
-                    format!("{} {}", environment.environment.name, environment.state())
-                }),
-                "none",
-            );
-            out.line(format_args!(
-                "{}  {}  {}  {}",
-                row.application.name, environments, row.application.generation, row.application.id
-            ))
+        ["NAME", "ENVIRONMENTS", "GENERATION", "ID"],
+        |row| {
+            [
+                row.application.name.clone(),
+                join_or(
+                    row.environments.iter().map(|environment| {
+                        format!("{} {}", environment.environment.name, environment.state())
+                    }),
+                    "none",
+                ),
+                row.application.generation.to_string(),
+                row.application.id.to_string(),
+            ]
         },
     )
 });

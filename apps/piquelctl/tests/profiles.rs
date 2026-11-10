@@ -133,7 +133,7 @@ socket = "/tmp/dev.sock"
     );
     assert_eq!(
         String::from_utf8(result.stdout).unwrap(),
-        "NAME  ENDPOINT\ndev  /tmp/dev.sock\nprod  http://127.0.0.1:7845\n"
+        "NAME  ENDPOINT\ndev   /tmp/dev.sock\nprod  http://127.0.0.1:7845\n"
     );
     let result = fixture.run(&["profiles", "--json", "--quiet"], &env);
     assert!(result.status.success());
@@ -170,8 +170,8 @@ socket = "/tmp/dev-missing.sock"
     let result = fixture.run(&["profiles"], &[]);
     assert_eq!(
         String::from_utf8(result.stdout).unwrap(),
-        "NAME  ENDPOINT\ndefault  /tmp/default-missing.sock\n\
-         dev  /tmp/dev-missing.sock\nprod  /tmp/prod-missing.sock  (default)\n"
+        "NAME     ENDPOINT\ndefault  /tmp/default-missing.sock\n\
+         dev      /tmp/dev-missing.sock\nprod     /tmp/prod-missing.sock  (default)\n"
     );
     for (args, env, selected) in [
         (vec!["status"], vec![], "prod"),
