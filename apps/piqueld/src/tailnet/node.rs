@@ -6,7 +6,7 @@
 //! it shares one that is already logged in, such as the development node that
 //! many `just dev` instances serve from, each on its own port.
 
-use super::{Cli, ProxyListener};
+use super::{Cli, PortUse, ProxyListener};
 use crate::config::DaemonConfig;
 use anyhow::{Context, Result, bail, ensure};
 use axum::serve::{ListenerExt, TapIo};
@@ -39,7 +39,6 @@ pub struct Node {
     daemon: Daemon,
     monitor: Monitor,
     listener: TcpListener,
-    address: SocketAddr,
 }
 
 /// The `tailscaled` behind the node.
@@ -47,7 +46,7 @@ enum Daemon {
     /// Started by piqueld, which stops it on exit and exits if it does.
     Owned(Child),
     /// Shared with other processes. piqueld only removes its HTTPS port from
-    /// the Serve configuration on exit.
+    /// the Serve configuration on exit, if it still forwards to piqueld.
     Shared,
 }
 
@@ -67,7 +66,9 @@ impl Node {
     ///
     /// # Errors
     /// Returns state directory, tailscaled, login, certificate, or forwarding
-    /// errors. HTTPS certificates must be enabled for the tailnet.
+    /// errors. HTTPS certificates must be enabled for the tailnet. A shared
+    /// node fails when the port is already served, unless it forwards to an
+    /// address that refuses connections, as a crashed daemon leaves it.
     pub async fn join(config: &mut DaemonConfig) -> Result<Option<Self>> {
         if !config.tailscale.enabled {
             return Ok(None);
@@ -101,6 +102,10 @@ impl Node {
             .context("failed to bind the tailnet forwarding listener")?;
         let address = listener.local_addr()?;
         let https_port = config.tailscale.https_port.get();
+        // A dedicated node's entries are its own leftovers, overwritten below.
+        if matches!(daemon, Daemon::Shared) {
+            cli.serve_status().await?.check_takeover(https_port).await?;
+        }
         cli.run(&[
             "serve",
             "--bg",
@@ -110,6 +115,12 @@ impl Node {
         ])
         .await
         .context("failed to forward the tailnet node's HTTPS port")?;
+        // `serve` overwrites silently, so another daemon starting at the same
+        // time may have replaced the forward since the check.
+        ensure!(
+            cli.serve_status().await?.port(https_port) == PortUse::Forwarded(address),
+            "another process took tailnet HTTPS port {https_port} over while piqueld started; stop it or set another tailscale.https_port"
+        );
 
         let url = match https_port {
             443 => format!("https://{dns_name}"),
@@ -148,9 +159,9 @@ impl Node {
                 https_port,
                 public_url_matches,
                 expires_at_ms,
+                address,
             },
             listener,
-            address,
         }))
     }
 
@@ -263,7 +274,8 @@ impl Node {
         self,
         cancellation: CancellationToken,
     ) -> (NodeListener, JoinHandle<Result<()>>) {
-        let listener = ProxyListener::spawn(self.listener, self.address, cancellation.clone());
+        let listener =
+            ProxyListener::spawn(self.listener, self.monitor.address, cancellation.clone());
         let supervisor = tokio::spawn(self.monitor.run(self.daemon, cancellation));
         let tap: fn(&mut TcpStream) = |_| {};
         (listener.tap_io(tap), supervisor)
@@ -278,6 +290,8 @@ struct Monitor {
     https_port: u16,
     public_url_matches: bool,
     expires_at_ms: i64,
+    /// The loopback listener the HTTPS port forwards to.
+    address: SocketAddr,
     status: watch::Sender<TailnetStatus>,
 }
 
@@ -302,10 +316,23 @@ impl Monitor {
     }
 
     /// Stops forwarding this daemon's HTTPS port from a shared tailscaled,
-    /// which would otherwise keep forwarding it to a closed listener.
+    /// which would otherwise keep forwarding it to a closed listener. A port
+    /// another daemon has taken over since is left alone.
     async fn remove_port(&self) {
-        let port = format!("--tls-terminated-tcp={}", self.https_port);
-        if let Err(error) = self.cli.run(&["serve", &port, "off"]).await {
+        let result = async {
+            let serving = self.cli.serve_status().await?.port(self.https_port);
+            if serving != PortUse::Forwarded(self.address) {
+                tracing::info!(
+                    port = self.https_port,
+                    "the tailnet HTTPS port no longer forwards to this daemon; leaving it"
+                );
+                return Ok(());
+            }
+            let port = format!("--tls-terminated-tcp={}", self.https_port);
+            self.cli.run(&["serve", &port, "off"]).await.map(drop)
+        }
+        .await;
+        if let Err(error) = result {
             tracing::warn!(error = %format!("{error:#}"), "failed to remove the tailnet HTTPS port");
         }
     }

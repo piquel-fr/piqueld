@@ -365,6 +365,10 @@ https_port = 7846         # https://<node>.<tailnet>.ts.net:7846
   when it stops. It neither logs the node in nor changes its preferences, so
   `hostname` is unused and `auth_key_file` is rejected; startup fails unless
   the node is logged in.
+- Startup fails if the port is already in the Serve configuration, such as
+  another daemon's, unless its address refuses connections. A daemon that
+  crashed without removing its port therefore doesn't block the next one, and
+  a stopping daemon leaves alone a port another one has taken over.
 - The `tailscaled` must run as the daemon's user, because the forwarding
   listener only accepts that user's connections.
 - An unset `auth.public_url` becomes `https://<node>:<https_port>`.
