@@ -5,7 +5,7 @@ use crate::{
     now_ms,
 };
 use piqueld_core::{
-    Event, EventActor, EventDetail,
+    Event, EventActor, EventDetail, Operation,
     api::Page,
     observability::{Diagnostic, EventFilter, EventScope},
     sync::SystemActor,
@@ -123,6 +123,24 @@ impl Store {
         .await
         .map_err(StoreError::database)?;
         Ok(())
+    }
+
+    /// Whether `operation`'s current attempt journaled staging its routes:
+    /// its first pass always does, since the gateway may keep it waiting.
+    ///
+    /// # Errors
+    /// Returns storage errors.
+    pub async fn routed(&self, operation: &Operation) -> Result<bool, StoreError> {
+        let attempt = i64::try_from(operation.attempt).map_err(StoreError::corrupt)?;
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM events WHERE operation_id=?1 AND attempt=?2
+            AND phase='routing' AND kind='action_started') AS "routed!: bool""#,
+            operation.id,
+            attempt,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)
     }
 
     /// Reads legacy oldest-first event pages from every scope.

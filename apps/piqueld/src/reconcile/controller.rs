@@ -496,9 +496,12 @@ impl<D: DockerApi> Controller<D> {
             }
             Ok(())
         };
-        // Each pass stages the routes again; only putting new ones in
-        // service is a step of the operation.
-        if ready && self.store.applied_routes(&operation.environment_id).await? != routes {
+        // Each pass stages the routes again. Its first pass is a step of the
+        // operation, since the gateway may keep it waiting, and so is putting
+        // new routes in service.
+        if !self.store.routed(operation).await?
+            || (ready && self.store.applied_routes(&operation.environment_id).await? != routes)
+        {
             self.journaled(&operation.id, Phase::Routing, None, staging)
                 .await
         } else {
