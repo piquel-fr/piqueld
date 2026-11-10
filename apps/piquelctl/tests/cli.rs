@@ -1535,8 +1535,8 @@ fn recover_admin_sends_no_credential() {
     assert!(!requests[0].headers.contains_key("authorization"));
 }
 
-/// A name matching no application is an input error, and one matching
-/// several is a conflict.
+/// A name the daemon doesn't find, or that it answers with a different
+/// application, is an input error.
 #[test]
 fn names_are_looked_up_by_the_daemon_and_checked() {
     // A daemon that predates the name filter answers with other applications.
