@@ -583,14 +583,12 @@ mod tests {
         let link = dir.path().join("credentials.json");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let fifo = dir.path().join("fifo.json");
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &fifo,
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            0,
-        )
-        .unwrap();
+        // rustix has no portable `mkfifo`: `mknodat` is missing on macOS.
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
         for (path, problem) in [
             (link, "must not be a symbolic link"),
             (dir.path().to_owned(), "must be a regular file"),
