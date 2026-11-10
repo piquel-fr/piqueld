@@ -5,7 +5,9 @@
 //! Each open timeline holds one `EventStream`, closed once the operation
 //! ended, and one clock ticking every second while it runs. Rows are keyed
 //! by step and read their own memo, so a new snapshot only redraws the rows
-//! it changed; bars grow between ticks through CSS transitions.
+//! it changed; bars grow between ticks through CSS transitions. A rollout's
+//! task lanes are redrawn only when its step changes: the clock moves one
+//! CSS variable their open states reach.
 use super::super::format::clock;
 use super::super::observability::{headline, kind_badge};
 use super::super::stream::EventStream;
@@ -13,7 +15,7 @@ use super::super::ui::{Icon, Tone, badge, empty, icon, loading, notice};
 use super::super::{Alive, ClientErrorExt, document_hidden, format::now_ms, operation_events};
 use super::editor;
 use crate::log_output::LogLine;
-use crate::timeline::{Progress, Row, RowId, Waterfall, percent};
+use crate::timeline::{Lanes, Progress, Row, RowId, TaskLook, Waterfall, percent};
 use gloo_timers::callback::Interval;
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
@@ -621,6 +623,7 @@ fn StepRow(
         move || row.with(|row| row.as_ref().and_then(read))
     };
     let (bar, usual) = (span(|row| row.bar), span(|row| row.usual));
+    let down = Memo::new(move |_| row.with(|row| row.as_ref().map(|row| row.down.clone())));
     let interactive = pick.is_some();
     view! {
         {move || {
@@ -686,6 +689,22 @@ fn StepRow(
                     style:left={move || bar().map(|span| percent(span.left))}
                     style:width={move || bar().map(|span| percent(span.width))}
                 ></span>
+                {move || {
+                    down.get()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|span| {
+                            view! {
+                                <span
+                                    class="step-down"
+                                    title="No task serving"
+                                    style:left={percent(span.left)}
+                                    style:width={percent(span.width)}
+                                ></span>
+                            }
+                        })
+                        .collect_view()
+                }}
             </span>
             <span class="waterfall-duration" class:slow={slow}>
                 {field(|row| match row.duration_ms {
@@ -699,8 +718,8 @@ fn StepRow(
 }
 
 /// The shown step: how long it took against how long it usually takes, its
-/// attempt and retries, why it failed, and for builds and jobs, the end of
-/// their output.
+/// attempt and retries, why it failed, for builds and jobs, the end of
+/// their output, and for a rollout, its Swarm tasks.
 #[component]
 fn StepDetail(
     live: LiveTimeline,
@@ -848,9 +867,190 @@ fn StepDetail(
                         }
                     })
             }}
-        // Swarm task lanes and downtime of `ensure_service` and
-        // `wait_for_service` steps go here once the timeline records them.
+            <RolloutTasks row={row} now={live.now} />
         </section>
+    }
+}
+
+/// The task looks a rollout's legend explains.
+const LOOKS: [(TaskLook, &str); 7] = [
+    (TaskLook::Preparing, "preparing"),
+    (TaskLook::Starting, "starting · health check"),
+    (TaskLook::Running, "running"),
+    (TaskLook::Monitor, "running · monitor window"),
+    (TaskLook::Unhealthy, "unhealthy"),
+    (TaskLook::Stopped, "stopped"),
+    (TaskLook::Failed, "failed"),
+];
+
+/// The Swarm tasks of the shown step, when it waited for a service to roll
+/// out: the monitor window open, a lane per task, old and new, and whether
+/// a task kept serving. Lanes are redrawn when the step changes; between
+/// ticks, their open states grow to the `--now` the clock sets.
+#[component]
+fn RolloutTasks(row: Memo<Option<Row>>, now: RwSignal<i64>) -> impl IntoView {
+    // Changes with the step, not with the clock.
+    let step = Memo::new(move |_| {
+        row.with(|row| {
+            row.as_ref()
+                .map(|row| &row.step)
+                .filter(|step| !step.tasks.is_empty())
+                .cloned()
+        })
+    });
+    let lanes = Memo::new(move |_| {
+        let now = now.get();
+        step.with(|step| step.as_ref().and_then(|step| Lanes::new(step, now)))
+    });
+    let cursor = Memo::new(move |_| {
+        let now = now.get();
+        lanes.with(|lanes| {
+            lanes
+                .as_ref()
+                .map(|lanes| percent(lanes.axis.position(now)))
+        })
+    });
+    let monitor = Memo::new(move |_| {
+        let now = now.get();
+        step.with(|step| step.as_ref().and_then(|step| step.monitor(now)))
+    });
+    let callout = Memo::new(move |_| {
+        let now = now.get();
+        step.with(|step| {
+            let step = step.as_ref()?;
+            let service = step.key.resource.as_deref().unwrap_or("service");
+            Some(match step.downtime(now) {
+                Some(down) if down.ongoing && step.state.running() => (
+                    Tone::Bad,
+                    format!(
+                        "No {service} task is serving: down for {} so far.",
+                        duration(down.ms)
+                    ),
+                ),
+                Some(down) if down.ongoing => (
+                    Tone::Bad,
+                    format!(
+                        "No {service} task was serving when the step ended, {} after the last one stopped.",
+                        duration(down.ms)
+                    ),
+                ),
+                Some(down) => (
+                    Tone::Warn,
+                    format!(
+                        "Downtime {}: no {service} task served while its tasks were replaced.",
+                        duration(down.ms)
+                    ),
+                ),
+                None if !step.overlapped() => return None,
+                None if step.state.running() => (
+                    Tone::Ok,
+                    format!(
+                        "An old {service} task kept serving until a new one did: no downtime so far."
+                    ),
+                ),
+                None => (
+                    Tone::Ok,
+                    format!("An old {service} task kept serving until a new one did: no downtime."),
+                ),
+            })
+        })
+    });
+    view! {
+        <Show when={move || step.with(Option::is_some)}>
+            <div class="rollout-tasks" style:--now={move || cursor.get()}>
+                {move || {
+                    monitor
+                        .get()
+                        .map(|window| {
+                            // The ring sweeps through CSS; only its count follows the clock.
+                            let elapsed = now.get_untracked() - window.from_ms;
+                            let length = window.to_ms - window.from_ms;
+                            view! {
+                                <div class="rollout-monitor" role="status">
+                                    <span class="monitor-ring" aria-hidden="true">
+                                        <svg viewBox="0 0 36 36">
+                                            <circle
+                                                cx="18"
+                                                cy="18"
+                                                r="15"
+                                                pathLength="100"
+                                                style:animation-duration={format!("{length}ms")}
+                                                style:animation-delay={format!("-{elapsed}ms")}
+                                            ></circle>
+                                        </svg>
+                                        <span>
+                                            {move || {
+                                                format!("{}s", window.left_ms(now.get()).div_ceil(1_000))
+                                            }}
+                                        </span>
+                                    </span>
+                                    <span>
+                                        {format!(
+                                            "A new task serves. Swarm watches it for failure for {} before the rollout goes on; a failure now pauses it.",
+                                            duration(u64::try_from(length).unwrap_or(0)),
+                                        )}
+                                    </span>
+                                </div>
+                            }
+                        })
+                }}
+                {move || {
+                    lanes
+                        .get()
+                        .map(|lanes| {
+                            view! {
+                                <ol class="task-lanes" aria-label="Swarm tasks">
+                                    {lanes
+                                        .lanes
+                                        .into_iter()
+                                        .map(|lane| {
+                                            let age = if lane.current { "new" } else { "old" };
+                                            view! {
+                                                <li class="task-lane">
+                                                    <span class="task-name">
+                                                        {lane.name} " " <em>{age}</em>
+                                                    </span>
+                                                    <span class="task-track">
+                                                        {lane
+                                                            .stretches
+                                                            .into_iter()
+                                                            .map(|stretch| {
+                                                                let left = percent(stretch.left);
+                                                                let width = stretch
+                                                                    .width
+                                                                    .map_or_else(
+                                                                        || format!("calc(var(--now) - {left})"),
+                                                                        percent,
+                                                                    );
+                                                                view! {
+                                                                    <span
+                                                                        class="task-stretch"
+                                                                        class:open={stretch.width.is_none()}
+                                                                        data-look={stretch.look.as_str()}
+                                                                        style:left={left}
+                                                                        style:width={width}
+                                                                    >
+                                                                        {stretch.look.as_str()}
+                                                                    </span>
+                                                                }
+                                                            })
+                                                            .collect_view()}
+                                                    </span>
+                                                </li>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </ol>
+                            }
+                        })
+                }}
+                <ul class="task-legend" aria-label="Task states">
+                    {LOOKS
+                        .map(|(look, label)| view! { <li data-look={look.as_str()}>{label}</li> })}
+                </ul>
+                {move || callout.get().map(|(tone, text)| notice(tone, text))}
+            </div>
+        </Show>
     }
 }
 

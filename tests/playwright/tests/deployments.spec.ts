@@ -84,8 +84,16 @@ test('a deployment\'s timeline lays its steps out by stage, and shows the one pi
     steps: [
       step('building_git', 'web', 0, 20_000, 25_000),
       step('ensure_service', 'web', 20_000, 21_000, 1_000),
-      // Twice as long as usual.
-      step('wait_for_service', 'web', 21_000, 40_000, 9_000),
+      // Twice as long as usual, and stop-first: the old task stopped at
+      // 22 s, before the new one ran at 25 s.
+      {
+        ...step('wait_for_service', 'web', 21_000, 40_000, 9_000),
+        monitor_seconds: 5,
+        tasks: [
+          { id: 'old', slot: 1, current: false, state: 'shutdown', spans: [{ state: 'running', from_ms: 21_000 }, { state: 'shutdown', from_ms: 22_000 }] },
+          { id: 'new', slot: 1, current: true, state: 'running', spans: [{ state: 'starting', from_ms: 22_000 }, { state: 'running', from_ms: 25_000 }] },
+        ],
+      },
     ],
     cursor: 42,
   };
@@ -109,10 +117,16 @@ test('a deployment\'s timeline lays its steps out by stage, and shows the one pi
   await expect(steps.nth(0)).toContainText('Build web');
   await expect(steps.locator('.waterfall-duration')).toHaveText(['20.0 s', '1.0 s', '19.0 s']);
   await expect(steps.nth(2).locator('.waterfall-duration')).toHaveClass(/slow/);
+  await expect(steps.nth(2).locator('.step-down')).toHaveCount(1);
 
   // The last step is shown until another is picked.
   const detail = card.getByRole('region', { name: 'Step detail' });
   await expect(detail.getByRole('heading')).toHaveText('Wait for service web');
+  // Its tasks, old then new, and the time no task served.
+  const lanes = detail.getByRole('list', { name: 'Swarm tasks' }).getByRole('listitem');
+  await expect(lanes.locator('.task-name')).toHaveText(['web.1 old', 'web.1 new']);
+  await expect(lanes.nth(1).locator('.task-stretch')).toHaveText(['starting', 'monitor', 'running']);
+  await expect(detail).toContainText('Downtime 3.0 s: no web task served while its tasks were replaced.');
   await steps.nth(0).click();
   await expect(detail.getByRole('heading')).toHaveText('Build web');
   await expect(detail).toContainText('25.0 s');
