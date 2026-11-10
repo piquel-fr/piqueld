@@ -184,10 +184,10 @@ expires.
   [back it up](../operations/backups.md#back-up) whole.
 
 On the host, `piquelctl status` lists each certificate, the hostnames using it,
-and its expiry, in milliseconds since 1970:
+and its expiry, in UTC:
 
 ```text
-Certificate: *.piquel.fr for admin.piquel.fr, staging.piquel.fr (expires at Unix ms 1767225600000)
+Certificate: *.piquel.fr for admin.piquel.fr, staging.piquel.fr (expires at 2026-01-01 00:00:00Z)
 ```
 
 A failing one adds a `Certificate problem:` line with the error. In the

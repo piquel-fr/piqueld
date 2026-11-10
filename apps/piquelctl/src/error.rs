@@ -4,7 +4,9 @@ use crate::{
     cli::Cli,
     output::{DiagnosticReport, Event, HumanWriter},
 };
-use piqueld_client::{ClientError, PlanView, PreviewLimitReached, TransportFailure};
+use piqueld_client::{
+    ClientError, PlanView, PreviewLimitReached, TransportFailure, observability::Timestamp,
+};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::{
@@ -617,8 +619,8 @@ impl<'a> ErrorReport<'a> {
                         counted.last_deployment.as_ref().map_or_else(
                             || "never deployed".into(),
                             |deployment| format!(
-                                "last deployed at Unix ms {}",
-                                deployment.created_at_ms
+                                "last deployed at {}",
+                                Timestamp(deployment.created_at_ms)
                             )
                         ),
                         if counted.deleting { " (deleting)" } else { "" },

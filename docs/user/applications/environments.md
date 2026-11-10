@@ -234,6 +234,9 @@ staging deployed after the change. When the manifest doesn't declare
 environments yet, setting a visibility in the dashboard or with `piquelctl`
 declares them all, as setting a variable's value for one environment does.
 
+`piquelctl env show hello staging` prints the visibility the environment
+deploys with, on its `Visibility` line.
+
 ## Promote releases
 
 Once a deployment of an environment has built or pulled its images, piqueld
@@ -375,7 +378,7 @@ With `piquelctl`:
      …
 
    Release:
-   rel-01a16d95e1627d5191c37f6cf0e8a041  commit 16139dfe6e37dc5f6a12c04c24629136d4c4e289  created 1792839901532
+   rel-01a16d95e1627d5191c37f6cf0e8a041  commit 16139dfe6e37dc5f6a12c04c24629136d4c4e289  created 2026-10-24 11:05:01Z
      Images: all present
      web: sha256:c0dcd0655ca8b48797f2ba02f1e323d17d12b04b18bf7a9f82c27849475d4fc4 (built from https://github.com/example/blog.git (16139dfe6e37dc5f6a12c04c24629136d4c4e289) at 16139dfe6e37dc5f6a12c04c24629136d4c4e289)
      Origin: promoted from staging's deployment operation-01a16d95dac676919a2e9efe0dc3299b
@@ -416,7 +419,7 @@ The application's **Releases** tab lists its releases, newest first, with the
 environments they were promoted to. So does `piquelctl app releases blog`:
 
 ```text
-rel-01a16d95e1627d5191c37f6cf0e8a041  commit 16139dfe6e37dc5f6a12c04c24629136d4c4e289  created 1792839901532
+rel-01a16d95e1627d5191c37f6cf0e8a041  commit 16139dfe6e37dc5f6a12c04c24629136d4c4e289  created 2026-10-24 11:05:01Z
   Images: all present
   web: sha256:c0dcd0655ca8b48797f2ba02f1e323d17d12b04b18bf7a9f82c27849475d4fc4 (built from https://github.com/example/blog.git (16139dfe6e37dc5f6a12c04c24629136d4c4e289) at 16139dfe6e37dc5f6a12c04c24629136d4c4e289)
   Deployed to: production as operation-01a16d964c787761b0128e7898e78122, promoted from staging's deployment operation-01a16d95dac676919a2e9efe0dc3299b

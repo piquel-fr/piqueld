@@ -284,11 +284,11 @@ List the application's builds by its ID, which `app show` prints:
 
 ```console
 $ piquelctl builds list --application app-01a16d91fb2c7b93bfe138a7d95dc56f
-1  env-01a16d91fb2c7b93bfe138a7d95dc560  web  Succeeded  1792839646134
+1  env-01a16d91fb2c7b93bfe138a7d95dc560  web  succeeded  2026-10-24 11:00:46Z
 ```
 
 Each line is a build: its number, the environment's ID, the service, its
-state, and when it started, in Unix milliseconds. Read a build's output by its
+state, and when it started, in UTC. Read a build's output by its
 number:
 
 ```console

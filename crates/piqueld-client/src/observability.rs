@@ -112,6 +112,48 @@ impl fmt::Display for Elapsed {
     }
 }
 
+/// A time the API reports in Unix milliseconds, as a UTC date and time to
+/// the second: `2026-01-01 00:00:00Z`. `piquelctl` shows times this way.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Timestamp(pub i64);
+
+impl Timestamp {
+    /// From Unix seconds, which account and credential expiries use.
+    #[must_use]
+    pub const fn from_secs(seconds: i64) -> Self {
+        Self(seconds.saturating_mul(1_000))
+    }
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let seconds = self.0.div_euclid(1_000);
+        let (days, second) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+        // Howard Hinnant's `civil_from_days`, with eras of 400 years that
+        // start on 1 March, so leap days end each year.
+        let days = days + 719_468;
+        let (era, day_of_era) = (days.div_euclid(146_097), days.rem_euclid(146_097));
+        let year_of_era =
+            (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_from_march = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_from_march + 2) / 5 + 1;
+        let month = if month_from_march < 10 {
+            month_from_march + 3
+        } else {
+            month_from_march - 9
+        };
+        let year = era * 400 + year_of_era + i64::from(month <= 2);
+        write!(
+            formatter,
+            "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}Z",
+            second / 3_600,
+            second % 3_600 / 60,
+            second % 60
+        )
+    }
+}
+
 impl Client {
     /// Reads a filtered page of durable history.
     /// # Errors
@@ -278,7 +320,7 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bytes, Elapsed, Uptime};
+    use super::{Bytes, Elapsed, Timestamp, Uptime};
     use std::time::Duration;
 
     #[test]
@@ -323,5 +365,18 @@ mod tests {
         }
         assert_eq!(Elapsed::from_millis_f64(3_245.7).to_string(), "3.2 s");
         assert_eq!(Elapsed::from_millis_f64(f64::NAN).to_string(), "0 ms");
+    }
+
+    #[test]
+    fn timestamps_are_utc_dates_and_times() {
+        for (milliseconds, text) in [
+            (0, "1970-01-01 00:00:00Z"),
+            (-1, "1969-12-31 23:59:59Z"),
+            (951_782_400_000, "2000-02-29 00:00:00Z"),
+            (1_767_225_599_999, "2025-12-31 23:59:59Z"),
+            (1_767_225_600_000, "2026-01-01 00:00:00Z"),
+        ] {
+            assert_eq!(Timestamp(milliseconds).to_string(), text);
+        }
     }
 }

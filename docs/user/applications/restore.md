@@ -43,16 +43,16 @@ The restore is a new deployment, at the top of the list. Its **Origin** reads
 
    ```console
    $ piquelctl env history hello production
-   operation-01a16da0f1c87a5e9b9d2b53a4f35b11  succeeded  created 1792841305114  (current, last successful)
+   operation-01a16da0f1c87a5e9b9d2b53a4f35b11  succeeded  created 2026-10-24 11:28:25Z  (current, last successful)
      Origin: built from its source
      Release: rel-01a16da0f4e17c2c84b4b8b6c1a5b8d2
-   operation-01a16d9f8e3b7e6aa1f27c46d0b9a3c4  succeeded  created 1792841213922
+   operation-01a16d9f8e3b7e6aa1f27c46d0b9a3c4  succeeded  created 2026-10-24 11:26:53Z
      Origin: built from its source
      Release: rel-01a16d9f90cf73f1b2a1e5d43e2c7f19
    ```
 
    Each line has the deployment's ID, its outcome, and when it was created,
-   in Unix milliseconds. `current` marks the one the environment runs. The
+   in UTC. `current` marks the one the environment runs. The
    command lists three deployments at a time, up to 100 with `--limit`, and
    prints a cursor to pass with `--cursor` for older ones.
 
@@ -188,7 +188,7 @@ The restore appears at the top of the environment's **Deployments** tab, and
 of `piquelctl env history`:
 
 ```text
-operation-01a16da2c7d05b1e2f8a9c3d4e5f6a7b  succeeded  created 1792841427035  (current, last successful)
+operation-01a16da2c7d05b1e2f8a9c3d4e5f6a7b  succeeded  created 2026-10-24 11:30:27Z  (current, last successful)
   Origin: restored from deployment operation-01a16d9f8e3b7e6aa1f27c46d0b9a3c4
   Release: rel-01a16d9f90cf73f1b2a1e5d43e2c7f19
 ```

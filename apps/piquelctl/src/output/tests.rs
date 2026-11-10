@@ -305,6 +305,39 @@ fn writes_and_flushes_fail_without_panicking_and_hidden_results_do_not_render() 
     quiet.info("hidden").unwrap();
 }
 
+/// A secret the daemon shows once, such as a new token.
+struct OneTime;
+impl Report for OneTime {
+    type Json = str;
+    const ONE_TIME: bool = true;
+    fn json(&self) -> &'static str {
+        "pqd_secret"
+    }
+    fn render_human(&self, out: &mut HumanWriter<'_>) -> io::Result<()> {
+        out.line("pqd_secret")
+    }
+}
+
+#[test]
+fn quiet_still_shows_one_time_secrets() {
+    let stdout = Capture::default();
+    let mut quiet = Console::with_writers(false, true, false, stdout.writer(), Box::new(Broken));
+    quiet.emit(&MustNotRender).unwrap();
+    quiet.emit(&OneTime).unwrap();
+    assert_eq!(stdout.text(), "pqd_secret\n");
+}
+
+#[test]
+fn manifests_print_as_toml_with_their_newlines() {
+    let stdout = Capture::default();
+    let manifest = "[metadata]\nname = \"notes\"\n\n[spec]\n";
+    stdout
+        .human_console()
+        .emit(&reports::ManifestReport(manifest.into()))
+        .unwrap();
+    assert_eq!(stdout.text(), "[metadata]\nname = \"notes\"\n\n[spec]\n");
+}
+
 /// Tracks whether a transient row occupies the terminal, without depending on
 /// spinner frames, elapsed time, or platform-specific cursor escape sequences.
 #[derive(Clone, Debug, Default)]
@@ -504,7 +537,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
         "{text}"
     );
     for expected in [
-        "*.piquel.fr for admin.piquel.fr (expires at Unix ms 1)",
+        "*.piquel.fr for admin.piquel.fr (expires at 1970-01-01 00:00:00Z)",
         "ovh create TXT record in zone piquel.fr: HTTP 403",
         "Public listener: healthy: Caddy is running",
         "Public ingress: Cloudflare Tunnel 6ff42ae2-765d-4adf-8112-31c55c1551ef (not connected)",
@@ -515,7 +548,7 @@ fn status_and_dns_refresh_list_images_dns_providers_certificate_failures_and_pre
         "Preview usage: 1500 millicores and 1610612736 bytes of limits across preview replicas",
         "Previews of notes: 3 of 10",
         "Unlimited replicas: 2 preview replicas deployed before the limits applied",
-        "Built images: 4 kept; cleanup removed 2048 bytes of images since the daemon started (last run at Unix ms 7)",
+        "Built images: 4 kept; cleanup removed 2048 bytes of images since the daemon started (last run at 1970-01-01 00:00:00Z)",
     ] {
         assert!(text.contains(expected), "{text}");
     }
@@ -559,7 +592,7 @@ fn telemetry_status_lists_destinations() {
     console.emit(&status).unwrap();
     assert_eq!(
         stdout.text(),
-        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at Unix ms 9, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\nTelemetry: otel production at unix:///var/lib/piqueld/telemetry/app-otel/collector/otlp.sock (connected, last export at Unix ms 10, 0 records dropped)\nTelemetry exports: daemon traces, metrics and logs; container logs and resource usage\n"
+        "Telemetry: unix:///run/otel/otlp.sock (failing, last export at 1970-01-01 00:00:00Z, 3 records dropped, headers from /run/credentials/piqueld.service/otlp-headers)\nTelemetry: otel production at unix:///var/lib/piqueld/telemetry/app-otel/collector/otlp.sock (connected, last export at 1970-01-01 00:00:00Z, 0 records dropped)\nTelemetry exports: daemon traces, metrics and logs; container logs and resource usage\n"
     );
 }
 

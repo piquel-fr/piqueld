@@ -337,8 +337,8 @@ report!(User, self, out, {
 });
 // Links served only over the Unix socket; human output is the bare URL so it
 // can be piped.
-report!(SetupLink, self, out, { out.line(&self.url) });
-report!(OperatorLink, self, out, { out.line(&self.url) });
+report!(once SetupLink, self, out, { out.line(&self.url) });
+report!(once OperatorLink, self, out, { out.line(&self.url) });
 /// Refuses `command` locally unless it will reach the daemon's Unix socket,
 /// the only transport serving it.
 fn require_socket(cli: &Cli, command: &str) -> Result<()> {

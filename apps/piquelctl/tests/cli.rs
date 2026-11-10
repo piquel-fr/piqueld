@@ -1929,7 +1929,7 @@ fn analytics_reads_one_environment_over_a_relative_window() {
         assert!(stdout.contains(line), "{stdout}");
     }
     assert!(
-        stderr.contains("reaches before retained history (recorded from Unix ms 5)"),
+        stderr.contains("reaches before retained history (recorded from 1970-01-01 00:00:00Z)"),
         "{stderr}"
     );
     assert_eq!(server.finish().len(), 2);
@@ -3927,8 +3927,8 @@ fn notification_deliveries_page_and_retry_refusals() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "delivery-02  ops  deployment_failures  notes / production  failed  1 attempt  updated 2000  HTTP 404\n\
-         delivery-01  ops  deployment_failures  notes / production  pending  2 attempts  next attempt 3000\n\
+        "delivery-02  ops  deployment_failures  notes / production  failed  1 attempt  updated 1970-01-01 00:00:02Z  HTTP 404\n\
+         delivery-01  ops  deployment_failures  notes / production  pending  2 attempts  next attempt 1970-01-01 00:00:03Z\n\
          Next cursor: v1:delivery-01\n"
     );
     let output = run_human(&server, &["notification", "retry", "delivery-02"]);

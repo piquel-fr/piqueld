@@ -209,12 +209,10 @@ impl Store {
         state: BuildState,
         image: Option<&str>,
     ) -> Result<(), StoreError> {
-        let state = match state {
-            BuildState::Running => return Err(StoreError::InvalidInput),
-            BuildState::Succeeded => "succeeded",
-            BuildState::Failed => "failed",
-            BuildState::Interrupted => "interrupted",
-        };
+        if state == BuildState::Running {
+            return Err(StoreError::InvalidInput);
+        }
+        let state = state.as_str();
         let now = now_ms();
         self.write(sqlx::query!(
             "UPDATE builds SET state=?1,finished_at_ms=?2,image_id=?3 WHERE id=?4 AND state='running'",
