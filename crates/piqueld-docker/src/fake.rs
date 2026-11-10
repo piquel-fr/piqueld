@@ -543,7 +543,7 @@ impl DockerApi for FakeDocker {
         &self,
         build: &ImageBuild<'_>,
         _log: Option<&dyn crate::command::OutputLog>,
-    ) -> Result<Sha256Digest, DockerError> {
+    ) -> Result<piqueld_core::BuiltImage, DockerError> {
         if !build.context.is_dir() {
             return Err(DockerError::Validation("find the build context"));
         }
@@ -577,7 +577,7 @@ impl DockerApi for FakeDocker {
         if let Some(gate) = &self.build_gate {
             gate.pass().await;
         }
-        Ok(id)
+        Ok(id.into())
     }
     /// Creates `request` in a task of its service, picked as the adapter
     /// picks one: the managed service of `instance`'s `environment` with

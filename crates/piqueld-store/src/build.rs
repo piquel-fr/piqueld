@@ -3,10 +3,9 @@ use super::auth::access::scope_json;
 use super::{Paging, Store, StoreError, days_ago_ms, decode_name, now_ms};
 use piqueld_core::access::Scope;
 use piqueld_core::{
-    ApplicationId, BuildInputs, EnvironmentId,
+    ApplicationId, BuildInputs, BuiltImage, EnvironmentId,
     api::{BuildLogChunk, BuildLogPage, BuildRecord, BuildState, LogStream, Page},
     manifest::ValidatedSource as Source,
-    resource::Sha256Digest,
 };
 use sqlx::{QueryBuilder, Sqlite};
 
@@ -17,7 +16,7 @@ pub struct ReusableBuild {
     /// The build that produced the image.
     pub id: i64,
     /// The image it produced.
-    pub image: Sha256Digest,
+    pub image: BuiltImage,
 }
 
 /// How a build ended: its terminal state, and the image of a succeeded one.
@@ -239,11 +238,7 @@ impl Store {
     ///
     /// # Errors
     /// Returns a storage error.
-    pub async fn finish_build(
-        &self,
-        id: i64,
-        outcome: &BuildOutcome,
-    ) -> Result<(), StoreError> {
+    pub async fn finish_build(&self, id: i64, outcome: &BuildOutcome) -> Result<(), StoreError> {
         let state = match outcome.state {
             BuildState::Running => return Err(StoreError::InvalidInput),
             BuildState::Succeeded => "succeeded",
@@ -302,7 +297,7 @@ impl Store {
             (BuildInputs::new(&source, Some(commit)) == inputs).then(|| {
                 Ok(ReusableBuild {
                     id: row.reused_build_id.unwrap_or(row.id),
-                    image: Sha256Digest::parse(row.image_id).map_err(StoreError::corrupt)?,
+                    image: BuiltImage::parse(row.image_id).map_err(StoreError::corrupt)?,
                 })
             })
         })
@@ -660,7 +655,7 @@ mod tests {
         };
         let original = ReusableBuild {
             id: built,
-            image: Sha256Digest::parse(image('a')).unwrap(),
+            image: BuiltImage::parse(image('a')).unwrap(),
         };
         assert_eq!(reusable(&preview).await, std::slice::from_ref(&original));
 

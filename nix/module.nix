@@ -193,6 +193,16 @@ in
             default = true;
             description = "Initialize an inactive Docker Engine as a single-node Swarm.";
           };
+          build.builder = lib.mkOption {
+            type = lib.types.nullOr (lib.types.strMatching "tcp://.+:[0-9]+");
+            default = null;
+            description = "BuildKit daemon of a build machine that builds images instead of this host, as tcp://host:port. The connection is not authenticated, so only this host should be able to reach that port. Requires build.repository.";
+          };
+          build.repository = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Image repository the build machine pushes to and this host pulls from, as registry-host[:port]/path without a tag. Docker requires HTTPS of a registry on another machine. Requires build.builder.";
+          };
           ingress.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;
@@ -411,6 +421,10 @@ in
       {
         assertion = dedicatedBelow "/run/" cfg.runtimeDir;
         message = "services.piqueld.runtimeDir must be a dedicated directory below /run";
+      }
+      {
+        assertion = (cfg.settings.build.builder == null) == (cfg.settings.build.repository == null);
+        message = "services.piqueld.settings.build needs both builder and repository, or neither";
       }
       {
         assertion = tunnel.enabled -> tunnel.credentials_file != null;

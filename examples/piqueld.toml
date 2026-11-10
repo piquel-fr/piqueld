@@ -42,6 +42,13 @@ hostname = "piqueld-dev"
 socket = "/var/run/docker.sock"
 auto_initialize_swarm = true
 
+[build]
+# Build images on another machine instead of this host: its BuildKit daemon,
+# and the image repository it pushes to and this host pulls from. Set both,
+# or neither. Only this host should be able to reach the builder's port.
+# builder = "tcp://build.example.ts.net:1234"
+# repository = "build.example.ts.net:5000/piqueld"
+
 [ingress]
 # Requires Docker 28+ and free public ports 80/443, unless [ingress.tunnel] is
 # enabled. Restart to apply.

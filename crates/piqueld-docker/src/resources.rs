@@ -551,21 +551,24 @@ impl DockerApi for BollardDocker {
         &self,
         build: &super::ImageBuild<'_>,
         log: Option<&dyn crate::command::OutputLog>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
-        // Builds shell out to Docker Buildx against the same socket, with the
-        // engine's own builder: the account may have selected one that does not
-        // load into the engine. Buildx also ignores `DOCKER_BUILDKIT=0`.
-        // They read the image ID from the build's `--metadata-file`, e.g.
-        // `{"containerimage.digest": "sha256:<64 hex>"}`. Provenance
-        // attestations differ on every build and, with the containerd image
-        // store, change that ID, so identical builds would never share a
-        // release. Without them, `--iidfile` would hold the config digest,
-        // which that store does not know the image by.
+    ) -> Result<piqueld_core::BuiltImage, DockerError> {
+        // Builds shell out to Docker Buildx, on the engine's own builder or
+        // on a build machine's (see `RemoteBuilder`), never on one the
+        // account selected, which may not load into the engine. Buildx also
+        // ignores `DOCKER_BUILDKIT=0`.
+        // They read the image's digest from the build's `--metadata-file`,
+        // e.g. `{"containerimage.digest": "sha256:<64 hex>"}`: the ID the
+        // engine's builder gives the image, or the digest a build machine
+        // pushed it under. Provenance attestations differ on every build
+        // and, with the containerd image store, change that ID, so identical
+        // builds would never share a release. Without them, `--iidfile`
+        // would hold the config digest, which that store does not know the
+        // image by.
         use anyhow::Context;
         #[derive(serde::Deserialize)]
         struct Metadata {
             #[serde(rename = "containerimage.digest")]
-            image_id: String,
+            digest: String,
         }
         let result = async {
             if !build.dockerfile.is_file() || !build.context.is_dir() {
@@ -573,12 +576,22 @@ impl DockerApi for BollardDocker {
             }
             let directory = tempfile::tempdir().context("create Docker build directory")?;
             let metadata = directory.path().join("metadata.json");
-            let mut command = tokio::process::Command::new("docker");
+            let mut command = if let Some(remote) = &self.builder {
+                let mut command = remote.docker();
+                command
+                    .args(["buildx", "build"])
+                    .args(remote.options(&self.platform().await?));
+                command
+            } else {
+                let mut command = tokio::process::Command::new("docker");
+                command
+                    .arg("--host")
+                    .arg(format!("unix://{}", self.socket.display()))
+                    .args(["buildx", "build", "--builder=default"]);
+                command
+            };
             command
-                .arg("--host")
-                .arg(format!("unix://{}", self.socket.display()))
-                .args(["buildx", "build", "--builder=default", "--pull"])
-                .args(["--provenance=false", "--file"])
+                .args(["--pull", "--provenance=false", "--file"])
                 .arg(&build.dockerfile)
                 .arg("--metadata-file")
                 .arg(&metadata)
@@ -591,11 +604,20 @@ impl DockerApi for BollardDocker {
                 .context("read build metadata")?;
             let metadata: Metadata =
                 serde_json::from_slice(&metadata).context("decode build metadata")?;
-            piqueld_core::resource::Sha256Digest::parse(metadata.image_id)
-                .context("validate built image ID")
+            let digest = piqueld_core::resource::Sha256Digest::parse(metadata.digest)
+                .context("validate built image digest")?;
+            let Some(remote) = &self.builder else {
+                return Ok(digest.into());
+            };
+            // The build machine pushed it: the engine has to pull it.
+            let image = remote.repository.image(&digest);
+            self.resolve_image(image.as_str())
+                .await
+                .context("pull the image the build machine pushed")?;
+            Ok(image.into())
         }
         .await;
-        result.map_err(|source| DockerError::RequestSource {
+        result.map_err(|source: anyhow::Error| DockerError::RequestSource {
             operation: "build Docker image",
             source: source.into(),
         })

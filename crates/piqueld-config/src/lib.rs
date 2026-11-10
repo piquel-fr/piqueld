@@ -2,6 +2,7 @@
 //! file, the DNS provider accounts it names, and the private state and
 //! runtime directories it prepares.
 
+mod build;
 mod credential;
 pub mod directories;
 pub mod dns;
@@ -10,6 +11,7 @@ pub mod runtime_dir;
 mod telemetry;
 mod tunnel;
 mod view;
+pub use build::BuildConfig;
 use credential::Resolution;
 pub use credential::{Credential, CredentialError, CredentialFile};
 pub use telemetry::{Headers, HeadersError, OtlpEndpoint, TelemetryConfig};
@@ -74,6 +76,9 @@ pub struct DaemonConfig {
     /// The Docker Engine piqueld manages.
     #[serde(default)]
     pub docker: DockerConfig,
+    /// A build machine that builds images instead of this host.
+    #[serde(default)]
+    pub build: BuildConfig,
     /// The managed HTTP gateway that serves applications' routes.
     #[serde(default)]
     pub ingress: IngressConfig,

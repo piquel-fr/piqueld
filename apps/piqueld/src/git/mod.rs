@@ -633,16 +633,16 @@ pub(crate) struct Checkout {
 }
 
 impl Checkout {
-    /// Builds the checkout's local image, labelled for `owner` and queued
-    /// with `priority`, streaming Docker's output into `log` when supplied.
-    /// Returns the built image ID.
+    /// Builds the checkout's image, labelled for `owner` and queued with
+    /// `priority`, streaming Docker's output into `log` when supplied.
+    /// Returns the built image.
     pub(crate) async fn build(
         &self,
         build: &piqueld_core::manifest::ValidatedBuild,
         (owner, priority): (&piqueld_core::InstanceId, piqueld_docker::BuildPriority),
         docker: &impl piqueld_docker::DockerApi,
         log: Option<&dyn piqueld_docker::command::OutputLog>,
-    ) -> anyhow::Result<piqueld_core::resource::Sha256Digest> {
+    ) -> anyhow::Result<piqueld_core::BuiltImage> {
         let piqueld_core::manifest::ValidatedBuild::Docker {
             dockerfile,
             context,

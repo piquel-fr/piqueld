@@ -40,6 +40,7 @@ impl DaemonConfig {
         let mut groups = BTreeMap::from([
             ("Server".into(), self.server_view()),
             ("Docker".into(), self.docker_view()),
+            ("Builds".into(), self.build_view()),
             ("Ingress".into(), self.ingress_view()),
             ("Reconciliation".into(), self.reconciliation_view()),
             ("Retention".into(), self.retention_view()),
@@ -90,6 +91,17 @@ impl DaemonConfig {
                 self.docker.auto_initialize_swarm.to_string(),
             ),
         ])
+    }
+
+    /// Builds the `Builds` group: the build machine, or this host.
+    fn build_view(&self) -> Group {
+        match &self.build.remote {
+            Some(remote) => group([
+                ("Builder", remote.builder.to_string()),
+                ("Image repository", remote.repository.to_string()),
+            ]),
+            None => group([("Builder", "This host's Docker Engine".into())]),
+        }
     }
 
     /// Builds the `Reconciliation` group.

@@ -2,8 +2,8 @@
 //! and whether a release's images are still present.
 
 use crate::{
-    DiagnosticSeverity, ImmutableImage, PlanDiagnostic, RepositoryDigest, ServiceName, codes,
-    resource::ResolvedApplication, resource::ResolvedSource,
+    BuiltImage, DiagnosticSeverity, ImmutableImage, PlanDiagnostic, RepositoryDigest, ServiceName,
+    codes, resource::ResolvedApplication, resource::ResolvedSource,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -149,14 +149,22 @@ impl LocalImages {
 
 impl ResolvedSource {
     /// The registry digest Docker can pull again if the image is missing.
-    /// A built image can't be recovered: rebuilding may produce another one.
+    /// An image built on the local engine can't be recovered: rebuilding
+    /// may produce another one.
     #[must_use]
     pub const fn repository_digest(&self) -> Option<&RepositoryDigest> {
         match self {
             Self::Image {
                 digest_reference, ..
+            }
+            | Self::Git {
+                image_id: BuiltImage::Pushed(digest_reference),
+                ..
             } => Some(digest_reference),
-            Self::Git { .. } => None,
+            Self::Git {
+                image_id: BuiltImage::Local(_),
+                ..
+            } => None,
         }
     }
 }
@@ -199,7 +207,9 @@ mod tests {
                 image: "unused".into(),
             },
             commit: "a".repeat(40),
-            image_id: Sha256Digest::parse(format!("sha256:{}", id.to_string().repeat(64))).unwrap(),
+            image_id: Sha256Digest::parse(format!("sha256:{}", id.to_string().repeat(64)))
+                .unwrap()
+                .into(),
         }
     }
 
@@ -233,6 +243,16 @@ mod tests {
             missing.iter().map(|m| &m.service).collect::<Vec<_>>(),
             [&api, &web]
         );
+
+        // A build pushed to a build machine's registry is pulled again.
+        let mut pushed = built('b');
+        if let ResolvedSource::Git { image_id, .. } = &mut pushed {
+            *image_id = pulled('c').repository_digest().unwrap().clone().into();
+        }
+        assert!(matches!(
+            LocalImages::default().availability([(&api, &pushed)]),
+            ReleaseAvailability::Pullable { .. }
+        ));
     }
 
     /// A plan of a release that can't be deployed again is blocked, like

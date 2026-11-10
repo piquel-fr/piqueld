@@ -28,6 +28,12 @@ Type: table. Optional.
 
 The website's origin and API token lifetimes.
 
+### `build`
+
+Type: table. Optional.
+
+A build machine that builds images instead of this host.
+
 ### `build_history`
 
 Type: table. Optional.
@@ -121,6 +127,22 @@ The longest lifetime, in days, of new API tokens. When unset, tokens may have an
 Type: string. Optional.
 
 The website's canonical origin, such as `https://piqueld.example.com`. Passkeys only work on this origin, and API mutations and WebSocket upgrades that send an `Origin` header must match it. It must be HTTPS, except `http://localhost` or a subdomain of it, such as `http://dev.localhost`, for development. When unset, it is `https://` followed by `ingress.private.dashboard_hostname` if that is set, otherwise the tailnet node's HTTPS URL if `tailscale.enabled` is set, otherwise `http://localhost:7845`.
+
+## `[build]` table
+
+A build machine that builds this installation's images instead of this host. piqueld still checks repositories out here, and sends each build to the machine's `BuildKit` daemon, which pushes the image to a registry this host's Docker Engine pulls it from. Set both settings, or neither: without them, images build on this host's Docker Engine.
+
+### `build.builder`
+
+Type: string. Optional.
+
+The build machine's `BuildKit` daemon, as `tcp://host:port`. The connection is not authenticated, so only this host should be able to reach that port, such as over a tailnet whose access rules allow nothing else.
+
+### `build.repository`
+
+Type: string. Optional.
+
+The image repository the build machine pushes to and this host pulls from, as `registry-host[:port]/path`, without a tag. Both reach it under this name, without credentials, and Docker requires HTTPS of a registry on another machine. Every image goes to this one repository, by digest, so they share their layers.
 
 ## `[build_history]` table
 

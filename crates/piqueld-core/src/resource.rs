@@ -14,7 +14,7 @@ use crate::{
         ValidatedRollout, ValidatedSource, registry_component, valid_image_reference,
     },
 };
-use crate::{BuildInputs, ImageReference, ImmutableImage, Release, RepositoryDigest};
+use crate::{BuildInputs, BuiltImage, ImageReference, ImmutableImage, Release, RepositoryDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
@@ -76,14 +76,15 @@ pub enum ResolvedSource {
         /// The immutable image reference used at runtime.
         digest_reference: RepositoryDigest,
     },
-    /// A Git revision built into an immutable local image.
+    /// A Git revision built into an immutable image.
     Git {
         /// Exact source and build inputs requested.
         requested: ValidatedSource,
         /// Resolved full commit hash.
         commit: String,
-        /// Docker's content-addressed local image ID.
-        image_id: Sha256Digest,
+        /// The image it was built into: Docker's content-addressed local
+        /// image ID, or its digest in a build machine's registry.
+        image_id: BuiltImage,
     },
 }
 

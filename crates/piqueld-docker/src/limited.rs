@@ -153,7 +153,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
         &self,
         build: &super::ImageBuild<'_>,
         log: Option<&dyn crate::command::OutputLog>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
+    ) -> Result<piqueld_core::BuiltImage, DockerError> {
         let _turn = self.builds.turn(build.priority).await;
         self.inner.build_image(build, log).await
     }

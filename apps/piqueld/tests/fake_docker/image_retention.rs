@@ -132,7 +132,7 @@ async fn missing_images_are_pulled_again_by_digest_or_reported_unavailable() {
             image: "unused".into(),
         },
         commit: "a".repeat(40),
-        image_id: image('c', &[]).id,
+        image_id: image('c', &[]).id.into(),
     };
     let error = in_use
         .ensure(&*harness.docker, [(&web, &pulled), (&api, &built)])

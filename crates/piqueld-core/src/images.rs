@@ -84,6 +84,70 @@ impl From<Sha256Digest> for ImmutableImage {
     }
 }
 
+/// The image a Git source was built into.
+#[derive(Clone, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+pub enum BuiltImage {
+    /// An image only the local engine has, under Docker's content-addressed
+    /// image ID. Rebuilding it may produce another one.
+    Local(Sha256Digest),
+    /// An image a build machine pushed to its registry, which Docker pulls
+    /// it from, again if it goes missing.
+    Pushed(RepositoryDigest),
+}
+
+impl BuiltImage {
+    /// Parses a local image ID or a repository digest.
+    ///
+    /// # Errors
+    /// Rejects anything else, such as a tag.
+    pub fn parse(value: impl Into<String>) -> Result<Self, ImmutableImageError> {
+        let value = value.into();
+        match Sha256Digest::parse(value.as_str()) {
+            Ok(id) => Ok(Self::Local(id)),
+            Err(_) => RepositoryDigest::parse(value)
+                .map(Self::Pushed)
+                .map_err(|_| ImmutableImageError),
+        }
+    }
+
+    /// The image ID or repository digest, as Docker takes it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Local(id) => id.as_str(),
+            Self::Pushed(digest) => digest.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for BuiltImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<Sha256Digest> for BuiltImage {
+    fn from(id: Sha256Digest) -> Self {
+        Self::Local(id)
+    }
+}
+
+impl From<RepositoryDigest> for BuiltImage {
+    fn from(digest: RepositoryDigest) -> Self {
+        Self::Pushed(digest)
+    }
+}
+
+impl From<BuiltImage> for ImmutableImage {
+    fn from(image: BuiltImage) -> Self {
+        match image {
+            BuiltImage::Local(id) => id.into(),
+            BuiltImage::Pushed(digest) => digest.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +164,14 @@ mod tests {
         let repository = format!("alpine@{digest}");
         assert!(RepositoryDigest::parse(&repository).is_ok());
         assert!(ImmutableImage::parse(&repository).is_ok());
+        // A built image is stored as either, and reads back as what it was.
+        for (value, pushed) in [(&digest, false), (&repository, true)] {
+            let image: BuiltImage = serde_json::from_value(value.as_str().into()).unwrap();
+            assert_eq!(matches!(image, BuiltImage::Pushed(_)), pushed);
+            assert_eq!(image, BuiltImage::parse(value.as_str()).unwrap());
+            assert_eq!(serde_json::to_value(&image).unwrap(), value.as_str());
+        }
+        assert!(BuiltImage::parse("alpine:latest").is_err());
         assert!(ImmutableImage::parse(&digest).is_ok());
         assert!(RepositoryDigest::parse(&digest).is_err());
         assert!(ImmutableImage::parse(format!("alpine@sha256:{}", "A".repeat(64))).is_err());

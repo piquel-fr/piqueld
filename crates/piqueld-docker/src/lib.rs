@@ -80,12 +80,16 @@ pub struct BollardDocker {
     docker: Arc<std::sync::OnceLock<Docker>>,
     /// Engine socket path, reused for raw service requests and `docker buildx build`.
     socket: Arc<Path>,
+    /// The build machine images build on; the engine builds them without one.
+    builder: Option<Arc<RemoteBuilder>>,
 }
 
 mod timeout;
 pub use timeout::DockerTimeout;
 mod build_queue;
 pub use build_queue::BuildPriority;
+mod builder;
+pub use builder::RemoteBuilder;
 mod configs;
 mod containers;
 pub use containers::{
@@ -185,7 +189,7 @@ impl JobRuns<'_> {
     }
 }
 
-/// Resolved inputs for one local Docker image build.
+/// Resolved inputs for one Docker image build.
 #[derive(Debug)]
 pub struct ImageBuild<'a> {
     /// Installation whose ownership labels the image carries. Image cleanup
@@ -337,7 +341,7 @@ pub trait DockerApi: Send + Sync + 'static {
         &self,
         build: &ImageBuild<'_>,
         log: Option<&dyn crate::command::OutputLog>,
-    ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
+    ) -> Result<piqueld_core::BuiltImage, DockerError>;
     /// Provisions an immutable secret with the expected application ownership.
     async fn ensure_secret(
         &self,
