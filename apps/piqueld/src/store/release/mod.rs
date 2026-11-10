@@ -121,11 +121,11 @@ impl Store {
     /// Records releases for deployments prepared before releases existed
     /// (migration `0022_releases.sql`), oldest first, so their environments
     /// show what they run. Runs on every start: once recorded, only
-    /// deployments of environments that record no releases match, and
-    /// deployments whose records no longer decode, which are logged and skipped.
+    /// deployments whose records no longer decode match, which are logged and
+    /// skipped. Previews record no releases, so their deployments never match.
     pub(super) async fn record_missing_releases(&self) -> Result<(), StoreError> {
         let prepared = sqlx::query!(
-            r#"SELECT d.id AS "id!",d.environment_id,d.created_at_ms,o.target_json AS "target_json!" FROM deployments d JOIN operations o ON o.id=d.id WHERE d.release_id IS NULL AND o.target_json IS NOT NULL ORDER BY d.created_at_ms,d.id"#
+            r#"SELECT d.id AS "id!",d.environment_id,d.created_at_ms,o.target_json AS "target_json!" FROM deployments d JOIN operations o ON o.id=d.id JOIN environments e ON e.id=d.environment_id AND e.kind='environment' WHERE d.release_id IS NULL AND o.target_json IS NOT NULL ORDER BY d.created_at_ms,d.id"#
         )
         .fetch_all(&self.pool)
         .await
