@@ -412,18 +412,22 @@ the daemon, so a compromised gateway can't take over a domain.
   over TCP without recursion or caching, every 5 seconds for up to 10 minutes,
   because OVH propagation is slow. It then answers the challenge, finalizes
   the order and deletes the record, also when issuance fails or shutdown
-  interrupts the order. The record is saved in `acme_challenges` before it is
-  created, with the provider's record ID once it exists, and forgotten once
-  deleted. Each certificate pass, once planning has refreshed the zones,
-  deletes the saved records, such as those whose deletion failed or that a
-  crash left behind (`ingress_certificate_challenge_delete`); one whose zone
-  no provider owns is kept, without an action, until one does. An order whose
-  name still has one deletes it first or fails, since too many TXT values at
-  one name make the CA reject validation. A record whose creation never
-  returned its ID is found by its value. A provider that can't or may not list
-  records (unsupported, HTTP 401 or 403), such as OVH without
-  `manage_records`, leaves it in place; other listing failures are retried.
-  Each ACME step is bounded by 2 minutes.
+  interrupts the order. Each ACME step is bounded by 2 minutes. A record that
+  outlives its order is deleted later:
+  - The record is saved in `acme_challenges` before it is created, with the
+    provider's record ID once it exists. It is forgotten once deleted.
+  - Each certificate pass deletes the saved records once planning has
+    refreshed the zones, in `ingress_certificate_challenge_delete` actions.
+    That covers records whose deletion failed and those a crash left behind.
+  - A saved record whose zone no provider owns is kept, without an action,
+    until a provider owns it again.
+  - An order whose challenge name still has a saved record deletes it first,
+    or fails. Too many TXT values at one name make the CA reject validation.
+  - A record whose creation never returned its ID is found by its value.
+  - A provider that can't or may not list records leaves such a record in
+    place, and its row is forgotten. Such a provider lacks the capability or
+    answers HTTP 401 or 403, as OVH does without `manage_records`. Other
+    listing failures are retried.
 - Files, all 0600: the account key in
   `<data_dir>/ingress/acme/account-<16 hex digits of the directory URL's SHA-256>.json`,
   and each certificate with its key in one file,
