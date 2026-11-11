@@ -35,6 +35,7 @@ never edited, since databases that applied it won't run it again.
 | `piqueld` | The daemon, with its dashboard and health probe embedded |
 | `piquelctl` | The CLI |
 | `piqueld-client` | The typed Rust client, with its documentation on [docs.rs](https://docs.rs/piqueld-client) |
+| `piqueld-config` | The daemon's configuration |
 | `piqueld-core` | The contracts the others share |
 | `piqueld-probe` | The static health probe the daemon embeds |
 
