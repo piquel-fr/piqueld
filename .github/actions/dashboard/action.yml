@@ -1,0 +1,37 @@
+# Builds the dashboard's wasm module once per version of its sources, and
+# points the daemon's build script at it through PIQUELD_DASHBOARD_WASM, so the
+# jobs that embed the dashboard skip its nested build. That build compiles
+# piqueld-ui with the size-optimized `dashboard` profile before the daemon can
+# start compiling, which takes minutes even with its dependencies cached.
+#
+# The cache key covers everything the module is compiled from: piqueld-ui and
+# the workspace crates it depends on, the manifests, the lockfile and the Rust
+# version. The build script still reads the stylesheets and assets themselves.
+#
+# Unlike the Rust caches, this one is saved from pull requests too: entries are
+# a few megabytes, and keyed by content, so a later push that leaves the
+# dashboard alone restores its own.
+
+name: Prebuilt dashboard
+description: Restores or builds the dashboard's wasm module, and sets PIQUELD_DASHBOARD_WASM to it.
+
+runs:
+  using: composite
+  steps:
+    - id: rust
+      shell: bash
+      run: echo "version=$(rustc --version | tr -c '[:alnum:].\n' -)" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/dashboard
+        key: dashboard-${{ steps.rust.outputs.version }}-${{ hashFiles('apps/piqueld-ui/**', 'crates/piqueld-core/**', 'crates/piqueld-client/**', 'crates/piqueld-probe/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+    # As the daemon's build script does (apps/piqueld/build/dashboard.rs).
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cargo build --locked --package piqueld-ui --profile dashboard --target wasm32-unknown-unknown --target-dir target-ui
+        mkdir -p "$RUNNER_TEMP/dashboard"
+        cp target-ui/wasm32-unknown-unknown/dashboard/piqueld-ui.wasm "$RUNNER_TEMP/dashboard/"
+    - shell: bash
+      run: echo "PIQUELD_DASHBOARD_WASM=$RUNNER_TEMP/dashboard/piqueld-ui.wasm" >> "$GITHUB_ENV"
