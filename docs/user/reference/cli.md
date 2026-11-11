@@ -1074,11 +1074,13 @@ status cannot be fetched during `app list`, `app show` or `env list`, its status
 is `null` (`unavailable` in human output) and a contextual warning is emitted
 immediately; other environments are still returned.
 
-Dynamic human-readable values escape terminal control characters, and invisible
-Unicode format characters such as bidirectional overrides, direction marks and
-zero-width characters, which could reorder or hide text. Logs preserve newlines
-and tabs, but escape the rest. `app exec` and `preview exec` output stays raw. Build logs additionally use the
-shared ANSI/control cleanup before human rendering. JSON retains original values.
+Dynamic human-readable values escape terminal control characters, and the common
+invisible Unicode format characters, such as bidirectional overrides, direction
+marks, zero-width characters and line separators, which could reorder or hide
+text. Logs preserve newlines, tabs and the zero-width joiners emoji need, but
+escape the rest. `app exec` and `preview exec` output stays raw. Build logs
+additionally use the shared ANSI/control cleanup before human rendering. JSON
+retains original values.
 Result, information, warning, and prompt write failures fail the command;
 progress and final error reporting are best effort.
 

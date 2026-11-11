@@ -130,20 +130,27 @@ fn dynamic_controls_are_escaped_and_log_whitespace_is_preserved() {
     );
 }
 
-/// Bidirectional overrides, direction marks and zero-width characters are
-/// escaped like controls, so they can't reorder or hide what is printed.
+/// Bidirectional overrides, direction marks, zero-width characters and line
+/// separators are escaped like controls, so they can't reorder or hide what
+/// is printed. Log text keeps the zero-width joiners that emoji need.
 #[test]
 fn invisible_format_characters_are_escaped() {
     let output = Capture::default();
     let mut writer = output.writer();
     let mut human = HumanWriter::new(writer.as_mut());
     human
-        .label("Name", "evil\u{202e}gnp.exe\u{2066}\u{200b}\u{200f}\u{61c}")
+        .label(
+            "Name",
+            "evil\u{202e}gnp.exe\u{2066}\u{200b}\u{200f}\u{61c}\u{2028}\u{200d}",
+        )
         .unwrap();
-    human.log_text("log\u{202d}\u{feff}\n").unwrap();
+    human
+        .log_text("log\u{202d}\u{feff}\u{2029} 👩\u{200d}💻\n")
+        .unwrap();
     assert_eq!(
         output.text(),
-        "Name: evil\\u{202e}gnp.exe\\u{2066}\\u{200b}\\u{200f}\\u{61c}\nlog\\u{202d}\\u{feff}\n"
+        "Name: evil\\u{202e}gnp.exe\\u{2066}\\u{200b}\\u{200f}\\u{61c}\\u{2028}\\u{200d}\n\
+         log\\u{202d}\\u{feff}\\u{2029} 👩\u{200d}💻\n"
     );
 }
 
