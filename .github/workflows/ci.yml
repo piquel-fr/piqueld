@@ -3,10 +3,11 @@
 # Jobs group the `just` validation recipes by what they compile, so each
 # compilation happens once per job instead of once per recipe:
 #
-#   checks  -> fmt-check, deny
-#   rust    -> lint, test, doc-test, openapi-check, boundary
-#   msrv    -> the published crates on the Rust their `rust-version` names
-#   wasm-ui -> ui-check, check-wasm, test-wasm
+#   checks             -> fmt-check, deny
+#   rust (lint)        -> lint, openapi-check, boundary
+#   rust (test)        -> test, doc-test
+#   msrv               -> the published crates on the Rust their `rust-version` names
+#   wasm-ui            -> ui-check, check-wasm, test-wasm
 #   docker-integration -> docker-test, in three shards
 #   browser-playwright -> test-playwright
 #   cli (macOS)        -> validate-cli
@@ -147,16 +148,31 @@ jobs:
       - run: just fmt-check
       - run: just deny
 
-  # Clippy runs first so lint failures report early. Both it and the tests
-  # embed the prebuilt dashboard instead of compiling it. `just lint` also
-  # lints the dashboard and client as wasm32, using the target from
-  # rust-toolchain.toml.
+  # Two parallel halves, so neither waits on the other's compilation: `lint`
+  # type-checks the workspace and builds the generators, `test` builds and
+  # runs the tests. Each keeps its own cache, as one holds Clippy metadata and
+  # the other compiled code. Both embed the prebuilt dashboard instead of
+  # compiling it. `just lint` also lints the dashboard and client as wasm32,
+  # using the target from rust-toolchain.toml.
   rust:
-    name: rust
+    name: rust (${{ matrix.name }})
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lint
+            run: |
+              just lint
+              just openapi-check
+              just boundary
+          - name: test
+            run: |
+              just test
+              just doc-test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
@@ -164,22 +180,19 @@ jobs:
           tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          key: ${{ matrix.name }}
           cache-directories: target-ui
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/actions/dashboard
-      - run: just lint
-      - run: just test
+      - run: ${{ matrix.run }}
       - name: Preserve test report
-        if: failure()
+        if: failure() && matrix.name == 'test'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: junit-workspace
           path: target/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
-      - run: just doc-test
-      - run: just openapi-check
-      - run: just boundary
 
   # Builds the published crates, as `cargo install` and their dependents do,
   # with the oldest Rust the workspace's `rust-version` promises. Warnings
