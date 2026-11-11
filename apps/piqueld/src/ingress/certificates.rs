@@ -53,10 +53,16 @@ use tokio_util::sync::CancellationToken;
 
 /// A failing certificate this close to expiry raises a daemon condition.
 const EXPIRY_WARNING_MS: i64 = 14 * 24 * 3600 * 1000;
-/// First retry delay after a failure; it doubles up to [`MAX_BACKOFF_MS`].
-const FIRST_BACKOFF_MS: i64 = 5 * 60 * 1000;
-/// Longest delay between retries.
-const MAX_BACKOFF_MS: i64 = 6 * 3600 * 1000;
+/// Retries of a failed certificate order.
+const ISSUANCE_BACKOFF: BackoffPolicy = BackoffPolicy {
+    first_ms: 5 * 60 * 1000,
+    max_ms: 6 * 3600 * 1000,
+};
+/// Retries of a leftover challenge record that failed to delete.
+const CHALLENGE_BACKOFF: BackoffPolicy = BackoffPolicy {
+    first_ms: 60 * 1000,
+    max_ms: 3600 * 1000,
+};
 /// Error of an order interrupted by daemon shutdown.
 const SHUTDOWN: &str = "cancelled by daemon shutdown";
 /// Longest wait for one ACME step, polling included: instant-acme's HTTP
@@ -200,10 +206,40 @@ struct Entry {
     error: Option<String>,
     /// Why no provider zone owns the hostnames, recomputed every pass.
     unowned: Option<ZoneError>,
-    /// Consecutive failures, which set the retry backoff.
+    /// When the next attempt may be made after failures.
+    backoff: Backoff,
+}
+
+/// How long to wait after each failure: `first_ms`, doubling up to `max_ms`.
+#[derive(Clone, Copy)]
+struct BackoffPolicy {
+    first_ms: i64,
+    max_ms: i64,
+}
+
+/// Consecutive failures of a retried task, and when it may run again.
+#[derive(Clone, Copy, Debug, Default)]
+struct Backoff {
     failures: u32,
     /// No attempt is made before this time.
     retry_at_ms: i64,
+}
+
+impl Backoff {
+    /// Whether an attempt may be made at `now_ms`. A pass reads the clock
+    /// a little later each time, so an attempt due within a second is ready
+    /// rather than left to the next pass.
+    fn ready(self, now_ms: i64) -> bool {
+        now_ms + 1000 >= self.retry_at_ms
+    }
+
+    /// Records a failure at `failed_at_ms`, delaying the next attempt as
+    /// `policy` says.
+    fn fail(&mut self, policy: BackoffPolicy, failed_at_ms: i64) {
+        self.failures += 1;
+        let delay = policy.first_ms << (self.failures - 1).min(10);
+        self.retry_at_ms = failed_at_ms + delay.min(policy.max_ms);
+    }
 }
 
 /// DNS providers, the ACME account and every known certificate.
@@ -215,6 +251,9 @@ pub(super) struct Certificates {
     /// ACME account, loaded or registered on first use.
     account: tokio::sync::Mutex<Option<Account>>,
     entries: parking_lot::RwLock<BTreeMap<CertificateName, Entry>>,
+    /// Backoff of leftover challenge records that failed to delete, by
+    /// record name. Kept in memory: a restart retries them at once.
+    challenge_backoff: parking_lot::Mutex<BTreeMap<String, Backoff>>,
     /// How long a TXT record may take to reach every authoritative nameserver;
     /// 10 minutes, because OVH propagation is slow.
     pub(super) propagation_timeout: Duration,
@@ -264,6 +303,7 @@ impl Certificates {
             directory,
             account: tokio::sync::Mutex::new(None),
             entries: parking_lot::RwLock::new(entries),
+            challenge_backoff: parking_lot::Mutex::default(),
             propagation_timeout: Duration::from_mins(10),
             #[cfg(test)]
             acme_root: None,
@@ -331,7 +371,7 @@ impl Certificates {
                         .stored
                         .as_ref()
                         .is_none_or(|stored| stored.due(now_ms))
-                        && now_ms >= entry.retry_at_ms =>
+                        && entry.backoff.ready(now_ms) =>
                 {
                     due.push(Due {
                         name,
@@ -456,7 +496,7 @@ impl Ingress {
             return;
         };
         // Planning discovered the zones that saved challenge records live in.
-        self.delete_leftover_challenges().await;
+        self.delete_leftover_challenges(now_ms).await;
         for due in due {
             let phase = if due.renewal {
                 "ingress_certificate_renew"
@@ -477,14 +517,12 @@ impl Ingress {
                 }
                 Err(error) => {
                     tracing::warn!(certificate=%due.name, phase, error=format!("{error:#}"), "DNS-01 certificate failed; will retry with backoff");
-                    entry.failures += 1;
                     // Backoff starts when the attempt failed, which can be
                     // minutes into the pass.
                     let failed_at_ms = now_ms.saturating_add(
                         i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
                     );
-                    entry.retry_at_ms = failed_at_ms
-                        + (FIRST_BACKOFF_MS << (entry.failures - 1).min(10)).min(MAX_BACKOFF_MS);
+                    entry.backoff.fail(ISSUANCE_BACKOFF, failed_at_ms);
                     entry.error = Some(format!("{error:#}"));
                 }
             }
@@ -633,9 +671,10 @@ impl Ingress {
 
     /// Deletes the challenge records saved by earlier attempts, such as
     /// before a restart or for a certificate no longer needed, each in its
-    /// own journal action. Failures are retried on the next pass. A record
-    /// whose zone no provider owns now is kept, unjournaled, until one does.
-    async fn delete_leftover_challenges(&self) {
+    /// own journal action. A record that fails is retried with
+    /// [`CHALLENGE_BACKOFF`], not every pass. A record whose zone no
+    /// provider owns now is kept, unjournaled, until one does.
+    async fn delete_leftover_challenges(&self, now_ms: i64) {
         let challenges = match self.store.acme_challenges().await {
             Ok(challenges) => challenges,
             Err(error) => {
@@ -643,7 +682,15 @@ impl Ingress {
                 return;
             }
         };
+        let backoff = &self.certificates.challenge_backoff;
         for challenge in challenges {
+            let ready = backoff
+                .lock()
+                .get(&challenge.name)
+                .is_none_or(|backoff| backoff.ready(now_ms));
+            if !ready {
+                continue;
+            }
             let owner = match self.certificates.dns.zone_for(&challenge.zone).await {
                 Ok(owner) => owner,
                 Err(error) => {
@@ -664,17 +711,20 @@ impl Ingress {
             }
             .await;
             if let Err(error) = result {
-                tracing::warn!(record=%challenge.name, error=format!("{error:#}"), "leftover ACME challenge record could not be deleted; will retry");
+                tracing::warn!(record=%challenge.name, error=format!("{error:#}"), "leftover ACME challenge record could not be deleted; will retry with backoff");
+                let mut backoff = backoff.lock();
+                let entry = backoff.entry(challenge.name).or_default();
+                entry.fail(CHALLENGE_BACKOFF, now_ms);
             }
         }
     }
 
     /// Deletes and unpublishes a saved challenge record through its zone's
     /// `owner` (provider index and zone) in the current journal action, then
-    /// forgets it. A record whose creation never returned its ID is found by
-    /// its value, when the provider may list records. Retrying after a failed
-    /// publish converges, since a record that is already gone counts as
-    /// deleted.
+    /// forgets it and its backoff. A record whose creation never returned its
+    /// ID is found by its value, when the provider may list records. Retrying
+    /// after a failed publish converges, since a record that is already gone
+    /// counts as deleted.
     async fn delete_challenge(
         &self,
         journal: &Journaled<'_>,
@@ -709,6 +759,11 @@ impl Ingress {
         journal.request().await?;
         provider.publish(dns.http(), &zone).await?;
         self.store.forget_acme_challenge(&challenge.name).await?;
+        // A record created at this name later starts without a backoff.
+        self.certificates
+            .challenge_backoff
+            .lock()
+            .remove(&challenge.name);
         Ok(())
     }
 

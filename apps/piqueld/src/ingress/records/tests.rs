@@ -438,6 +438,42 @@ async fn saved_challenge_records_are_deleted_after_a_restart() {
     assert_eq!(journaled, ["ingress_certificate_challenge_delete"; 2]);
 }
 
+/// A leftover challenge record that keeps failing to delete is retried with
+/// a doubling delay, not on every pass, and deleted once it can be.
+#[tokio::test]
+async fn failing_challenge_deletions_back_off() {
+    let harness = Harness::new(true).await;
+    let name = "_acme-challenge.www.example.com";
+    harness.provider.insert(name, Record::Txt("left".into()));
+    let id = harness.provider.found(name).unwrap()[0].id.clone();
+    let challenge = AcmeChallenge {
+        name: name.into(),
+        zone: Hostname::parse("example.com").unwrap(),
+        value: "left".into(),
+        record_id: Some(id.0),
+    };
+    harness.store.save_acme_challenge(&challenge).await.unwrap();
+    harness.provider.fail(Some(Outage::Delete));
+
+    let (token, unneeded) = (CancellationToken::new(), BTreeSet::new());
+    let pass = |now| {
+        harness
+            .ingress
+            .maintain_certificates(&unneeded, now, &token)
+    };
+    let (minute, mut since) = (60_000, 0);
+    // Failures at 0 and 1 minute delay the next attempts by 1 and 2 minutes.
+    for (now, attempts) in [(0, 1), (minute / 2, 0), (minute, 1), (2 * minute, 0)] {
+        pass(now).await;
+        assert_eq!(harness.journaled(&mut since).await.len(), attempts, "{now}");
+    }
+    harness.provider.fail(None);
+    pass(3 * minute).await;
+    assert_eq!(harness.journaled(&mut since).await.len(), 1);
+    assert_eq!(harness.provider.dump(), Vec::<String>::new());
+    assert_eq!(harness.store.acme_challenges().await.unwrap(), []);
+}
+
 #[tokio::test]
 async fn wildcards_get_records_with_ownership_beside_their_parent() {
     let harness = Harness::new(true).await;
