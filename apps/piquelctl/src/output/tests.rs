@@ -130,6 +130,23 @@ fn dynamic_controls_are_escaped_and_log_whitespace_is_preserved() {
     );
 }
 
+/// Bidirectional overrides, direction marks and zero-width characters are
+/// escaped like controls, so they can't reorder or hide what is printed.
+#[test]
+fn invisible_format_characters_are_escaped() {
+    let output = Capture::default();
+    let mut writer = output.writer();
+    let mut human = HumanWriter::new(writer.as_mut());
+    human
+        .label("Name", "evil\u{202e}gnp.exe\u{2066}\u{200b}\u{200f}\u{61c}")
+        .unwrap();
+    human.log_text("log\u{202d}\u{feff}\n").unwrap();
+    assert_eq!(
+        output.text(),
+        "Name: evil\\u{202e}gnp.exe\\u{2066}\\u{200b}\\u{200f}\\u{61c}\nlog\\u{202d}\\u{feff}\n"
+    );
+}
+
 #[test]
 fn tables_align_columns_by_escaped_display_width() {
     let output = Capture::default();
