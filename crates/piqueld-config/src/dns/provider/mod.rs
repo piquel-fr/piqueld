@@ -88,7 +88,10 @@ pub enum DnsProvider {
     /// time from `/auth/time`, which needs no permission.
     Ovh(Ovh),
     /// Pebble's `challtestsrv`, which serves TXT records to a test CA.
+    // Test-only variants are skipped so they never reach the configuration
+    // schema, which `just generate` builds with the `testing` feature on.
     #[cfg(any(test, feature = "testing"))]
+    #[serde(skip)]
     Challtestsrv(challtestsrv::Challtestsrv),
     /// Records kept in memory, for reconciliation tests.
     #[cfg(any(test, feature = "testing"))]
