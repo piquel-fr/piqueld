@@ -252,7 +252,7 @@ async fn narrowed_secret_access_applies_to_restores() {
         previews: false,
     };
     store
-        .set_secret_access(Daemon, app.id(), "stripe", &none)
+        .set_secret_access(Daemon, app.id(), "stripe", &none, None)
         .await
         .unwrap();
     assert!(matches!(

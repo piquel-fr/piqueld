@@ -242,7 +242,9 @@ impl SecretAction {
                             "supply --environments, --all-environments, --previews or --no-previews",
                         )
                     })?;
-                let secret = client.set_secret_access(id, name, &access).await?;
+                let secret = client
+                    .set_secret_access(id, name, &access, Some(&existing.access))
+                    .await?;
                 console.emit(&StoredSecretReport {
                     secret: &secret,
                     environments,

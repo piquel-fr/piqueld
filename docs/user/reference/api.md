@@ -895,8 +895,11 @@ belong to their environment. Secret endpoints expose metadata only:
   retained-version or byte quota returns 409 `secret_quota_exceeded`; delete
   unused secrets to free space.
 - `PUT /api/v1/applications/{id}/secrets/{name}/access` replaces the access list
-  with a JSON `SecretAccess` body. Environments must belong to the application
-  (400 otherwise).
+  with a JSON `SecretAccessChange` body: the new `environments` and `previews`,
+  and optionally `expected`, the access you read. Environments must belong to
+  the application (400 otherwise). With `expected`, the change fails with 409
+  `secret_access_conflict` if someone changed the access meanwhile; read it again
+  and retry. `piquelctl` and the dashboard always send it.
   Narrowing it affects later deployments only. A secret being deleted keeps its
   access (409 `secret_deleting`).
 - `GET /api/v1/environments/{id}/secrets` lists an environment's generated secrets

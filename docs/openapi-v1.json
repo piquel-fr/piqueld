@@ -10899,6 +10899,43 @@
         ],
         "type": "object"
       },
+      "SecretAccessChange": {
+        "additionalProperties": false,
+        "description": "A stored secret's new access list, optionally guarded by the one the\ncaller read, so concurrent changes aren't lost: the change fails with 409\n`secret_access_conflict` once the secret's access is no longer `expected`.",
+        "properties": {
+          "environments": {
+            "$ref": "#/components/schemas/EnvironmentAccess",
+            "description": "Environments that may mount the secret."
+          },
+          "expected": {
+            "oneOf": [
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/SecretAccess"
+                  }
+                ],
+                "description": "The access the change was made from; without it, the change replaces\nwhatever access is set."
+              },
+              {
+                "enum": [
+                  null
+                ],
+                "nullable": true,
+                "type": "string"
+              }
+            ]
+          },
+          "previews": {
+            "description": "Whether previews may mount the secret. Previews are never covered by\n`environments`, even `all`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "environments"
+        ],
+        "type": "object"
+      },
       "SecretDeclaration": {
         "additionalProperties": false,
         "description": "A secret whose value piqueld generates for each environment when one of\nits deployments first needs it. Later deployments and manifest edits keep\nthat value; `piquelctl env secret regenerate` replaces it. A value is never\nshared with another environment.",
@@ -17832,7 +17869,7 @@
     },
     "/api/v1/applications/{id}/secrets/{name}/access": {
       "put": {
-        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.\nFails with 409 `secret_deleting` while the secret is being deleted.",
+        "description": "Environments are listed by ID and must belong to the application. A\nnarrower list fails later deployments that mount the secret with\n`secret_access_denied`; running deployments keep their pinned versions.\nFails with 409 `secret_deleting` while the secret is being deleted, and\nwith 409 `secret_access_conflict` when `expected` is given and no longer\nthe secret's access.",
         "operationId": "setSecretAccess",
         "parameters": [
           {
@@ -17856,7 +17893,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SecretAccess"
+                "$ref": "#/components/schemas/SecretAccessChange"
               }
             }
           },

@@ -127,6 +127,11 @@ impl ApiError {
                 "secret_deleting",
                 "Secret deletion is in progress; retry deletion to finish cleanup",
             ),
+            StoreError::SecretAccessConflict => Self::new(
+                StatusCode::CONFLICT,
+                "secret_access_conflict",
+                "The secret's access changed since you read it; read it again and retry",
+            ),
             StoreError::SecretQuota => Self::new(
                 StatusCode::CONFLICT,
                 "secret_quota_exceeded",
@@ -314,6 +319,7 @@ impl From<StoreError> for ApiError {
             | StoreError::SecretKeyUsable
             | StoreError::SecretSource(_)
             | StoreError::SecretDeleting
+            | StoreError::SecretAccessConflict
             | StoreError::SecretQuota
             | StoreError::SecretReferenced
             | StoreError::SecretAccessDenied { .. }) => Self::from_secret_error(error),

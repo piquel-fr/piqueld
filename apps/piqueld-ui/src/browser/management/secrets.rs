@@ -363,11 +363,14 @@ pub(super) fn StoredSecrets(
             return;
         }
         let (id, name, access) = (id.get_value(), name.get_untracked(), form.access());
+        // The access the form was loaded from, so a concurrent change fails
+        // with `secret_access_conflict` instead of being overwritten.
+        let expected = existing(&name).map(|(_, access)| access);
         feedback.send(
             context,
             async move {
                 Client::browser()
-                    .set_secret_access(&id, &name, &access)
+                    .set_secret_access(&id, &name, &access, expected.as_ref())
                     .await
             },
             move |secret| saved(secret, "Access saved. It applies to later deployments."),

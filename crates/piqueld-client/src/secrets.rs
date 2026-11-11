@@ -1,7 +1,7 @@
 //! Secret metadata and write-only secret values: generated secrets per
 //! environment, and each application's store of manually set secrets.
 use crate::{
-    Client, ClientError, SecretAccess, SecretMetadata, StoredSecret,
+    Client, ClientError, SecretAccess, SecretAccessChange, SecretMetadata, StoredSecret,
     client::{EnvelopedCall, GeneratedCall},
 };
 impl Client {
@@ -56,17 +56,21 @@ impl Client {
             .await
     }
 
-    /// Replaces which environments, and whether previews, may mount a stored secret.
+    /// Replaces which environments, and whether previews, may mount a stored
+    /// secret, if its access is still `expected`, the access it was read with.
     /// # Errors
-    /// Returns transport, decoding or API errors.
+    /// Returns transport, decoding or API errors, such as 409
+    /// `secret_access_conflict` when the access changed meanwhile.
     pub async fn set_secret_access(
         &self,
         application: &str,
         name: &str,
         access: &SecretAccess,
+        expected: Option<&SecretAccess>,
     ) -> Result<StoredSecret, ClientError> {
+        let change = SecretAccessChange::new(access.clone(), expected.cloned());
         self.generated
-            .set_secret_access(application, name, access)
+            .set_secret_access(application, name, &change)
             .data()
             .await
     }

@@ -1807,6 +1807,46 @@ impl SecretAccess {
     }
 }
 
+/// A stored secret's new access list, optionally guarded by the one the
+/// caller read, so concurrent changes aren't lost: the change fails with 409
+/// `secret_access_conflict` once the secret's access is no longer `expected`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SecretAccessChange {
+    /// Environments that may mount the secret.
+    pub environments: EnvironmentAccess,
+    /// Whether previews may mount the secret. Previews are never covered by
+    /// `environments`, even `all`.
+    #[serde(default)]
+    pub previews: bool,
+    /// The access the change was made from; without it, the change replaces
+    /// whatever access is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<SecretAccess>,
+}
+
+impl SecretAccessChange {
+    /// Changes the access to `access`, guarded by `expected` when given.
+    #[must_use]
+    pub fn new(access: SecretAccess, expected: Option<SecretAccess>) -> Self {
+        Self {
+            environments: access.environments,
+            previews: access.previews,
+            expected,
+        }
+    }
+
+    /// The new access, and the one it was made from.
+    #[must_use]
+    pub fn into_parts(self) -> (SecretAccess, Option<SecretAccess>) {
+        let access = SecretAccess {
+            environments: self.environments,
+            previews: self.previews,
+        };
+        (access, self.expected)
+    }
+}
+
 /// A manually set secret in an application's store: its metadata and access,
 /// never its value.
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]

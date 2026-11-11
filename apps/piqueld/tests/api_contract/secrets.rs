@@ -127,6 +127,37 @@ async fn stored_secret_uploads_check_their_headers_first() {
     response.assert_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "secret_content_type");
 }
 
+/// Over HTTP, an access change made from an access read that is no longer
+/// current fails with 409 `secret_access_conflict`, keeping the current one.
+#[tokio::test]
+async fn access_changes_from_an_outdated_read_conflict() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::tcp(router(state(&temp).await, FakeAuth)).await;
+    let client = server.client();
+    let app = client.apply_and_deploy(&new_application()).await.unwrap();
+    client
+        .put_stored_secret(&app.application_id, "token", 0, b"one".to_vec(), None)
+        .await
+        .unwrap();
+    let outdated = piqueld_client::SecretAccess {
+        environments: piqueld_client::EnvironmentAccess::All,
+        previews: true,
+    };
+    let refused = client
+        .set_secret_access(
+            &app.application_id,
+            "token",
+            &piqueld_client::SecretAccess::default(),
+            Some(&outdated),
+        )
+        .await;
+    let error = api_error(refused.unwrap_err());
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (409, "secret_access_conflict")
+    );
+}
+
 #[tokio::test]
 async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     use piqueld_client::edit::{ApplicationEdit, EditOptions, ServiceEdit};

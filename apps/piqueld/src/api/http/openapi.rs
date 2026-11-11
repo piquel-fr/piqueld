@@ -44,6 +44,7 @@ use utoipa::{OpenApi, ToResponse};
         Envelope<Vec<SecretMetadata>>,
         piqueld_core::api::StoredSecret,
         piqueld_core::api::SecretAccess,
+        piqueld_core::api::SecretAccessChange,
         piqueld_core::api::EnvironmentAccess,
         Envelope<Vec<piqueld_core::api::StoredSecret>>,
         Envelope<piqueld_core::api::StoredSecret>,
