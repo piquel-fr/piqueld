@@ -1,7 +1,7 @@
 # Ingress
 
 This page describes how piqueld's managed ingress works, for people changing
-`apps/piqueld/src/ingress`, `apps/piqueld/src/dns` or the route handling around
+`apps/piqueld/src/ingress`, `crates/piqueld-config/src/dns` or the route handling around
 them. The user guide's [networking pages](../../user/networking/routes.md)
 describe what users see and do.
 

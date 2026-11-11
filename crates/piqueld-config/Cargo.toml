@@ -1,0 +1,50 @@
+[package]
+name = "piqueld-config"
+description = "Configuration, DNS provider accounts and state directories of the piqueld daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["config"]
+
+# `testing` adds the in-memory and `challtestsrv` DNS providers that the
+# daemon's ingress tests issue certificates and manage records with.
+[features]
+testing = []
+
+[dependencies]
+anyhow.workspace = true
+hickory-resolver.workspace = true
+openssl.workspace = true
+parking_lot.workspace = true
+piqueld-core.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls"] }
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+url.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+
+# Static musl builds link a vendored OpenSSL; see the daemon's manifest.
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { workspace = true, features = ["vendored"] }
+
+[dev-dependencies]
+# Stands in for the DNS providers' APIs.
+axum.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

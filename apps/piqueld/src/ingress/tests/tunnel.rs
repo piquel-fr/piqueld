@@ -2,11 +2,8 @@
 //! tunnel listener. The harness test emulates `cloudflared` with a container
 //! on the edge network, since a real tunnel needs Cloudflare.
 use super::{Engine, Scenario, dns01::CURL_IMAGE, private_config, routes};
-use crate::{
-    config::{Credential, TunnelConfig, TunnelCredentials},
-    ingress::Ingress,
-    store::Store,
-};
+use crate::{ingress::Ingress, store::Store};
+use piqueld_config::{Credential, TunnelConfig, TunnelCredentials};
 use piqueld_core::{EnvironmentId, api::PublicIngressStatus, manifest::Visibility};
 use serde_json::{Value, json};
 use std::sync::Arc;

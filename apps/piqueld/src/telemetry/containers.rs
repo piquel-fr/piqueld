@@ -539,8 +539,8 @@ mod tests {
     /// nothing listens on.
     fn unreachable(directory: &std::path::Path) -> Telemetry {
         let endpoint = directory.join("absent.sock");
-        let config = crate::config::TelemetryConfig {
-            endpoint: Some(crate::config::OtlpEndpoint::Unix(endpoint)),
+        let config = piqueld_config::TelemetryConfig {
+            endpoint: Some(piqueld_config::OtlpEndpoint::Unix(endpoint)),
             ..Default::default()
         };
         Telemetry::new(&config, crate::telemetry::Sockets::new(directory)).unwrap()

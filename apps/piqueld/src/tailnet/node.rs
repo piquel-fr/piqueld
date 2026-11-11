@@ -7,9 +7,9 @@
 //! many `just dev` instances serve from, each on its own port.
 
 use super::{Cli, PortUse, ProxyListener};
-use crate::config::DaemonConfig;
 use anyhow::{Context, Result, bail, ensure};
 use axum::serve::{ListenerExt, TapIo};
+use piqueld_config::DaemonConfig;
 use piqueld_core::api::TailnetStatus;
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -131,7 +131,7 @@ impl Node {
                 config.auth.public_url = Some(url.clone());
                 true
             }
-            Some(public_url) => crate::auth::Auth::validate_origin(public_url)
+            Some(public_url) => piqueld_config::AuthConfig::validate_origin(public_url)
                 .is_ok_and(|origin| origin.origin().ascii_serialization() == url),
         };
         if !public_url_matches {
@@ -169,7 +169,7 @@ impl Node {
     /// logs it in.
     async fn start(config: &DaemonConfig) -> Result<(Daemon, Cli)> {
         let dir = config.server.tailscale_dir();
-        crate::prepare_data_dir(&dir)
+        piqueld_config::directories::prepare_data_dir(&dir)
             .await
             .with_context(|| format!("failed to prepare tailnet state {}", dir.display()))?;
         let cli = Cli {
@@ -199,7 +199,7 @@ impl Node {
     /// terminal interrupts stop both, and is killed when piqueld drops it.
     async fn spawn(dir: &Path, socket: &Path) -> Result<Child> {
         // A stale socket from a killed daemon would look ready before it is.
-        crate::directories::remove_file(socket)
+        piqueld_config::directories::remove_file(socket)
             .await
             .context("failed to remove the stale tailscaled socket")?;
         let mut daemon = Command::new("tailscaled")

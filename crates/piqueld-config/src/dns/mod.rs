@@ -54,8 +54,8 @@ pub struct Dns {
     refreshed: Mutex<Option<Instant>>,
     /// Addresses of each nameserver queried for propagation instead of each
     /// zone's NS records.
-    #[cfg(test)]
-    pub(crate) nameservers: Option<Vec<Vec<std::net::SocketAddr>>>,
+    #[cfg(any(test, feature = "testing"))]
+    pub nameservers: Option<Vec<Vec<std::net::SocketAddr>>>,
 }
 
 impl Dns {
@@ -76,28 +76,28 @@ impl Dns {
                 .no_proxy()
                 .build()?,
             refreshed: Mutex::new(None),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             nameservers: None,
         })
     }
 
     /// The client used for provider APIs.
-    pub(crate) fn http(&self) -> &reqwest::Client {
+    pub fn http(&self) -> &reqwest::Client {
         &self.http
     }
 
     /// The configured provider at `index`.
-    pub(crate) fn provider(&self, index: usize) -> &DnsProvider {
+    pub fn provider(&self, index: usize) -> &DnsProvider {
         &self.providers[index].provider
     }
 
     /// Whether any provider manages routes' records.
-    pub(crate) fn manages_any_records(&self) -> bool {
+    pub fn manages_any_records(&self) -> bool {
         self.providers.iter().any(|config| config.manage_records)
     }
 
     /// Whether the provider at `index` manages routes' records.
-    pub(crate) fn manages_records(&self, index: usize) -> bool {
+    pub fn manages_records(&self, index: usize) -> bool {
         self.providers[index].manage_records
     }
 

@@ -6,8 +6,6 @@ pub mod application;
 pub mod auth;
 /// Executor-independent durable build recording.
 pub mod build;
-pub mod config;
-pub mod dns;
 pub mod docker;
 pub mod ingress;
 pub mod operations;
@@ -19,17 +17,12 @@ pub mod telemetry;
 
 mod certificate;
 mod command;
-mod directories;
 mod git;
-mod runtime_dir;
 mod ui_bundle;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-
-pub use directories::{DirectoryLock, prepare_data_dir};
-pub use runtime_dir::RuntimeDir;
 
 /// Errors produced by the daemon's process-level runtime skeleton.
 #[derive(Debug, Error)]

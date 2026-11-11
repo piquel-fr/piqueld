@@ -27,10 +27,10 @@
 //! container whose spec hash differs is replaced.
 
 use super::{Ingress, TAILSCALE_IMAGE, gateway::TMPFS, wire::UnixApi};
-use crate::config::{Credential, PrivateIngressConfig};
-use crate::directories::PrivateFile;
 use crate::tailnet::ProxyListener;
 use anyhow::{Context, Result};
+use piqueld_config::directories::PrivateFile;
+use piqueld_config::{Credential, PrivateIngressConfig};
 use piqueld_core::api::PrivateIngressStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -188,7 +188,7 @@ impl Ingress {
     async fn prepare_node(&self, node: &Node) -> Result<()> {
         let directory = self.node_directory();
         for name in ["", "state", "run", "config"] {
-            crate::prepare_data_dir(&directory.join(name)).await?;
+            piqueld_config::directories::prepare_data_dir(&directory.join(name)).await?;
         }
         let config = directory.join("config");
         PrivateFile::at(config.join("serve.json"))

@@ -29,6 +29,13 @@ const MAX_PENDING: usize = 1024;
 /// Prefix of credential secrets issued since authorization was introduced.
 const CREDENTIAL_PREFIX: &str = "pqd_";
 
+/// An invalid origin is invalid input, with the reason as its message.
+impl From<piqueld_config::InvalidOrigin> for AuthError {
+    fn from(error: piqueld_config::InvalidOrigin) -> Self {
+        Self::Invalid(error.0)
+    }
+}
+
 /// Authentication failure with internal diagnostics retained for logging.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -137,7 +144,7 @@ pub struct TokenPolicy {
 impl TokenPolicy {
     /// The limits `config` sets.
     #[must_use]
-    pub fn new(config: &crate::config::DaemonConfig) -> Self {
+    pub fn new(config: &piqueld_config::DaemonConfig) -> Self {
         Self {
             max_days: config.auth.max_token_days,
             tailnet: config.tailscale.enabled
@@ -155,7 +162,7 @@ impl Auth {
     /// Returns configuration, database, or setup-file errors.
     pub async fn initialize(
         store: &crate::store::Store,
-        config: &crate::config::DaemonConfig,
+        config: &piqueld_config::DaemonConfig,
     ) -> anyhow::Result<Self> {
         let tokens = TokenPolicy::new(config);
         let auth = Self::configured(store, config.public_url(), tokens)?;
@@ -187,7 +194,7 @@ impl Auth {
         public_url: &str,
         tokens: TokenPolicy,
     ) -> Result<Self> {
-        let origin = Self::validate_origin(public_url)?;
+        let origin = piqueld_config::AuthConfig::validate_origin(public_url)?;
         let host = origin
             .domain()
             .ok_or(AuthError::Invalid("public_url requires a DNS hostname"))?;
@@ -214,40 +221,6 @@ impl Auth {
         })))
     }
 
-    /// Validates the canonical origin used for `WebAuthn`, links, and CSRF checks.
-    ///
-    /// The URL must be a bare origin with a DNS hostname: no credentials, path,
-    /// query, or fragment.
-    ///
-    /// ```text
-    /// https://piqueld.example.com   accepted
-    /// http://localhost:8080         accepted (development)
-    /// http://dev.localhost:8080     accepted (development)
-    /// https://10.0.0.1              rejected (no DNS hostname)
-    /// https://example.com/piqueld   rejected (path)
-    /// ```
-    /// # Errors
-    /// Requires HTTPS, except for HTTP development on `localhost` or its
-    /// subdomains, which browsers resolve to loopback and treat as secure.
-    pub fn validate_origin(value: &str) -> Result<url::Url> {
-        let url = url::Url::parse(value).map_err(|_| AuthError::Invalid("invalid public_url"))?;
-        if url.domain().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.path() != "/"
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || !(url.scheme() == "https"
-                || (url.scheme() == "http"
-                    && url.domain().is_some_and(piqueld_core::auth::is_localhost)))
-        {
-            return Err(AuthError::Invalid(
-                "public_url must be an HTTPS origin (or http://localhost or a subdomain of it for development)",
-            ));
-        }
-        Ok(url)
-    }
-
     /// Creates a private setup link on disk while the installation is unclaimed,
     /// and keeps it in memory for [`Auth::setup_link`]. Repeated startup
     /// preserves the secret of an existing valid link, rebuilding the link for
@@ -259,7 +232,7 @@ impl Auth {
         use anyhow::Context;
         use std::io::Write;
         if self.status().await?.initialized {
-            return crate::directories::remove_file(path)
+            return piqueld_config::directories::remove_file(path)
                 .await
                 .context("remove consumed setup link");
         }

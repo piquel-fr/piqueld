@@ -1,5 +1,4 @@
 //! One OTLP/gRPC collector and the bounded queues feeding it.
-use crate::config::{Credential, OtlpEndpoint};
 use crate::store::now_ms;
 use opentelemetry::InstrumentationScope;
 use opentelemetry_proto::tonic::collector::{
@@ -13,14 +12,13 @@ use opentelemetry_proto::transform::{
 };
 use opentelemetry_sdk::{Resource, logs::SdkLogRecord, trace::SpanData};
 use parking_lot::Mutex;
+use piqueld_config::{Credential, Headers, OtlpEndpoint};
 use piqueld_core::EnvironmentId;
 use rustix::fs::{Mode, OFlags};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
-use thiserror::Error;
 use tokio::sync::mpsc;
-use tonic::metadata::{AsciiMetadataKey, AsciiMetadataValue, MetadataMap};
 use tonic::transport::{Channel, ClientTlsConfig};
 
 /// Records exported in one request at most.
@@ -41,58 +39,6 @@ pub(super) enum LogItem {
     Daemon(Box<(SdkLogRecord, InstrumentationScope)>),
     /// A line of a container's output, with the container's resource.
     Container(super::containers::ContainerLog),
-}
-
-/// gRPC metadata sent with every export, parsed from `headers_file`: one
-/// `name: value` per line, ignoring blank lines.
-///
-/// ```text
-/// authorization: Bearer 0123456789
-/// x-scope-orgid: piqueld
-/// ```
-#[derive(Clone, Default)]
-pub struct Headers(MetadataMap);
-
-/// Shows how many headers there are, never their values.
-impl std::fmt::Debug for Headers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Headers({} redacted)", self.0.len())
-    }
-}
-
-/// A line of a headers file is not valid ASCII gRPC metadata. Never contains
-/// the value.
-#[derive(Debug, Error)]
-#[error("telemetry headers line {line} must be `name: value` with an ASCII name and value")]
-pub struct HeadersError {
-    /// One-based line number.
-    line: usize,
-}
-
-impl Headers {
-    /// Parses a headers file's contents.
-    ///
-    /// # Errors
-    /// Every non-blank line must be an ASCII `name: value` pair; binary
-    /// (`-bin`) metadata is not supported.
-    pub fn parse(source: &str) -> Result<Self, HeadersError> {
-        let mut map = MetadataMap::new();
-        for (index, line) in source.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let error = || HeadersError { line: index + 1 };
-            let (name, value) = line.split_once(':').ok_or_else(error)?;
-            let name = AsciiMetadataKey::from_bytes(name.trim().as_bytes()).map_err(|_| error())?;
-            let mut value = Some(value.trim())
-                .filter(|value| value.is_ascii())
-                .and_then(|value| AsciiMetadataValue::try_from(value).ok())
-                .ok_or_else(error)?;
-            value.set_sensitive(true);
-            map.append(name, value);
-        }
-        Ok(Self(map))
-    }
 }
 
 /// Export health of one destination, shared with its worker.
@@ -340,7 +286,7 @@ impl Destination {
     /// Wraps `message` in a request carrying the configured headers.
     fn request<M>(&self, message: M) -> tonic::Request<M> {
         let mut request = tonic::Request::new(message);
-        *request.metadata_mut() = self.headers.0.clone();
+        *request.metadata_mut() = self.headers.metadata().clone();
         request
     }
 
@@ -712,21 +658,5 @@ mod tests {
         }
         assert!(connect_unix(&socket, Some(&stale)).await.is_err());
         assert!(!socket.exists());
-    }
-
-    #[test]
-    fn headers_are_ascii_name_value_lines() {
-        let headers =
-            Headers::parse("Authorization: Bearer token\n\nx-scope-orgid:piqueld\n").unwrap();
-        assert_eq!(headers.0.get("authorization").unwrap(), "Bearer token");
-        assert_eq!(headers.0.get("x-scope-orgid").unwrap(), "piqueld");
-        for invalid in [
-            "no separator",
-            "bad name: x",
-            "key-bin: x",
-            "key: caf\u{e9}",
-        ] {
-            assert!(Headers::parse(invalid).is_err(), "{invalid}");
-        }
     }
 }

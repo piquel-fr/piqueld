@@ -139,7 +139,7 @@ pub enum TunnelConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DaemonConfig;
+    use crate::DaemonConfig;
 
     const ID: &str = "6ff42ae2-765d-4adf-8112-31c55c1551ef";
 

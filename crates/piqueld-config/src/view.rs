@@ -270,7 +270,7 @@ impl DaemonConfig {
                             ovh.application_secret,
                             ovh.consumer_key
                         ),
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "testing"))]
                         DnsProvider::Challtestsrv(_) | DnsProvider::Test(_) => "test server".into(),
                     };
                     let records = if config.manage_records {

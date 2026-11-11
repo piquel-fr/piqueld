@@ -7,7 +7,7 @@
 //! X-Ovh-Signature: "$1$" + hex(sha1(secret + "+" + consumer + "+" + METHOD + "+" + url + "+" + body + "+" + time))
 //! ```
 use super::{ApiError, Found, Provider, Record, RecordId, Zone, send};
-use crate::config::{Credential, CredentialError, CredentialFile, schema_from_raw};
+use crate::{Credential, CredentialError, CredentialFile, schema_from_raw};
 use piqueld_core::manifest::Hostname;
 use reqwest::Method;
 use serde::{Deserialize, de::DeserializeOwned};

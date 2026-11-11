@@ -11,14 +11,14 @@ mod records;
 mod tunnel;
 mod wire;
 
-use crate::{
-    config::{AcmeConfig, DnsConfig, PrivateIngressConfig, TunnelConfig, TunnelCredentials},
-    dns::Dns,
-    store::{Store, ingress::RoutingTable, now_ms},
-};
+use crate::store::{Store, ingress::RoutingTable, now_ms};
 use anyhow::{Context, Result};
 use certificates::Certificates;
 use futures_util::{StreamExt, stream};
+use piqueld_config::dns::Dns;
+use piqueld_config::{
+    AcmeConfig, DnsConfig, PrivateIngressConfig, TunnelConfig, TunnelCredentials,
+};
 use piqueld_core::{
     EnvironmentId,
     api::{DnsRecords, IngressStatus, PrivateIngressStatus, PublicIngressStatus, RouteStatus},
@@ -226,7 +226,7 @@ impl Ingress {
     ///
     /// # Errors
     /// Returns invalid local client configuration errors.
-    pub fn from_config(config: &crate::config::DaemonConfig, store: Arc<Store>) -> Result<Self> {
+    pub fn from_config(config: &piqueld_config::DaemonConfig, store: Arc<Store>) -> Result<Self> {
         Ok(Self::new(
             config.ingress.enabled,
             &config.docker.socket,
@@ -283,7 +283,7 @@ impl Ingress {
     /// # Errors
     /// Returns directory preparation or binding errors.
     pub async fn bind_dashboard(
-        config: &crate::config::DaemonConfig,
+        config: &piqueld_config::DaemonConfig,
     ) -> Result<Option<DashboardSocket>> {
         let Some(hostname) = config.ingress.private.dashboard_hostname.clone() else {
             return Ok(None);
@@ -303,10 +303,10 @@ impl Ingress {
     async fn bind_control(directory: &Path, name: &str) -> Result<tokio::net::UnixListener> {
         let control = directory.join("control");
         for directory in [directory, &control] {
-            crate::prepare_data_dir(directory).await?;
+            piqueld_config::directories::prepare_data_dir(directory).await?;
         }
         let path = control.join(name);
-        crate::directories::remove_file(&path)
+        piqueld_config::directories::remove_file(&path)
             .await
             .with_context(|| format!("remove the previous {name}"))?;
         let previous = rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);

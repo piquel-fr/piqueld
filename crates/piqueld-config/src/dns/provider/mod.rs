@@ -8,10 +8,10 @@
 mod cloudflare;
 mod ovh;
 
-#[cfg(test)]
-pub(crate) mod challtestsrv;
-#[cfg(test)]
-pub(crate) mod test_provider;
+#[cfg(any(test, feature = "testing"))]
+pub mod challtestsrv;
+#[cfg(any(test, feature = "testing"))]
+pub mod test_provider;
 
 pub use cloudflare::Cloudflare;
 pub use ovh::{Ovh, OvhEndpoint};
@@ -88,10 +88,10 @@ pub enum DnsProvider {
     /// time from `/auth/time`, which needs no permission.
     Ovh(Ovh),
     /// Pebble's `challtestsrv`, which serves TXT records to a test CA.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     Challtestsrv(challtestsrv::Challtestsrv),
     /// Records kept in memory, for reconciliation tests.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     #[serde(skip)]
     Test(test_provider::TestProvider),
 }
@@ -111,7 +111,7 @@ pub struct DnsProviderConfig {
 }
 
 /// A provider whose zones stay manual.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl From<DnsProvider> for DnsProviderConfig {
     fn from(provider: DnsProvider) -> Self {
         Self {
@@ -250,7 +250,7 @@ pub struct Zone {
 
 impl Zone {
     /// A zone whose provider handle is its name.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     fn named(name: Hostname) -> Self {
         Self {
             id: name.to_string(),
@@ -267,7 +267,7 @@ impl Zone {
 
 /// A record created through a provider, deleted by this handle.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecordId(pub(crate) String);
+pub struct RecordId(pub String);
 
 /// A failed provider call. It names the provider, operation and zone, and
 /// keeps the API's response; credentials are only ever sent in headers, so
@@ -286,7 +286,8 @@ impl DnsError {
     /// Whether the provider can't or won't make this call at all, rather than
     /// failing this time: it doesn't support it, or the credentials lack the
     /// permission.
-    pub(crate) fn is_denied(&self) -> bool {
+    #[must_use]
+    pub fn is_denied(&self) -> bool {
         match &self.source {
             ApiError::Unsupported(_) => true,
             ApiError::Status { status, .. } => {
@@ -347,9 +348,9 @@ macro_rules! dispatch {
         match $self {
             Self::Cloudflare($provider) => $call,
             Self::Ovh($provider) => $call,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             Self::Challtestsrv($provider) => $call,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testing"))]
             Self::Test($provider) => $call,
         }
     };
@@ -475,17 +476,17 @@ pub(crate) mod tests {
     use tokio::sync::Mutex;
 
     /// One request received by [`Recorded`].
-    pub(crate) struct Request {
-        pub(crate) method: Method,
+    pub struct Request {
+        pub method: Method,
         /// Path with its query.
-        pub(crate) path: String,
+        pub path: String,
         headers: axum::http::HeaderMap,
         /// JSON body, or `null` when empty.
-        pub(crate) body: serde_json::Value,
+        pub body: serde_json::Value,
     }
 
     impl Request {
-        pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        pub fn header(&self, name: &str) -> Option<&str> {
             self.headers.get(name).and_then(|value| value.to_str().ok())
         }
     }
@@ -496,14 +497,14 @@ pub(crate) mod tests {
 
     /// A local HTTP server replaying recorded provider responses by method and
     /// path, and recording what it received.
-    pub(crate) struct Recorded {
-        pub(crate) url: String,
+    pub struct Recorded {
+        pub url: String,
         requests: Arc<Mutex<Vec<Request>>>,
         _server: tokio::task::JoinHandle<()>,
     }
 
     impl Recorded {
-        pub(crate) async fn serve(responses: Responses) -> Self {
+        pub async fn serve(responses: Responses) -> Self {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let state = (Arc::new(responses), Arc::clone(&requests));
             let app = axum::Router::new().fallback(
@@ -544,7 +545,7 @@ pub(crate) mod tests {
         }
 
         /// Requests received so far, in order.
-        pub(crate) async fn requests(&self) -> Vec<Request> {
+        pub async fn requests(&self) -> Vec<Request> {
             std::mem::take(&mut *self.requests.lock().await)
         }
     }

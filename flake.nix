@@ -150,7 +150,9 @@
                 # The real root manifest: members inherit its lints.
                 ./Cargo.toml
                 ./apps/piqueld-ui
-                ./crates
+                ./crates/piqueld-client
+                ./crates/piqueld-core
+                ./crates/piqueld-probe
               ];
               cargoArtifacts = buildDepsOnly dashboardArgs;
               installPhaseCommand = ''

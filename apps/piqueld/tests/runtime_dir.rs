@@ -5,7 +5,7 @@ mod daemon;
 #[path = "support/fixture_dir.rs"]
 mod fixture_dir;
 
-use piqueld::RuntimeDir;
+use piqueld_config::runtime_dir::RuntimeDir;
 use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},

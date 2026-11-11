@@ -9,7 +9,7 @@ mod settings_reference;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use piqueld::api::http::openapi_document;
-use piqueld::config::DaemonConfig;
+use piqueld_config::DaemonConfig;
 use piqueld_core::manifest::ApplicationManifest;
 use piqueld_generated::Artifacts;
 use serde::Deserialize;

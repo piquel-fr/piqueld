@@ -111,7 +111,7 @@ impl<D> Controller<D> {
 
     /// Applies the daemon's validated reconciliation timing configuration.
     #[must_use]
-    pub fn with_config(mut self, config: &crate::config::ReconciliationConfig) -> Self {
+    pub fn with_config(mut self, config: &piqueld_config::ReconciliationConfig) -> Self {
         self.prepare_timeout = Duration::from_secs(config.prepare_timeout_seconds);
         self.retry.convergence_timeout = Duration::from_secs(config.convergence_timeout_seconds);
         self
@@ -119,7 +119,7 @@ impl<D> Controller<D> {
 
     /// Applies the daemon's image retention configuration.
     #[must_use]
-    pub fn with_images(mut self, config: &crate::config::ImagesConfig) -> Self {
+    pub fn with_images(mut self, config: &piqueld_config::ImagesConfig) -> Self {
         self.images = images::ImageRetention::new(config);
         self
     }

@@ -14,10 +14,11 @@ use super::{
     node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
     wire::Journaled,
 };
-use crate::{directories::PrivateFile, store::ingress::RoutingTable};
+use crate::store::ingress::RoutingTable;
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
 use hyper::Method;
+use piqueld_config::directories::PrivateFile;
 use piqueld_core::{
     DockerNetworkName,
     manifest::ValidatedRoute,
@@ -469,7 +470,7 @@ impl Ingress {
     /// A short SHA-256 fingerprint of a secret a container reads from a
     /// mounted file. Labelling the container with it makes a changed secret
     /// replace the container. Secrets are random, so it reveals nothing.
-    pub(super) fn fingerprint(secret: &crate::config::Credential) -> String {
+    pub(super) fn fingerprint(secret: &piqueld_config::Credential) -> String {
         format!("{:x}", Sha256::digest(secret.expose().as_bytes()))[..16].into()
     }
 
@@ -512,7 +513,7 @@ impl Ingress {
             self.directory.join("control").as_path(),
             self.directory.join("config/caddy").as_path(),
         ] {
-            crate::prepare_data_dir(directory).await?;
+            piqueld_config::directories::prepare_data_dir(directory).await?;
         }
         self.ensure_edge_network().await?;
         self.ensure_image(CADDY_IMAGE).await?;

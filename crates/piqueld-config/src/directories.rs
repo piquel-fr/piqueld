@@ -26,7 +26,7 @@ pub async fn prepare_data_dir(path: &Path) -> io::Result<()> {
 /// # Errors
 /// Returns an error for missing directories, unsafe ownership, permissions,
 /// symlinks, or I/O failures.
-pub(crate) async fn validate_runtime_dir(path: &Path) -> io::Result<()> {
+pub async fn validate_runtime_dir(path: &Path) -> io::Result<()> {
     DirectoryKind::Runtime.prepare(path).await
 }
 
@@ -34,7 +34,7 @@ pub(crate) async fn validate_runtime_dir(path: &Path) -> io::Result<()> {
 ///
 /// # Errors
 /// Returns any other I/O error.
-pub(crate) async fn remove_file(path: &Path) -> io::Result<()> {
+pub async fn remove_file(path: &Path) -> io::Result<()> {
     match tokio::fs::remove_file(path).await {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
@@ -44,11 +44,11 @@ pub(crate) async fn remove_file(path: &Path) -> io::Result<()> {
 /// A file only the daemon may read, replaced atomically and durably. Its
 /// directory may be writable by a container running as the daemon's user (the
 /// gateway's Caddy), so no operation follows a symlink planted there.
-pub(crate) struct PrivateFile(PathBuf);
+pub struct PrivateFile(PathBuf);
 
 impl PrivateFile {
     /// The private file at `path`.
-    pub(crate) fn at(path: impl Into<PathBuf>) -> Self {
+    pub fn at(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
     }
 
@@ -60,7 +60,7 @@ impl PrivateFile {
     ///
     /// # Errors
     /// Returns the I/O error, with the file's path as context.
-    pub(crate) async fn write(self, bytes: impl Into<Vec<u8>>) -> anyhow::Result<()> {
+    pub async fn write(self, bytes: impl Into<Vec<u8>>) -> anyhow::Result<()> {
         let bytes = bytes.into();
         self.run("write", move |file| {
             use std::io::Write;
@@ -81,7 +81,7 @@ impl PrivateFile {
     ///
     /// # Errors
     /// Returns the I/O error, with the file's path as context.
-    pub(crate) async fn remove(self) -> anyhow::Result<()> {
+    pub async fn remove(self) -> anyhow::Result<()> {
         self.run("remove", |file| {
             let removed =
                 file.remove_temporaries()? | Self::removed(std::fs::remove_file(&file.0))?;

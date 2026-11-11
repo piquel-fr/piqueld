@@ -24,6 +24,19 @@ daemon example that only development builds compile; the client uses Progenitor'
 small runtime support crate. See
 [client generation](https://github.com/sourceorigin-dev/piqueld/blob/main/tools/client-codegen/README.md).
 
+The daemon is split into crates that build in parallel, so a change
+recompiles only the crates it touches and those above them:
+
+| Crate | Modules | Depends on |
+| --- | --- | --- |
+| `piqueld-config` (`crates/piqueld-config`) | `config` (the crate root), `dns`, `directories`, `runtime_dir` | `piqueld-core` |
+| `piqueld` (`apps/piqueld`) | every other module, the binary, and the embedded health probe and dashboard | all of the above |
+
+`piqueld-config` holds the configuration file, the DNS provider accounts it
+configures, which are also their API clients, and the private state and
+runtime directories. Its `testing` feature adds the in-memory and
+`challtestsrv` DNS providers the daemon's ingress tests use.
+
 Inside the daemon:
 
 | Module | Responsibility |
@@ -51,4 +64,7 @@ between separate store, API, and client operation models.
 
 `just boundary` (`cargo xtask boundary`) checks that `piqueld-core` depends on no
 server, Docker, database, or browser framework (`axum`, `bollard`, `sqlx`,
-`leptos`), including through build and development dependencies.
+`leptos`), including through build and development dependencies. It also
+checks that the daemon's crates don't depend on those they build alongside:
+`piqueld-config` depends on no Docker, database, or browser framework, nor on
+the daemon.

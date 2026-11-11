@@ -1,12 +1,12 @@
 use super::*;
 use crate::{
-    config::TunnelCredentials,
-    dns::provider::{
-        DnsProvider, DnsProviderConfig,
-        test_provider::{Mimics, Outage, TestProvider},
-    },
     ingress::tests::{Engine, application, private_config, request_deployment},
     store::{Store, ingress::AcmeChallenge},
+};
+use piqueld_config::TunnelCredentials;
+use piqueld_config::dns::provider::{
+    DnsProvider, DnsProviderConfig,
+    test_provider::{Mimics, Outage, TestProvider},
 };
 use piqueld_core::{
     EnvironmentId,
@@ -63,17 +63,17 @@ impl Harness {
         engine
             .ingress(true)
             .with_dns(
-                &crate::config::DnsConfig {
+                &piqueld_config::DnsConfig {
                     providers: vec![DnsProviderConfig {
                         provider: DnsProvider::Test(provider.clone()),
                         manage_records,
                     }],
                 },
-                &crate::config::AcmeConfig::default(),
+                &piqueld_config::AcmeConfig::default(),
             )
             .unwrap()
             .with_private(&private_config())
-            .with_tunnel(&crate::config::TunnelConfig {
+            .with_tunnel(&piqueld_config::TunnelConfig {
                 credentials: tunnel,
             })
             .with_public_addresses(&[PUBLIC.parse().unwrap()])
@@ -264,7 +264,7 @@ async fn records_are_written_once_applied_and_never_on_foreign_names() {
     let mut since = 0;
     assert_eq!(harness.journaled(&mut since).await, ["ingress_dns_create"]);
     // An unchanged pass changes nothing and records no history.
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(harness.pass().await);
     harness.unchanged();
     assert_eq!(harness.journaled(&mut since).await, Vec::<String>::new());
@@ -279,7 +279,7 @@ async fn records_are_written_once_applied_and_never_on_foreign_names() {
             &Record::A("198.51.100.7".parse().unwrap()),
         )
         .unwrap();
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(harness.pass().await);
     assert_eq!(
         harness.provider.changes(),
@@ -375,7 +375,7 @@ async fn a_staged_withdrawal_is_published_by_the_next_pass() {
     assert_eq!(harness.provider.dump(), [format!("{owner} {rival}")]);
 
     harness.provider.fail(None);
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(harness.pass().await);
     assert_eq!(harness.provider.changes(), ["publish"]);
     assert_eq!(
@@ -505,7 +505,7 @@ async fn visibility_changes_withdraw_before_repointing() {
         .await;
     harness.apply().await;
     assert!(harness.pass().await);
-    harness.provider.changes();
+    let _ = harness.provider.changes();
 
     // Public -> private: the deployment withdraws the route first. Until the
     // gateway acknowledges that, the records stay.
@@ -552,7 +552,7 @@ async fn visibility_changes_withdraw_before_repointing() {
     harness
         .node_addresses(&["100.64.0.9", "fd7a:115c:a1e0::5"])
         .await;
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(harness.pass().await);
     assert_eq!(
         harness.provider.changes(),
@@ -584,7 +584,7 @@ async fn tunnel_mode_replaces_addresses_with_a_proxied_cname() {
     assert!(harness.pass().await);
     let tunnel = harness.restart(Some(tunnel())).await;
     // Until the gateway runs in tunnel mode, the records stay.
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(Harness::pass_of(&tunnel).await);
     harness.unchanged();
     tunnel.converged();
@@ -630,7 +630,7 @@ async fn disabled_ingress_deletes_records_once_the_gateway_stopped() {
     let harness = Harness::new(true).await;
     harness.applied("www.example.com").await;
     assert!(harness.pass().await);
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     let mut disabled = harness.restart(None).await;
     disabled.enabled = false;
     // The gateway's stop is not confirmed yet: its records stay.
@@ -659,7 +659,7 @@ async fn names_another_installation_claims_are_never_changed() {
             &Record::A("198.51.100.7".parse().unwrap()),
         )
         .unwrap();
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(harness.pass().await);
     harness.unchanged();
     assert_eq!(
@@ -689,13 +689,13 @@ async fn staged_changes_are_published_after_a_failed_publish() {
     harness.provider.mimic(Mimics::Ovh);
     let id = harness.applied("www.example.com").await;
     assert!(harness.pass().await);
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     // The route is removed, but publishing its deletion fails.
     harness.stage(&id, &[], true).await;
     harness.apply().await;
     harness.provider.fail(Some(Outage::Publish));
     assert!(!harness.pass().await);
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     // Nothing is left to delete; the deletion is still published, once.
     harness.provider.fail(None);
     assert!(harness.pass().await);
@@ -763,7 +763,7 @@ async fn the_webhook_hostname_gets_a_public_routes_records() {
         .await
         .with_webhooks(Some(hooks));
     tunneled.converged();
-    harness.provider.changes();
+    let _ = harness.provider.changes();
     assert!(Harness::pass_of(&tunneled).await);
     assert_eq!(
         harness.provider.changes(),

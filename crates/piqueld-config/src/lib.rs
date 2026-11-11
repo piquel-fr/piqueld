@@ -1,13 +1,18 @@
-//! Read-only host configuration for the single-node Docker Swarm daemon.
+//! Read-only host configuration for the piqueld daemon: its configuration
+//! file, the DNS provider accounts it names, and the private state and
+//! runtime directories it prepares.
 
 mod credential;
+pub mod directories;
+pub mod dns;
 mod listeners;
+pub mod runtime_dir;
 mod telemetry;
 mod tunnel;
 mod view;
 use credential::Resolution;
 pub use credential::{Credential, CredentialError, CredentialFile};
-pub use telemetry::{OtlpEndpoint, TelemetryConfig};
+pub use telemetry::{Headers, HeadersError, OtlpEndpoint, TelemetryConfig};
 pub use tunnel::{TunnelConfig, TunnelConfigError, TunnelCredentials};
 
 use piqueld_core::TomlDiagnostic;
@@ -18,7 +23,6 @@ use serde_json::Value;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::ToSchema;
 
 /// Implements [`ToSchema`] for `#[serde(try_from = "Raw")]` types as the
@@ -203,7 +207,7 @@ impl DaemonConfig {
             ));
         }
         if let Some(public_url) = &self.auth.public_url {
-            crate::auth::Auth::validate_origin(public_url)
+            AuthConfig::validate_origin(public_url)
                 .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         }
         if self.auth.max_token_days == Some(0) {
@@ -281,6 +285,47 @@ pub struct AuthConfig {
     #[schema(minimum = 1)]
     pub max_token_days: Option<u32>,
 }
+
+impl AuthConfig {
+    /// Validates the canonical origin used for `WebAuthn`, links, and CSRF checks.
+    ///
+    /// The URL must be a bare origin with a DNS hostname: no credentials, path,
+    /// query, or fragment.
+    ///
+    /// ```text
+    /// https://piqueld.example.com   accepted
+    /// http://localhost:8080         accepted (development)
+    /// http://dev.localhost:8080     accepted (development)
+    /// https://10.0.0.1              rejected (no DNS hostname)
+    /// https://example.com/piqueld   rejected (path)
+    /// ```
+    /// # Errors
+    /// Requires HTTPS, except for HTTP development on `localhost` or its
+    /// subdomains, which browsers resolve to loopback and treat as secure.
+    pub fn validate_origin(value: &str) -> Result<url::Url, InvalidOrigin> {
+        let url = url::Url::parse(value).map_err(|_| InvalidOrigin("invalid public_url"))?;
+        if url.domain().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.path() != "/"
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || !(url.scheme() == "https"
+                || (url.scheme() == "http"
+                    && url.domain().is_some_and(piqueld_core::auth::is_localhost)))
+        {
+            return Err(InvalidOrigin(
+                "public_url must be an HTTPS origin (or http://localhost or a subdomain of it for development)",
+            ));
+        }
+        Ok(url)
+    }
+}
+
+/// Why a `public_url` can't be the website's origin.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[error("{0}")]
+pub struct InvalidOrigin(pub &'static str);
 
 impl DaemonConfig {
     /// Effective website origin. The dashboard hostname fills an unset value
@@ -885,50 +930,6 @@ pub enum ConfigError {
     /// A parsed setting violated a semantic invariant.
     #[error("configuration is invalid: {0}")]
     Invalid(String),
-}
-
-/// Installs tracing filtered by `RUST_LOG` when present.
-///
-/// With `telemetry` enabled, API request spans and log events are also
-/// exported over OTLP.
-///
-/// Interactive terminals and the systemd journal receive plain text. The
-/// journal gets it without colors or timestamps, which it records itself.
-/// Other pipes (containers, log collectors) receive structured JSON. A
-/// `log_file` additionally receives JSON, so tools can query the logs while a
-/// person watches the terminal.
-///
-/// # Errors
-///
-/// Invalid or absent `RUST_LOG` values fall back to the `info` filter. The
-/// returned error is only from subscriber initialization, such as when another
-/// global subscriber is already installed.
-pub fn init_tracing(
-    log_file: Option<std::fs::File>,
-    telemetry: &crate::telemetry::Telemetry,
-) -> Result<(), tracing_subscriber::util::TryInitError> {
-    use std::io::IsTerminal as _;
-    let layer = if std::io::stdout().is_terminal() {
-        tracing_subscriber::fmt::layer().compact().boxed()
-    } else if std::env::var_os("JOURNAL_STREAM").is_some() {
-        tracing_subscriber::fmt::layer()
-            .compact()
-            .with_ansi(false)
-            .without_time()
-            .boxed()
-    } else {
-        tracing_subscriber::fmt::layer().json().boxed()
-    };
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(layer)
-        .with(log_file.map(|file| {
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_writer(std::sync::Arc::new(file))
-        }))
-        .with(telemetry.layer())
-        .try_init()
 }
 
 #[cfg(test)]

@@ -65,7 +65,7 @@ start with a letter and end with a letter or digit."#,
     /// Every setting of the daemon's configuration file.
     pub const CONFIG: Self = Self {
         path: "docs/user/reference/configuration-settings.md",
-        source: "the configuration types in `apps/piqueld/src/config`",
+        source: "the configuration types in `crates/piqueld-config`",
         title: "Daemon configuration settings",
         intro: "\
 This page lists every setting of the daemon's configuration file,

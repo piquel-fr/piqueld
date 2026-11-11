@@ -164,7 +164,7 @@ impl Backend {
             let state = ApiState::new(store, Arc::new(Runtime))?;
             return Ok((state, tokio::spawn(std::future::pending())));
         };
-        let config = piqueld::config::DaemonConfig::default();
+        let config = piqueld_config::DaemonConfig::default();
         let docker = FakeDocker::default();
         docker
             .registry
@@ -219,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
     auth.prepare_setup(&setup).await?;
     // Installation checks inspect these settings; the fixture serves no
     // runtime socket, so its API socket check fails, as a real failure would.
-    let config = piqueld::config::DaemonConfig::from_toml(&format!(
+    let config = piqueld_config::DaemonConfig::from_toml(&format!(
         "[server]\ndata_dir = '{}'\nruntime_dir = '{}'\n[auth]\npublic_url = '{origin}'",
         dir.join("data").display(),
         dir.display()

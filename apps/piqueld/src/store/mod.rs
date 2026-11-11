@@ -576,7 +576,7 @@ pub struct Store {
     /// Stable installation identity, generated when the database is first created.
     instance_id: piqueld_core::InstanceId,
     /// Build output retention and per-build byte cap.
-    build_history: crate::config::BuildHistoryConfig,
+    build_history: piqueld_config::BuildHistoryConfig,
 
     /// Secret master key file, stored next to the database as `secrets.key`.
     secret_key_path: std::path::PathBuf,
@@ -747,7 +747,7 @@ impl Store {
         let store = Self {
             pool,
             instance_id,
-            build_history: crate::config::BuildHistoryConfig::default(),
+            build_history: piqueld_config::BuildHistoryConfig::default(),
 
             secret_key_path: path.with_file_name("secrets.key"),
             writers: std::sync::Arc::default(),
@@ -762,7 +762,7 @@ impl Store {
                     .await
                     .map_err(StoreError::PathSource)?,
             ),
-            max_upload_bytes: crate::config::SnapshotsConfig::default().max_upload_bytes,
+            max_upload_bytes: piqueld_config::SnapshotsConfig::default().max_upload_bytes,
             access_changes: tokio::sync::watch::Sender::new(()),
             checkouts: std::sync::Arc::new(
                 crate::git::Checkouts::open(path.with_file_name("checkouts"))

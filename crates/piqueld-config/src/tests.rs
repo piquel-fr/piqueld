@@ -359,3 +359,24 @@ fn checks_locate_credential_files_without_reading_them() {
         Err(ConfigError::Read(_))
     ));
 }
+
+#[test]
+fn public_urls_are_https_origins_or_localhost() {
+    for origin in [
+        "https://piqueld.example",
+        "http://localhost:7845",
+        "http://worktree-1a2b3c4d.localhost:7846",
+    ] {
+        assert!(AuthConfig::validate_origin(origin).is_ok());
+    }
+    for origin in [
+        "http://piqueld.example",
+        "http://localhost.example",
+        "https://127.0.0.1",
+        "https://user:secret@example.com",
+        "https://example.com/path",
+        "https://example.com?query",
+    ] {
+        assert!(AuthConfig::validate_origin(origin).is_err());
+    }
+}

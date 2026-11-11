@@ -10,9 +10,9 @@ use serde_json::json;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, utoipa::ToSchema)]
 pub struct Challtestsrv {
     /// Management API base URL, such as `http://127.0.0.1:8055`.
-    pub(crate) management: String,
+    pub management: String,
     /// Zones it answers for.
-    pub(crate) zones: Vec<Hostname>,
+    pub zones: Vec<Hostname>,
 }
 
 impl Challtestsrv {
@@ -32,7 +32,10 @@ impl Challtestsrv {
     }
 
     /// Makes DNS queries for `name` fail with SERVFAIL, or answer again.
-    pub(crate) async fn servfail(&self, http: &reqwest::Client, name: &str, enabled: bool) {
+    ///
+    /// # Panics
+    /// If `challtestsrv` refuses the change.
+    pub async fn servfail(&self, http: &reqwest::Client, name: &str, enabled: bool) {
         let endpoint = if enabled {
             "set-servfail"
         } else {

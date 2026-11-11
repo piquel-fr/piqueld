@@ -765,7 +765,7 @@ impl ApplicationService {
     /// Attaches the effective host configuration for read-only API
     /// inspection and installation checks.
     #[must_use]
-    pub fn with_configuration(mut self, config: &crate::config::DaemonConfig) -> Self {
+    pub fn with_configuration(mut self, config: &piqueld_config::DaemonConfig) -> Self {
         self.configuration = Some(Arc::new(Configuration {
             view: config.view(),
             checks: checks::CheckSettings::from(config),

@@ -5,6 +5,7 @@ members = [
   "apps/piquelctl",
   "apps/piqueld-ui",
   "crates/piqueld-client",
+  "crates/piqueld-config",
   "crates/piqueld-core",
   "crates/piqueld-generated",
   "crates/piqueld-probe",
@@ -36,6 +37,7 @@ zeroize = "1.8"
 # piqueld-generated isn't published, so the crates that use it as a development
 # dependency publish without it.
 piqueld-client    = { version = "0.1.0", path = "crates/piqueld-client" }
+piqueld-config    = { version = "0.1.0", path = "crates/piqueld-config" }
 piqueld-core      = { version = "0.1.0", path = "crates/piqueld-core"   }
 piqueld-generated = { path = "crates/piqueld-generated" }
 piqueld-probe     = { version = "0.1.0", path = "crates/piqueld-probe"  }
