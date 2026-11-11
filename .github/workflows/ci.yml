@@ -7,7 +7,7 @@
 #   rust    -> lint, test, doc-test, openapi-check, boundary
 #   msrv    -> the published crates on the Rust their `rust-version` names
 #   wasm-ui -> ui-check, check-wasm, test-wasm
-#   docker-integration -> docker-test
+#   docker-integration -> docker-test, in three shards
 #   browser-playwright -> test-playwright
 #   cli (macOS)        -> validate-cli
 #   nix                -> the combined Nix package
@@ -255,12 +255,30 @@ jobs:
       - name: Run browser transport tests
         run: CHROMEDRIVER="${CHROMEWEBDRIVER:?}/chromedriver" just test-wasm
 
+  # Three shards, each against an engine of its own, so the serial suites run
+  # side by side: the ingress suite, and the engine suite in two halves.
+  # Each compiles only the test binary it runs.
   docker-integration:
-    name: docker-integration
+    name: docker-integration (${{ matrix.name }})
     needs: changes
     if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ingress
+            suite: ingress
+            binary: --lib
+          - name: engine 1/2
+            suite: engine
+            binary: --test docker_integration
+            partition: --partition count:1/2
+          - name: engine 2/2
+            suite: engine
+            binary: --test docker_integration
+            partition: --partition count:2/2
     env:
       # `just docker-test` bounds each test run; compilation is already warm
       # through the prebuild below.
@@ -273,21 +291,22 @@ jobs:
           tool: just,cargo-nextest
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          key: ${{ matrix.suite }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Compile everything `just docker-test` runs before the isolated
       # Docker-in-Docker daemon starts, so its inner cargo invocations are
-      # instant: the xtask runner and both test binaries it selects.
+      # instant: the xtask runner and the shard's test binary.
       - name: Compile Docker integration tests
         run: |
           cargo build --locked --package xtask
-          cargo nextest run --locked -p piqueld --lib --test docker_integration --no-run
+          cargo nextest run --locked -p piqueld ${{ matrix.binary }} --no-run
       - name: Run Docker integration tests
-        run: just docker-test
+        run: just docker-test ${{ matrix.suite }} ${{ matrix.partition }}
       - name: Preserve test report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: junit-docker-integration
+          name: junit-docker-integration-${{ strategy.job-index }}
           path: target/nextest/docker-ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore

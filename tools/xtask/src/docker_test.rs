@@ -1,5 +1,6 @@
 //! `just docker-test`: the ignored Docker integration tests, run against a
-//! throwaway Docker-in-Docker engine instead of the host's.
+//! throwaway Docker-in-Docker engine instead of the host's. CI runs the suites,
+//! and shards of them, in parallel jobs, each with an engine of its own.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,7 +16,37 @@ use crate::Workspace;
 use crate::docker::Engine;
 use crate::process::{Job, Shutdown, exit_code};
 
-pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
+/// A group of Docker integration tests, run by one nextest invocation.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Suite {
+    /// The daemon library's `ingress_caddy` tests, against Caddy, Pebble and
+    /// challtestsrv in the engine.
+    // They reach them on the ports of `PUBLISHED`.
+    Ingress,
+    /// `apps/piqueld/tests/docker_integration.rs`, against the engine's Swarm.
+    Engine,
+}
+
+impl Suite {
+    /// Every suite, in the order `docker-test` runs them without one named.
+    const ALL: [Self; 2] = [Self::Ingress, Self::Engine];
+
+    /// The nextest arguments that select the suite's tests.
+    fn filter(self) -> &'static [&'static str] {
+        match self {
+            Self::Ingress => &["--lib", "--no-capture", "-E", "test(ingress_caddy)"],
+            Self::Engine => &["--test", "docker_integration"],
+        }
+    }
+}
+
+/// Runs `suite`, or every suite, against one engine. `partition`, nextest's
+/// `--partition` such as `count:1/2`, selects a shard of each suite's tests.
+pub async fn run(
+    workspace: &Workspace,
+    suite: Option<Suite>,
+    partition: Option<&str>,
+) -> Result<ExitCode> {
     ensure!(
         cfg!(target_os = "linux"),
         "docker-test requires a Linux host with a local Docker-compatible daemon"
@@ -29,12 +60,15 @@ pub async fn run(workspace: &Workspace) -> Result<ExitCode> {
     let image = Engine::dind_image();
     engine.pull_missing(&image).await?;
     let container = engine.launch(None, dind(image, runtime.path())).await?;
+    let suites = suite.as_ref().map_or(&Suite::ALL[..], std::slice::from_ref);
     let result = test(
         workspace,
         &engine,
         &container,
         runtime.path(),
         &mut shutdown,
+        suites,
+        partition,
     )
     .await;
     engine.remove(&container).await?;
@@ -59,9 +93,12 @@ const PUBLISHED: [(&str, &str); 6] = [
 fn dind(image: String, runtime: &Path) -> ContainerCreateBody {
     let runtime = runtime.display();
     let mut body = Engine::dind_container(image, &runtime, [format!("{runtime}:{runtime}")]);
+    // The image keeps /var/lib/docker in a volume on the host's filesystem,
+    // where overlay2 works. vfs copies every layer, which made the image-heavy
+    // tests several times slower.
     body.cmd
         .get_or_insert_default()
-        .push("--storage-driver=vfs".to_owned());
+        .push("--storage-driver=overlay2".to_owned());
     #[expect(
         clippy::zero_sized_map_values,
         reason = "bollard requires HashMap<(), ()> for each exposed port"
@@ -96,6 +133,8 @@ async fn test(
     container: &str,
     runtime: &Path,
     shutdown: &mut Shutdown,
+    suites: &[Suite],
+    partition: Option<&str>,
 ) -> Result<ExitCode> {
     engine.wait_for_dind(container).await?;
     let ports = engine
@@ -130,20 +169,24 @@ async fn test(
         command
     };
     let limit = Some(limit()?);
-    let mut ingress = nextest(&["--lib", "--no-capture", "-E", "test(ingress_caddy)"]);
-    ingress.env("PIQUELD_DOCKER_DATA_DIR", runtime);
-    for (name, variable) in PUBLISHED {
-        ingress.env(variable, port(name)?);
-    }
     // Tests share one engine and mutate its Swarm state, so they run serially.
-    let status = Job::spawn(&mut ingress)?.finish(limit, shutdown).await?;
-    if !status.success() {
-        return Ok(exit_code(status));
+    for &suite in suites {
+        let mut command = nextest(suite.filter());
+        if let Some(partition) = partition {
+            command.args(["--partition", partition]);
+        }
+        if suite == Suite::Ingress {
+            command.env("PIQUELD_DOCKER_DATA_DIR", runtime);
+            for (name, variable) in PUBLISHED {
+                command.env(variable, port(name)?);
+            }
+        }
+        let status = Job::spawn(&mut command)?.finish(limit, shutdown).await?;
+        if !status.success() {
+            return Ok(exit_code(status));
+        }
     }
-    let status = Job::spawn(&mut nextest(&["--test", "docker_integration"]))?
-        .finish(limit, shutdown)
-        .await?;
-    Ok(exit_code(status))
+    Ok(ExitCode::SUCCESS)
 }
 
 /// How long each test run may take: `PIQUELD_DOCKER_TEST_TIMEOUT`, such as

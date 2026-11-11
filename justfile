@@ -154,8 +154,12 @@ docs:
 docs-serve *ARGS:
     @mdbook serve {{ARGS}}
 
-docker-test:
-    @cargo xtask docker-test
+# Runs the Docker integration tests against a throwaway Docker-in-Docker engine.
+# ARGS select a suite, `ingress` or `engine`, and a shard of it, such as
+# `engine --partition count:1/2`; see `cargo xtask docker-test --help`.
+[positional-arguments]
+docker-test *ARGS:
+    @cargo xtask docker-test "$@"
 
 # Explicit development-only setup: pinned JS packages and a containerized browser.
 setup-playwright:
