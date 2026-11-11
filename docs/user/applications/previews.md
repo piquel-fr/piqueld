@@ -116,6 +116,14 @@ worktree's committed, uncommitted and untracked files, but not the files Git
 ignores. A tracked file that Git ignores is sent as committed, without your
 edits. Your branch, index and files don't change.
 
+So that credentials don't leave your machine by accident, the command refuses
+a file that isn't in `HEAD`, untracked or only staged, whose name usually holds
+them: an `.env` file other than an `.example`, `.sample` or `.template`, an
+SSH key such as `id_ed25519`, a `.pem`, `.key`, `.p12` or `.pfx` file,
+`credentials` or `credentials.json`, `.npmrc`, `.pypirc`, `.netrc` or
+`.git-credentials`. Add such a file to `.gitignore`, or pass
+`--allow-secret-files` when the preview needs it.
+
 Only what the repository lacks is uploaded: the commits you haven't pushed,
 and your changes. piqueld fetches the rest from the application's
 repository. Run the command again after each change, to deploy a new

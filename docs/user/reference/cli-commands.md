@@ -3708,6 +3708,9 @@ Options:
 
   By default, the command sends only the commits since the nearest ancestor of `HEAD` that a remote-tracking branch has, and the daemon fetches that ancestor from the application's repository. Use this when there is no such ancestor, or the daemon can't fetch it.
 - `--branch <BRANCH>`: Deploy the snapshot as the preview of this branch instead of the current one. Required when `HEAD` is detached.
+- `--allow-secret-files`: Send files not in `HEAD` whose names usually hold credentials too.
+
+  Without it, `--local` refuses to send an untracked or only staged `.env*` file (but `.example`, `.sample` and `.template` ones), SSH key `id_*`, `*.pem`, `*.key`, `*.p12` or `*.pfx` file, `credentials` or `*credentials.json`, `.npmrc`, `.pypirc`, `.netrc` or `.git-credentials`, in any case. Ignore such files in `.gitignore` instead when the preview doesn't need them.
 - `--no-wait`: Return once the daemon accepts the deployment, without waiting for it to finish.
 
 ## `piquelctl preview list`
