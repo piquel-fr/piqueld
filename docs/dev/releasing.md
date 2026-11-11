@@ -56,9 +56,9 @@ Each crate builds from its package alone, as `cargo install` builds it:
 
 `just publish`, which runs `cargo xtask publish`, builds the dashboard into
 `apps/piqueld/dashboard/`, runs `cargo publish --workspace`, which publishes
-the crates in dependency order, then removes the dashboard. The `package` CI
-job runs it with `--dry-run` on every pull request that changes the crates,
-once it is ready for review: it packages each crate and builds it from its
+the crates in dependency order, then removes the dashboard. The `package` job
+of the [release checks](validation.md#release-checks) runs it with `--dry-run`
+on every push to `main`: it packages each crate and builds it from its
 package, without uploading anything. Run it yourself after changing a
 manifest, a build script, or a file a crate reads at compile time:
 
@@ -78,9 +78,9 @@ any x86_64 Linux: the daemon builds OpenSSL from source for musl targets.
 
 `just dist`, which runs `cargo xtask dist`, builds them into `target/dist`. It
 needs `musl-gcc`, from the `musl-tools` package on Debian and Ubuntu, for the
-C code of OpenSSL, SQLite and ring. The `install` CI job runs it on every pull
-request that changes what the archive is built from, once it is ready for
-review, then installs the archive with the script on the runner, which has
+C code of OpenSSL, SQLite and ring. The `install` job of the
+[release checks](validation.md#release-checks) runs it on every push to
+`main`, then installs the archive with the script on the runner, which has
 systemd and Docker Engine, and installs it again as an update. The script
 reads the archive from `PIQUELD_RELEASE_URL` there, instead of the release.
 
@@ -120,6 +120,13 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    git switch main && git pull
    ```
 
+   Wait for the merge commit's
+   [release checks](validation.md#release-checks) to pass:
+
+   ```console
+   gh run watch "$(gh run list --workflow release-checks.yml --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId --jq '.[0].databaseId')"
+   ```
+
 3. Check the release without changing anything:
 
    ```console
@@ -144,7 +151,7 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
 5. Wait for the tag's
    [release workflow](https://github.com/sourceorigin-dev/piqueld/actions/workflows/release.yml)
    to build the release binaries and create the GitHub release, which takes
-   about as long as the `install` CI job. For a release that breaks existing
+   about as long as the `install` job of the release checks. For a release that breaks existing
    setups, then edit the release on GitHub to say how to upgrade.
 
 ## Check that it works

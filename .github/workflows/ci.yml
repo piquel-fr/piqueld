@@ -10,19 +10,19 @@
 #   docker-integration -> docker-test
 #   browser-playwright -> test-playwright
 #   cli (macOS)        -> validate-cli
-#   nix                -> the combined Nix package
-#   package            -> publish --dry-run
-#   install            -> dist, then install.sh
 #   docs               -> docs
+#
+# Release builds (Nix packages, publish --dry-run, dist and install.sh) take
+# too long to gate merges: release-checks.yml runs them after merging.
 #
 # Pull requests run only the jobs whose inputs changed (see `changes`). Draft
 # pull requests run only the quick jobs (checks, rust, msrv, wasm-ui): the slower
-# ones (Docker, Playwright, macOS, Nix, packaging, install) wait until the pull request is marked
+# ones (Docker, Playwright, macOS) wait until the pull request is marked
 # ready, so iterating on a draft stays cheap. `docs` runs on every pull
 # request, as its links point all over the repository and any change can
 # break one. Merge queue entries, pushes to main and manual runs run
-# everything, and build every Nix package: the queue tests each pull request on
-# top of the latest main before it merges.
+# everything: the queue tests each pull request on top of the latest main
+# before it merges.
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
@@ -73,9 +73,6 @@ jobs:
       cli: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.cli == 'true' && !github.event.pull_request.draft) }}
       docker: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.docker == 'true' && !github.event.pull_request.draft) }}
       playwright: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.playwright == 'true' && !github.event.pull_request.draft) }}
-      nix: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.nix == 'true' && !github.event.pull_request.draft) }}
-      package: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.package == 'true' && !github.event.pull_request.draft) }}
-      install: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.install == 'true' && !github.event.pull_request.draft) }}
     steps:
       - if: github.event_name == 'pull_request'
         id: filter
@@ -133,32 +130,6 @@ jobs:
               # The screenshot specs follow the guides.
               - docs/user/**
               - docs/images/**
-            # The flake's package sources.
-            nix:
-              - *crates
-              - flake.nix
-              - flake.lock
-              - nix/**
-              - apps/**
-              - tools/xtask/**
-              - examples/**
-            # What the published crates are packaged from.
-            package:
-              - *crates
-              - apps/**
-              - tools/xtask/**
-              - README.md
-              - LICENSE
-            # What the release archive is built from, and the script that
-            # installs it.
-            install:
-              - *crates
-              - apps/piqueld/**
-              - apps/piquelctl/**
-              - apps/piqueld-ui/**
-              - apps/site/install.sh
-              - tools/xtask/**
-              - LICENSE
 
   checks:
     name: checks
@@ -346,104 +317,6 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just validate-cli
 
-  # Builds the combined package. Crane's dependency builds are rooted with
-  # out-links so the cache action's garbage collection keeps them; without
-  # roots it deletes them, and every run rebuilds every dependency. Pull
-  # requests only evaluate the other packages, which share these sources;
-  # main and the merge queue build them too.
-  nix:
-    name: nix packages
-    needs: changes
-    if: needs.changes.outputs.nix == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      # Purges superseded Nix caches on main.
-      actions: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
-        with:
-          # Keys are immutable, so each main build saves a fresh one; the
-          # newest one with the same lockfiles restores first.
-          primary-key: nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-${{ github.sha }}
-          restore-prefixes-first-match: |
-            nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-
-            nix-x86_64-linux-
-          save: ${{ github.ref == 'refs/heads/main' }}
-          gc-max-store-size-linux: 4G
-          # Only caches no run restored for a day: a failed save must not
-          # purge the last usable cache.
-          purge: ${{ github.ref == 'refs/heads/main' }}
-          purge-prefixes: nix-x86_64-linux-
-          purge-last-accessed: P1D
-          purge-primary-key: never
-      - name: Build Nix packages
-        run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts
-      - name: Build the other Nix packages
-        run: nix build -L --out-link result-other ${{ github.event_name == 'pull_request' && '--dry-run' || '' }} .#cli .#cli.cargoArtifacts .#daemon
-
-  # Packages every published crate, with the dashboard the daemon ships, and
-  # builds each from its package, as `cargo install` would: everything
-  # `just publish` does except uploading.
-  package:
-    name: package
-    needs: changes
-    if: needs.changes.outputs.package == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          cache-directories: |
-            target-ui
-            target-probe
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo xtask publish --dry-run
-
-  # Builds the release archive as the release workflow does, then installs it
-  # with install.sh on the runner, which has systemd and Docker Engine like a
-  # user's host. The script runs as the runner's user, as users run it, with
-  # sudo for the steps that need root; --yes also adds that user to the
-  # piqueld group. The second run is an update, which must leave the daemon
-  # running too. The cache is shared with the release workflow's build.
-  install:
-    name: install
-    needs: changes
-    if: needs.changes.outputs.install == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends musl-tools
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          shared-key: dist
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo xtask dist
-      - name: Install with install.sh, then update
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
-          for run in install update; do
-            echo "::group::$run"
-            PIQUELD_VERSION="$version" PIQUELD_RELEASE_URL="file://$PWD/target/dist" sh apps/site/install.sh --yes
-            echo "::endgroup::"
-          done
-      - run: sudo piquelctl status
-      # A member of the piqueld group reaches the daemon without an account to
-      # print the setup link; sg runs it with the group the script added.
-      - run: sg piqueld -c 'piquelctl setup-link'
-      - name: Show the daemon's logs
-        if: failure()
-        run: sudo journalctl --unit piqueld --no-pager
-
   # Builds the documentation book and checks its links. The flake's `docs`
   # shell provides the tools at the versions flake.lock pins, as in
   # `nix develop`.
@@ -471,14 +344,11 @@ jobs:
       - docker-integration
       - browser-playwright
       - macos-cli
-      - nix
-      - package
-      - install
       - docs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
-          allowed-skips: checks, rust, msrv, wasm-ui, docker-integration, browser-playwright, macos-cli, nix, package, install
+          allowed-skips: checks, rust, msrv, wasm-ui, docker-integration, browser-playwright, macos-cli
           jobs: ${{ toJSON(needs) }}

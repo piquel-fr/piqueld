@@ -3,17 +3,16 @@
 CI runs on GitHub-hosted runners. Jobs group the recipes that compile the same
 code, so each job builds the workspace once, and run in parallel. Pull requests
 run only the jobs whose inputs changed, and drafts only the quick ones: Docker,
-Playwright, macOS, Nix, and packaging jobs wait until a pull request is marked
-ready.
+Playwright, and macOS jobs wait until a pull request is marked ready. Release
+builds take too long to gate a merge, so they run after it, in the
+[release checks](#release-checks).
 The `docs` job runs on every pull request. Pull requests merge through a merge
 queue, which tests each one on top of the latest main; merge queue entries and
 pushes to main run every job. The `ci` job summarizes them: it fails if any job
 failed. Failed checks do not cancel unrelated jobs.
 
 Rust build caches are scoped to jobs and saved from main only; pull requests
-restore them. The Nix job caches the store, including crane's dependency builds
-and the dashboard. Pull requests build the combined package; main and the merge
-queue build every package. Dashboard tools are cached by version.
+restore them. Dashboard tools are cached by version.
 
 | Capability | Local recipe | CI job |
 | --- | --- | --- |
@@ -30,21 +29,52 @@ queue build every package. Dashboard tools are cached by version.
 | Isolated Engine integration tests | `docker-test` | `docker-integration` |
 | Browser end-to-end tests | `test-playwright` | `browser-playwright` |
 | CLI on macOS | `validate-cli` | `cli (macOS)` |
-| Embedded daemon and CLI release builds | `nix build` | `nix packages` |
-| Every published crate packaged and built from its package | `publish --dry-run` | `package` |
 | Documentation book build and link check | `docs` | `docs` |
 
 `just` runs the default validation set (`validate`), including a single check of
 the generated OpenAPI specification, client, and manifest JSON Schema. Both local
 validation and CI compare the committed artifacts without rewriting them. CI
-skips `check` and `build`: the stronger all-target Clippy and the Nix package
-build cover them. `fmt` and `generate` are editing commands whose results are
+skips `check` and `build`: the stronger all-target Clippy and the test builds
+cover them. `fmt` and `generate` are editing commands whose results are
 checked above, and `setup-playwright` installs the browser test dependencies.
 `run`, `ctl`, `daemon`, `daemon-embedded`, `dev`, and `docs-serve` launch
 interactive processes and are not finite validation commands. `publish` and
 `release` [release piqueld](releasing.md). `coverage`
 measures the tests without checking a minimum; see
 [test coverage](#test-coverage).
+
+## Release checks
+
+The [release checks workflow](https://github.com/sourceorigin-dev/piqueld/blob/main/.github/workflows/release-checks.yml)
+builds piqueld the way it is released. Each build takes up to ten minutes, so
+these checks run after a pull request merges instead of before:
+
+| Capability | Local recipe | Job |
+| --- | --- | --- |
+| Embedded daemon and CLI release builds | `nix build` | `nix packages` |
+| Every published crate packaged and built from its package | `publish --dry-run` | `package` |
+| The static release archive, installed and then updated by `install.sh` | `dist` | `install` |
+
+They run on every push to `main`, and every night at 04:00 UTC to catch what
+breaks without a commit, such as a new stable Rust or a new runner image. Only
+the latest commit is checked: a push cancels the run of the one before it.
+
+While a check fails on `main`, an issue titled *Release checks fail on main*
+stays open. The first failure opens it, each later one comments on it, and the
+next run that passes closes it. Fix the failure before the next
+[release](releasing.md#release-a-version).
+
+Run a check before merging when a pull request changes what it builds: a
+manifest, a build script, `flake.nix`, or `install.sh`. Run its local recipe,
+or run the workflow on your branch from the Actions tab, which needs write
+access to the repository:
+
+```console
+gh workflow run release-checks.yml --ref <branch>
+```
+
+The Nix job caches the store, including crane's dependency builds and the
+dashboard. The `install` job's Rust cache is also the release workflow's.
 
 ## Docker test suites
 

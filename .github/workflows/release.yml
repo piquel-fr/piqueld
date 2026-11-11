@@ -14,8 +14,9 @@ on:
 permissions:
   contents: read
 
-# As in CI: rust-cache's key hashes the CARGO*, RUST* and CC* variables, so the
-# build restores the cache of the CI install job only while they match.
+# As in the release checks: rust-cache's key hashes the CARGO*, RUST* and CC*
+# variables, so the build restores the cache of their install job only while
+# they match.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -41,7 +42,7 @@ jobs:
             exit 1
           }
       - run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends musl-tools
-      # The CI install job's build on main, which saves this cache.
+      # The release checks' install job on main saves this cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: dist

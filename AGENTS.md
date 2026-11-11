@@ -17,8 +17,10 @@ Titles should follow the `feat(server): add docker swarm reconciliation` convent
 
 Open pull requests as drafts and mark them ready for review once the work is
 done. Drafts run only the quick CI jobs; marking a pull request ready runs the
-slow ones (Docker, Playwright, macOS, Nix, packaging), which it must pass
-before merging.
+slow ones (Docker, Playwright, macOS), which it must pass
+before merging. Release builds (Nix, packaging, install) run after merging; see
+"Release checks" in `docs/dev/validation.md` to run them on a branch that
+changes a manifest, build script, the flake or `install.sh`.
 
 `main` merges through a merge queue: `gh pr merge` adds a pull request to it,
 and the queue reruns CI on top of the latest main. Never merge with `--admin`.
