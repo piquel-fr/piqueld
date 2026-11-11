@@ -1,6 +1,22 @@
 //! Where container log export stopped reading, kept across restarts.
 use crate::store::{Store, StoreError};
-use crate::telemetry::ContainerCursors;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Where log export stopped reading each container, saved so that it resumes
+/// there after a restart.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ContainerCursors {
+    /// When the discovery these cursors cover started, in Unix nanoseconds:
+    /// a container without a cursor was created after it. `None` before the
+    /// first save, when export starts from the present.
+    pub watermark: Option<i64>,
+    /// By container ID, Docker's timestamp of the last line sent or dropped,
+    /// or where reading started, in Unix nanoseconds. Resuming skips lines
+    /// before it but not at it, so a line may be sent twice and none is
+    /// missed.
+    pub containers: BTreeMap<String, i64>,
+}
 
 impl Store {
     /// The cursors container log export last saved; empty before the first

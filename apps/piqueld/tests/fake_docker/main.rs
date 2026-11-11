@@ -22,6 +22,7 @@ use piqueld::docker::fake::{
     FakeDocker, Gate, JobRunState, JobStart, RegistryState, observed_service,
 };
 use piqueld::docker::{DockerApi, DockerError, ImageSource, LocalImage, resolve_image_digest};
+use piqueld::git::Sources;
 use piqueld::reconcile::Controller;
 use piqueld::store::Store;
 use piqueld_core::Sha256Digest;
@@ -99,6 +100,7 @@ struct ControllerHarness {
     _directory: tempfile::TempDir,
     database_path: PathBuf,
     store: Arc<Store>,
+    sources: Arc<Sources>,
     application: NormalizedApplication,
     docker: Arc<FakeDocker>,
     controller: Controller<FakeDocker>,
@@ -117,17 +119,32 @@ impl ControllerHarness {
                 .await
                 .expect("fresh database opens"),
         );
+        let sources = Arc::new(Sources::open(directory.path()).await.unwrap());
         let application = prebuilt::application("app-fake-docker-01");
         let docker = Arc::new(docker);
-        let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store));
+        let controller = Controller::new(
+            Arc::clone(&docker),
+            Arc::clone(&store),
+            Arc::clone(&sources),
+        );
         Self {
             _directory: directory,
             database_path,
             store,
+            sources,
             application,
             docker,
             controller,
         }
+    }
+
+    /// A controller over this harness's Docker, store and sources.
+    fn new_controller(&self) -> Controller<FakeDocker> {
+        Controller::new(
+            Arc::clone(&self.docker),
+            Arc::clone(&self.store),
+            Arc::clone(&self.sources),
+        )
     }
 
     /// Replaces the application.
@@ -179,8 +196,7 @@ impl ControllerHarness {
 
     /// Replaces the controller with one following `retry`.
     fn set_retry_policy(&mut self, retry: piqueld::reconcile::RetryPolicy) {
-        self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store))
-            .with_retry_policy(retry);
+        self.controller = self.new_controller().with_retry_policy(retry);
     }
 
     fn applications(&self) -> TestApplications {
@@ -188,6 +204,7 @@ impl ControllerHarness {
             Arc::clone(&self.store),
             self.controller
                 .runtime(Arc::new(tokio::sync::Notify::new())),
+            Arc::clone(&self.sources),
         )
     }
 
@@ -354,7 +371,9 @@ impl ControllerHarness {
     /// Simulates a daemon restart: reopens the database behind a fresh controller.
     async fn reopen(&mut self) {
         self.store = Arc::new(Store::open_unsynced(&self.database_path).await.unwrap());
-        self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store));
+        let directory = self.database_path.parent().unwrap();
+        self.sources = Arc::new(Sources::open(directory).await.unwrap());
+        self.controller = self.new_controller();
     }
 
     async fn assert_recovered(&self, operation_id: &str) {

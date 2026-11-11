@@ -79,10 +79,15 @@ impl ApplicationService {
             .repository
             .url
             .clone();
-        let snapshots = self.store.snapshots();
-        let limit = self.store.max_upload_bytes();
+        let snapshots = self.sources.snapshots();
+        let limit = self.sources.max_upload_bytes();
         let received = snapshots
-            .receive(bundle, (length, limit), &repository, self.store.checkouts())
+            .receive(
+                bundle,
+                (length, limit),
+                &repository,
+                self.sources.checkouts(),
+            )
             .await?;
         let mutation = Mutation::Preview(PreviewMutation::Local {
             application,

@@ -29,6 +29,8 @@ pub struct Controller<D> {
     /// Deadline for resolving images, building sources, and fetching manifests.
     prepare_timeout: Duration,
     store: Arc<Store>,
+    /// The Git checkouts and local snapshots deployments build from.
+    sources: Arc<crate::git::Sources>,
     /// Managed ingress; without it, routes are staged and acknowledged directly.
     ingress: Option<Arc<crate::ingress::Ingress>>,
     retry: RetryPolicy,
@@ -47,12 +49,13 @@ pub struct Controller<D> {
 impl<D> Controller<D> {
     /// Creates a controller with the default retry policy.
     #[must_use]
-    pub fn new(docker: Arc<D>, store: Arc<Store>) -> Self {
+    pub fn new(docker: Arc<D>, store: Arc<Store>, sources: Arc<crate::git::Sources>) -> Self {
         Self {
             docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
             mutations: Arc::default(),
             prepare_timeout: Duration::from_mins(5),
             store,
+            sources,
             ingress: None,
             retry: RetryPolicy::default(),
             images: images::ImageRetention::default(),
@@ -214,6 +217,7 @@ impl<D: DockerApi> Controller<D> {
             crate::application::ApplicationRuntime::new(
                 Arc::clone(&self.docker),
                 &self.store,
+                &self.sources,
                 wake,
                 self.prepare_timeout,
                 self.images_lock(),

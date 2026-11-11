@@ -510,8 +510,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{Actor, Mutation, MutationResponse};
     use crate::store::testing::template;
+    use crate::store::{Actor, Mutation, MutationResponse};
     use crate::store::{CredentialKind, NewCredential};
     use piqueld_core::access::{AppPermission, Preset};
 

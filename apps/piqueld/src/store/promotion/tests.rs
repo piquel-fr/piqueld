@@ -1,7 +1,7 @@
 use super::*;
-use crate::api::Actor::Daemon;
-use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation, SourceChoice};
+use crate::store::Actor::Daemon;
 use crate::store::testing::template;
+use crate::store::{Mutation, MutationResponse, PreviewMutation, PromotionMutation, SourceChoice};
 use piqueld_core::{ApplicationId, GitBranch, TrackedBranch};
 
 /// Saves the repository-backed application `name`, whose environments

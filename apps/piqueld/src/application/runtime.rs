@@ -48,11 +48,12 @@ impl<D> ApplicationRuntime<D> {
     /// Creates application runtime orchestration for `store`'s instance with
     /// the supplied preparation budget, sharing `images`, the lock image cleanup takes,
     /// `mutations`, the controller's lock around Docker mutations, and
-    /// `store`'s checkout admission.
+    /// the checkout admission of `sources`.
     #[must_use]
     pub fn new(
         docker: Arc<D>,
         store: &crate::store::Store,
+        sources: &crate::git::Sources,
         wake: Arc<Notify>,
         prepare_timeout: Duration,
         images: Arc<tokio::sync::RwLock<()>>,
@@ -69,7 +70,7 @@ impl<D> ApplicationRuntime<D> {
             snapshot: None,
             images,
             mutations,
-            checkouts: Arc::clone(store.checkouts()),
+            checkouts: Arc::clone(sources.checkouts()),
         }
     }
     /// Requests full scans through `rescan`, shared with the reconciler.

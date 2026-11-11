@@ -330,8 +330,11 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     .await;
     let (store, docker, controller) = (harness.store, harness.docker, harness.controller);
     let wake = Arc::new(tokio::sync::Notify::new());
-    let applications =
-        TestApplications::new(Arc::clone(&store), controller.runtime(Arc::clone(&wake)));
+    let applications = TestApplications::new(
+        Arc::clone(&store),
+        controller.runtime(Arc::clone(&wake)),
+        harness.sources,
+    );
     let mut slow = manifest();
     slow.metadata.name = "slow".into();
     let original = applications
@@ -805,7 +808,8 @@ async fn preparation_timeout_is_retried_after_backoff() {
         ..FakeDocker::default()
     })
     .await;
-    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
+    harness.controller = harness
+        .new_controller()
         .with_prepare_timeout(Duration::from_millis(100));
     let mut manifest = manifest();
     manifest.spec.services[0].source = piqueld_core::Source::Image {
@@ -829,7 +833,7 @@ async fn preparation_timeout_is_retried_after_backoff() {
         [] as [ObservedService; 0]
     );
     harness.expire_backoff(&operation).await;
-    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store));
+    harness.controller = harness.new_controller();
     gate.release.notify_one();
     harness.scan().await;
     let latest = harness

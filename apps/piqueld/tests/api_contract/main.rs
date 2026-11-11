@@ -19,8 +19,10 @@ use piqueld::api::http::{
     ApiState, Authenticator, EmbeddedBundle, UiAssets, api_router, router, web_router,
 };
 use piqueld::application::{BoundaryError, RuntimeBoundary};
+use piqueld::git::Sources;
 use piqueld::store::{Store, StoredEnvironment};
 use piqueld_client::{ApplyApplicationRequest, ApplyOptions, Client, ClientError};
+use piqueld_config::DaemonConfig;
 use piqueld_core::api::SavedApplication;
 use piqueld_core::{
     InstanceId, NormalizedApplication, ObservedApplication, ResolutionSet, compile_application,
@@ -358,21 +360,41 @@ async fn state_with(temp: &TempDir, max_upload_bytes: Option<std::num::NonZeroU6
     let store = Store::open_unsynced(database(temp))
         .await
         .expect("fresh database opens");
-    let store = match max_upload_bytes {
-        Some(limit) => store.with_snapshot_uploads(limit),
-        None => store,
-    };
-    contract_state(temp, Arc::new(store)).await.1
+    let mut config = DaemonConfig::default();
+    if let Some(limit) = max_upload_bytes {
+        config.snapshots.max_upload_bytes = limit;
+    }
+    contract_state(temp, Arc::new(store), &config).await.1
 }
 
 /// The runtime and state of a contract daemon over `store`, opened in
-/// `temp`.
-async fn contract_state(temp: &TempDir, store: Arc<Store>) -> (Arc<FakeRuntime>, ApiState) {
+/// `temp` with `config`.
+async fn contract_state(
+    temp: &TempDir,
+    store: Arc<Store>,
+    config: &DaemonConfig,
+) -> (Arc<FakeRuntime>, ApiState) {
     // `FakeAuth` signs requests in with this administrator's credential,
     // which mutations re-read from the database.
     seed_account(&database(temp), "contract-admin", &[("admin", None)]).await;
     let runtime = Arc::new(FakeRuntime::new(&store));
-    (Arc::clone(&runtime), ApiState::new(store, runtime).unwrap())
+    let state = ApiState::new(store, runtime.clone(), sources(temp, config).await).unwrap();
+    (runtime, state)
+}
+
+/// The API service over `store` and `runtime`, with its Git sources in `temp`.
+async fn api_state(temp: &TempDir, store: Arc<Store>, runtime: Arc<FakeRuntime>) -> ApiState {
+    ApiState::new(
+        store,
+        runtime,
+        sources(temp, &DaemonConfig::default()).await,
+    )
+    .unwrap()
+}
+
+/// The Git sources in `temp`, limited by `config`.
+async fn sources(temp: &TempDir, config: &DaemonConfig) -> Arc<Sources> {
+    Arc::new(Sources::open(temp.path()).await.unwrap().configured(config))
 }
 
 /// The real authenticator of the contract daemon in `temp`.
@@ -760,18 +782,22 @@ struct AcceptanceApi {
     client: Client,
     runtime: Arc<FakeRuntime>,
     store: Arc<Store>,
+    /// The service the server routes to.
+    state: ApiState,
     server: Server,
 }
 
 impl AcceptanceApi {
     async fn start(temp: &TempDir) -> Self {
         let store = Arc::new(Store::open_unsynced(database(temp)).await.unwrap());
-        let (runtime, state) = contract_state(temp, Arc::clone(&store)).await;
-        let server = Server::tcp(router(state, FakeAuth)).await;
+        let (runtime, state) =
+            contract_state(temp, Arc::clone(&store), &DaemonConfig::default()).await;
+        let server = Server::tcp(router(state.clone(), FakeAuth)).await;
         Self {
             client: server.client(),
             runtime,
             store,
+            state,
             server,
         }
     }
@@ -794,10 +820,7 @@ impl AcceptanceApi {
 
     /// The same daemon, routed in process.
     fn router(&self) -> axum::Router {
-        router(
-            ApiState::new(Arc::clone(&self.store), self.runtime.clone()).unwrap(),
-            FakeAuth,
-        )
+        router(self.state.clone(), FakeAuth)
     }
 
     /// Runs operation `id` to success, or to failure with `error`.
@@ -987,7 +1010,8 @@ impl GrantFixture {
         // Authentication shares the store, which tells connections that
         // access changed.
         let store = Arc::new(Store::open_unsynced(&database).await.unwrap());
-        let (runtime, state) = contract_state(&temp, Arc::clone(&store)).await;
+        let (runtime, state) =
+            contract_state(&temp, Arc::clone(&store), &DaemonConfig::default()).await;
         let mut ids = Vec::new();
         for name in ["blog", "shop"] {
             let mut input = manifest();

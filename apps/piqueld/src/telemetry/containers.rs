@@ -19,8 +19,6 @@ use opentelemetry_proto::tonic::{
 };
 use parking_lot::Mutex;
 use piqueld_core::api::LogStream;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
@@ -33,21 +31,6 @@ const MAX_LINE_BYTES: usize = 16 * 1024;
 const LINES_PER_SECOND: f64 = 200.0;
 /// Lines a container may export at once after a quiet spell.
 const LINE_BURST: f64 = 2_000.0;
-
-/// Where log export stopped reading each container, saved so that it resumes
-/// there after a restart.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ContainerCursors {
-    /// When the discovery these cursors cover started, in Unix nanoseconds:
-    /// a container without a cursor was created after it. `None` before the
-    /// first save, when export starts from the present.
-    pub(crate) watermark: Option<i64>,
-    /// By container ID, Docker's timestamp of the last line sent or dropped,
-    /// or where reading started, in Unix nanoseconds. Resuming skips lines
-    /// before it but not at it, so a line may be sent twice and none is
-    /// missed.
-    pub(crate) containers: BTreeMap<String, i64>,
-}
 
 /// One container's export: the resource its records carry, and how far its
 /// output was read and sent. Shared by the code discovering it, which saves

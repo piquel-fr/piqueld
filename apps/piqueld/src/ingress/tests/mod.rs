@@ -6,6 +6,7 @@ use super::*;
 use crate::{
     api::{Actor, Mutation, MutationResponse},
     docker::{BollardDocker, DockerApi},
+    git::Sources,
     reconcile::Controller,
 };
 use hyper::Method;
@@ -233,7 +234,8 @@ impl Scenario {
                 .unwrap(),
         );
         let gateway = Arc::new(gateway);
-        let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store))
+        let sources = Arc::new(Sources::open(directory.path()).await.unwrap());
+        let controller = Controller::new(Arc::clone(&docker), Arc::clone(&store), sources)
             .with_ingress(Arc::clone(&gateway));
         let first = deploy(
             &store,
@@ -1073,8 +1075,10 @@ impl Scenario {
                 .join("ingress/data/caddy/pki/authorities/local/root.crt")
                 .exists()
         );
-        let controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store))
-            .with_ingress(Arc::clone(&disabled));
+        let sources = Arc::new(Sources::open(self.directory.path()).await.unwrap());
+        let controller =
+            Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store), sources)
+                .with_ingress(Arc::clone(&disabled));
         let mut changed =
             application("one", "one.example.test", "updated while disabled").to_manifest();
         changed.spec.routes.clear();

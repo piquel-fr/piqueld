@@ -25,7 +25,7 @@ impl ApplicationService {
         let (id, deployment) = restore.parts();
         let (id, deployment) = (id.clone(), deployment.to_owned());
         let request = Mutation::Restore(restore);
-        request.check_submission(None, false, request_id)?;
+        Self::check_submission(&request, None, false, request_id)?;
         // A repeated request returns what it got, whatever changed since.
         if let Some(response) = self
             .store

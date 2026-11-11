@@ -1,7 +1,7 @@
 //! Atomic acceptance: compare current intent, write the change and its replay receipt together.
 use super::auth::access::{EnvironmentOwner, Holder};
 use super::{Actor, Operation, OperationKind, Store, StoreError, StoredApplication, now_ms};
-use crate::api::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
+use crate::store::{Mutation, MutationResponse, PreviewMutation, PromotionMutation};
 use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
     AcceptedOperation, CreatedPreview, DeletedApplication, EnvironmentView, RenamedApplication,
@@ -297,7 +297,7 @@ impl Store {
             | Mutation::SetBranch { id, .. }
             | Mutation::SetSync { id, .. }
             | Mutation::SetTelemetry { id, .. }
-            | Mutation::Sync(crate::api::ListedHead { id, .. })
+            | Mutation::Sync(crate::store::ListedHead { id, .. })
             | Mutation::Promotion(
                 PromotionMutation::SetSource { id, .. } | PromotionMutation::Promote { id, .. },
             )

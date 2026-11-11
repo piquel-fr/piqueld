@@ -17,7 +17,7 @@ pub mod telemetry;
 
 mod certificate;
 mod command;
-mod git;
+pub mod git;
 mod ui_bundle;
 
 use thiserror::Error;

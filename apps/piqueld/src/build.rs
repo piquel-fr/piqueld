@@ -20,28 +20,6 @@ impl BuildLog {
     ) -> Result<(), StoreError> {
         self.store.append_build_log(self.id, bytes, stream).await
     }
-    /// Keeps an incomplete UTF-8 suffix for the next read without rejecting binary output.
-    ///
-    /// Returns how many leading bytes can be flushed now: everything except a
-    /// trailing, possibly incomplete multi-byte character. Invalid bytes elsewhere
-    /// are flushed as-is.
-    ///
-    /// ```text
-    /// b"ok\xe2\x82"      -> 2  (the partial `€` waits for more bytes)
-    /// b"\xffok\xe2\x82"  -> 3
-    /// ```
-    pub(crate) fn complete_prefix(bytes: &[u8]) -> usize {
-        let mut end = 0;
-        for chunk in bytes.utf8_chunks() {
-            end += chunk.valid().len();
-            let invalid = chunk.invalid();
-            if std::str::from_utf8(invalid).is_err_and(|error| error.error_len().is_none()) {
-                return end;
-            }
-            end += invalid.len();
-        }
-        end
-    }
     /// Records the resolved Git commit on the build.
     pub(crate) async fn commit(&self, commit: &str) -> Result<(), StoreError> {
         self.store.build_commit(self.id, commit).await
@@ -146,13 +124,6 @@ impl Drop for BuildAttempt {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn incomplete_characters_wait_for_the_next_read() {
-        assert_eq!(BuildLog::complete_prefix(b"ok\xe2\x82"), 2);
-        assert_eq!(BuildLog::complete_prefix(b"\xffok\xe2\x82"), 3);
-        assert_eq!(BuildLog::complete_prefix("ok€".as_bytes()), 5);
-    }
 
     #[test]
     fn completion_retry_preserves_pending_terminal_result() {

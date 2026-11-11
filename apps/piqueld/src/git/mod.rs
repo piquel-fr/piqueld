@@ -13,6 +13,72 @@ use std::{collections::BTreeMap, time::Duration};
 use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// Where deployments get their Git sources: the checkouts they read
+/// manifests from and build in, and the snapshots uploaded from local
+/// worktrees, in the daemon's data directory. One per daemon, shared by the
+/// API service, which receives snapshots, and the controller.
+pub struct Sources {
+    /// Admission for every Git checkout, made in `checkouts/`.
+    checkouts: Arc<Checkouts>,
+    /// Snapshots uploaded from local worktrees, kept in `snapshots/`.
+    snapshots: snapshot::Snapshots,
+    /// Largest snapshot bundle an upload may carry (`[snapshots]`).
+    max_upload_bytes: std::num::NonZeroU64,
+}
+
+impl Sources {
+    /// Opens `checkouts/` and `snapshots/` in `directory` with the default
+    /// limits, removing what a previous process left in progress.
+    ///
+    /// # Errors
+    /// Returns the file system error preparing either directory.
+    pub async fn open(directory: &Path) -> std::io::Result<Self> {
+        Ok(Self {
+            checkouts: Arc::new(Checkouts::open(directory.join("checkouts")).await?),
+            snapshots: snapshot::Snapshots::open(directory.join("snapshots")).await?,
+            max_upload_bytes: piqueld_config::SnapshotsConfig::default().max_upload_bytes,
+        })
+    }
+
+    /// Applies the daemon's `[checkouts] max_bytes` and `[snapshots]
+    /// max_upload_bytes`, before any checkout is made.
+    #[must_use]
+    pub fn configured(self, config: &piqueld_config::DaemonConfig) -> Self {
+        Self {
+            checkouts: Arc::new(self.checkouts.with_max_bytes(config.checkouts.max_bytes)),
+            max_upload_bytes: config.snapshots.max_upload_bytes,
+            ..self
+        }
+    }
+
+    /// Admission for every Git checkout.
+    pub(crate) const fn checkouts(&self) -> &Arc<Checkouts> {
+        &self.checkouts
+    }
+
+    /// Snapshots uploaded from local worktrees.
+    pub(crate) const fn snapshots(&self) -> &snapshot::Snapshots {
+        &self.snapshots
+    }
+
+    /// The largest local snapshot bundle an upload may carry, in bytes.
+    pub(crate) const fn max_upload_bytes(&self) -> u64 {
+        self.max_upload_bytes.get()
+    }
+
+    /// Removes the snapshots no preview's latest deployment uses, finding
+    /// those that are in `store` while no upload is being accepted.
+    ///
+    /// # Errors
+    /// Returns a storage or file system error.
+    pub(crate) async fn prune_snapshots(
+        &self,
+        store: &crate::store::Store,
+    ) -> Result<(), crate::store::StoreError> {
+        self.snapshots.prune(store.local_snapshot_commits()).await
+    }
+}
+
 /// The branch heads of a remote repository, listed with `git ls-remote`.
 pub(crate) struct Heads {
     /// The repository listed.

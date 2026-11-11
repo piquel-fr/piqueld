@@ -13,6 +13,11 @@ pub(crate) mod ingress;
 mod jobs;
 mod journal;
 mod links;
+mod mutation;
+pub use mutation::{
+    ListedHead, Mutation, MutationResponse, PreviewMutation, PromotionMutation, Restore,
+    SourceChoice, SyncOutcome,
+};
 mod observability;
 pub(crate) use audit::NewAuditEvent;
 pub use auth::access::{Actor, Attribution, Caller, EnvironmentOwner, Visibility};
@@ -23,7 +28,7 @@ pub(crate) use auth::{
 };
 pub(crate) use journal::JournalAction;
 pub(crate) use observability::DESTINATION_CHANGED;
-pub use observability::{DestinationError, RetryError};
+pub use observability::{ContainerCursors, DestinationError, RetryError};
 pub(crate) use secret::SecretDeletion;
 mod operation;
 mod preview;
@@ -595,17 +600,9 @@ pub struct Store {
     audit_days: u64,
     /// How many previews may exist and what their services may use.
     previews: piqueld_core::manifest::PreviewLimits,
-    /// Snapshots uploaded from local worktrees, kept next to the database
-    /// in `snapshots/`.
-    snapshots: std::sync::Arc<crate::git::snapshot::Snapshots>,
-    /// Largest snapshot bundle an upload may carry (`[snapshots]`).
-    max_upload_bytes: std::num::NonZeroU64,
     /// Signalled after each committed change to accounts, credentials, or
     /// grants (see [`Store::access_changes`]).
     access_changes: tokio::sync::watch::Sender<()>,
-    /// Admission for every Git checkout, made in `checkouts/` next to the
-    /// database.
-    checkouts: std::sync::Arc<crate::git::Checkouts>,
 }
 
 /// Whether a commit waits for the disk to sync it.
@@ -757,18 +754,7 @@ impl Store {
             daemon_event_days: 0,
             audit_days: 0,
             previews: piqueld_core::manifest::PreviewLimits::default(),
-            snapshots: std::sync::Arc::new(
-                crate::git::snapshot::Snapshots::open(path.with_file_name("snapshots"))
-                    .await
-                    .map_err(StoreError::PathSource)?,
-            ),
-            max_upload_bytes: piqueld_config::SnapshotsConfig::default().max_upload_bytes,
             access_changes: tokio::sync::watch::Sender::new(()),
-            checkouts: std::sync::Arc::new(
-                crate::git::Checkouts::open(path.with_file_name("checkouts"))
-                    .await
-                    .map_err(StoreError::PathSource)?,
-            ),
         };
         store.reencrypt_moved_secrets().await?;
         store.record_missing_releases().await?;

@@ -316,7 +316,7 @@ pub(crate) mod tests {
                     .await
                     .unwrap(),
             );
-            let service = ApplicationService::unconnected(store, temp.path());
+            let service = ApplicationService::unconnected(store, temp.path()).await;
             Self {
                 application: Self::save(&service, "notes", sync).await,
                 service,

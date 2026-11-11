@@ -343,7 +343,7 @@ mod tests {
             .insert_credential(&user.id, &credential)
             .await
             .unwrap();
-        let service = ApplicationService::unconnected(store, temp.path());
+        let service = ApplicationService::unconnected(store, temp.path()).await;
         let url = format!("sqlite:{}", database.display());
         let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();
         let address = IpAddr::from([192, 0, 2, 1]);
@@ -371,7 +371,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("db");
         let store = Arc::new(Store::open_unsynced(&database).await.unwrap());
-        let service = ApplicationService::unconnected(Arc::clone(&store), temp.path());
+        let service = ApplicationService::unconnected(Arc::clone(&store), temp.path()).await;
         let url = format!("sqlite:{}", database.display());
         let mut db = sqlx::SqliteConnection::connect(&url).await.unwrap();
         let drained = std::time::Duration::from_secs(5);

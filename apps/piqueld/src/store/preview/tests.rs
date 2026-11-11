@@ -1,8 +1,8 @@
 //! Preview lifecycle: idempotent creation without the application revision,
 //! separation from environments, and shared secret access.
-use crate::api::Actor::Daemon;
-use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::store::Actor::Daemon;
 use crate::store::*;
+use crate::store::{Mutation, MutationResponse, PreviewMutation};
 use piqueld_core::{
     GitBranch, PreviewSlot,
     access::Scope,
@@ -491,7 +491,7 @@ async fn local_snapshot_previews_are_not_pruned_nor_promotion_sources() {
     let promoted = Mutation::CreateEnvironment {
         application: application.clone(),
         name: piqueld_core::EnvironmentName::parse("production-2").unwrap(),
-        source: Some(crate::api::SourceChoice::PromoteFrom(preview.id.clone())),
+        source: Some(crate::store::SourceChoice::PromoteFrom(preview.id.clone())),
     };
     assert!(matches!(
         accept(promoted).await,

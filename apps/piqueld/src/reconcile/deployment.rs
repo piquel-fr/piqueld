@@ -77,7 +77,7 @@ impl<D: DockerApi> Controller<D> {
             .progress(&operation.id, "fetching_manifest", None)
             .await?;
         let checkout = self
-            .store
+            .sources
             .checkouts()
             .checkout(
                 source
@@ -199,7 +199,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<Option<SnapshotSource>, OperationError> {
         match (origin, backing) {
             (DeploymentOrigin::Local(local), Some(backing)) => Ok(Some(
-                self.store
+                self.sources
                     .snapshots()
                     .source(&backing.repository.url, &local.commit),
             )),
