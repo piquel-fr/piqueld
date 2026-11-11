@@ -2,9 +2,10 @@
 //! tunnel listener. The harness test emulates `cloudflared` with a container
 //! on the edge network, since a real tunnel needs Cloudflare.
 use super::{Engine, Scenario, dns01::CURL_IMAGE, private_config, routes};
-use crate::{ingress::Ingress, store::Store};
+use crate::ingress::Ingress;
 use piqueld_config::{Credential, TunnelConfig, TunnelCredentials};
 use piqueld_core::{EnvironmentId, api::PublicIngressStatus, manifest::Visibility};
+use piqueld_store::Store;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -106,7 +107,7 @@ async fn cloudflared_forwards_everything_to_the_tunnel_listener_without_privileg
 async fn the_tunnel_listener_serves_only_public_routes_to_edge_peers() {
     let (_engine, ingress) = tunnel_ingress().await;
     let ingress = ingress.with_private(&private_config());
-    let table: crate::store::ingress::RoutingTable = [
+    let table: piqueld_store::ingress::RoutingTable = [
         (
             EnvironmentId::parse("env-public").unwrap(),
             routes(Visibility::Public, "www.example.com"),

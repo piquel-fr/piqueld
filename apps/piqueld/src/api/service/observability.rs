@@ -1,6 +1,5 @@
 //! Shared observability operations, independent of HTTP and the browser.
 use super::{ApplicationError, ApplicationService};
-use crate::store::{NewAuditEvent, Visibility};
 use piqueld_core::{
     Event,
     api::Page,
@@ -8,6 +7,7 @@ use piqueld_core::{
         DaemonStats, DeploymentAnalytics, Diagnostic, EventFilter, NotificationDelivery,
     },
 };
+use piqueld_store::{NewAuditEvent, Visibility};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
@@ -61,7 +61,7 @@ impl ApplicationService {
         diagnostic: &Diagnostic,
         request_id: Option<&str>,
         application: Option<&piqueld_core::EnvironmentId>,
-        actor: crate::store::Attribution<'_>,
+        actor: piqueld_store::Attribution<'_>,
     ) {
         if let Err(error) = self
             .store
@@ -179,7 +179,7 @@ impl ApplicationService {
         &self,
         what: &str,
         held: Option<tokio::sync::OwnedSemaphorePermit>,
-        write: impl Future<Output = Result<(), crate::store::StoreError>> + Send + 'static,
+        write: impl Future<Output = Result<(), piqueld_store::StoreError>> + Send + 'static,
     ) -> bool {
         let Ok(slot) = self.audit_backlog.clone().try_acquire_owned() else {
             tracing::error!(what, "audit backlog is full; record dropped");
@@ -312,7 +312,7 @@ impl KnownAddresses {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{CredentialKind, NewCredential, Store};
+    use piqueld_store::{CredentialKind, NewCredential, Store};
     use sqlx::Connection as _;
     use std::sync::Arc;
 

@@ -13,7 +13,7 @@ pub(crate) fn diagnostic_id() -> String {
 pub enum OperationError {
     /// A saved or captured route belongs to another environment or the installation.
     #[error("{0}")]
-    HostnameConflict(#[source] crate::store::StoreError),
+    HostnameConflict(#[source] piqueld_store::StoreError),
     /// Managed gateway could not apply the required routing transition.
     #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
     Ingress(#[source] anyhow::Error),
@@ -22,10 +22,10 @@ pub enum OperationError {
     Docker(#[source] crate::docker::DockerError),
     /// Durable operation failure with its storage cause.
     #[error("operation journal is unavailable")]
-    Journal(#[source] crate::store::StoreError),
+    Journal(#[source] piqueld_store::StoreError),
     /// Secret values could not be decrypted with the configured master key.
     #[error("secret storage is unavailable")]
-    SecretStorageUnavailable(#[source] crate::store::StoreError),
+    SecretStorageUnavailable(#[source] piqueld_store::StoreError),
     /// Logical names whose values must be replaced before a new deployment.
     #[error(
         "secret values unavailable: {names}; supply replacement values and start a new deployment"
@@ -36,13 +36,13 @@ pub enum OperationError {
     },
     /// Mounted secrets have no value to deploy.
     #[error("{0}")]
-    SecretMissing(#[source] crate::store::StoreError),
+    SecretMissing(#[source] piqueld_store::StoreError),
     /// The environment mounts a stored secret its access list excludes.
     #[error("{0}")]
-    SecretAccessDenied(#[source] crate::store::StoreError),
+    SecretAccessDenied(#[source] piqueld_store::StoreError),
     /// A build or fetch was requested for an environment that is now promoted.
     #[error("{0}")]
-    EnvironmentPromoted(#[source] crate::store::StoreError),
+    EnvironmentPromoted(#[source] piqueld_store::StoreError),
     /// Repository input could not be located or decoded.
     #[error("{}", if *.not_found { "manifest not found" } else { "repository manifest is invalid or its application name does not match" })]
     ManifestInput {
@@ -264,26 +264,26 @@ impl crate::docker::DockerError {
     }
 }
 
-impl From<crate::store::StoreError> for OperationError {
+impl From<piqueld_store::StoreError> for OperationError {
     /// Keeps secret and hostname failures distinct; every other storage error
     /// is a journal failure.
-    fn from(error: crate::store::StoreError) -> Self {
+    fn from(error: piqueld_store::StoreError) -> Self {
         match error {
-            error @ crate::store::StoreError::SecretSource(_) => {
+            error @ piqueld_store::StoreError::SecretSource(_) => {
                 Self::SecretStorageUnavailable(error)
             }
-            crate::store::StoreError::SecretUnavailable { names } => {
+            piqueld_store::StoreError::SecretUnavailable { names } => {
                 Self::SecretUnavailable { names }
             }
-            error @ crate::store::StoreError::SecretMissing { .. } => Self::SecretMissing(error),
-            error @ crate::store::StoreError::SecretAccessDenied { .. } => {
+            error @ piqueld_store::StoreError::SecretMissing { .. } => Self::SecretMissing(error),
+            error @ piqueld_store::StoreError::SecretAccessDenied { .. } => {
                 Self::SecretAccessDenied(error)
             }
-            error @ crate::store::StoreError::Promotion(
-                crate::store::PromotionError::Promoted { .. },
+            error @ piqueld_store::StoreError::Promotion(
+                piqueld_store::PromotionError::Promoted { .. },
             ) => Self::EnvironmentPromoted(error),
-            error @ (crate::store::StoreError::HostnameConflict { .. }
-            | crate::store::StoreError::SharedHostnameConflict { .. }) => {
+            error @ (piqueld_store::StoreError::HostnameConflict { .. }
+            | piqueld_store::StoreError::SharedHostnameConflict { .. }) => {
                 Self::HostnameConflict(error)
             }
             other => Self::Journal(other),
@@ -361,7 +361,7 @@ impl OperationError {
                         .push(format!("Docker operation: {operation}"));
                 }
             }
-            if let Some(failure) = error.downcast_ref::<crate::secrets::KeyFailure>() {
+            if let Some(failure) = error.downcast_ref::<piqueld_store::secrets::KeyFailure>() {
                 diagnostic.causes.push(failure.fact().into());
             }
             if let Some(error) = error.downcast_ref::<crate::ingress::ResponseError>() {
@@ -485,7 +485,7 @@ mod tests {
         assert!(cause.is::<std::io::Error>());
         assert_eq!(cause.to_string(), diagnostic);
 
-        let journal = OperationError::from(crate::store::StoreError::DatabaseSource(
+        let journal = OperationError::from(piqueld_store::StoreError::DatabaseSource(
             sqlx::Error::PoolClosed,
         ));
         assert_eq!(journal.code(), "journal_unavailable");
@@ -588,7 +588,7 @@ mod tests {
         .diagnostic();
         assert!(io.causes.contains(&"I/O failure: PermissionDenied".into()));
         assert!(!serde_json::to_string(&io).unwrap().contains("secret"));
-        let storage = OperationError::Journal(crate::store::StoreError::DatabaseSource(
+        let storage = OperationError::Journal(piqueld_store::StoreError::DatabaseSource(
             sqlx::Error::PoolClosed,
         ))
         .diagnostic();

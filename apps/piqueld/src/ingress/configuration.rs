@@ -50,12 +50,12 @@ use super::{
     tunnel::TUNNEL_PORT,
 };
 use crate::api::{WEBHOOK_BODY_LIMIT, WEBHOOK_PATH};
-use crate::store::ingress::RoutingTable;
 use anyhow::Result;
 use piqueld_core::{
     DockerServiceName, EnvironmentId,
     manifest::{Hostname, RouteHostname, RouteTarget, ValidatedRoute, Visibility},
 };
+use piqueld_store::ingress::RoutingTable;
 use serde_json::{Value, json};
 
 /// The routes of one listener, as Caddy route objects.

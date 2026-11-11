@@ -1,11 +1,11 @@
 //! Durable opaque sessions, host operator sessions, and short-lived,
 //! explicitly approved device logins.
 use super::{Auth, AuthError, CredentialKind, DAY, MAX_PENDING, Result, now_secs};
-use crate::store::{Actor, Caller, NewCredential, StoreError};
 use piqueld_core::access::{Denied, Grants};
 use piqueld_core::auth::{
     DeviceRequest, DeviceStart, DeviceToken, HostOperator, OperatorLink, Principal, Session, User,
 };
+use piqueld_store::{Actor, Caller, NewCredential, StoreError};
 use std::collections::{HashMap, hash_map::Entry};
 
 /// Seconds a host operator sign-in link stays redeemable.

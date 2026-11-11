@@ -1077,7 +1077,7 @@ async fn git_build_runs_as_a_local_swarm_image() {
     let environment = EnvironmentId::parse("env-git-local-build").unwrap();
     // The store gives the build its owner, the sources its checkout admission.
     let state = tempfile::tempdir().unwrap();
-    let store = piqueld::store::Store::open_unsynced(state.path().join("state.db"))
+    let store = piqueld_store::Store::open_unsynced(state.path().join("state.db"))
         .await
         .unwrap();
     let sources = piqueld::git::Sources::open(state.path()).await.unwrap();

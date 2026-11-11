@@ -5,10 +5,10 @@ mod prebuilt;
 #[path = "support/sqlite.rs"]
 mod sqlite;
 
-use piqueld::store::{Store, StoreError};
 use piqueld_core::api::Page;
 use piqueld_core::manifest::ApplicationTemplate;
 use piqueld_core::{EnvironmentId, NormalizedApplication, Operation, OperationState};
+use piqueld_store::{Store, StoreError};
 
 fn application() -> NormalizedApplication {
     prebuilt::application("app-persist-01")
@@ -224,7 +224,7 @@ async fn list_quarantines_corrupt_rows_and_get_stays_fail_closed() {
     let fourth = save(&store, &fourth).await.environment_id;
 
     // The corrupt row consumes one slot, but must not hide later applications.
-    let ids = |page: &piqueld::store::EnvironmentPage| {
+    let ids = |page: &piqueld_store::EnvironmentPage| {
         page.items
             .iter()
             .map(|environment| environment.id().to_string())

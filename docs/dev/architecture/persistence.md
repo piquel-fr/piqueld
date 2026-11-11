@@ -4,8 +4,9 @@ SQLx's SQLite driver owns persistence (see [ADR 0001](adr/0001-sqlx-sqlite.md)).
 The database at `<server.data_dir>/piqueld.db` contains application manifests,
 environments with their resolved targets and status, deployments, releases,
 operation and build history, accounts and their grants, encrypted secrets, the
-audit trail, and the control-plane instance identity. The store reads and
-writes these records; it does not resolve images or plan runtime changes. The
+audit trail, and the control-plane instance identity. The store, the
+`piqueld-store` crate, reads and writes these records; it does not resolve
+images or plan runtime changes. The
 daemon prepares its private data directory before opening SQLite, and the store
 checks the database file path.
 
@@ -44,7 +45,7 @@ restart or later migration failure can resume from any committed version
 without changing the instance identity.
 
 Each file in
-[`apps/piqueld/migrations/`](https://github.com/sourceorigin-dev/piqueld/tree/main/apps/piqueld/migrations)
+[`crates/piqueld-store/migrations/`](https://github.com/sourceorigin-dev/piqueld/tree/main/crates/piqueld-store/migrations)
 explains in its comments what it changes and what it does to existing data.
 The migration tests cover upgrading populated databases, the data moves of
 `0012`, `0014`, `0021` and `0022`, and reopening every committed version after
@@ -52,10 +53,10 @@ a later migration fails.
 
 ### Adding a migration
 
-Add `apps/piqueld/migrations/NNNN_<name>.sql` with the next number, starting with a comment
-that says what it changes and what happens to existing data. The daemon build
-script embeds every file in name order and fails unless the numbers are
-contiguous from `0001`; migration `N` upgrades schema `N - 1` to `N`, and the
+Add `crates/piqueld-store/migrations/NNNN_<name>.sql` with the next number,
+starting with a comment that says what it changes and what happens to existing
+data. The store's build script embeds every file in name order and fails
+unless the numbers are contiguous from `0001`; migration `N` upgrades schema `N - 1` to `N`, and the
 number of embedded migrations is the schema version. It also applies them all
 to a disposable database and points `DATABASE_URL` at it, so `sqlx::query!`
 macros are checked against the new schema at compile time. A migration runs as

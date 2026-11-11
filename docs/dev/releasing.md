@@ -38,6 +38,7 @@ never edited, since databases that applied it won't run it again.
 | `piqueld-config` | The daemon's configuration |
 | `piqueld-core` | The contracts the others share |
 | `piqueld-probe` | The static health probe the daemon embeds |
+| `piqueld-store` | The daemon's control-plane state |
 
 `piqueld-ui`, `piqueld-generated` and `xtask` set `publish = false`. Cargo
 leaves `piqueld-generated` out of the published `piqueld` and `piquelctl`,
@@ -45,7 +46,8 @@ which use it only as a development dependency.
 
 Each crate builds from its package alone, as `cargo install` builds it:
 
-- The daemon's migrations are in `apps/piqueld/migrations`, inside its crate.
+- The store's migrations are in `crates/piqueld-store/migrations`, inside its
+  crate, whose build script checks its queries against them.
 - The daemon's build script builds the health probe from the `piqueld-probe`
   crate, whose build script exports its directory as `DEP_PIQUELD_PROBE_DIR`,
   with the `probe` profile of `apps/piqueld/build/probe.toml`. This works the

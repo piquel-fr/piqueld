@@ -2,7 +2,6 @@
 //! for an environment. Neither builds nor fetches: a release's images are
 //! deployed as recorded.
 use super::{ApplicationError, ApplicationService, Mutation, MutationResponse, PromotionMutation};
-use crate::store::{Promotion, PromotionCandidate, PromotionError, StoreError, StoredEnvironment};
 use piqueld_core::{
     EnvironmentId, Plan, PlanRequest, ResolvedApplication, ValidationErrors,
     api::{
@@ -12,6 +11,7 @@ use piqueld_core::{
     compile_release,
     manifest::{PREVIEW_DEPLOYMENT_ID, Rendering},
 };
+use piqueld_store::{Promotion, PromotionCandidate, PromotionError, StoreError, StoredEnvironment};
 
 impl ApplicationService {
     /// Promotes `selection` into the promoted environment `id`, pinning its

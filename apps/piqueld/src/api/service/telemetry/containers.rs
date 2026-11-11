@@ -10,11 +10,11 @@
 use super::{ApplicationService, Names, RECEIVERS_INTERVAL, interval, step};
 use crate::application::{BoundaryError, RuntimeBoundary};
 use crate::docker::{ContainerState, DockerError, ManagedContainer, Workload};
-use crate::store::ContainerCursors;
-use crate::store::{StoreError, now_ns};
 use crate::telemetry::{ContainerExport, ContainerSample, Telemetry};
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
+use piqueld_store::ContainerCursors;
+use piqueld_store::{StoreError, now_ns};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

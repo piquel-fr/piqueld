@@ -12,7 +12,7 @@
 //! dashboard_hostname`, a private route's.
 //!
 //! **Ordering.** Records follow the routes the gateway has acknowledged
-//! ([`Store::applied_table`](crate::store::Store::applied_table)), so they
+//! ([`Store::applied_table`](piqueld_store::Store::applied_table)), so they
 //! are written once the gateway serves a route and deleted or repointed only
 //! after it has withdrawn it. A route waiting for the gateway keeps its
 //! current records, and so does every route until the gateway has converged

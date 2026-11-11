@@ -250,7 +250,7 @@ impl<D: DockerApi> Controller<D> {
         job: &DesiredJobRun,
         ownership: &BTreeMap<String, String>,
         cancellation: &CancellationToken,
-        journal: &crate::store::JournalAction,
+        journal: &piqueld_store::JournalAction,
         log: &BuildLog,
     ) -> Result<(), OperationError> {
         let secrets = self

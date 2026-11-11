@@ -4,7 +4,6 @@ use super::{BoundaryError, RuntimeBoundary};
 use crate::{
     docker::{BuildPriority, DockerApi, DockerError, DockerTimeout},
     reconcile::ImagesInUse,
-    store::StoredEnvironment,
 };
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
@@ -14,6 +13,7 @@ use piqueld_core::{
     manifest::{SourceRepository, ValidatedSource as Source},
     resource::ResolvedSource,
 };
+use piqueld_store::StoredEnvironment;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -31,7 +31,7 @@ pub struct ApplicationRuntime<D> {
     prepare_timeout: Duration,
     // Set only for execution, never API previews. Records the source-preparation
     // phase and service names, and journals each source-preparation action.
-    progress: Option<(Arc<crate::store::Store>, String)>,
+    progress: Option<(Arc<piqueld_store::Store>, String)>,
     /// The build queue its Git sources wait in.
     priority: BuildPriority,
     /// The local snapshot `"self"` sources are checked out from, if any.
@@ -52,7 +52,7 @@ impl<D> ApplicationRuntime<D> {
     #[must_use]
     pub fn new(
         docker: Arc<D>,
-        store: &crate::store::Store,
+        store: &piqueld_store::Store,
         sources: &crate::git::Sources,
         wake: Arc<Notify>,
         prepare_timeout: Duration,
@@ -83,7 +83,7 @@ impl<D> ApplicationRuntime<D> {
     /// Associates source preparation with the operation whose status is reported.
     pub(crate) fn with_progress(
         mut self,
-        store: Arc<crate::store::Store>,
+        store: Arc<piqueld_store::Store>,
         operation_id: String,
     ) -> Self {
         self.progress = Some((store, operation_id));

@@ -2,8 +2,8 @@
 //! ran. Nothing is rendered, fetched or built: its saved target is deployed
 //! again with the secret versions it pinned, and its jobs never run again.
 use super::{ApplicationError, ApplicationService, Mutation, MutationResponse, Restore};
-use crate::store::StoreError;
 use piqueld_core::api::AcceptedOperation;
+use piqueld_store::StoreError;
 
 impl ApplicationService {
     /// Restores a deployment of an environment or preview, after the

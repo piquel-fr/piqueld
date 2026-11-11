@@ -24,7 +24,6 @@ use piqueld::docker::fake::{
 use piqueld::docker::{DockerApi, DockerError, ImageSource, LocalImage, resolve_image_digest};
 use piqueld::git::Sources;
 use piqueld::reconcile::Controller;
-use piqueld::store::Store;
 use piqueld_core::Sha256Digest;
 use piqueld_core::manifest::{ApplicationManifest, ApplicationTemplate};
 use piqueld_core::planner::PlanRequest;
@@ -35,6 +34,7 @@ use piqueld_core::resource::{
 };
 use piqueld_core::{ApplicationId, EnvironmentId, Event, NormalizedApplication, Plan};
 use piqueld_core::{Operation, OperationState};
+use piqueld_store::Store;
 use poll::eventually;
 use prebuilt::manifest;
 use std::{
@@ -323,7 +323,7 @@ impl ControllerHarness {
                     operation_id: Some(id.to_owned()),
                     ..Default::default()
                 },
-                &piqueld::store::Visibility::ALL,
+                &piqueld_store::Visibility::ALL,
                 None,
                 100,
             )
@@ -382,7 +382,7 @@ impl ControllerHarness {
             .status(&self.environment().await)
             .await
             .expect("status is readable");
-        assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
+        assert_eq!(status.state, piqueld_store::ApplicationState::Ready);
         let operation = self.operation(operation_id).await;
         assert_eq!(operation.state, OperationState::Succeeded);
         let observed = self
@@ -444,7 +444,7 @@ impl ControllerHarness {
     async fn assert_deleted(&self, deletion: &Operation) {
         assert!(matches!(
             self.store.get(&deletion.environment_id).await,
-            Err(piqueld::store::StoreError::NotFound)
+            Err(piqueld_store::StoreError::NotFound)
         ));
         let observed = self
             .docker
@@ -504,7 +504,7 @@ impl ControllerHarness {
             .status(&self.environment().await)
             .await
             .expect("status is readable");
-        assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
+        assert_eq!(status.state, piqueld_store::ApplicationState::Degraded);
         assert_eq!(
             self.operation(&created.id).await.state,
             OperationState::Failed

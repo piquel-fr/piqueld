@@ -1,5 +1,4 @@
 //! One OTLP/gRPC collector and the bounded queues feeding it.
-use crate::store::now_ms;
 use opentelemetry::InstrumentationScope;
 use opentelemetry_proto::tonic::collector::{
     logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
@@ -14,6 +13,7 @@ use opentelemetry_sdk::{Resource, logs::SdkLogRecord, trace::SpanData};
 use parking_lot::Mutex;
 use piqueld_config::{Credential, Headers, OtlpEndpoint};
 use piqueld_core::EnvironmentId;
+use piqueld_store::now_ms;
 use rustix::fs::{Mode, OFlags};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};

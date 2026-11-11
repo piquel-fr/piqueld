@@ -5,7 +5,6 @@
 //! the SDK, and queued on the same bounded queues.
 use super::{Destination, Telemetry};
 use crate::docker::{ContainerLogs, ContainerUsage, DockerError};
-use crate::store::now_ns;
 use futures_util::StreamExt as _;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
@@ -19,6 +18,7 @@ use opentelemetry_proto::tonic::{
 };
 use parking_lot::Mutex;
 use piqueld_core::api::LogStream;
+use piqueld_store::now_ns;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;

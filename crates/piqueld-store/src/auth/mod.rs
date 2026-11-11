@@ -1,0 +1,1448 @@
+//! Accounts, passkeys, revocable credentials, and invitations.
+//!
+//! Timestamps are Unix seconds. Callers pass only hashes of credential and
+//! invitation secrets, so this module never sees a usable secret. Writes queue
+//! behind the shared writer, and account changes refuse to lock everyone out.
+//! Changes to an account take the [`Caller`], whose authority over the account
+//! is checked against both sides' current grants inside the same transaction.
+pub(super) mod access;
+mod security;
+pub use security::SecurityEvent;
+
+use super::{Actor, Attribution, Store, StoreError, now_secs};
+use access::{Authority, Caller, Holder};
+use piqueld_core::access::{GlobalPermission, Grants, Permission};
+use piqueld_core::auth::{
+    Account, CredentialView, Directory, HostOperator, InvitationView, OperatorSessionView,
+    PasskeyView, User,
+};
+use piqueld_core::tailnet::TailnetBinding;
+use sqlx::SqliteConnection;
+use std::fmt;
+
+/// Browser sessions end after a day without use, even before they expire.
+pub(super) const SESSION_IDLE_SECS: i64 = 86_400;
+
+/// Parses a credential's stored tailnet binding.
+fn binding(stored: Option<String>) -> Result<Option<TailnetBinding>, StoreError> {
+    stored
+        .map(TailnetBinding::try_from)
+        .transpose()
+        .map_err(|reason| {
+            StoreError::CorruptSource(format!("auth_credentials.tailnet: {reason}").into())
+        })
+}
+
+/// Account changes refused because nobody could administer the installation
+/// afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lockout {
+    /// No account would hold `admin` on every application together with a
+    /// passkey to sign in with.
+    LastAdmin,
+}
+
+impl Lockout {
+    /// Human-readable reason, suitable for API responses.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::LastAdmin => {
+                "at least one account must keep admin on every application and a passkey"
+            }
+        }
+    }
+}
+
+impl fmt::Display for Lockout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for Lockout {}
+
+/// Credential classes. Only browser sessions have an idle timeout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialKind {
+    /// Dashboard session cookie.
+    Browser,
+    /// Session approved for the command-line client.
+    Cli,
+    /// Named API token.
+    Token,
+}
+
+impl CredentialKind {
+    /// Value stored in the `kind` column.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::Cli => "cli",
+            Self::Token => "token",
+        }
+    }
+
+    /// Parses a stored kind, reporting unknown values as corruption.
+    fn parse(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "browser" => Ok(Self::Browser),
+            "cli" => Ok(Self::Cli),
+            "token" => Ok(Self::Token),
+            _ => Err(StoreError::Corrupt),
+        }
+    }
+}
+
+/// A credential to store for an account. Only its secret's hash is persisted.
+pub struct NewCredential<'a> {
+    /// Public identifier, used to revoke the credential.
+    pub id: String,
+    /// Hash of the bearer secret; the secret itself is never stored.
+    pub secret_hash: String,
+    /// Credential class, deciding idle-timeout behavior.
+    pub kind: CredentialKind,
+    /// Human-readable label shown in the account directory.
+    pub name: &'a str,
+    /// Absolute expiry in Unix seconds; `None` never expires.
+    pub expires_at: Option<i64>,
+    /// Grants a scoped credential is limited to; `None` acts with the
+    /// account's full access.
+    pub grants: Option<&'a Grants>,
+}
+
+impl NewCredential<'_> {
+    /// Inserts the credential for `user_id`, marking it used now. A duplicate ID
+    /// or hash maps to `AlreadyExists`, and a missing account to `NotFound`.
+    async fn insert(&self, db: &mut SqliteConnection, user_id: &str) -> Result<(), StoreError> {
+        let now = now_secs();
+        let kind = self.kind.as_str();
+        let scoped = self.grants.is_some();
+        sqlx::query!(
+            "INSERT INTO auth_credentials(id,user_id,secret_hash,kind,name,created_at,last_used_at,expires_at,scoped) VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
+            self.id,
+            user_id,
+            self.secret_hash,
+            kind,
+            self.name,
+            now,
+            self.expires_at,
+            scoped
+        )
+        .execute(&mut *db)
+        .await
+        .map_err(StoreError::constraint)?;
+        if let Some(grants) = self.grants {
+            Holder::Credential(&self.id).replace(db, grants).await?;
+        }
+        Ok(())
+    }
+}
+
+/// A registered `WebAuthn` credential, serialized by the caller.
+pub struct NewPasskey<'a> {
+    /// `WebAuthn` credential ID.
+    pub id: &'a str,
+    /// Human-readable label.
+    pub name: &'a str,
+    /// Serialized passkey state, updated after each sign-in.
+    pub credential: &'a str,
+}
+
+/// Who a newly registered passkey belongs to.
+pub enum PasskeyOwner<'a> {
+    /// A signed-in caller adds another passkey to its own account, named by
+    /// ID; refused unless the caller's credential still belongs to it.
+    Existing(Caller<'a>, &'a str),
+    /// Registration redeems the setup secret or an invitation, and signs the
+    /// account in with `session`. Account invitations create `user` with the
+    /// invitation's grants; the setup secret creates it as administrator.
+    /// Enrollment invitations add the passkey to their existing account
+    /// instead, ignoring `user`.
+    Redeem {
+        /// Account to create, for setup and account invitations.
+        user: &'a User,
+        /// Hash of the setup secret or invitation secret being redeemed.
+        invitation_hash: &'a str,
+        /// Browser session opened for the account.
+        session: NewCredential<'a>,
+    },
+}
+
+/// What an unused setup secret or invitation will do once redeemed.
+pub enum Invitation {
+    /// Creates a new account: the first administrator for the setup secret,
+    /// otherwise with the invitation's grants.
+    Account,
+    /// Adds a passkey to this existing account.
+    Enrollment(User),
+}
+
+/// An invitation to store, by the hash of its secret. The caller creating it
+/// becomes its issuer.
+pub struct NewInvitation {
+    /// Revocation identifier.
+    pub id: String,
+    /// Hash of the secret in the shared link.
+    pub secret_hash: String,
+    /// Absolute expiry in Unix seconds.
+    pub expires_at: i64,
+}
+
+/// The part of the account directory a viewer may see.
+#[derive(Clone, Copy)]
+pub enum DirectoryView<'a> {
+    /// Every account, invitation, and host operator session.
+    All,
+    /// One account, by ID, with its passkeys and credentials.
+    Account(&'a str),
+    /// The caller's account, without passkeys, and only the caller's own
+    /// credential: what a credential limited to its own grants sees.
+    Credential(Caller<'a>),
+}
+
+impl<'a> DirectoryView<'a> {
+    /// The account and the credential the view is limited to, if any.
+    const fn limits(self) -> (Option<&'a str>, Option<&'a str>) {
+        match self {
+            Self::All => (None, None),
+            Self::Account(user) => (Some(user), None),
+            Self::Credential(caller) => (Some(caller.user_id), Some(caller.credential_id)),
+        }
+    }
+}
+
+/// The account behind a live credential.
+pub struct CredentialOwner {
+    /// Credential class.
+    pub kind: CredentialKind,
+    /// Matched credential, used to record its use or revoke it.
+    pub credential_id: String,
+    /// Account that owns the credential.
+    pub user: User,
+    /// The credential's effective grants.
+    pub grants: Grants,
+    /// Whether the credential is limited to its own grants.
+    pub scoped: bool,
+    /// Last recorded use in Unix seconds, letting callers skip frequent refreshes.
+    pub last_used_at: i64,
+    /// Tailnet user or tag the credential is bound to, if any.
+    pub tailnet: Option<TailnetBinding>,
+}
+
+impl Store {
+    /// Whether first-account setup has completed.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn auth_initialized(&self) -> Result<bool, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT initialized AS "initialized: bool" FROM auth_setup WHERE singleton=1"#
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)
+    }
+
+    /// Replaces the setup secret while the installation is unclaimed.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn set_setup_secret(&self, hash: &str) -> Result<(), StoreError> {
+        self.write(sqlx::query!(
+            "UPDATE auth_setup SET secret_hash=?1 WHERE singleton=1 AND initialized=0",
+            hash
+        ))
+        .await
+        .map_err(StoreError::constraint)?;
+        Ok(())
+    }
+
+    /// Replaces the admin recovery link with one for `hash`, valid until
+    /// `expires_at`, and records that `operator` asked for it as a security
+    /// event.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn create_recovery(
+        &self,
+        hash: &str,
+        expires_at: i64,
+        operator: HostOperator,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        sqlx::query!(
+            "INSERT INTO auth_recovery(singleton,secret_hash,expires_at) VALUES(1,?1,?2)
+            ON CONFLICT(singleton) DO UPDATE SET secret_hash=excluded.secret_hash,expires_at=excluded.expires_at",
+            hash,
+            expires_at
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let issued = super::SecurityEvent::RecoveryIssued;
+        Self::operator_link_event_on(&mut tx, issued, "An admin recovery link", operator).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Records that `operator` was issued a link, e.g. `An admin recovery
+    /// link`, as a security event attributed to it.
+    async fn operator_link_event_on(
+        db: &mut SqliteConnection,
+        event: super::SecurityEvent,
+        link: &str,
+        operator: HostOperator,
+    ) -> Result<(), StoreError> {
+        let message = format!(
+            "{link} was issued over the Unix socket to uid {}",
+            operator.uid
+        );
+        let actor = Actor::Operator {
+            operator,
+            session: None,
+        };
+        Self::security_event_on(db, event, &message, actor.attribution()).await
+    }
+
+    /// Stores a host operator sign-in link for `hash`, valid until
+    /// `expires_at`, and records that `operator` asked for it as a security
+    /// event. [`Self::prune_auth`] removes it once expired.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn create_operator_link(
+        &self,
+        id: &str,
+        hash: &str,
+        expires_at: i64,
+        operator: HostOperator,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        sqlx::query!(
+            "INSERT INTO auth_operator_sessions(id,secret_hash,uid,expires_at) VALUES(?1,?2,?3,?4)",
+            id,
+            hash,
+            operator.uid,
+            expires_at
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        let issued = super::SecurityEvent::OperatorSignInIssued;
+        Self::operator_link_event_on(&mut tx, issued, "A host operator sign-in link", operator)
+            .await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Redeems the live sign-in link `link_hash` as a host operator browser
+    /// session with secret hash `session_hash`, valid until `expires_at`.
+    /// Returns the session's ID and operator, or `None` when the link was
+    /// already used, has expired, or never existed. Such links are turned
+    /// away by a read, so guessing them never waits for the writer.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn redeem_operator_link(
+        &self,
+        link_hash: &str,
+        session_hash: &str,
+        expires_at: i64,
+    ) -> Result<Option<(String, HostOperator)>, StoreError> {
+        let now = now_secs();
+        let live = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_operator_sessions WHERE secret_hash=?1 AND redeemed=0 AND expires_at>?2) AS "live!: bool""#,
+            link_hash,
+            now
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        if !live {
+            return Ok(None);
+        }
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let now = now_secs();
+        let row = sqlx::query!(
+            r#"UPDATE auth_operator_sessions SET secret_hash=?2,redeemed=1,expires_at=?3
+            WHERE secret_hash=?1 AND redeemed=0 AND expires_at>?4 RETURNING id AS "id!",uid"#,
+            link_hash,
+            session_hash,
+            expires_at,
+            now
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        row.map(|row| Ok((row.id, Self::host_operator(row.uid)?)))
+            .transpose()
+    }
+
+    /// The live host operator session with secret hash `hash`: its ID and
+    /// operator.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn operator_session(
+        &self,
+        hash: &str,
+    ) -> Result<Option<(String, HostOperator)>, StoreError> {
+        let now = now_secs();
+        let row = sqlx::query!(
+            r#"SELECT id AS "id!",uid FROM auth_operator_sessions WHERE secret_hash=?1 AND redeemed=1 AND expires_at>?2"#,
+            hash,
+            now
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        row.map(|row| Ok((row.id, Self::host_operator(row.uid)?)))
+            .transpose()
+    }
+
+    /// Whether a host operator link or session with this ID exists.
+    async fn operator_session_on(db: &mut SqliteConnection, id: &str) -> Result<bool, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_operator_sessions WHERE id=?1) AS "exists!: bool""#,
+            id
+        )
+        .fetch_one(db)
+        .await
+        .map_err(StoreError::database)
+    }
+
+    /// The host operator with a stored Unix user ID.
+    pub(super) fn host_operator(uid: i64) -> Result<HostOperator, StoreError> {
+        Ok(HostOperator {
+            uid: u32::try_from(uid).map_err(StoreError::corrupt)?,
+        })
+    }
+
+    /// Describes the open setup secret, admin recovery link, or live
+    /// invitation matching a hash, or `None` when there is none.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn invitation(&self, hash: &str) -> Result<Option<Invitation>, StoreError> {
+        let now = now_secs();
+        let setup = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_setup WHERE initialized=0 AND secret_hash=?1)
+            OR EXISTS(SELECT 1 FROM auth_recovery WHERE secret_hash=?1 AND expires_at>?2) AS "open!: bool""#,
+            hash,
+            now
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)?;
+        if setup {
+            return Ok(Some(Invitation::Account));
+        }
+        let Some(row) = sqlx::query!(
+            r#"SELECT i.user_id,u.username AS "username?",u.display_name AS "display_name?" FROM auth_invitations i LEFT JOIN auth_users u ON u.id=i.user_id WHERE i.secret_hash=?1 AND i.expires_at>?2"#,
+            hash,
+            now
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StoreError::database)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(match (row.user_id, row.username, row.display_name) {
+            (Some(id), Some(username), Some(display_name)) => Invitation::Enrollment(User {
+                id,
+                username,
+                display_name,
+            }),
+            (None, ..) => Invitation::Account,
+            _ => return Err(StoreError::Corrupt),
+        }))
+    }
+
+    /// Whether an account already uses `username`, regardless of case.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn username_taken(&self, username: &str) -> Result<bool, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM auth_users WHERE username=?1) AS "taken!: bool""#,
+            username
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StoreError::database)
+    }
+
+    /// Serialized `WebAuthn` credentials registered to one account.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn passkey_credentials(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar!(
+            "SELECT credential FROM auth_passkeys WHERE user_id=?1",
+            user_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)
+    }
+
+    /// Stores a registered passkey. Redemption atomically consumes the setup
+    /// secret or invitation, creates or selects the account, and opens its
+    /// session. Returns `false` when the secret was already used or has
+    /// expired, when an enrollment invitation targets another account, or when
+    /// a signed-in caller adds a passkey to an account that is not its own.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn add_passkey(
+        &self,
+        owner: PasskeyOwner<'_>,
+        passkey: NewPasskey<'_>,
+    ) -> Result<bool, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let now = now_secs();
+        let user_id = match &owner {
+            PasskeyOwner::Existing(caller, user_id) => {
+                let authority = caller.load(&mut tx).await?;
+                authority.require_unscoped()?;
+                if authority.user_id != *user_id {
+                    return Ok(false);
+                }
+                *user_id
+            }
+            PasskeyOwner::Redeem {
+                user,
+                invitation_hash,
+                session,
+            } => {
+                if !Self::redeem_on(&mut tx, user, invitation_hash, now).await? {
+                    return Ok(false);
+                }
+                session.insert(&mut tx, &user.id).await?;
+                user.id.as_str()
+            }
+        };
+        sqlx::query!(
+            "INSERT INTO auth_passkeys(id,user_id,name,credential,created_at) VALUES(?1,?2,?3,?4,?5)",
+            passkey.id,
+            user_id,
+            passkey.name,
+            passkey.credential,
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(true)
+    }
+
+    /// Consumes the setup secret, the admin recovery link, or a live
+    /// invitation for `user`:
+    ///
+    /// 1. The setup secret closes initial setup and creates `user` with `admin`
+    ///    on every application; so does the admin recovery link.
+    /// 2. An account invitation creates `user` with the invitation's grants.
+    /// 3. An enrollment invitation must target `user`, which already exists.
+    ///
+    /// Invitations carry their issuer's authority, so they are only redeemed
+    /// while the issuer could still create them: grants may have changed on
+    /// either side since. Returns `false` when nothing matching is left to
+    /// redeem.
+    async fn redeem_on(
+        db: &mut SqliteConnection,
+        user: &User,
+        invitation_hash: &str,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        let setup = sqlx::query!(
+            "UPDATE auth_setup SET initialized=1,secret_hash=NULL WHERE initialized=0 AND secret_hash=?1",
+            invitation_hash
+        )
+        .execute(&mut *db)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        let recovery = sqlx::query!(
+            "DELETE FROM auth_recovery WHERE secret_hash=?1 AND expires_at>?2",
+            invitation_hash,
+            now
+        )
+        .execute(&mut *db)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        if setup == 1 || recovery == 1 {
+            Self::insert_user_on(db, user, now).await?;
+            let daemon = Attribution::default();
+            let how = if setup == 1 {
+                "by first-account setup"
+            } else {
+                "by an admin recovery link"
+            };
+            Self::replace_user_grants_on(db, &user.id, &Grants::admin(), daemon, how).await?;
+            return Ok(true);
+        }
+        let Some(invitation) = sqlx::query!(
+            r#"SELECT id AS "id!",issuer_id,user_id FROM auth_invitations WHERE secret_hash=?1 AND expires_at>?2"#,
+            invitation_hash,
+            now
+        )
+        .fetch_optional(&mut *db)
+        .await
+        .map_err(StoreError::database)?
+        else {
+            return Ok(false);
+        };
+        let authority = Holder::User(&invitation.issuer_id).grants(&mut *db).await?;
+        if let Some(target) = invitation.user_id {
+            let grants = Holder::User(&target).grants(&mut *db).await?;
+            let own = invitation.issuer_id == target;
+            if target != user.id || authority.may_change_account(own, &grants).is_err() {
+                return Ok(false);
+            }
+        } else {
+            let grants = Holder::Invitation(&invitation.id).grants(&mut *db).await?;
+            if Self::may_invite(&authority, &grants).is_err() {
+                return Ok(false);
+            }
+            Self::insert_user_on(db, user, now).await?;
+            let issuer = Attribution {
+                user_id: Some(&invitation.issuer_id),
+                ..Attribution::default()
+            };
+            let how = "by invitation";
+            Self::replace_user_grants_on(db, &user.id, &grants, issuer, how).await?;
+        }
+        sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", invitation.id)
+            .execute(&mut *db)
+            .await
+            .map_err(StoreError::database)?;
+        Ok(true)
+    }
+
+    /// Creates an account; a taken username maps to `AlreadyExists`.
+    async fn insert_user_on(
+        db: &mut SqliteConnection,
+        user: &User,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        sqlx::query!(
+            "INSERT INTO auth_users(id,username,display_name,created_at) VALUES(?1,?2,?3,?4)",
+            user.id,
+            user.username,
+            user.display_name,
+            now
+        )
+        .execute(db)
+        .await
+        .map_err(StoreError::constraint)?;
+        Ok(())
+    }
+
+    /// Verifies a passkey assertion and opens a browser session while holding
+    /// the writer lock, so a concurrent deletion or replay cannot resurrect
+    /// access. `verify` receives the stored credential and returns its updated
+    /// form. Returns `None` when the passkey does not belong to `user_id`.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn sign_in_with_passkey<E: From<StoreError>>(
+        &self,
+        passkey_id: &str,
+        user_id: &str,
+        verify: impl FnOnce(&str) -> Result<String, E>,
+        session: &NewCredential<'_>,
+    ) -> Result<Option<User>, E> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let Some(row) = sqlx::query!(
+            r#"SELECT p.credential,u.id AS "id!",u.username,u.display_name FROM auth_passkeys p JOIN auth_users u ON u.id=p.user_id WHERE p.id=?1 AND u.id=?2"#,
+            passkey_id,
+            user_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        else {
+            return Ok(None);
+        };
+        let credential = verify(&row.credential)?;
+        sqlx::query!(
+            "UPDATE auth_passkeys SET credential=?1 WHERE id=?2",
+            credential,
+            passkey_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        session.insert(&mut tx, user_id).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Some(User {
+            id: row.id,
+            username: row.username,
+            display_name: row.display_name,
+        }))
+    }
+
+    /// Finds the account for a live credential by its secret hash, with its
+    /// effective grants read from the same snapshot. This is read-only, so
+    /// authenticating never waits for writers.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn credential_owner(
+        &self,
+        hash: &str,
+    ) -> Result<Option<CredentialOwner>, StoreError> {
+        let now = now_secs();
+        let idle = now - SESSION_IDLE_SECS;
+        let mut tx = self.snapshot().await?;
+        let row = sqlx::query!(
+            r#"SELECT c.id AS "credential_id!",c.kind,c.last_used_at,c.scoped AS "scoped: bool",c.tailnet,u.id AS "id!",u.username,u.display_name FROM auth_credentials c JOIN auth_users u ON u.id=c.user_id WHERE c.secret_hash=?1 AND (c.expires_at IS NULL OR c.expires_at>?2) AND (c.kind!='browser' OR c.last_used_at>?3)"#,
+            hash,
+            now,
+            idle
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let authority =
+            Authority::read(&mut tx, row.id.clone(), &row.credential_id, row.scoped).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Some(CredentialOwner {
+            kind: CredentialKind::parse(&row.kind)?,
+            credential_id: row.credential_id,
+            user: User {
+                id: row.id,
+                username: row.username,
+                display_name: row.display_name,
+            },
+            grants: authority.grants,
+            scoped: authority.scoped,
+            last_used_at: row.last_used_at,
+            tailnet: binding(row.tailnet)?,
+        }))
+    }
+
+    /// Records use of a live credential. It queues behind other writers and
+    /// judges liveness once it holds the writer lock, so a revocation or expiry
+    /// that lands while it waits wins. Returns `false` when the credential was
+    /// revoked or expired in the meantime.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn touch_credential(&self, id: &str) -> Result<bool, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let now = now_secs();
+        let idle = now - SESSION_IDLE_SECS;
+        let rows = sqlx::query!(
+            "UPDATE auth_credentials SET last_used_at=MAX(last_used_at,?1) WHERE id=?2 AND (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?3)",
+            now,
+            id,
+            idle
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(rows == 1)
+    }
+
+    /// Issues `credential` to the account behind the approving credential, if
+    /// the approver may still create credentials and holds every grant the new
+    /// one is limited to. Returns `None` when the approving session has ended.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn issue_for_credential_owner(
+        &self,
+        approver: Caller<'_>,
+        credential: &NewCredential<'_>,
+    ) -> Result<Option<User>, StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let authority = match approver.load(&mut tx).await {
+            Ok(authority) => authority,
+            Err(StoreError::CredentialRevoked) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        authority.may_hand_out(credential.grants)?;
+        let user = sqlx::query_as!(
+            User,
+            r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE id=?1"#,
+            authority.user_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        credential.insert(&mut tx, &user.id).await?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Some(user))
+    }
+
+    /// Deletes one credential if `actor` may change its owner, or one host
+    /// operator session if `actor` could manage an administrator, as that
+    /// session acts with `admin`. A credential may always revoke itself, even
+    /// a scoped one. Unknown IDs are `NotFound`.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn revoke_credential(&self, actor: Actor<'_>, id: &str) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let owner = sqlx::query_scalar!("SELECT user_id FROM auth_credentials WHERE id=?1", id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        if let Some(owner) = owner {
+            let own = matches!(actor, Actor::Account(caller) if caller.credential_id == id);
+            if !own {
+                Self::check_account_on(&mut tx, actor, &owner).await?;
+            }
+            sqlx::query!("DELETE FROM auth_credentials WHERE id=?1", id)
+                .execute(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+        } else if Self::operator_session_on(&mut tx, id).await? {
+            if let Some(caller) = actor.load(&mut tx).await? {
+                caller
+                    .grants
+                    .may_change_account(false, &Grants::admin())
+                    .map_err(StoreError::Denied)?;
+            }
+            sqlx::query!("DELETE FROM auth_operator_sessions WHERE id=?1", id)
+                .execute(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+        } else {
+            return Err(StoreError::NotFound);
+        }
+        self.commit_access_change(tx).await
+    }
+
+    /// Deletes every credential of an account, signing it out everywhere.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn revoke_credentials(
+        &self,
+        actor: Actor<'_>,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_account_on(&mut tx, actor, user_id).await?;
+        sqlx::query!("DELETE FROM auth_credentials WHERE user_id=?1", user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        self.commit_access_change(tx).await
+    }
+
+    /// The part of the account directory `view` covers, read in one
+    /// snapshot: accounts with their grants, passkeys and live credentials,
+    /// and, for [`DirectoryView::All`], live invitations and host operator
+    /// sessions. Secrets and their hashes are never included.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn auth_directory(&self, view: DirectoryView<'_>) -> Result<Directory, StoreError> {
+        let now = now_secs();
+        let (user, credential) = view.limits();
+        let mut tx = self.snapshot().await?;
+        let users = sqlx::query_as!(
+            User,
+            r#"SELECT id AS "id!",username,display_name FROM auth_users WHERE ?1 IS NULL OR id=?1 ORDER BY username"#,
+            user
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let mut accounts = Vec::with_capacity(users.len());
+        for user in users {
+            let grants = Holder::User(&user.id).grants(&mut tx).await?;
+            accounts.push(Account { user, grants });
+        }
+        let passkeys = sqlx::query_as!(
+            PasskeyView,
+            r#"SELECT id AS "id!",user_id,name FROM auth_passkeys WHERE (?1 IS NULL OR user_id=?1) AND ?2 IS NULL ORDER BY created_at"#,
+            user,
+            credential
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!",user_id,kind,name,last_used_at,expires_at,scoped AS "scoped: bool",tailnet FROM auth_credentials WHERE (expires_at IS NULL OR expires_at>?1) AND (kind!='browser' OR last_used_at>?1-?2) AND (?3 IS NULL OR user_id=?3) AND (?4 IS NULL OR id=?4) ORDER BY created_at"#,
+            now,
+            SESSION_IDLE_SECS,
+            user,
+            credential
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let mut credentials = Vec::with_capacity(rows.len());
+        for row in rows {
+            let grants = if row.scoped {
+                Some(Holder::Credential(&row.id).grants(&mut tx).await?)
+            } else {
+                None
+            };
+            credentials.push(CredentialView {
+                id: row.id,
+                user_id: row.user_id,
+                kind: row.kind,
+                name: row.name,
+                last_used_at: row.last_used_at,
+                expires_at: row.expires_at,
+                grants,
+                tailnet: binding(row.tailnet)?,
+            });
+        }
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!",issuer_id,user_id,expires_at FROM auth_invitations WHERE expires_at>?1 AND ?2 IS NULL ORDER BY expires_at"#,
+            now,
+            user
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let mut invitations = Vec::with_capacity(rows.len());
+        for row in rows {
+            let grants = Holder::Invitation(&row.id).grants(&mut tx).await?;
+            invitations.push(InvitationView {
+                id: row.id,
+                issuer_id: row.issuer_id,
+                user_id: row.user_id,
+                expires_at: row.expires_at,
+                grants,
+            });
+        }
+        let rows = sqlx::query!(
+            r#"SELECT id AS "id!",uid,expires_at FROM auth_operator_sessions WHERE redeemed=1 AND expires_at>?1 AND ?2 IS NULL ORDER BY expires_at"#,
+            now,
+            user
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let operator_sessions = rows
+            .into_iter()
+            .map(|row| {
+                Ok(OperatorSessionView {
+                    id: row.id,
+                    operator: Self::host_operator(row.uid)?,
+                    expires_at: row.expires_at,
+                })
+            })
+            .collect::<Result<_, StoreError>>()?;
+        tx.commit().await.map_err(StoreError::database)?;
+        Ok(Directory {
+            users: accounts,
+            passkeys,
+            credentials,
+            invitations,
+            operator_sessions,
+        })
+    }
+
+    /// Changes an account's username and display name. A taken username maps to
+    /// `AlreadyExists`.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn update_user(
+        &self,
+        actor: Actor<'_>,
+        id: &str,
+        username: &str,
+        display_name: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_account_on(&mut tx, actor, id).await?;
+        sqlx::query!(
+            "UPDATE auth_users SET username=?1,display_name=?2 WHERE id=?3",
+            username,
+            display_name,
+            id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::constraint)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Deletes an account with its passkeys, credentials, grants, and
+    /// invitations. Refuses to leave no administrator able to sign in.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn delete_user(&self, actor: Actor<'_>, id: &str) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_account_on(&mut tx, actor, id).await?;
+        sqlx::query!("DELETE FROM auth_users WHERE id=?1", id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        Self::require_an_admin(&mut tx).await?;
+        self.commit_access_change(tx).await
+    }
+
+    /// Checks that `actor` may change the account owning a passkey. Unknown
+    /// passkeys are `NotFound`.
+    async fn check_passkey_owner_on(
+        db: &mut SqliteConnection,
+        actor: Actor<'_>,
+        id: &str,
+    ) -> Result<(), StoreError> {
+        let owner = sqlx::query_scalar!("SELECT user_id FROM auth_passkeys WHERE id=?1", id)
+            .fetch_optional(&mut *db)
+            .await
+            .map_err(StoreError::database)?
+            .ok_or(StoreError::NotFound)?;
+        Self::check_account_on(db, actor, &owner).await?;
+        Ok(())
+    }
+
+    /// Deletes one passkey, refusing to leave no administrator able to sign in.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn remove_passkey(&self, actor: Actor<'_>, id: &str) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_passkey_owner_on(&mut tx, actor, id).await?;
+        sqlx::query!("DELETE FROM auth_passkeys WHERE id=?1", id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        Self::require_an_admin(&mut tx).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Changes a passkey's label.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn rename_passkey(
+        &self,
+        actor: Actor<'_>,
+        id: &str,
+        name: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        Self::check_passkey_owner_on(&mut tx, actor, id).await?;
+        sqlx::query!("UPDATE auth_passkeys SET name=?1 WHERE id=?2", name, id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Stores an account invitation that gives the created account `grants`,
+    /// if `caller` may manage accounts, holds every grant, and is not scoped:
+    /// redeeming it yields a passkey and session. `add_passkey` consumes it.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn create_invitation(
+        &self,
+        caller: Caller<'_>,
+        invitation: &NewInvitation,
+        grants: &Grants,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let authority = caller.load(&mut tx).await?;
+        authority.require_unscoped()?;
+        Self::may_invite(&authority.grants, grants)?;
+        Self::insert_invitation_on(&mut tx, invitation, &authority.user_id, None).await?;
+        Holder::Invitation(&invitation.id)
+            .replace(&mut tx, grants)
+            .await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Requires `accounts:manage` and every grant an invitation hands out.
+    fn may_invite(authority: &Grants, grants: &Grants) -> Result<(), StoreError> {
+        authority
+            .require(Permission::Global(GlobalPermission::AccountsManage))
+            .and_then(|()| authority.may_grant(grants))
+            .map_err(StoreError::Denied)
+    }
+
+    /// Stores an enrollment invitation that adds a passkey to `user_id`, if
+    /// `caller` may change that account.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn create_enrollment(
+        &self,
+        caller: Caller<'_>,
+        invitation: &NewInvitation,
+        user_id: &str,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let account = Actor::Account(caller);
+        if let Some(authority) = Self::check_account_on(&mut tx, account, user_id).await? {
+            authority.require_unscoped()?;
+        }
+        Self::insert_invitation_on(&mut tx, invitation, caller.user_id, Some(user_id)).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Inserts an invitation row issued by `issuer`, targeting `user_id` for
+    /// enrollment.
+    async fn insert_invitation_on(
+        db: &mut SqliteConnection,
+        invitation: &NewInvitation,
+        issuer: &str,
+        user_id: Option<&str>,
+    ) -> Result<(), StoreError> {
+        sqlx::query!(
+            "INSERT INTO auth_invitations(id,issuer_id,secret_hash,expires_at,user_id) VALUES(?1,?2,?3,?4,?5)",
+            invitation.id,
+            issuer,
+            invitation.secret_hash,
+            invitation.expires_at,
+            user_id
+        )
+        .execute(db)
+        .await
+        .map_err(StoreError::constraint)?;
+        Ok(())
+    }
+
+    /// Deletes an unused invitation if `actor` could have created it: it may
+    /// change the enrollment target, or hand out the invitation's grants.
+    /// Unknown IDs are `NotFound`.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn revoke_invitation(&self, actor: Actor<'_>, id: &str) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let target = sqlx::query_scalar!("SELECT user_id FROM auth_invitations WHERE id=?1", id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        match target {
+            None => return Err(StoreError::NotFound),
+            Some(Some(user_id)) => {
+                Self::check_account_on(&mut tx, actor, &user_id).await?;
+            }
+            Some(None) => {
+                if let Some(authority) = actor.load(&mut tx).await? {
+                    let grants = Holder::Invitation(id).grants(&mut tx).await?;
+                    Self::may_invite(&authority.grants, &grants)?;
+                }
+            }
+        }
+        sqlx::query!("DELETE FROM auth_invitations WHERE id=?1", id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Stores an API token for the caller's own account, limited to grants the
+    /// caller holds and optionally bound to a tailnet user or tag. Scoped
+    /// callers cannot create tokens.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn create_token(
+        &self,
+        caller: Caller<'_>,
+        credential: &NewCredential<'_>,
+        tailnet: Option<&TailnetBinding>,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let authority = caller.load(&mut tx).await?;
+        authority.may_hand_out(credential.grants)?;
+        credential.insert(&mut tx, &authority.user_id).await?;
+        let tailnet = tailnet.map(TailnetBinding::as_str);
+        sqlx::query!(
+            "UPDATE auth_credentials SET tailnet=?1 WHERE id=?2",
+            tailnet,
+            credential.id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        let actor = Actor::Account(caller).attribution();
+        Self::check_token_on(&mut tx, credential, actor).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Deletes auth state that can no longer be used: expired credentials
+    /// and browser sessions idle for a day, with their grants, and expired
+    /// invitations, admin recovery links, and host operator links and
+    /// sessions. Long-lived connections recheck their access when a
+    /// credential went.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn prune_auth(&self) -> Result<(), StoreError> {
+        let now = now_secs();
+        let idle = now - SESSION_IDLE_SECS;
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        let credentials = sqlx::query!(
+            "DELETE FROM auth_credentials WHERE expires_at<=?1 OR (kind='browser' AND last_used_at<=?2)",
+            now,
+            idle
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?
+        .rows_affected();
+        sqlx::query!("DELETE FROM auth_invitations WHERE expires_at<=?1", now)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::query!("DELETE FROM auth_recovery WHERE expires_at<=?1", now)
+            .execute(&mut *tx)
+            .await
+            .map_err(StoreError::database)?;
+        sqlx::query!(
+            "DELETE FROM auth_operator_sessions WHERE expires_at<=?1",
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StoreError::database)?;
+        if credentials > 0 {
+            self.commit_access_change(tx).await
+        } else {
+            tx.commit().await.map_err(StoreError::database)
+        }
+    }
+}
+
+/// Fixtures for authentication tests that need states no API produces.
+#[cfg(any(test, feature = "testing"))]
+impl Store {
+    /// Claims the installation for an account with `grants` and no passkey.
+    ///
+    /// # Panics
+    /// If the store fails.
+    pub async fn seed_auth_user(&self, user: &User, grants: &Grants) {
+        let (_writer, mut tx) = self.begin_immediate().await.unwrap();
+        Self::insert_user_on(&mut tx, user, now_secs())
+            .await
+            .unwrap();
+        Holder::User(&user.id)
+            .replace(&mut tx, grants)
+            .await
+            .unwrap();
+        sqlx::query!("UPDATE auth_setup SET initialized=1,secret_hash=NULL")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// Stores a credential for an existing account.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub async fn insert_credential(
+        &self,
+        user_id: &str,
+        credential: &NewCredential<'_>,
+    ) -> Result<(), StoreError> {
+        let (_writer, mut tx) = self.begin_immediate().await?;
+        credential.insert(&mut tx, user_id).await?;
+        tx.commit().await.map_err(StoreError::database)
+    }
+
+    /// Holds the writer queue, as a long write would, until the guard drops.
+    pub async fn hold_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.writers.lock().await
+    }
+
+    /// Makes every credential look unused since `secs` ago.
+    ///
+    /// # Panics
+    /// If the store fails.
+    pub async fn age_auth_credentials(&self, secs: i64) {
+        let last_used = now_secs() - secs;
+        self.write(sqlx::query!(
+            "UPDATE auth_credentials SET last_used_at=?1",
+            last_used
+        ))
+        .await
+        .unwrap();
+    }
+
+    /// Makes every host operator link and session expire now.
+    ///
+    /// # Panics
+    /// If the store fails.
+    pub async fn expire_operator_sessions(&self) {
+        let now = now_secs();
+        self.write(sqlx::query!(
+            "UPDATE auth_operator_sessions SET expires_at=?1",
+            now
+        ))
+        .await
+        .unwrap();
+    }
+
+    /// Empties the account table behind the daemon's back.
+    ///
+    /// # Panics
+    /// If the store fails.
+    pub async fn clear_auth_users(&self) {
+        self.write(sqlx::query!("DELETE FROM auth_users"))
+            .await
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Opens a store whose admin `alice` holds the browser session
+    /// `credential`, with secret hash `hash`.
+    async fn browser_session() -> (tempfile::TempDir, Store) {
+        let (dir, store) = Store::temporary().await;
+        let user = User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store.seed_auth_user(&user, &Grants::admin()).await;
+        let credential = NewCredential {
+            id: "credential".into(),
+            secret_hash: "hash".into(),
+            kind: CredentialKind::Browser,
+            name: "Browser",
+            expires_at: Some(now_secs() + SESSION_IDLE_SECS),
+            grants: None,
+        };
+        store
+            .insert_credential(&user.id, &credential)
+            .await
+            .unwrap();
+        (dir, store)
+    }
+
+    /// Authentication reads never wait for writers; refreshes queue behind
+    /// them without holding a pool connection, and a revocation that lands
+    /// first wins.
+    #[tokio::test]
+    async fn credential_reads_skip_the_writer_queue_and_refreshes_respect_revocation() {
+        let (_dir, store) = browser_session().await;
+
+        let (writer, tx) = store.begin_immediate().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), store.credential_owner("hash"))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let refresh = store.touch_credential("credential");
+        tokio::pin!(refresh);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut refresh)
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+        // The queued refresh holds no pool connection while it waits.
+        let mut connections = Vec::new();
+        for _ in 0..8 {
+            connections.push(
+                tokio::time::timeout(Duration::from_secs(1), store.pool.acquire())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        // Revoke while the refresh is still queued behind the writer.
+        sqlx::query!("DELETE FROM auth_credentials")
+            .execute(&mut *connections[0])
+            .await
+            .unwrap();
+        drop(connections);
+        drop(writer);
+        assert!(!refresh.await.unwrap());
+        assert!(store.credential_owner("hash").await.unwrap().is_none());
+    }
+
+    /// A refresh judges idle expiry when it gets the writer lock, so a session
+    /// that expires while the refresh waits is not revived.
+    #[tokio::test]
+    async fn refreshes_waiting_for_writers_respect_idle_expiry() {
+        let (_dir, store) = browser_session().await;
+        // One second of idle time remains, and passes while the refresh waits.
+        store.age_auth_credentials(SESSION_IDLE_SECS - 1).await;
+        let (writer, tx) = store.begin_immediate().await.unwrap();
+        let refresh = tokio::spawn({
+            let store = store.clone();
+            async move { store.touch_credential("credential").await }
+        });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        tx.rollback().await.unwrap();
+        drop(writer);
+        assert!(!refresh.await.unwrap().unwrap());
+    }
+
+    /// Pruning deletes expired credentials, idle browser sessions, and
+    /// expired invitations, and keeps what can still be used.
+    #[tokio::test]
+    async fn pruning_deletes_unusable_auth_state() {
+        let (_dir, store) = Store::temporary().await;
+        let user = User {
+            id: "alice".into(),
+            username: "alice".into(),
+            display_name: String::new(),
+        };
+        store.seed_auth_user(&user, &Grants::admin()).await;
+        let now = now_secs();
+        for (id, kind, expires_at) in [
+            ("expired", CredentialKind::Token, Some(now)),
+            ("idle", CredentialKind::Browser, Some(now + 3600)),
+            ("live", CredentialKind::Token, None),
+        ] {
+            let credential = NewCredential {
+                id: id.into(),
+                secret_hash: id.into(),
+                kind,
+                name: "Test",
+                expires_at,
+                grants: None,
+            };
+            store
+                .insert_credential(&user.id, &credential)
+                .await
+                .unwrap();
+        }
+        store.age_auth_credentials(SESSION_IDLE_SECS).await;
+        for (id, expires_at) in [("old", now), ("open", now + 3600)] {
+            sqlx::query!(
+                "INSERT INTO auth_invitations(id,issuer_id,secret_hash,expires_at) VALUES(?1,'alice',?1,?2)",
+                id,
+                expires_at
+            )
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+
+        store.prune_auth().await.unwrap();
+        let credentials = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM auth_credentials"#)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(credentials, ["live"]);
+        let invitations = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM auth_invitations"#)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(invitations, ["open"]);
+    }
+}

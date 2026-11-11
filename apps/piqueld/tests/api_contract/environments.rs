@@ -37,8 +37,8 @@ async fn environment_branches_are_validated_like_preview_branches() {
 #[tokio::test]
 async fn environments_deploy_independently_and_runtime_commands_never_pick_one() {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
-    use piqueld::store::StoreError;
     use piqueld_core::EnvironmentName;
+    use piqueld_store::StoreError;
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
@@ -175,7 +175,7 @@ async fn application_history_spans_its_environments() {
         let service = service.clone();
         async move {
             service
-                .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 100)
+                .filtered_events(&filter, &piqueld_store::Visibility::ALL, None, 100)
                 .await
                 .unwrap()
                 .items
@@ -215,8 +215,8 @@ async fn application_history_spans_its_environments() {
 #[tokio::test]
 async fn previews_compare_with_the_selected_environment() {
     use piqueld::api::{ApplicationError, Mutation};
-    use piqueld::store::StoreError;
     use piqueld_core::api::RuntimeCoverage;
+    use piqueld_store::StoreError;
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;
@@ -293,8 +293,8 @@ async fn previews_compare_with_the_selected_environment() {
 #[tokio::test]
 async fn previews_render_variables_for_the_selected_environment() {
     use piqueld::api::ApplicationError;
-    use piqueld::store::StoreError;
     use piqueld_core::manifest::{EnvironmentConfig, Variable, VariableValue};
+    use piqueld_store::StoreError;
     let temp = tempfile::tempdir().unwrap();
     let service = state(&temp).await;
     let (saved, staging) = two_environments(&service).await;

@@ -9,6 +9,7 @@ members = [
   "crates/piqueld-core",
   "crates/piqueld-generated",
   "crates/piqueld-probe",
+  "crates/piqueld-store",
   "tools/xtask",
 ]
 
@@ -41,6 +42,7 @@ piqueld-config    = { version = "0.1.0", path = "crates/piqueld-config" }
 piqueld-core      = { version = "0.1.0", path = "crates/piqueld-core"   }
 piqueld-generated = { path = "crates/piqueld-generated" }
 piqueld-probe     = { version = "0.1.0", path = "crates/piqueld-probe"  }
+piqueld-store     = { version = "0.1.0", path = "crates/piqueld-store"  }
 
 # External
 anstream = "1.0.0"

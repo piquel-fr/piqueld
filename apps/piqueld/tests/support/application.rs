@@ -3,10 +3,10 @@
 use piqueld::api::{ApplicationError, ApplicationService, Mutation, MutationResponse};
 use piqueld::application::RuntimeBoundary;
 use piqueld::git::Sources;
-use piqueld::store::{Store, StoreError};
 use piqueld_core::api::SavedApplication;
 use piqueld_core::manifest::ValidatedTemplate;
 use piqueld_core::{EnvironmentId, Operation};
+use piqueld_store::{Store, StoreError};
 use std::sync::Arc;
 
 /// An [`ApplicationService`] with shorthands for the daemon's own mutations.

@@ -20,7 +20,6 @@ use piqueld::api::http::{
 };
 use piqueld::application::{BoundaryError, RuntimeBoundary};
 use piqueld::git::Sources;
-use piqueld::store::{Store, StoredEnvironment};
 use piqueld_client::{ApplyApplicationRequest, ApplyOptions, Client, ClientError};
 use piqueld_config::DaemonConfig;
 use piqueld_core::api::SavedApplication;
@@ -30,6 +29,7 @@ use piqueld_core::{
     planner::ActionKind,
     resource::{ResolvedSource, image_repository},
 };
+use piqueld_store::{Store, StoredEnvironment};
 use poll::eventually;
 use repository::Repository;
 use std::{
@@ -62,7 +62,7 @@ impl Authenticator for FakeAuth {
                     display_name: String::new(),
                 },
                 id: "contract-admin".into(),
-                kind: piqueld::store::CredentialKind::Token,
+                kind: piqueld_store::CredentialKind::Token,
             },
             grants: piqueld_core::access::Grants::admin(),
             scoped: false,
@@ -1095,7 +1095,7 @@ async fn two_environments(
     piqueld_core::api::EnvironmentView,
 ) {
     use piqueld::api::{ApplicationError, Mutation, MutationResponse};
-    use piqueld::store::StoreError;
+    use piqueld_store::StoreError;
     let mut saved = save(service, manifest()).await;
     let application = piqueld_core::ApplicationId::parse(&saved.application_id).unwrap();
     let create = |name: &str| Mutation::CreateEnvironment {

@@ -157,7 +157,7 @@ impl<D: DockerApi> Controller<D> {
         }
         // Old probe configs are about as long-lived as old images.
         self.docker.prune_health_probes().await?;
-        let now = crate::store::now_ms();
+        let now = piqueld_store::now_ms();
         self.images.status.send_modify(|status| {
             status.images = kept;
             status.reclaimed_bytes += reclaimed;
@@ -192,7 +192,7 @@ impl<D: DockerApi> Controller<D> {
         &self,
         instance: &InstanceId,
         image: &LocalImage,
-    ) -> Result<bool, crate::store::StoreError> {
+    ) -> Result<bool, piqueld_store::StoreError> {
         let journal = self
             .store
             .begin_daemon_action(None, "remove_image", Some(image.id.as_str()))

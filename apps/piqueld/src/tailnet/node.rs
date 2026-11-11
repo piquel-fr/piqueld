@@ -151,7 +151,7 @@ impl Node {
                     &dns_name,
                     &url,
                     public_url_matches,
-                    crate::store::now_ms(),
+                    piqueld_store::now_ms(),
                 )),
                 cli,
                 dns_name,
@@ -396,7 +396,7 @@ impl Monitor {
             &self.dns_name,
             &self.url,
             self.public_url_matches,
-            crate::store::now_ms(),
+            piqueld_store::now_ms(),
         ));
     }
 }

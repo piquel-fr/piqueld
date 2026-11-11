@@ -10,9 +10,9 @@
 //! retried with exponential backoff, as it is when a submission fails.
 use super::{ApplicationService, ListedHead, Mutation, MutationResponse, SyncOutcome};
 use crate::git::Heads;
-use crate::store::{Actor, SyncApplication};
 use futures_util::{StreamExt, stream};
 use piqueld_core::{ApplicationId, GitBranch, sync::RepositorySync, sync::SystemActor};
+use piqueld_store::{Actor, SyncApplication};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -312,7 +312,7 @@ pub(crate) mod tests {
         pub(crate) async fn new(sync: &str) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let store = Arc::new(
-                crate::store::Store::open_unsynced(temp.path().join("db"))
+                piqueld_store::Store::open_unsynced(temp.path().join("db"))
                     .await
                     .unwrap(),
             );

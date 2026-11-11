@@ -378,7 +378,7 @@ async fn service_and_http_share_acceptance_receipts_and_application_views() {
     let service = api.state.clone();
     let apply = new_application();
     // The same account as the HTTP client, since receipts replay only for theirs.
-    let caller = piqueld::api::Actor::Account(piqueld::store::Caller {
+    let caller = piqueld::api::Actor::Account(piqueld_store::Caller {
         credential_id: "contract-admin",
         user_id: "contract-admin",
     });
@@ -537,7 +537,7 @@ async fn direct_service_mutations_enforce_preconditions_and_explicit_force() {
             )
             .await,
         Err(ApplicationError::Store(
-            piqueld::store::StoreError::IdentityConflict
+            piqueld_store::StoreError::IdentityConflict
         ))
     ));
     // An explicit override uses the same path for every transport.
@@ -577,9 +577,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
     }
     assert!(matches!(
         service.logs(&missing, Some("web"), 5, 60, None).await,
-        Err(ApplicationError::Store(
-            piqueld::store::StoreError::NotFound
-        ))
+        Err(ApplicationError::Store(piqueld_store::StoreError::NotFound))
     ));
     assert!(matches!(
         service
@@ -605,9 +603,7 @@ async fn direct_service_validates_log_bounds_and_deployment_ownership() {
         service
             .deployment_attempts(&missing, &deployment, None)
             .await,
-        Err(ApplicationError::Store(
-            piqueld::store::StoreError::NotFound
-        ))
+        Err(ApplicationError::Store(piqueld_store::StoreError::NotFound))
     ));
     let id = production(&service, &saved.application_id).await;
     service

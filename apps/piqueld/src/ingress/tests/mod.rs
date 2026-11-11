@@ -526,7 +526,7 @@ impl Scenario {
 
     async fn reject_invalid_replacement_configuration(
         &self,
-        table: &crate::store::ingress::RoutingTable,
+        table: &piqueld_store::ingress::RoutingTable,
         networks: &std::collections::BTreeSet<String>,
     ) {
         let mut invalid = Ingress::new(
@@ -1302,7 +1302,7 @@ async fn private_ingress() -> (Engine, Ingress) {
 #[tokio::test]
 async fn each_listener_serves_only_its_own_routes() {
     let (_engine, ingress) = private_ingress().await;
-    let table: crate::store::ingress::RoutingTable = [
+    let table: piqueld_store::ingress::RoutingTable = [
         (
             EnvironmentId::parse("env-public").unwrap(),
             routes(Visibility::Public, "www.example.com"),
@@ -1408,7 +1408,7 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
         .await
         .unwrap();
     let ingress = ingress.with_webhooks(Some(hooks));
-    let table: crate::store::ingress::RoutingTable = [
+    let table: piqueld_store::ingress::RoutingTable = [
         (
             "env-deeper",
             routes(Visibility::Public, "api.eu.example.com"),

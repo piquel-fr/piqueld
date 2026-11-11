@@ -830,12 +830,17 @@ mod tests {
     #[test]
     fn migrations_and_configuration_are_sources() {
         let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("apps/piqueld/migrations")).unwrap();
+        fs::create_dir_all(root.path().join("crates/piqueld-store/migrations")).unwrap();
         let instance = instance(root.path());
         let built = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));
         assert!(!instance.sources_changed_since(built));
-        fs::write(root.path().join("apps/piqueld/migrations/0001_new.sql"), "").unwrap();
+        fs::write(
+            root.path()
+                .join("crates/piqueld-store/migrations/0001_new.sql"),
+            "",
+        )
+        .unwrap();
         assert!(instance.sources_changed_since(built));
         let built = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));

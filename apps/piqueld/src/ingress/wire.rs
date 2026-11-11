@@ -6,12 +6,13 @@
 //!
 //! Reads are unrestricted. A mutating request can only be sent with an open
 //! [`Journaled`] action, which commits intent before the request is made.
-use crate::{operations::OperationError, store::JournalAction};
+use crate::operations::OperationError;
 use anyhow::{Context, Result};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, body::Bytes};
 use hyper_util::rt::TokioIo;
 use piqueld_core::observability::DiagnosticCode;
+use piqueld_store::JournalAction;
 use serde_json::Value;
 use std::{
     path::PathBuf,
@@ -49,7 +50,7 @@ impl ResponseError {
 
 /// An open journal action for one daemon-owned gateway change.
 pub(super) struct Journaled<'a> {
-    store: &'a crate::store::Store,
+    store: &'a piqueld_store::Store,
     action: JournalAction,
     /// Classification of a failed outcome.
     code: DiagnosticCode,

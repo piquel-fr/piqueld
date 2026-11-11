@@ -28,7 +28,7 @@ pub(super) async fn get(
     let owner = state.environment_owner(&operation.environment_id).await?;
     identity.grants.require_change(
         &[AppPermission::Read],
-        crate::store::EnvironmentOwner::target(owner.as_ref()),
+        piqueld_store::EnvironmentOwner::target(owner.as_ref()),
     )?;
     Ok(ok(operation))
 }

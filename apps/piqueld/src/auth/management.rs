@@ -6,9 +6,9 @@
 //! The store re-reads both the caller's and the target's grants inside each
 //! change's transaction.
 use super::{Auth, AuthError, CredentialKind, DAY, Identity, Result, now_secs};
-use crate::store::{DirectoryView, NewInvitation};
 use piqueld_core::access::GlobalPermission;
 use piqueld_core::auth::{Directory, HostOperator, Manage, Managed, OperatorLink};
+use piqueld_store::{DirectoryView, NewInvitation};
 impl Auth {
     /// Lists the accounts `viewer` may see: every account, invitation, and
     /// host operator session with `accounts:manage`, otherwise only its own

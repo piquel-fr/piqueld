@@ -7,8 +7,8 @@ use super::*;
 /// started a command.
 #[tokio::test]
 async fn exec_rechecks_grants_when_the_command_starts() {
-    use piqueld::store::{Caller, StoreError};
     use piqueld_core::access::Denied;
+    use piqueld_store::{Caller, StoreError};
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
     let saved = save(&state, manifest()).await;
@@ -44,7 +44,7 @@ async fn exec_rechecks_grants_when_the_command_starts() {
         ..Default::default()
     };
     let started = state
-        .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+        .filtered_events(&filter, &piqueld_store::Visibility::ALL, None, 10)
         .await
         .unwrap()
         .items;
@@ -431,7 +431,7 @@ async fn exec_rechecks_access_once_the_command_is_created() {
     };
     let started = f
         .state
-        .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+        .filtered_events(&filter, &piqueld_store::Visibility::ALL, None, 10)
         .await
         .unwrap();
     assert!(started.items.is_empty());
@@ -472,7 +472,7 @@ async fn exec_notices_a_client_that_left_behind_unread_input() {
         Duration::from_millis(100),
         async || {
             let events = state
-                .filtered_events(&filter, &piqueld::store::Visibility::ALL, None, 10)
+                .filtered_events(&filter, &piqueld_store::Visibility::ALL, None, 10)
                 .await
                 .unwrap()
                 .items;

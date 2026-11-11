@@ -1,7 +1,6 @@
 //! Authentication HTTP boundary shared by both daemon transports.
 use super::{ApiError, ApiJson};
 use crate::auth::{Auth, AuthCookie, AuthError, Identity};
-use crate::store::StoreError;
 use crate::tailnet::{LookupTimedOut, TailnetLookup};
 use axum::{
     Extension, Json, Router,
@@ -16,6 +15,7 @@ use piqueld_core::auth::{
     OperatorSignIn, Principal, RegistrationStart, Session, SetupLink, User,
 };
 use piqueld_core::tailnet::TailnetPeer;
+use piqueld_store::StoreError;
 use std::{net::SocketAddr, sync::Arc};
 use utoipa_axum::router::UtoipaMethodRouter;
 

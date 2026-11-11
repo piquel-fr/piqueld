@@ -616,7 +616,7 @@ async fn docker_outage_allows_acceptance_and_preserves_receipt_replay() {
 #[tokio::test]
 async fn receipts_replay_only_for_their_account() {
     use piqueld::api::{Actor, ApplicationError, Mutation};
-    use piqueld::store::{Caller, StoreError};
+    use piqueld_store::{Caller, StoreError};
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
     let database = database(&temp);

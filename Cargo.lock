@@ -2633,7 +2633,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bollard",
- "chacha20poly1305",
  "clap",
  "futures-util",
  "getrandom 0.3.4",
@@ -2655,6 +2654,7 @@ dependencies = [
  "piqueld-core",
  "piqueld-generated",
  "piqueld-probe",
+ "piqueld-store",
  "prettyplease",
  "progenitor",
  "reqwest",
@@ -2765,6 +2765,33 @@ name = "piqueld-probe"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "piqueld-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "futures-util",
+ "getrandom 0.3.4",
+ "openssl",
+ "piqueld-config",
+ "piqueld-core",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

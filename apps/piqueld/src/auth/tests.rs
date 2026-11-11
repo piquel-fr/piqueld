@@ -1,8 +1,8 @@
 use super::*;
 use crate::api::http::Authenticator as _;
-use crate::store::{Invitation, Lockout, NewPasskey, PasskeyOwner, StoreError};
 use piqueld_core::access::{Denied, GlobalPermission, Grants, Permission, Preset, Scope};
 use piqueld_core::auth::{HostOperator, Manage, OperatorLink, RegistrationStart, User};
+use piqueld_store::{Invitation, Lockout, NewPasskey, PasskeyOwner, StoreError};
 
 impl Identity {
     /// The account behind an identity a test signed in as.
@@ -18,7 +18,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::Store::open_unsynced(dir.path().join("state.db"))
+        let store = piqueld_store::Store::open_unsynced(dir.path().join("state.db"))
             .await
             .unwrap();
         Self {
@@ -165,7 +165,7 @@ async fn sessions_expire_revoke_and_survive_restart_without_storing_secrets() {
             .unwrap()
             .is_none()
     );
-    let store = crate::store::Store::open_unsynced(f.dir.path().join("state.db"))
+    let store = piqueld_store::Store::open_unsynced(f.dir.path().join("state.db"))
         .await
         .unwrap();
     let restarted = Auth::new(&store, "http://localhost:7845").unwrap();
@@ -821,7 +821,7 @@ async fn token_lifetimes_are_bounded_and_legacy_secrets_authenticate() {
     }
     auth.manage(&alice, token(Some(30))).await.unwrap();
     for legacy in ["l".repeat(43), format!("pqd_{}", "A".repeat(39))] {
-        let credential = crate::store::NewCredential {
+        let credential = piqueld_store::NewCredential {
             id: Auth::id(),
             secret_hash: Auth::hash(&legacy),
             kind: CredentialKind::Token,
@@ -1024,7 +1024,7 @@ async fn device_polls_issue_once_without_blocking_other_logins() {
     async fn committed_then_cancelled(
         f: &Fixture,
         alice: &Identity,
-    ) -> (String, crate::store::NewCredential<'static>, String) {
+    ) -> (String, piqueld_store::NewCredential<'static>, String) {
         let start = f.auth.device_start(None, None).unwrap();
         f.auth.device_approve(&start.user_code, alice).unwrap();
         let key = Auth::hash(&start.device_code);
@@ -1593,14 +1593,14 @@ async fn security_events(auth: &Auth) -> Vec<(String, String)> {
         scope: Some(piqueld_core::observability::EventScope::Daemon),
         ..Default::default()
     };
-    let visible = crate::store::Visibility::ALL;
+    let visible = piqueld_store::Visibility::ALL;
     let events = auth.0.store.filtered_events(&filter, &visible, None, 100);
     events
         .await
         .unwrap()
         .items
         .into_iter()
-        .filter(|event| crate::store::SecurityEvent::parse(&event.kind).is_some())
+        .filter(|event| piqueld_store::SecurityEvent::parse(&event.kind).is_some())
         .map(|event| (event.kind, event.message.unwrap_or_default()))
         .collect()
 }
@@ -1700,7 +1700,7 @@ async fn operator_sign_in_links_work_once_and_act_as_the_operator() {
     assert!(f.auth.authenticate(&token).await.is_err());
 
     let filter = piqueld_core::observability::EventFilter::default();
-    let visible = crate::store::Visibility::ALL;
+    let visible = piqueld_store::Visibility::ALL;
     let events = f.auth.0.store.filtered_events(&filter, &visible, None, 100);
     let issued = events
         .await

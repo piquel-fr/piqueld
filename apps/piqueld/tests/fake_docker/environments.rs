@@ -115,7 +115,7 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
 
     assert!(matches!(
         store.get(staging).await,
-        Err(piqueld::store::StoreError::NotFound)
+        Err(piqueld_store::StoreError::NotFound)
     ));
     let remaining = harness.docker.observe(staging).await.unwrap();
     assert_eq!(remaining.services, [] as [ObservedService; 0]);
@@ -130,7 +130,7 @@ async fn deleting_staging_preserves_production_runtime_secrets_and_history() {
     );
     assert_eq!(
         store.status(production).await.unwrap().state,
-        piqueld::store::ApplicationState::Ready
+        piqueld_store::ApplicationState::Ready
     );
     let history = store.deployments(production, None, 10).await.unwrap();
     assert_eq!(
@@ -284,7 +284,7 @@ async fn revoked_links_close_while_the_exporters_plan_is_blocked() {
     }
     assert!(matches!(
         harness.store.get(&notes).await,
-        Err(piqueld::store::StoreError::NotFound)
+        Err(piqueld_store::StoreError::NotFound)
     ));
     let exporter = harness.docker.observe(&auth).await.unwrap();
     assert!(
@@ -330,7 +330,7 @@ async fn deleting_an_exporter_removes_networks_its_deleted_importers_left() {
     scan().await;
     assert!(matches!(
         harness.store.get(&auth).await,
-        Err(piqueld::store::StoreError::NotFound)
+        Err(piqueld_store::StoreError::NotFound)
     ));
     assert!(
         harness

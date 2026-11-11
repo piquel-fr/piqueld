@@ -1,0 +1,58 @@
+[package]
+name = "piqueld-store"
+description = "Control-plane state of the piqueld daemon: SQLite persistence, command acceptance and secret encryption"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["database"]
+# The tests read core's manifest fixtures from across the repository.
+include = ["/build.rs", "/migrations", "/src", "/LICENSE"]
+
+# `testing` adds `Store::open_unsynced`, for the throwaway stores of the
+# daemon's tests and browser fixture, and fixtures the daemon's tests share.
+# It only adds API: the daemon's store syncs regardless.
+[features]
+testing = []
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+futures-util.workspace = true
+getrandom = { workspace = true, features = ["std"] }
+openssl.workspace = true
+piqueld-config.workspace = true
+piqueld-core.workspace = true
+rustix = { workspace = true, features = ["param"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+# Static musl builds link a vendored OpenSSL; see the daemon's manifest.
+[target.'cfg(target_env = "musl")'.dependencies]
+openssl = { workspace = true, features = ["vendored"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+toml.workspace = true
+
+# The build script provisions the database `SQLx` checks queries against.
+[build-dependencies]
+sqlx.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

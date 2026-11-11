@@ -70,7 +70,7 @@ pub(super) async fn analytics(
     Extension(identity): Extension<Identity>,
     ApiQuery(query): ApiQuery<AnalyticsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let until = query.until_ms.unwrap_or_else(crate::store::now_ms);
+    let until = query.until_ms.unwrap_or_else(piqueld_store::now_ms);
     let _admitted = state.admit(crate::api::Expensive::Analytics)?;
     Ok(ok(state
         .deployment_analytics(
@@ -104,7 +104,7 @@ pub(super) async fn deliveries(
     Ok(ok(state
         .notification_deliveries(
             query.cursor.as_deref(),
-            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
+            query.limit.unwrap_or(piqueld_store::DEFAULT_PAGE_SIZE),
         )
         .await?))
 }
@@ -256,7 +256,7 @@ pub(super) async fn audit(
         .audit_events(
             &filter,
             query.cursor.as_deref(),
-            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
+            query.limit.unwrap_or(piqueld_store::DEFAULT_PAGE_SIZE),
         )
         .await?))
 }

@@ -30,12 +30,19 @@ recompiles only the crates it touches and those above them:
 | Crate | Modules | Depends on |
 | --- | --- | --- |
 | `piqueld-config` (`crates/piqueld-config`) | `config` (the crate root), `dns`, `directories`, `runtime_dir` | `piqueld-core` |
+| `piqueld-store` (`crates/piqueld-store`) | `store` (the crate root), `secrets`, and the migrations | `piqueld-config` |
 | `piqueld` (`apps/piqueld`) | every other module, the binary, and the embedded health probe and dashboard | all of the above |
 
 `piqueld-config` holds the configuration file, the DNS provider accounts it
 configures, which are also their API clients, and the private state and
 runtime directories. Its `testing` feature adds the in-memory and
 `challtestsrv` DNS providers the daemon's ingress tests use.
+
+`piqueld-store` holds the control-plane state, the mutations its acceptance
+commits, and secret encryption. Its build script checks the `sqlx::query!`
+macros against its migrations. Its `testing` feature adds
+`Store::open_unsynced` and fixtures the daemon's tests share; the daemon's
+`fake-docker` feature enables it.
 
 Inside the daemon:
 
@@ -65,4 +72,5 @@ server, Docker, database, or browser framework (`axum`, `bollard`, `sqlx`,
 `leptos`), including through build and development dependencies. It also
 checks that the daemon's crates don't depend on those they build alongside:
 `piqueld-config` depends on no Docker, database, or browser framework, nor on
-the daemon.
+the daemon, and `piqueld-store` on no server, Docker, or browser framework,
+nor on the daemon.
