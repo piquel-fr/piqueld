@@ -18,8 +18,8 @@ pub enum OperationError {
     #[error("ingress configuration could not be applied; see ingress health and daemon logs")]
     Ingress(#[source] anyhow::Error),
     /// Docker failure with its complete diagnostic cause chain.
-    #[error("{}", .0.operation_classification())]
-    Docker(#[source] crate::docker::DockerError),
+    #[error("{}", OperationError::docker_classification(.0))]
+    Docker(#[source] piqueld_docker::DockerError),
     /// Durable operation failure with its storage cause.
     #[error("operation journal is unavailable")]
     Journal(#[source] piqueld_store::StoreError),
@@ -91,7 +91,7 @@ pub enum OperationError {
         image: piqueld_core::ServiceImage,
         /// Why pulling it again failed; absent for builds.
         #[source]
-        source: Option<crate::docker::DockerError>,
+        source: Option<piqueld_docker::DockerError>,
     },
     /// Git source preparation failed before rollout.
     #[error("Git source build failed")]
@@ -207,58 +207,42 @@ impl OperationError {
     }
 }
 
-impl From<crate::docker::DockerError> for OperationError {
-    fn from(error: crate::docker::DockerError) -> Self {
+impl From<piqueld_docker::DockerError> for OperationError {
+    fn from(error: piqueld_docker::DockerError) -> Self {
         Self::Docker(error)
     }
 }
 
-impl crate::docker::DockerError {
-    /// Uses the same stable classification for startup and operation diagnostics.
-    pub(crate) fn diagnostic_code(&self) -> DiagnosticCode {
-        self.operation_classification().diagnostic_code()
-    }
-
-    /// Projects a safe public classification without consuming the cause.
-    /// Registry 4xx responses count as rejections, except 408 and 429, which are
-    /// transient resolution failures that may be retried.
-    fn operation_classification(&self) -> OperationError {
-        use OperationError as Failure;
-        match self {
-            crate::docker::DockerError::OwnershipConflict => Failure::OwnershipConflict,
-            crate::docker::DockerError::ConfigurationConflict => {
-                Failure::DockerConfigurationConflict
+impl OperationError {
+    /// Projects a Docker failure onto its safe public classification without
+    /// consuming the cause.
+    fn docker_classification(error: &piqueld_docker::DockerError) -> Self {
+        use piqueld_docker::DockerError;
+        match error {
+            DockerError::OwnershipConflict => Self::OwnershipConflict,
+            DockerError::ConfigurationConflict => Self::DockerConfigurationConflict,
+            DockerError::Validation(operation) => Self::ValidationFailed(operation),
+            DockerError::NotManager => Self::SwarmManagerUnavailable,
+            DockerError::IncompatibleSwarm => Self::SwarmTopologyUnsupported,
+            DockerError::Unavailable(operation)
+            | DockerError::UnavailableSource { operation, .. } => {
+                Self::DockerUnavailable(operation)
             }
-            crate::docker::DockerError::Validation(operation) => {
-                Failure::ValidationFailed(operation)
+            DockerError::ImageResolutionSource { operation, .. } if error.registry_rejected() => {
+                Self::ImageResolutionRejected(operation)
             }
-            crate::docker::DockerError::NotManager => Failure::SwarmManagerUnavailable,
-            crate::docker::DockerError::IncompatibleSwarm => Failure::SwarmTopologyUnsupported,
-            crate::docker::DockerError::Unavailable(operation)
-            | crate::docker::DockerError::UnavailableSource { operation, .. } => {
-                Failure::DockerUnavailable(operation)
+            DockerError::ImageResolution(operation)
+            | DockerError::ImageResolutionSource { operation, .. } => {
+                Self::ImageResolutionFailed(operation)
             }
-            crate::docker::DockerError::ImageResolutionSource {
-                operation,
-                source:
-                    bollard::errors::Error::DockerResponseServerError {
-                        status_code: 400..=407 | 409..=428 | 430..=499,
-                        ..
-                    },
-            } => Failure::ImageResolutionRejected(operation),
-            crate::docker::DockerError::ImageResolution(operation)
-            | crate::docker::DockerError::ImageResolutionSource { operation, .. } => {
-                Failure::ImageResolutionFailed(operation)
+            DockerError::NetworkInUse(_) => {
+                Self::DockerRequestFailed("delete a network a task still uses")
             }
-            crate::docker::DockerError::NetworkInUse(_) => {
-                Failure::DockerRequestFailed("delete a network a task still uses")
+            DockerError::NetworkRemoving(_) => {
+                Self::DockerRequestFailed("delete a network Swarm is still removing")
             }
-            crate::docker::DockerError::NetworkRemoving(_) => {
-                Failure::DockerRequestFailed("delete a network Swarm is still removing")
-            }
-            crate::docker::DockerError::Request(operation)
-            | crate::docker::DockerError::RequestSource { operation, .. } => {
-                Failure::DockerRequestFailed(operation)
+            DockerError::Request(operation) | DockerError::RequestSource { operation, .. } => {
+                Self::DockerRequestFailed(operation)
             }
         }
     }
@@ -340,8 +324,8 @@ impl OperationError {
             let Some(error) = source else {
                 break;
             };
-            if let Some(error) = error.downcast_ref::<crate::docker::DockerError>() {
-                use crate::docker::DockerError;
+            if let Some(error) = error.downcast_ref::<piqueld_docker::DockerError>() {
+                use piqueld_docker::DockerError;
                 let operation = match error {
                     DockerError::Unavailable(operation)
                     | DockerError::ImageResolution(operation)
@@ -387,7 +371,7 @@ impl OperationError {
                     .causes
                     .push(format!("Docker returned HTTP status {status_code}"));
             }
-            if let Some(error) = error.downcast_ref::<crate::command::CommandFailure>() {
+            if let Some(error) = error.downcast_ref::<piqueld_docker::command::CommandFailure>() {
                 diagnostic
                     .causes
                     .push(format!("Command stage: {}", error.operation));
@@ -432,7 +416,7 @@ impl crate::application::BoundaryError {
     pub(crate) fn diagnostic(&self) -> piqueld_core::observability::Diagnostic {
         let (code, summary) = match self {
             Self::Runtime(error) => {
-                let classification = error.operation_classification();
+                let classification = OperationError::docker_classification(error);
                 (classification.diagnostic_code(), classification.message())
             }
             Self::Store(_) => (
@@ -469,8 +453,32 @@ impl crate::application::BoundaryError {
 #[cfg(test)]
 mod tests {
     use super::{DiagnosticCode, OperationError};
-    use crate::docker::DockerError;
+    use piqueld_docker::DockerError;
     use std::error::Error;
+
+    #[tokio::test]
+    async fn command_diagnostics_keep_stage_and_exit_code_without_output() {
+        let error = piqueld_docker::command::LoggedCommand::run_recorded(
+            tokio::process::Command::new("sh").args(["-c", "printf private-token >&2; exit 7"]),
+            "clone Git repository",
+            None,
+        )
+        .await
+        .unwrap_err();
+        let diagnostic = crate::application::BoundaryError::GitBuild(error).diagnostic();
+        assert_eq!(
+            diagnostic.causes,
+            [
+                "Command stage: clone Git repository",
+                "Command exit code: 7"
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains("private-token")
+        );
+    }
 
     #[test]
     fn operation_errors_retain_causes_without_exposing_them_publicly() {

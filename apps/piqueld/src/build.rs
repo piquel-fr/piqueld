@@ -35,6 +35,17 @@ impl BuildLog {
     }
 }
 
+#[async_trait::async_trait]
+impl piqueld_docker::command::OutputLog for BuildLog {
+    async fn append(
+        &self,
+        bytes: &[u8],
+        stream: piqueld_core::api::LogStream,
+    ) -> anyhow::Result<()> {
+        Ok(BuildLog::append(self, bytes, stream).await?)
+    }
+}
+
 /// A persisted build record that is always given a terminal state.
 ///
 /// Call [`BuildAttempt::finish`] on completion. If the attempt is dropped first

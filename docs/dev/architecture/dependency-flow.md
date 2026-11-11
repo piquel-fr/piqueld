@@ -8,7 +8,7 @@ operation records, and shared API requests and responses. It has no HTTP server,
 database, Docker, or UI dependency. The daemon uses these contracts directly.
 `piqueld-client` adds HTTP transport and reexports the shared contracts for the
 CLI and dashboard. `piqueld-probe` is the static HTTP health probe, depending
-only on `thiserror`: the daemon build script embeds its binary, and
+only on `thiserror`: `piqueld-docker`'s build script embeds its binary, and
 `piqueld-core` uses its container path and arguments to validate and compile
 HTTP health checks. `piqueld-generated` writes and checks the files
 `just generate` produces, for the daemon's `generate_openapi` example and
@@ -31,7 +31,8 @@ recompiles only the crates it touches and those above them:
 | --- | --- | --- |
 | `piqueld-config` (`crates/piqueld-config`) | `config` (the crate root), `dns`, `directories`, `runtime_dir` | `piqueld-core` |
 | `piqueld-store` (`crates/piqueld-store`) | `store` (the crate root), `secrets`, and the migrations | `piqueld-config` |
-| `piqueld` (`apps/piqueld`) | every other module, the binary, and the embedded health probe and dashboard | all of the above |
+| `piqueld-docker` (`crates/piqueld-docker`) | `docker` (the crate root), `command`, and the embedded health probe | `piqueld-core`, `piqueld-probe` |
+| `piqueld` (`apps/piqueld`) | every other module, the binary, and the embedded dashboard | all of the above |
 
 `piqueld-config` holds the configuration file, the DNS provider accounts it
 configures, which are also their API clients, and the private state and
@@ -43,6 +44,15 @@ commits, and secret encryption. Its build script checks the `sqlx::query!`
 macros against its migrations. Its `testing` feature adds
 `Store::open_unsynced` and fixtures the daemon's tests share; the daemon's
 `fake-docker` feature enables it.
+
+`piqueld-docker` holds the Docker boundary and `command`, which runs Git's and
+Docker's commands with bounded output capture. It streams output into any
+`command::OutputLog`, such as the daemon's `BuildLog`, so it doesn't depend
+on the store, and the two build in parallel. It classifies its errors with
+`DockerError::diagnostic_code`. Its build script builds the health probe with
+a nested Cargo, through `piqueld-build`, which the daemon's build script
+shares for the dashboard. Its `fake` feature adds the in-memory Docker
+engine; the daemon's `fake-docker` feature enables it.
 
 Inside the daemon:
 
@@ -70,5 +80,6 @@ server, Docker, database, or browser framework (`axum`, `bollard`, `sqlx`,
 `leptos`), including through build and development dependencies. It also
 checks that the daemon's crates don't depend on those they build alongside:
 `piqueld-config` depends on no Docker, database, or browser framework, nor on
-the daemon, and `piqueld-store` on no server, Docker, or browser framework,
-nor on the daemon.
+the daemon; `piqueld-store` on no server, Docker, or browser framework, nor on
+the daemon; and `piqueld-docker` on no server, database, or browser framework,
+nor on the daemon, its configuration, or its store.

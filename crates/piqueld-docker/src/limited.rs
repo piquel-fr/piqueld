@@ -16,7 +16,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// A [`DockerApi`] wrapper that bounds process-wide concurrent Docker work.
-pub(crate) struct LimitedDocker<D> {
+pub struct LimitedDocker<D> {
     /// The wrapped implementation that performs the actual requests.
     inner: Arc<D>,
     /// Concurrent image resolutions (pulls).
@@ -30,7 +30,7 @@ pub(crate) struct LimitedDocker<D> {
 impl<D> LimitedDocker<D> {
     /// Wraps `inner` with 2 image and 8 observation permits, and a queue
     /// running one build at a time.
-    pub(crate) fn new(inner: Arc<D>) -> Self {
+    pub fn new(inner: Arc<D>) -> Self {
         Self {
             inner,
             images: Semaphore::new(2),
@@ -152,7 +152,7 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     async fn build_image(
         &self,
         build: &super::ImageBuild<'_>,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn crate::command::OutputLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         let _turn = self.builds.turn(build.priority).await;
         self.inner.build_image(build, log).await

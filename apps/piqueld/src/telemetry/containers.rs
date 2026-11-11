@@ -4,7 +4,6 @@
 //! resource, so they are built as OTLP messages directly rather than through
 //! the SDK, and queued on the same bounded queues.
 use super::{Destination, Telemetry};
-use crate::docker::{ContainerLogs, ContainerUsage, DockerError};
 use futures_util::StreamExt as _;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
@@ -18,7 +17,8 @@ use opentelemetry_proto::tonic::{
 };
 use parking_lot::Mutex;
 use piqueld_core::api::LogStream;
-use piqueld_store::now_ns;
+use piqueld_docker::now_ns;
+use piqueld_docker::{ContainerLogs, ContainerUsage, DockerError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
@@ -536,7 +536,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let telemetry = unreachable(directory.path());
         let container = ContainerExport::new(vec![], 2_000_000_000, false);
-        let lines = crate::docker::LogLines {
+        let lines = piqueld_docker::LogLines {
             stream: Some(LogStream::Stdout),
             lines: [1, 2, 3]
                 .map(|second| (second * 1_000_000_000, format!("line {second}")))
@@ -564,7 +564,7 @@ mod tests {
             service,
         )]));
         telemetry.receive(listed).await.unwrap();
-        let line = || crate::docker::LogLines {
+        let line = || piqueld_docker::LogLines {
             stream: Some(LogStream::Stdout),
             lines: vec![(1, "received".into())],
         };

@@ -19,12 +19,12 @@ use bollard::query_parameters::{
 use docker_contract::Environment;
 use git_fixture::GitBuildFixture;
 use piqueld::application::RuntimeBoundary;
-use piqueld::docker::{BollardDocker, DockerApi, DockerError, JobRuns, JobStatus};
 use piqueld_core::manifest::ValidatedHealthCheck;
 use piqueld_core::resource::{
     DesiredNetwork, DesiredService, DesiredVolume, ObservedService, ResolvedSource,
 };
 use piqueld_core::{ApplicationId, EnvironmentId, InstanceId};
+use piqueld_docker::{BollardDocker, DockerApi, DockerError, JobRuns, JobStatus};
 use poll::eventually;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
@@ -330,7 +330,7 @@ impl SwarmScenario {
         &self,
         script: &str,
         tty: Option<piqueld_core::exec::TerminalSize>,
-    ) -> piqueld::docker::Exec {
+    ) -> piqueld_docker::Exec {
         use piqueld_core::exec::{ExecCommand, ExecRequest};
         let request = ExecRequest {
             service: piqueld_core::ServiceName::parse("web").unwrap(),
@@ -364,7 +364,7 @@ impl SwarmScenario {
         let (output_tx, mut output) = tokio::sync::mpsc::channel(16);
         input.send(ExecInput::Stdin(stdin.to_vec())).await.unwrap();
         input.send(ExecInput::CloseStdin).await.unwrap();
-        let io = piqueld::docker::ExecIo {
+        let io = piqueld_docker::ExecIo {
             input: input_rx,
             output: output_tx,
             stop: tokio_util::sync::CancellationToken::new(),
@@ -418,7 +418,7 @@ impl SwarmScenario {
             .await
             .unwrap();
         let stop = tokio_util::sync::CancellationToken::new();
-        let io = piqueld::docker::ExecIo {
+        let io = piqueld_docker::ExecIo {
             input: input_rx,
             output,
             stop: stop.clone(),

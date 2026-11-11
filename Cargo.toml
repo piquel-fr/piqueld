@@ -4,9 +4,11 @@ members = [
   "apps/piqueld",
   "apps/piquelctl",
   "apps/piqueld-ui",
+  "crates/piqueld-build",
   "crates/piqueld-client",
   "crates/piqueld-config",
   "crates/piqueld-core",
+  "crates/piqueld-docker",
   "crates/piqueld-generated",
   "crates/piqueld-probe",
   "crates/piqueld-store",
@@ -37,9 +39,11 @@ zeroize = "1.8"
 # Internal. Published crates carry the version they are published with;
 # piqueld-generated isn't published, so the crates that use it as a development
 # dependency publish without it.
+piqueld-build     = { version = "0.1.0", path = "crates/piqueld-build"  }
 piqueld-client    = { version = "0.1.0", path = "crates/piqueld-client" }
 piqueld-config    = { version = "0.1.0", path = "crates/piqueld-config" }
 piqueld-core      = { version = "0.1.0", path = "crates/piqueld-core"   }
+piqueld-docker    = { version = "0.1.0", path = "crates/piqueld-docker" }
 piqueld-generated = { path = "crates/piqueld-generated" }
 piqueld-probe     = { version = "0.1.0", path = "crates/piqueld-probe"  }
 piqueld-store     = { version = "0.1.0", path = "crates/piqueld-store"  }
@@ -162,4 +166,4 @@ inherits = "release"
 opt-level = "z"
 codegen-units = 1
 
-# The static health probe's `probe` profile is in `apps/piqueld/build/probe.toml`.
+# The static health probe's `probe` profile is in `crates/piqueld-docker/build/probe.toml`.

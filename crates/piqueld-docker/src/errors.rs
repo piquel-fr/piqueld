@@ -1,3 +1,5 @@
+use piqueld_core::observability::DiagnosticCode;
+
 #[derive(Debug, thiserror::Error)]
 /// A stable Docker boundary error.
 pub enum DockerError {
@@ -75,8 +77,49 @@ impl DockerError {
             || !self.diagnostic_code().retryable()
     }
 
+    /// The stable classification diagnostics and retry policy use.
+    #[must_use]
+    pub fn diagnostic_code(&self) -> DiagnosticCode {
+        match self {
+            Self::OwnershipConflict => DiagnosticCode::OwnershipConflict,
+            Self::ConfigurationConflict => DiagnosticCode::DockerConfigurationConflict,
+            Self::Validation(_) => DiagnosticCode::ValidationFailed,
+            Self::NotManager => DiagnosticCode::SwarmManagerUnavailable,
+            Self::IncompatibleSwarm => DiagnosticCode::SwarmTopologyUnsupported,
+            Self::Unavailable(_) | Self::UnavailableSource { .. } => {
+                DiagnosticCode::DockerUnavailable
+            }
+            Self::ImageResolutionSource { .. } if self.registry_rejected() => {
+                DiagnosticCode::ImageResolutionRejected
+            }
+            Self::ImageResolution(_) | Self::ImageResolutionSource { .. } => {
+                DiagnosticCode::ImageResolutionFailed
+            }
+            Self::NetworkInUse(_)
+            | Self::NetworkRemoving(_)
+            | Self::Request(_)
+            | Self::RequestSource { .. } => DiagnosticCode::DockerRequestFailed,
+        }
+    }
+
+    /// Whether the registry rejected an image resolution: a 4xx response,
+    /// except 408 and 429, which are transient failures that may be retried.
+    #[must_use]
+    pub const fn registry_rejected(&self) -> bool {
+        matches!(
+            self,
+            Self::ImageResolutionSource {
+                source: bollard::errors::Error::DockerResponseServerError {
+                    status_code: 400..=407 | 409..=428 | 430..=499,
+                    ..
+                },
+                ..
+            }
+        )
+    }
+
     /// Builds a [`DockerError::UnavailableSource`] that keeps `source` for diagnostics.
-    pub(crate) fn unavailable(
+    pub fn unavailable(
         operation: &'static str,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {

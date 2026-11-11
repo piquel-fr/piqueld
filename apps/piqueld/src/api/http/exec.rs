@@ -10,7 +10,6 @@ use super::{
 use crate::{
     api::{ExecSession, Expensive},
     auth::Identity,
-    docker::ExecIo,
 };
 use axum::{
     Extension,
@@ -30,6 +29,7 @@ use piqueld_core::{
     EnvironmentId,
     exec::{ExecFrame, ExecInput, ExecOutput, ExecRequest, MAX_MESSAGE_BYTES},
 };
+use piqueld_docker::ExecIo;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::Instant};
 use tokio_util::sync::CancellationToken;

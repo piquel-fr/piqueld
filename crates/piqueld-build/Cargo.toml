@@ -1,0 +1,15 @@
+[package]
+name = "piqueld-build"
+description = "Nested Cargo builds for the build scripts of piqueld's crates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["development-tools::build-utils"]
+
+[lints]
+workspace = true

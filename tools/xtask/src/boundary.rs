@@ -21,7 +21,7 @@ struct Boundary {
     reason: &'static str,
 }
 
-const BOUNDARIES: [Boundary; 3] = [
+const BOUNDARIES: [Boundary; 4] = [
     Boundary {
         package: "piqueld-core",
         // The client and dashboard build it, so its build and development
@@ -49,6 +49,19 @@ const BOUNDARIES: [Boundary; 3] = [
         edges: "normal,build",
         forbidden: &["axum", "bollard", "leptos", "piqueld"],
         reason: "builds alongside the daemon's Docker crate, without a server, Docker, or browser framework",
+    },
+    Boundary {
+        package: "piqueld-docker",
+        edges: "normal,build",
+        forbidden: &[
+            "axum",
+            "leptos",
+            "sqlx",
+            "piqueld",
+            "piqueld-config",
+            "piqueld-store",
+        ],
+        reason: "builds alongside the daemon's configuration and store crates, without a server, database, or browser framework",
     },
 ];
 

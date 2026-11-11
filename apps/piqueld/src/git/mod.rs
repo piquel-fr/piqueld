@@ -103,7 +103,7 @@ impl Heads {
         command.args(["ls-remote", "--heads", "--"]).arg(url);
         let output = tokio::time::timeout(
             Self::TIMEOUT,
-            crate::command::LoggedCommand::output(
+            piqueld_docker::command::LoggedCommand::output(
                 &mut command,
                 "list Git branches",
                 Self::OUTPUT_LIMIT,
@@ -114,7 +114,7 @@ impl Heads {
         .map_err(|error| {
             // Git may echo the URL, credentials included, so details stay in logs.
             tracing::warn!(?error, "git ls-remote failed");
-            match error.downcast_ref::<crate::command::CommandFailure>() {
+            match error.downcast_ref::<piqueld_docker::command::CommandFailure>() {
                 Some(failure) => anyhow::anyhow!("git ls-remote failed ({})", failure.status),
                 None => anyhow::anyhow!("git ls-remote could not run"),
             }
@@ -374,7 +374,7 @@ impl Checkouts {
     pub(crate) async fn checkout(
         &self,
         repository: &GitRepository,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn piqueld_docker::command::OutputLog>,
     ) -> anyhow::Result<Checkout> {
         let mut errors = Vec::new();
         repository.validate("repository", &mut errors);
@@ -406,7 +406,7 @@ impl Checkouts {
         tokio::fs::write(info.join("attributes"), Self::ATTRIBUTES)
             .await
             .context("write Git checkout attributes")?;
-        crate::command::LoggedCommand::run_recorded(
+        piqueld_docker::command::LoggedCommand::run_recorded(
             Checkout::command_in(&root).args(["checkout", "--detach", revision, "--"]),
             "checkout Git commit",
             log,
@@ -468,18 +468,18 @@ impl Checkouts {
             "--end-of-options",
             revision,
         ]);
-        let output = crate::command::LoggedCommand::output(
+        let output = piqueld_docker::command::LoggedCommand::output(
             &mut command,
             "measure Git tree",
             Self::FILES * 28,
         )
         .await
-        .map_err(
-            |error| match error.downcast_ref::<crate::command::OutputLimit>() {
+        .map_err(|error| {
+            match error.downcast_ref::<piqueld_docker::command::OutputLimit>() {
                 Some(_) => self.too_large().into(),
                 None => error,
-            },
-        )?;
+            }
+        })?;
         let output = String::from_utf8(output).context("decode Git tree sizes")?;
         let mut bytes = 0_u64;
         for (files, entry) in output.lines().enumerate() {
@@ -502,7 +502,7 @@ impl Checkouts {
     async fn download(
         repository: &GitRepository,
         root: &Path,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn piqueld_docker::command::OutputLog>,
     ) -> anyhow::Result<()> {
         // `--no-local` keeps `--depth` for repository paths too.
         let mut clone = Checkout::command();
@@ -517,8 +517,12 @@ impl Checkouts {
             clone.args(["--branch", &repository.branch]);
         }
         clone.arg("--").arg(&repository.url).arg(root);
-        crate::command::LoggedCommand::run_recorded(&mut clone, "clone Git repository", log)
-            .await?;
+        piqueld_docker::command::LoggedCommand::run_recorded(
+            &mut clone,
+            "clone Git repository",
+            log,
+        )
+        .await?;
         let Some(commit) = &repository.commit else {
             return Ok(());
         };
@@ -527,14 +531,14 @@ impl Checkouts {
             fetch.arg("fetch").args(arguments);
             fetch
         };
-        let pinned = crate::command::LoggedCommand::run_recorded(
+        let pinned = piqueld_docker::command::LoggedCommand::run_recorded(
             &mut fetch(&["--depth=1", "origin", commit]),
             "fetch pinned Git commit",
             log,
         )
         .await;
         if pinned.is_err() {
-            crate::command::LoggedCommand::run_recorded(
+            piqueld_docker::command::LoggedCommand::run_recorded(
                 &mut fetch(&[
                     "--unshallow",
                     "origin",
@@ -626,13 +630,14 @@ impl Checkouts {
         &self,
         repository: &GitRepository,
         build: &piqueld_core::manifest::ValidatedBuild,
-        (owner, priority): (&piqueld_core::InstanceId, crate::docker::BuildPriority),
-        docker: &impl crate::docker::DockerApi,
-        log: Option<&crate::build::BuildLog>,
+        (owner, priority): (&piqueld_core::InstanceId, piqueld_docker::BuildPriority),
+        docker: &impl piqueld_docker::DockerApi,
+        build_log: Option<&crate::build::BuildLog>,
     ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
+        let log = build_log.map(|log| log as &dyn piqueld_docker::command::OutputLog);
         let checkout = self.checkout(repository, log).await?;
-        if let Some(log) = log {
-            log.commit(&checkout.commit).await?;
+        if let Some(build_log) = build_log {
+            build_log.commit(&checkout.commit).await?;
         }
         let piqueld_core::manifest::ValidatedBuild::Docker {
             dockerfile,
@@ -640,7 +645,7 @@ impl Checkouts {
             args,
             target,
         } = build;
-        let build = crate::docker::ImageBuild {
+        let build = piqueld_docker::ImageBuild {
             owner,
             dockerfile: checkout.path(dockerfile).await?,
             context: checkout.path(context).await?,
@@ -798,13 +803,14 @@ mod tests {
         tokio::fs::write(root.join("Dockerfile"), contents)
             .await
             .unwrap();
-        crate::command::LoggedCommand::run(
+        piqueld_docker::command::LoggedCommand::run_recorded(
             Checkout::command_in(root).args(["add", "."]),
             "stage fixture",
+            None,
         )
         .await
         .unwrap();
-        crate::command::LoggedCommand::run(
+        piqueld_docker::command::LoggedCommand::run_recorded(
             Checkout::command_in(root).args([
                 "-c",
                 "user.name=Test",
@@ -815,6 +821,7 @@ mod tests {
                 "fixture",
             ]),
             "commit fixture",
+            None,
         )
         .await
         .unwrap();
@@ -859,9 +866,13 @@ mod tests {
                     &helper
                 })
                 .arg(root.path().join("checkout"));
-            let error = crate::command::LoggedCommand::run(&mut command, "clone fixture")
-                .await
-                .unwrap_err();
+            let error = piqueld_docker::command::LoggedCommand::run_recorded(
+                &mut command,
+                "clone fixture",
+                None,
+            )
+            .await
+            .unwrap_err();
             assert!(
                 error.to_string().contains("transport 'ext' not allowed"),
                 "{error:#}"
@@ -880,11 +891,12 @@ mod tests {
 
     /// A repository with one commit of `Dockerfile`, returning its source.
     async fn fixture(root: &Path) -> GitRepository {
-        crate::command::LoggedCommand::run(
+        piqueld_docker::command::LoggedCommand::run_recorded(
             Checkout::command()
                 .args(["init", "--initial-branch=main"])
                 .arg(root),
             "initialize fixture",
+            None,
         )
         .await
         .unwrap();

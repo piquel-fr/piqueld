@@ -182,7 +182,7 @@ impl RuntimeBoundary for FakeRuntime {
         &self,
         _environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
-    ) -> Result<Option<piqueld::docker::Exec>, BoundaryError> {
+    ) -> Result<Option<piqueld_docker::Exec>, BoundaryError> {
         if request.command.as_slice()[0] == "held" {
             self.exec_gate.started.notify_one();
             self.exec_gate.release.notified().await;
@@ -193,7 +193,7 @@ impl RuntimeBoundary for FakeRuntime {
             _ => "exec-1",
         };
         Ok(
-            (request.service.as_str() == "web").then(|| piqueld::docker::Exec {
+            (request.service.as_str() == "web").then(|| piqueld_docker::Exec {
                 id: id.into(),
                 task: "task-1".into(),
                 tty: request.tty.is_some(),
@@ -205,11 +205,11 @@ impl RuntimeBoundary for FakeRuntime {
     /// code, until the transport stops it.
     async fn run_exec(
         &self,
-        exec: &piqueld::docker::Exec,
-        io: piqueld::docker::ExecIo,
+        exec: &piqueld_docker::Exec,
+        io: piqueld_docker::ExecIo,
     ) -> Result<i64, BoundaryError> {
         use piqueld_core::exec::{ExecInput, ExecOutput};
-        let piqueld::docker::ExecIo {
+        let piqueld_docker::ExecIo {
             mut input,
             output,
             stop,
@@ -240,7 +240,7 @@ impl RuntimeBoundary for FakeRuntime {
         };
         tokio::select! {
             result = echo => result,
-            () = stopped => Err(piqueld::docker::DockerError::Request("stopped").into()),
+            () = stopped => Err(piqueld_docker::DockerError::Request("stopped").into()),
         }
     }
 
@@ -279,19 +279,19 @@ impl RuntimeBoundary for FakeRuntime {
 
     /// Image availability is unknown: no engine.
     async fn local_images(&self) -> Result<piqueld_core::LocalImages, BoundaryError> {
-        Err(piqueld::docker::DockerError::Unavailable("list images").into())
+        Err(piqueld_docker::DockerError::Unavailable("list images").into())
     }
 
     async fn reuse_images(
         &self,
         _: &BTreeMap<piqueld_core::ServiceName, piqueld_core::ResolvedSource>,
     ) -> Result<piqueld::reconcile::ImagesInUse, BoundaryError> {
-        Err(piqueld::docker::DockerError::Unavailable("list images").into())
+        Err(piqueld_docker::DockerError::Unavailable("list images").into())
     }
 
     async fn check_available(&self) -> Result<(), BoundaryError> {
         if self.unavailable.load(Ordering::Relaxed) {
-            return Err(piqueld::docker::DockerError::Unavailable("observe application").into());
+            return Err(piqueld_docker::DockerError::Unavailable("observe application").into());
         }
         Ok(())
     }
@@ -304,20 +304,20 @@ impl RuntimeBoundary for FakeRuntime {
         Ok(ObservedApplication::default())
     }
     /// The fake runtime runs no containers.
-    async fn containers(&self) -> Result<Vec<piqueld::docker::ManagedContainer>, BoundaryError> {
+    async fn containers(&self) -> Result<Vec<piqueld_docker::ManagedContainer>, BoundaryError> {
         Ok(Vec::new())
     }
     async fn container_usage(
         &self,
         _: &str,
-    ) -> Result<Option<piqueld::docker::ContainerUsage>, BoundaryError> {
+    ) -> Result<Option<piqueld_docker::ContainerUsage>, BoundaryError> {
         Ok(None)
     }
-    fn container_logs(&self, _: &str, _: i32) -> piqueld::docker::ContainerLogs {
+    fn container_logs(&self, _: &str, _: i32) -> piqueld_docker::ContainerLogs {
         futures_util::stream::empty().boxed()
     }
     /// No container ever starts.
-    fn container_starts(&self, _: i64) -> piqueld::docker::ContainerStarts {
+    fn container_starts(&self, _: i64) -> piqueld_docker::ContainerStarts {
         futures_util::stream::pending().boxed()
     }
 }

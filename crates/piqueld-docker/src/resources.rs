@@ -550,7 +550,7 @@ impl DockerApi for BollardDocker {
     async fn build_image(
         &self,
         build: &super::ImageBuild<'_>,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn crate::command::OutputLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError> {
         // Builds shell out to Docker Buildx against the same socket, with the
         // engine's own builder: the account may have selected one that does not

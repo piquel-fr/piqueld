@@ -6,7 +6,6 @@ pub mod application;
 pub mod auth;
 /// Executor-independent durable build recording.
 pub mod build;
-pub mod docker;
 pub mod ingress;
 pub mod operations;
 pub mod reconcile;
@@ -14,7 +13,6 @@ pub mod tailnet;
 pub mod telemetry;
 
 mod certificate;
-mod command;
 pub mod git;
 mod ui_bundle;
 

@@ -108,7 +108,7 @@ pub struct Ingress {
     caddy: UnixApi,
     /// Docker client used only for streaming image pulls, which needs
     /// Docker's socket only once it pulls.
-    images: crate::docker::BollardDocker,
+    images: piqueld_docker::BollardDocker,
     /// Public HTTPS client for route probes; never follows redirects or proxies.
     client: reqwest::Client,
     store: Arc<Store>,
@@ -174,7 +174,7 @@ impl Ingress {
         let directory = data_dir.join("ingress");
         // Local Docker and Caddy control requests share the daemon's request budget.
         // Deployment convergence still imposes its configured outer deadline.
-        let request_timeout = crate::docker::DockerTimeout::Request.duration();
+        let request_timeout = piqueld_docker::DockerTimeout::Request.duration();
         let certificates = Certificates::new(
             Dns::new(Vec::new())?,
             AcmeConfig::default(),
@@ -187,7 +187,7 @@ impl Ingress {
             caddy: UnixApi::new(directory.join("control/admin.sock"), request_timeout),
             directory,
             docker: UnixApi::new(socket.into(), request_timeout),
-            images: crate::docker::BollardDocker::connect(socket)
+            images: piqueld_docker::BollardDocker::connect(socket)
                 .context("Docker socket is not UTF-8")?,
             client: Self::probe_client().build()?,
             store,

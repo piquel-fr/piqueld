@@ -571,7 +571,7 @@ impl ApplicationService {
     /// Docker call fails at once.
     pub(crate) async fn unconnected(store: Arc<Store>, dir: &std::path::Path) -> Self {
         let docker =
-            Arc::new(crate::docker::BollardDocker::connect(&dir.join("docker.sock")).unwrap());
+            Arc::new(piqueld_docker::BollardDocker::connect(&dir.join("docker.sock")).unwrap());
         let sources = Arc::new(crate::git::Sources::open(dir).await.unwrap());
         let runtime =
             crate::reconcile::Controller::new(docker, Arc::clone(&store), Arc::clone(&sources))

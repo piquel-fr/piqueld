@@ -1,10 +1,10 @@
 //! Retention of the images this installation builds: cleanup, and making
 //! sure a retained image is present before a deployment uses it again.
 use super::{Controller, DockerApi, OperationError};
-use crate::docker::LocalImage;
 use piqueld_core::{
     InstanceId, ServiceImage, ServiceName, api::ImageStatus, resource::ResolvedSource,
 };
+use piqueld_docker::LocalImage;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{Notify, OwnedRwLockReadGuard, RwLock, watch};
 use tokio_util::sync::CancellationToken;

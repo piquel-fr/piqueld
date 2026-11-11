@@ -18,10 +18,6 @@ mod sqlite;
 use application_fixture::TestApplications;
 use async_trait::async_trait;
 use piqueld::api::Actor::Daemon;
-use piqueld::docker::fake::{
-    FakeDocker, Gate, JobRunState, JobStart, RegistryState, observed_service,
-};
-use piqueld::docker::{DockerApi, DockerError, ImageSource, LocalImage, resolve_image_digest};
 use piqueld::git::Sources;
 use piqueld::reconcile::Controller;
 use piqueld_core::Sha256Digest;
@@ -34,6 +30,10 @@ use piqueld_core::resource::{
 };
 use piqueld_core::{ApplicationId, EnvironmentId, Event, NormalizedApplication, Plan};
 use piqueld_core::{Operation, OperationState};
+use piqueld_docker::fake::{
+    FakeDocker, Gate, JobRunState, JobStart, RegistryState, observed_service,
+};
+use piqueld_docker::{DockerApi, DockerError, ImageSource, LocalImage, resolve_image_digest};
 use piqueld_store::Store;
 use poll::eventually;
 use prebuilt::manifest;

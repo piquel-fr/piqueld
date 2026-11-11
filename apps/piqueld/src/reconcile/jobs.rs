@@ -9,15 +9,13 @@ use super::{
     ActionKind, CancellationToken, Controller, DockerApi, Duration, Operation, OperationError,
     Plan, PlanRequest,
 };
-use crate::{
-    build::BuildLog,
-    docker::{JobRuns, JobStatus},
-};
+use crate::build::BuildLog;
 use piqueld_core::{
     DesiredJobRun, ResolvedApplication,
     api::{BuildState, DeploymentOrigin, LogStream},
     manifest::JobRun,
 };
+use piqueld_docker::{JobRuns, JobStatus};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -445,7 +443,7 @@ impl<D: DockerApi> Controller<D> {
     /// run or service still holds a volume it would share.
     async fn wait_unlocked(
         &self,
-        released: impl Future<Output = Result<(), crate::docker::DockerError>>,
+        released: impl Future<Output = Result<(), piqueld_docker::DockerError>>,
     ) -> Result<(), OperationError> {
         tokio::time::timeout(self.retry.convergence_timeout, released)
             .await

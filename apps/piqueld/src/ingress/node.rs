@@ -92,7 +92,7 @@ impl Node {
             auth_key: config.auth_key.clone(),
             api: UnixApi::new(
                 Self::socket(directory),
-                crate::docker::DockerTimeout::Request.duration(),
+                piqueld_docker::DockerTimeout::Request.duration(),
             )
             .with_host("local-tailscaled.sock"),
             login_url: parking_lot::Mutex::new(None),

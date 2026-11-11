@@ -87,7 +87,7 @@ The build script then reads the module path from Cargo's
 `CARGO_BIN_FILE_PIQUELD_UI_piqueld-ui` environment variable. That deletes:
 
 - the nested build in `Dashboard::compile`, and `NestedCargo`
-  (`apps/piqueld/build/nested.rs`) with its environment scrubbing, once the
+  (the `piqueld-build` crate) with its environment scrubbing, once the
   health probe's musl build, which shares it, moves too;
 - the `target-ui` and `target-probe` directories;
 - the manual `rerun-if-changed` tracking, because Cargo tracks the dependency

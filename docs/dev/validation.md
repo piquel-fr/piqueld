@@ -94,7 +94,7 @@ dashboard. The `install` job's Rust cache is also the release workflow's.
 ## Docker test suites
 
 Controller tests run against `FakeDocker`, an in-memory Docker engine in
-`apps/piqueld/src/docker/fake.rs`. `just docker-test` runs two suites against
+`crates/piqueld-docker/src/fake.rs`. `just docker-test` runs two suites against
 a real engine: a throwaway Docker-in-Docker daemon, never the host's.
 
 - `ingress` is the daemon library's `ingress_caddy` tests, against Caddy and

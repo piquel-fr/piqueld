@@ -27,7 +27,7 @@ embedded-ui = ["dep:wasm-bindgen-cli-support"]
 # tests and the browser fixture, and `Store::open_unsynced` for their
 # throwaway stores. It only adds API: the daemon's store syncs regardless.
 # Release builds leave it out.
-fake-docker = ["piqueld-store/testing"]
+fake-docker = ["piqueld-docker/fake", "piqueld-store/testing"]
 
 [dependencies]
 zeroize.workspace = true
@@ -56,7 +56,7 @@ http.workspace = true
 http-body-util.workspace = true
 piqueld-config.workspace = true
 piqueld-core.workspace = true
-piqueld-probe.workspace = true
+piqueld-docker.workspace = true
 piqueld-store.workspace = true
 rustix.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls"] }
@@ -109,6 +109,7 @@ progenitor.workspace = true
 syn.workspace = true
 
 [build-dependencies]
+piqueld-build.workspace = true
 sha2.workspace = true
 wasm-bindgen-cli-support = { workspace = true, optional = true }
 

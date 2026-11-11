@@ -3,14 +3,14 @@
 mod runtime;
 pub use runtime::ApplicationRuntime;
 
-use crate::docker::{
-    ContainerLogs, ContainerStarts, ContainerUsage, DockerError, Exec, ExecIo, ManagedContainer,
-};
 use crate::reconcile::ImagesInUse;
 use async_trait::async_trait;
 use piqueld_core::{
     CompileError, EnvironmentId, NormalizedApplication, ObservedApplication, ServiceName,
     resource::{ResolvedApplication, ResolvedSource},
+};
+use piqueld_docker::{
+    ContainerLogs, ContainerStarts, ContainerUsage, DockerError, Exec, ExecIo, ManagedContainer,
 };
 use piqueld_store::{StoreError, StoredEnvironment};
 use std::collections::BTreeMap;
