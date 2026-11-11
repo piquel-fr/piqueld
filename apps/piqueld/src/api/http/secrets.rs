@@ -143,8 +143,7 @@ pub(super) struct AccessQuery {
 
 impl QueryParams for AccessQuery {
     const INVALID_CODE: &'static str = "query_invalid";
-    const INVALID_MESSAGE: &'static str =
-        "environments must be all or environment IDs; previews must be true or false";
+    const INVALID_MESSAGE: &'static str = "environments and expected_environments must be all or environment IDs; previews and expected_previews must be true or false";
 }
 
 impl AccessQuery {
@@ -248,7 +247,10 @@ pub(super) async fn put_stored(
             identity.actor(),
             &ApplicationId::parse(id)?,
             &name,
-            (generation, expected_access.as_ref()),
+            piqueld_store::SecretPrecondition {
+                generation,
+                access: expected_access.as_ref(),
+            },
             body.to_vec(),
             access.as_ref(),
         )

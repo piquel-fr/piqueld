@@ -291,7 +291,10 @@ async fn uploads_from_an_outdated_access_read_are_refused() {
             Daemon,
             &application,
             secret,
-            (1, expected),
+            SecretPrecondition {
+                generation: 1,
+                access: expected,
+            },
             b"two".to_vec(),
             Some(&mine),
         )

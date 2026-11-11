@@ -7,6 +7,7 @@ mod deletion;
 pub use deletion::SecretDeletion;
 mod key;
 mod stored;
+pub use stored::SecretPrecondition;
 
 use super::{
     Attribution, EnvironmentId, NormalizedApplication, Operation, Store, StoreError, new_id, now_ms,

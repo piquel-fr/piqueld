@@ -369,7 +369,7 @@ impl ApplicationService {
         actor: Actor<'_>,
         application: &ApplicationId,
         name: &str,
-        expected: (i64, Option<&SecretAccess>),
+        expected: piqueld_store::SecretPrecondition<'_>,
         value: Vec<u8>,
         access: Option<&SecretAccess>,
     ) -> Result<StoredSecret, ApplicationError> {

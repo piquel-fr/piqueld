@@ -20,6 +20,27 @@ use sqlx::{Sqlite, SqliteConnection, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use zeroize::Zeroizing;
 
+/// What a secret write expects of the stored secret: its `generation`, zero
+/// to create it, and, when the caller read it, its `access`.
+#[derive(Clone, Copy, Debug)]
+pub struct SecretPrecondition<'a> {
+    /// The secret's current generation, or zero to create it.
+    pub generation: i64,
+    /// The access the caller read, which the secret must still have.
+    pub access: Option<&'a SecretAccess>,
+}
+
+impl SecretPrecondition<'_> {
+    /// Expects `generation` alone.
+    #[must_use]
+    pub const fn generation(generation: i64) -> Self {
+        Self {
+            generation,
+            access: None,
+        }
+    }
+}
+
 impl Store {
     /// Lists an application's stored secrets and their access, without
     /// accessing the master key or decrypting values.
@@ -114,13 +135,14 @@ impl Store {
         value: Vec<u8>,
         access: Option<&SecretAccess>,
     ) -> Result<StoredSecret, StoreError> {
-        self.put_stored_secret_guarded(actor, application, name, (expected, None), value, access)
+        let expected = SecretPrecondition::generation(expected);
+        self.put_stored_secret_guarded(actor, application, name, expected, value, access)
             .await
     }
 
     /// [`Self::put_stored_secret`], also guarded by the access the caller
-    /// read, when given: once an existing secret's access is no longer
-    /// `expected_access`, it fails with `SecretAccessConflict` instead of
+    /// read, when `expected` has one: once an existing secret's access is
+    /// no longer that, it fails with `SecretAccessConflict` instead of
     /// overwriting a concurrent access change.
     ///
     /// # Errors
@@ -130,10 +152,14 @@ impl Store {
         actor: Actor<'_>,
         application: &ApplicationId,
         name: &str,
-        (expected, expected_access): (i64, Option<&SecretAccess>),
+        expected: SecretPrecondition<'_>,
         value: Vec<u8>,
         access: Option<&SecretAccess>,
     ) -> Result<StoredSecret, StoreError> {
+        let SecretPrecondition {
+            generation: expected,
+            access: expected_access,
+        } = expected;
         let value = Zeroizing::new(value);
         Self::check_secret_write(name, &value, expected)?;
         let (_writer, mut tx) = self.begin_immediate().await?;
@@ -171,14 +197,9 @@ impl Store {
             existing.map(|row| (row.generation, row.deletion_id.is_some())),
             expected,
         )?;
-        if let Some(expected_access) = expected_access
-            && replacing
-            && Self::stored_secret_on(&mut tx, application, name)
-                .await?
-                .access
-                != *expected_access
-        {
-            return Err(StoreError::SecretAccessConflict);
+        if replacing && expected_access.is_some() {
+            let current = Self::stored_secret_on(&mut tx, application, name).await?;
+            Self::check_expected_access(&current.access, expected_access)?;
         }
         if generation == 1 {
             let count = sqlx::query_scalar!(
@@ -250,9 +271,7 @@ impl Store {
         if current.metadata.deleting {
             return Err(StoreError::SecretDeleting);
         }
-        if expected.is_some_and(|expected| *expected != current.access) {
-            return Err(StoreError::SecretAccessConflict);
-        }
+        Self::check_expected_access(&current.access, expected)?;
         let description = Self::write_access_on(&mut tx, application, name, access).await?;
         let (scope, by) = (SecretScope::Application(application), actor.attribution());
         let message = format!("Allowed {description} to mount the secret");
@@ -261,6 +280,19 @@ impl Store {
         let secret = Self::stored_secret_on(&mut tx, application, name).await?;
         tx.commit().await.map_err(StoreError::database)?;
         Ok(secret)
+    }
+
+    /// Refuses a change made from `expected`, the access the caller read,
+    /// once the secret's `current` access is another, so a concurrent change
+    /// isn't overwritten. Without `expected`, nothing is checked.
+    fn check_expected_access(
+        current: &SecretAccess,
+        expected: Option<&SecretAccess>,
+    ) -> Result<(), StoreError> {
+        if expected.is_some_and(|expected| expected != current) {
+            return Err(StoreError::SecretAccessConflict);
+        }
+        Ok(())
     }
 
     /// Stores `access` for an existing secret and describes it. Listed

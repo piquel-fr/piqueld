@@ -128,8 +128,9 @@ async fn stored_secret_uploads_check_their_headers_first() {
     response.assert_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "secret_content_type");
 }
 
-/// Over HTTP, an access change made from an access read that is no longer
-/// current fails with 409 `secret_access_conflict`, keeping the current one.
+/// Over HTTP, an access change, or an upload that replaces the access, made
+/// from an access read that is no longer current fails with 409
+/// `secret_access_conflict`, keeping the current one.
 #[tokio::test]
 async fn access_changes_from_an_outdated_read_conflict() {
     let temp = tempfile::tempdir().unwrap();
@@ -137,7 +138,7 @@ async fn access_changes_from_an_outdated_read_conflict() {
     let client = server.client();
     let app = client.apply_and_deploy(&new_application()).await.unwrap();
     client
-        .put_stored_secret(&app.application_id, "token", 0, b"one".to_vec(), None)
+        .put_stored_secret(&app.application_id, "token", 0, b"one".to_vec(), None, None)
         .await
         .unwrap();
     let outdated = piqueld_client::SecretAccess {
@@ -149,6 +150,21 @@ async fn access_changes_from_an_outdated_read_conflict() {
             &app.application_id,
             "token",
             &piqueld_client::SecretAccess::default(),
+            Some(&outdated),
+        )
+        .await;
+    let error = api_error(refused.unwrap_err());
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (409, "secret_access_conflict")
+    );
+    let refused = client
+        .put_stored_secret(
+            &app.application_id,
+            "token",
+            1,
+            b"two".to_vec(),
+            Some(&piqueld_client::SecretAccess::default()),
             Some(&outdated),
         )
         .await;
