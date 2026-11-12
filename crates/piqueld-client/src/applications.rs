@@ -225,11 +225,9 @@ impl Client {
         environment: Option<&str>,
     ) -> Result<PlanView, ClientError> {
         let headers = expected
-            .map(|expected| vec![("X-Expected-Generation", expected.to_string())])
-            .unwrap_or_default();
-        let query = environment
-            .map(|environment| vec![("environment", environment.to_owned())])
-            .unwrap_or_default();
+            .map_or_default(|expected| vec![("X-Expected-Generation", expected.to_string())]);
+        let query =
+            environment.map_or_default(|environment| vec![("environment", environment.to_owned())]);
         self.send(
             "/api/v1/applications/plan",
             &query,

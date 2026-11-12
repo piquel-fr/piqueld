@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 validated_string!(
     /// A Docker network name, distinct from logical names and other resource kinds.
-    DockerNetworkName, DockerNetworkNameError,
+    DockerNetworkName,
+    DockerNetworkNameError,
     "managed Docker network names must be 1-63 lowercase letters, digits, or internal hyphens",
     crate::resource::valid_logical_name
 );
@@ -20,20 +21,23 @@ validated_string!(
     /// fn attach_network(_: DockerNetworkName) {}
     /// fn wrong_kind(service: DockerServiceName) { attach_network(service); }
     /// ```
-    DockerServiceName, DockerServiceNameError,
+    DockerServiceName,
+    DockerServiceNameError,
     "managed Docker service names must be 1-63 lowercase letters, digits, or internal hyphens",
     crate::resource::valid_logical_name
 );
 validated_string!(
     /// A Docker volume name, distinct from its logical volume name.
-    DockerVolumeName, DockerVolumeNameError,
+    DockerVolumeName,
+    DockerVolumeNameError,
     "managed Docker volume names must be 1-63 lowercase letters, digits, or internal hyphens",
     crate::resource::valid_logical_name
 );
 
 validated_string!(
     /// A Docker config name, distinct from other resource kinds.
-    DockerConfigName, DockerConfigNameError,
+    DockerConfigName,
+    DockerConfigNameError,
     "managed Docker config names must be 1-63 lowercase letters, digits, or internal hyphens",
     crate::resource::valid_logical_name
 );

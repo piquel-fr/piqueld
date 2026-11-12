@@ -220,27 +220,35 @@ pub(crate) fn is_lowercase_label(value: &str, lengths: RangeInclusive<usize>) ->
 
 logical_name!(
     /// User-facing logical application name.
-    ApplicationName, ApplicationNameError, "application names"
+    ApplicationName,
+    ApplicationNameError,
+    "application names"
 );
 logical_name!(
     /// User-facing environment name, unique within its application.
-    EnvironmentName, EnvironmentNameError, "environment names"
+    EnvironmentName,
+    EnvironmentNameError,
+    "environment names"
 );
 validated_string!(
     /// A valid Git branch name, such as the branch a preview deploys.
-    GitBranch, GitBranchError,
+    GitBranch,
+    GitBranchError,
     "branch must be a valid Git branch name",
     crate::manifest::valid_git_branch
 );
 logical_name!(
     /// Distinguishes several previews of one branch, e.g. one per agent.
-    PreviewSlot, PreviewSlotError, "preview slots"
+    PreviewSlot,
+    PreviewSlotError,
+    "preview slots"
 );
 validated_string!(
     /// DNS-safe identifier of a preview, derived once by
     /// [`PreviewSlug::derive`] and persisted. It is also the preview's name,
     /// so no environment of its application can share it.
-    PreviewSlug, PreviewSlugError,
+    PreviewSlug,
+    PreviewSlugError,
     "preview slugs must be 1-40 lowercase letters, digits, or hyphens, start with a letter, and end with a letter or digit",
     |value: &str| value.len() <= PreviewSlug::MAX_LEN && crate::resource::valid_logical_name(value)
 );
@@ -259,25 +267,35 @@ logical_name!(
     /// use piqueld_core::{ServiceName, VolumeName};
     /// let volume: VolumeName = ServiceName::parse("data").unwrap();
     /// ```
-    ServiceName, ServiceNameError, "service names"
+    ServiceName,
+    ServiceNameError,
+    "service names"
 );
 logical_name!(
     /// Logical volume name, including references from service mounts.
-    VolumeName, VolumeNameError, "volume names"
+    VolumeName,
+    VolumeNameError,
+    "volume names"
 );
 logical_name!(
     /// Optional stable name of a route, unique within its application. Every
     /// environment and preview renders the same routes, so a name selects the
     /// same route in each, whatever hostname it renders.
-    RouteName, RouteNameError, "route names"
+    RouteName,
+    RouteNameError,
+    "route names"
 );
 logical_name!(
     /// Logical one-shot job name.
-    JobName, JobNameError, "job names"
+    JobName,
+    JobNameError,
+    "job names"
 );
 logical_name!(
     /// Unique name of a notification destination, such as `ops`.
-    DestinationName, DestinationNameError, "destination names"
+    DestinationName,
+    DestinationNameError,
+    "destination names"
 );
 
 #[cfg(test)]

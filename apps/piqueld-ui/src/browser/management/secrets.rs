@@ -404,7 +404,7 @@ pub(super) fn StoredSecrets(
     // Every secret, or on an environment's page the ones it may mount or mounts.
     let shown = move || {
         let scope = scope();
-        let mounts = mounts.map(|mounts| mounts.get()).unwrap_or_default();
+        let mounts = mounts.map_or_default(|mounts| mounts.get());
         secrets
             .get()
             .into_iter()
@@ -1050,8 +1050,7 @@ fn secret_files(manifest: &ApplicationManifest, service: &str) -> Vec<SecretMoun
         .services
         .iter()
         .find(|s| s.name.as_str() == service)
-        .map(|s| s.secrets.clone())
-        .unwrap_or_default()
+        .map_or_default(|s| s.secrets.clone())
 }
 
 /// Editor for one service's secret file references (secret name and container

@@ -15,12 +15,7 @@ use std::collections::BTreeSet;
 /// The signed-in credential's grants.
 pub(super) fn grants() -> Signal<Grants> {
     let session = super::auth::session();
-    Signal::derive(move || {
-        session
-            .get()
-            .map(|session| session.grants)
-            .unwrap_or_default()
-    })
+    Signal::derive(move || session.get().map_or_default(|session| session.grants))
 }
 
 /// Whether the signed-in credential holds `permission` on some application.

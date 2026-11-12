@@ -1217,8 +1217,7 @@ fn exclusive_jobs_need_a_writable_volume_their_dependencies_do_not_mount() {
         let found = input
             .validate()
             .err()
-            .map(|errors| errors.0)
-            .unwrap_or_default()
+            .map_or_default(|errors| errors.0)
             .into_iter()
             .map(|error| (error.code, error.path))
             .collect::<Vec<_>>();

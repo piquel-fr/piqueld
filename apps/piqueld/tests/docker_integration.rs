@@ -907,7 +907,7 @@ impl SwarmScenario {
     ) -> serde_json::Value {
         use std::io::{Read, Write};
         let socket = self.engine.socket.clone();
-        let body = body.map(|body| body.to_string()).unwrap_or_default();
+        let body = body.map_or_default(|body| body.to_string());
         let request = format!(
             "{method} {path} HTTP/1.0\r\nHost: docker\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()

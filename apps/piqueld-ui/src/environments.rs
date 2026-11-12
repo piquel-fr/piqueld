@@ -210,13 +210,10 @@ impl BranchDraft {
     /// has no repository.
     #[must_use]
     pub fn default_for(spec: &ApplicationSpec) -> Self {
-        spec.manifest
-            .as_ref()
-            .map(|manifest| Self {
-                branch: manifest.repository.branch.clone(),
-                commit: manifest.repository.commit.clone().unwrap_or_default(),
-            })
-            .unwrap_or_default()
+        spec.manifest.as_ref().map_or_default(|manifest| Self {
+            branch: manifest.repository.branch.clone(),
+            commit: manifest.repository.commit.clone().unwrap_or_default(),
+        })
     }
 
     /// Validates the draft, ignoring surrounding whitespace; a blank commit
@@ -263,8 +260,7 @@ impl SourceDraft {
                 .map_or(default, BranchDraft::from),
             promote_from: source
                 .and_then(EnvironmentSource::promoted_from)
-                .map(ToString::to_string)
-                .unwrap_or_default(),
+                .map_or_default(ToString::to_string),
         }
     }
 

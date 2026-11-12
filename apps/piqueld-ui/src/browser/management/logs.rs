@@ -70,8 +70,7 @@ pub(super) fn ApplicationLogs(#[prop(optional)] fixed_service: Option<String>) -
     });
     let lines = Memo::new(move |_| {
         logs.get()
-            .map(|logs| LogLine::runtime(logs.items))
-            .unwrap_or_default()
+            .map_or_default(|logs| LogLine::runtime(logs.items))
     });
     view! {
         <section class="card">

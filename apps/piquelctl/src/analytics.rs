@@ -64,8 +64,7 @@ impl AnalyticsArgs {
         if analytics.incomplete {
             let pruned = analytics
                 .pruned_through_ms
-                .map(|at| format!(", pruned through Unix ms {at}"))
-                .unwrap_or_default();
+                .map_or_default(|at| format!(", pruned through Unix ms {at}"));
             console.warning(format_args!(
                 "The window reaches before retained history (recorded from Unix ms {}{pruned}); counts cover retained applications and records only.",
                 analytics.history_started_at_ms

@@ -88,9 +88,7 @@ impl SetJobArgs {
                 .map(|(key, value)| (key.clone(), value.as_str().into()))
                 .collect();
         }
-        current
-            .map(|job| job.environment.clone())
-            .unwrap_or_default()
+        current.map_or_default(|job| job.environment.clone())
     }
     /// The job's own secrets: the `--secret` mounts, none with
     /// `--clear-secrets`, or otherwise those of `current`, the job it replaces.
@@ -105,7 +103,7 @@ impl SetJobArgs {
                 })
                 .collect();
         }
-        current.map(|job| job.secrets.clone()).unwrap_or_default()
+        current.map_or_default(|job| job.secrets.clone())
     }
 }
 #[derive(Debug, Args)]

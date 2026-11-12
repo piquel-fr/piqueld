@@ -31,8 +31,7 @@ impl EditorContext {
     fn delete_preview(self, preview: &EnvironmentView, deleted: impl FnOnce() + 'static) {
         let branch = preview
             .preview()
-            .map(|identity| identity.branch.to_string())
-            .unwrap_or_default();
+            .map_or_default(|identity| identity.branch.to_string());
         let message = format!(
             "Delete preview {} of branch {branch}, its services, secrets, and deployment history? Every Docker volume it created is removed with its data.",
             preview.name
@@ -363,9 +362,7 @@ fn PreviewRow(
     let preview = StoredValue::new(view.preview.clone());
     let name = view.preview.name.to_string();
     let identity = view.preview.preview();
-    let branch = identity
-        .map(|identity| identity.branch.to_string())
-        .unwrap_or_default();
+    let branch = identity.map_or_default(|identity| identity.branch.to_string());
     let subtitle = match identity.and_then(|identity| identity.slot.as_ref()) {
         Some(slot) => format!("{name} · slot {slot}"),
         None => name.clone(),
@@ -507,8 +504,7 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                     <code>
                         {identity
                             .as_ref()
-                            .map(|identity| identity.branch.to_string())
-                            .unwrap_or_default()}
+                            .map_or_default(|identity| identity.branch.to_string())}
                     </code>
                 </dd>
                 <dt>"Slot"</dt>
@@ -523,8 +519,7 @@ pub(super) fn PreviewSettings() -> impl IntoView {
                     <code>
                         {identity
                             .as_ref()
-                            .map(|identity| identity.slug.to_string())
-                            .unwrap_or_default()}
+                            .map_or_default(|identity| identity.slug.to_string())}
                     </code>
                 </dd>
                 <dt>"Preview ID"</dt>

@@ -51,14 +51,16 @@ pub const TELEMETRY_TARGET: &str = "/run/piqueld/telemetry";
 
 validated_string!(
     /// Stable control-plane instance identity.
-    InstanceId, InstanceIdError,
+    InstanceId,
+    InstanceIdError,
     "instance IDs must be 1-64 lowercase ASCII letters, digits, or internal hyphens",
     |value: &str| crate::names::is_lowercase_label(value, 1..=64)
 );
 
 validated_string!(
     /// Explicitly tagged lowercase SHA-256 digest.
-    Sha256Digest, Sha256DigestError,
+    Sha256Digest,
+    Sha256DigestError,
     "SHA-256 digests must use the sha256:<64 lowercase hexadecimal digits> format",
     valid_sha256
 );

@@ -1585,7 +1585,7 @@ async fn prepare_on_subnet(
                     MANAGED_LABEL:"true",INSTANCE_LABEL:instance,APPLICATION_LABEL:labelled.get()
                 },
                 "Driver":"overlay","Attachable":true,
-                "IPAM":{"Config":subnet.map(|subnet| json!([{"Subnet":subnet}])).unwrap_or_default()}
+                "IPAM":{"Config":subnet.map_or_default(|subnet| json!([{"Subnet":subnet}]))}
             });
             async move { axum::Json(network) }
         })
