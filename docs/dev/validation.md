@@ -18,11 +18,11 @@ restore them. Dashboard tools are cached by version.
 | --- | --- | --- |
 | Rust formatting | `fmt-check` | `checks` |
 | Dependency policy and advisories | `deny` | `checks` |
-| All-target, all-feature compilation and Clippy, plus wasm32 Clippy of the dashboard, client, and core | `lint` | `rust` |
-| Native workspace tests, against the real embedded dashboard | `test` | `rust` |
-| Documentation tests | `doc-test` | `rust` |
-| Generated API specification, client, and manifest JSON Schema freshness | `openapi-check` | `rust` |
-| Core dependency boundaries | `boundary` | `rust` |
+| All-target, all-feature compilation and Clippy, plus wasm32 Clippy of the dashboard, client, and core | `lint` | `rust (lint)` |
+| Native workspace tests, against the real embedded dashboard | `test` | `rust (test)` |
+| Documentation tests | `doc-test` | `rust (test)` |
+| Generated API specification, client, and manifest JSON Schema freshness | `openapi-check` | `rust (lint)` |
+| Core dependency boundaries | `boundary` | `rust (lint)` |
 | Published crates on the minimum supported Rust, `rust-version` | `cargo +<rust-version> check` | `msrv` |
 | Browser compilation | `ui-check`, `check-wasm` | `wasm-ui` |
 | Real browser transport tests | `test-wasm` | `wasm-ui` |
@@ -112,7 +112,7 @@ just docker-test engine --store containerd
 
 The scenarios in `apps/piqueld/tests/support/docker_contract.rs` check that the
 fake behaves like the real engine. Two test binaries run each of them:
-`fake_docker/main.rs` against the fake, in the `rust` job, and
+`fake_docker/main.rs` against the fake, in the `rust (test)` job, and
 `docker_integration.rs` against the engine, in the `docker-integration` job.
 When the controller starts relying on another engine behavior, add a scenario
 for it.
