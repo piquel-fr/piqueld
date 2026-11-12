@@ -738,6 +738,45 @@ fn exec_cat(target: &[&str], runs_in: &str, stdin: Stdio, input: &[u8]) -> (Test
 }
 
 #[test]
+fn exec_ends_through_the_supervisor_on_sigterm() {
+    let (upgraded, session_started) = mpsc::channel();
+    let server = start_server(false, 2, move |request| match request.path.as_str() {
+        "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+        "/api/v1/environments/app-notes-01/exec" => {
+            upgraded.send(()).expect("test is waiting");
+            Reply::upgrade()
+        }
+        path => panic!("unexpected path {path}"),
+    });
+    // Standard input stays open, so the session never ends on its own.
+    let mut child = server
+        .command()
+        .args(["app", "exec", "app-notes-01", "web", "-i", "--", "cat", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piquelctl process");
+    let stdin = child.stdin.take().expect("child stdin");
+    // The supervisor's handlers are installed before any request is sent.
+    session_started
+        .recv_timeout(Duration::from_secs(10))
+        .expect("exec requested");
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("send SIGTERM");
+    let output = child.wait_with_output().expect("terminated child");
+    drop(stdin);
+    let _ = server.finish();
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("SIGTERM: command interrupted"),
+        "{output:?}"
+    );
+}
+
+#[test]
 fn exec_forwards_stdin_streams_output_and_exits_with_the_command_code() {
     for (target, runs_in) in [
         (&["app", "exec", "app-notes-01"][..], "app-notes-01"),

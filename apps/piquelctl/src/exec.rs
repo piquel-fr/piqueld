@@ -1,12 +1,14 @@
 //! `app exec` and `preview exec`: run a one-off command in a running service task.
 //!
 //! Each API request is bounded by `--timeout`; the command session is not.
+//! Like every command, the session runs under `main`'s supervisor, so Ctrl-C
+//! without `--tty`, SIGTERM and SIGHUP end it and restore the terminal.
 //! The CLI exits with the command's exit code.
 
 use crate::{
     deployments::Target,
     error::{CliError, ErrorKind, Result},
-    support::TerminalMode,
+    support::{self, TerminalMode},
 };
 use clap::Args;
 use http::StatusCode;
@@ -92,11 +94,15 @@ impl<T: Args + Target> ExecArgs<T> {
             .transpose()
             .map_err(|error| local_error("watch terminal size", &error))?;
         // A local input failure aborts the session rather than ending the
-        // command's input early, which would look like success.
-        let code = tokio::select! {
-            code = receive(output) => code?,
-            Err(error) = forward(input, request.stdin.then(read_stdin), resizes) => return Err(error),
-        };
+        // command's input early, which would look like success. The session
+        // is operator time, which `--timeout` doesn't bound.
+        let code = support::interactive(async {
+            tokio::select! {
+                code = receive(output) => code,
+                Err(error) = forward(input, request.stdin.then(read_stdin), resizes) => Err(error),
+            }
+        })
+        .await?;
         Ok(ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX)))
     }
 }

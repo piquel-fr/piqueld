@@ -556,7 +556,7 @@ no `request_id`:
 | `deployment_superseded` | 3 | `wait`'s deployment was superseded; `details.deployment_id` and `superseded_by` |
 | `operation_failed` | 5 | An awaited operation failed; `details.operation` |
 | `checks_failed` | 6 | `doctor` found a failed installation check |
-| `interrupted` | 130 | Ctrl-C |
+| `interrupted` | 130 | Ctrl-C, SIGTERM, or SIGHUP when the terminal closes |
 | `failed` | 1 | Any other failure |
 
 Without `--json`, errors stay human-readable, as below.
@@ -989,9 +989,10 @@ operation record). It does not wait for the replacement to deploy. An observed
 failed attempt returns failure even if the controller will retry automatically.
 `--no-wait` returns immediately. For long image pulls,
 use a longer `--timeout` or return immediately and inspect the operation later.
-Pressing Ctrl-C ends the local command, including confirmation and network
-requests. It does not cancel an accepted server-side operation, which can still
-be inspected with `piquelctl operation <id>`.
+Pressing Ctrl-C, or sending SIGTERM or SIGHUP, ends the local command,
+including confirmation and network requests, and restores the terminal. It
+does not cancel an accepted server-side operation, which can still be
+inspected with `piquelctl operation <id>`.
 
 The commonly useful exit codes are 0 for success or supersession, 1 for a general error, 2 for
 usage or input errors, 3 for conflicts, 4 for unavailable or timed

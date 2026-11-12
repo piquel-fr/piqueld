@@ -30,8 +30,9 @@ use tokio::time::Instant;
 /// Parses arguments, then dispatches in three stages:
 /// 1. `profiles` is answered from loaded profile files without connecting.
 /// 2. Connection settings are resolved; `login` runs under its own device-flow deadline.
-/// 3. `app exec` and `preview exec` stream for as long as the command runs;
-///    every other command runs under the `--timeout` supervisor.
+/// 3. Every other command runs under the supervisor (`run_with_timeout`):
+///    `--timeout`, and Ctrl-C, SIGTERM and SIGHUP. `app exec` and
+///    `preview exec` sessions stream for as long as the command runs.
 ///
 /// Errors are rendered to stderr and mapped to `ErrorKind` exit codes.
 ///
@@ -77,14 +78,26 @@ pub async fn run() -> ExitCode {
             cli::Command::Doctor => {
                 commands::doctor(&cli, &commands::build_client(&cli)?, &mut console).await?;
             }
-            // A command session is not bounded by the command timeout.
+            // Validate the endpoint before the supervisor's deadline can win,
+            // so timeout diagnostics can never echo rejected URL input.
             cli::Command::App {
                 command: cli::AppCommand::Exec(args),
-            } => return args.run(&commands::build_client(&cli)?).await,
+            } => {
+                let client = commands::build_client(&cli)?;
+                return run_with_timeout(&cli, args.run(&client)).await;
+            }
             cli::Command::Preview {
                 command: previews::PreviewCommand::Exec(args),
-            } => return args.run(&commands::build_client(&cli)?).await,
-            _ => run_with_timeout(&cli, &mut console).await?,
+            } => {
+                let client = commands::build_client(&cli)?;
+                return run_with_timeout(&cli, args.run(&client)).await;
+            }
+            _ => {
+                let client = commands::build_client(&cli)?;
+                // Boxed: every command's state would otherwise be inlined here.
+                let command = Box::pin(commands::run(&cli, &client, &mut console));
+                run_with_timeout(&cli, command).await?;
+            }
         }
         Ok(ExitCode::SUCCESS)
     }
@@ -135,15 +148,15 @@ fn usage_error(error: &clap::Error) -> ExitCode {
     ExitCode::from(error.exit_code())
 }
 
-/// Bounds the command by `--timeout` while excluding interactive prompts:
-/// operator think time must not consume the network-phase budget. The command
-/// future stays polled even while a prompt is open so its completion and
-/// signal handling keep making progress.
-async fn run_with_timeout(cli: &Cli, console: &mut Console) -> Result<(), CliError> {
-    // Validate the endpoint before the deadline can win the select below, so
-    // timeout diagnostics can never echo rejected URL input.
-    let client = commands::build_client(cli)?;
-    let command = commands::run(cli, &client, console);
+/// Bounds `command` by `--timeout` while excluding interactive prompts and
+/// sessions: operator time must not consume the network-phase budget. Ends
+/// it on Ctrl-C, SIGTERM or SIGHUP; dropping it restores a raw terminal and
+/// closes its connections. The command future stays polled even while a
+/// prompt is open so its completion and signal handling keep making progress.
+async fn run_with_timeout<T>(
+    cli: &Cli,
+    command: impl Future<Output = Result<T, CliError>>,
+) -> Result<T, CliError> {
     let interrupt =
         CliError::on_interrupt("command interrupted; any server-side operation was not cancelled");
     tokio::pin!(command, interrupt);
@@ -341,7 +354,7 @@ mod tests {
             Cli::try_parse_from(["piquelctl", "--timeout", "18446744073709551615s", "status"])
                 .expect("the duration parser accepts a syntactically valid value");
 
-        let error = super::run_with_timeout(&cli, &mut super::Console::new(&cli))
+        let error = super::run_with_timeout(&cli, std::future::pending::<Result<(), _>>())
             .await
             .expect_err("the platform cannot represent the deadline");
 
