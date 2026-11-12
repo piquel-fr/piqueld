@@ -32,9 +32,10 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 const POLL: Duration = Duration::from_millis(250);
 
 /// A `/bin/sh -c` script that runs until its container is stopped, then
-/// lingers for two seconds, so a removed task outlives its service. `sh` as
-/// PID 1 ignores SIGTERM unless it traps it, and would stop only when Docker
-/// kills it after the 10 second grace period.
+/// lingers for two to three seconds (the trap waits for the current
+/// `sleep 1`), so a removed task outlives its service. `sh` as PID 1 ignores
+/// SIGTERM unless it traps it, and would stop only when Docker kills it after
+/// the 10 second grace period.
 const LINGERING: &str = "trap 'sleep 2; exit 0' TERM; while true; do sleep 1; done";
 
 struct IsolatedDocker {
