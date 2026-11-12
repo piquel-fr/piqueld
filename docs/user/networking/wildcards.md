@@ -112,7 +112,8 @@ DNS provider:
 3. The certificate authority checks the record and issues the certificate.
 4. piqueld deletes the record, even when issuing fails. If it can't, or the
    daemon stops first, it deletes the record on its next attempt, also after a
-   restart.
+   restart. In one rare case it can't find the record again; see
+   [Troubleshooting](#troubleshooting).
 
 Your DNS credentials never leave the daemon: the gateway gets the
 certificates, not the credentials. With a
@@ -225,3 +226,10 @@ again once the certificate recovers.
   own route.
 - **Your hostname is refused with `hostname_conflict`.** Another application
   has a wildcard above it, or piqueld uses the hostname itself.
+- **An old `_acme-challenge` TXT record stays in the zone.** The daemon
+  stopped while creating it, before the provider returned the record's ID.
+  piqueld then looks the record up by its value, which needs permission to
+  list records. Without it, such as at OVH without
+  [`manage_records`](../reference/configuration.md#dns-providers), piqueld
+  logs a warning and leaves the record. Delete it at your DNS provider: too
+  many values at that name make the certificate authority reject validation.
