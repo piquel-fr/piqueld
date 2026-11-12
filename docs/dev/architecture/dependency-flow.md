@@ -51,11 +51,9 @@ Inside the daemon:
 | `api` | HTTP decoding, authentication and per-route authorization middleware, the transport-independent service that validates commands, response composition, and error mapping |
 | `auth` | Passkey ceremonies, account management with grant checks, invitations, and durable credentials |
 | `application` | Runtime boundary: resolve accepted inputs during execution, observe runtime for reads, and wake reconciliation |
-| `store` | Atomic intent comparison, receipts, records, and guarded writes |
 | `reconcile` | One async controller; resolve, observe, plan, execute, and verify |
 | `docker` | Docker requests, runtime specifications, ownership, and observation |
 | `git` | Isolated, bounded checkouts and local worktree snapshots |
-| `secrets` | Authenticated encryption and generation of application secrets |
 | `ingress` | The installation-owned Caddy gateway, certificates, and tunnel and tailnet listeners |
 | `tailnet` | The daemon's own tailnet node serving the website |
 

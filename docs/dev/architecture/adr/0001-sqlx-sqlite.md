@@ -7,7 +7,7 @@ The prototype uses SQLx's integrated SQLite driver as its sole database runtime.
 SQLx owns the pool, transactions, and query execution; the store applies the
 embedded migrations itself, tracking `PRAGMA user_version`. Production
 queries use compile-time checking against a disposable database created by the
-daemon build script from the migration sequence.
+`piqueld-store` build script from the migration sequence.
 
 The application service validates commands; the store compares intent inside its
 acceptance transaction and records the response receipt atomically. Image resolution
