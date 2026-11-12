@@ -983,7 +983,7 @@ impl SwarmScenario {
                 .await
             {
                 Ok(()) => Some(()),
-                Err(error @ DockerError::NetworkInUse(_)) => {
+                Err(error) if error.releases_network() => {
                     in_use = Some(error);
                     None
                 }

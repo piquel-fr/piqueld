@@ -45,6 +45,11 @@ pub enum DockerError {
     /// which Swarm releases within seconds.
     #[error("Docker network is still in use by a task")]
     NetworkInUse(#[source] bollard::errors::Error),
+    /// Swarm is still removing a deleted network in the background: it still
+    /// inspects it, but fails deleting it again with a 500 "network … not
+    /// found" until it is gone, which can take more than ten seconds.
+    #[error("Docker network is still being removed")]
+    NetworkRemoving(#[source] bollard::errors::Error),
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     Request(&'static str),
@@ -89,29 +94,31 @@ impl DockerError {
         Self::ImageResolutionSource { operation, source }
     }
 
-    /// Whether a failed network deletion means Swarm is still removing the
-    /// network in the background: it still inspects it, but fails deleting
-    /// it again with a 500 "network … not found".
-    pub(super) fn still_removing_network(source: &bollard::errors::Error) -> bool {
-        matches!(
-            source,
-            bollard::errors::Error::DockerResponseServerError {
-                status_code: 500,
-                message,
-            } if message.starts_with("network ") && message.ends_with(" not found")
-        )
-    }
-
-    /// Classifies a failed network deletion: Swarm refuses to delete a
-    /// network a task still uses with a 400 "network … is in use by task …".
+    /// Classifies a failed deletion of a network the adapter just inspected:
+    /// Swarm refuses to delete one a task still uses with a 400 "network … is
+    /// in use by task …", and fails deleting one it is still removing with a
+    /// 500 "network … not found".
     pub(super) fn delete_network(source: bollard::errors::Error) -> Self {
         match &source {
             bollard::errors::Error::DockerResponseServerError {
                 status_code: 400,
                 message,
             } if message.contains("is in use by task") => Self::NetworkInUse(source),
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 500,
+                message,
+            } if message.starts_with("network ") && message.ends_with(" not found") => {
+                Self::NetworkRemoving(source)
+            }
             _ => Self::request("delete network", source),
         }
+    }
+
+    /// Whether Swarm is still releasing the network this failed to delete, so
+    /// the deletion is worth retrying for longer than other failures.
+    #[must_use]
+    pub fn releases_network(&self) -> bool {
+        matches!(self, Self::NetworkInUse(_) | Self::NetworkRemoving(_))
     }
 
     /// Builds a [`DockerError::RequestSource`] that keeps `source` for diagnostics.

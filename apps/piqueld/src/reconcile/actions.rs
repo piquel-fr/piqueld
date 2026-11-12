@@ -12,10 +12,11 @@ const SERVICE_POLL: Duration = Duration::from_millis(250);
 /// Longest delay between observations while waiting for a service. Each is
 /// a full observation of the environment.
 const SERVICE_POLL_MAX: Duration = Duration::from_secs(1);
-/// How long removing a network keeps retrying while a task still uses it.
+/// How long removing a network keeps retrying while Swarm still releases it.
 /// A container that left an attachable overlay, such as the ingress gateway
 /// detached from an environment's network or removed, keeps its Swarm
-/// attachment task on it for a few seconds, until Swarm releases it.
+/// attachment task on it for a few seconds, and Swarm removes a deleted
+/// network in the background, still reporting it meanwhile.
 const NETWORK_RELEASE: Duration = Duration::from_secs(30);
 
 impl<D: DockerApi> Controller<D> {
@@ -234,9 +235,9 @@ impl<D: DockerApi> Controller<D> {
     /// Each attempt re-checks that the operation is still current, both before and
     /// after taking the global mutation lock, and records the request attempt in the
     /// journal. Ownership, configuration, swarm, and validation errors are terminal;
-    /// other errors are journaled as retries until attempts run out. A network a
-    /// task still uses is retried, without counting against the attempts, for up
-    /// to [`NETWORK_RELEASE`]. Cancellation interrupts the backoff sleep,
+    /// other errors are journaled as retries until attempts run out. A network Swarm
+    /// still releases is retried, without counting against the attempts, for up
+    /// to [`NETWORK_RELEASE`], so the next attempt finds it gone. Cancellation interrupts the backoff sleep,
     /// which happens outside the mutation lock.
     pub(super) async fn retry<F, Fut>(
         &self,
@@ -274,8 +275,7 @@ impl<D: DockerApi> Controller<D> {
                 }
                 Err(error) => error,
             };
-            let releasing = matches!(error, DockerError::NetworkInUse(_))
-                && started.elapsed() < NETWORK_RELEASE;
+            let releasing = error.releases_network() && started.elapsed() < NETWORK_RELEASE;
             if !releasing {
                 failures += 1;
                 if failures == attempts {

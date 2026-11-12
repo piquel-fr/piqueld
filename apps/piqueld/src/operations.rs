@@ -253,6 +253,9 @@ impl crate::docker::DockerError {
             crate::docker::DockerError::NetworkInUse(_) => {
                 Failure::DockerRequestFailed("delete a network a task still uses")
             }
+            crate::docker::DockerError::NetworkRemoving(_) => {
+                Failure::DockerRequestFailed("delete a network Swarm is still removing")
+            }
             crate::docker::DockerError::Request(operation)
             | crate::docker::DockerError::RequestSource { operation, .. } => {
                 Failure::DockerRequestFailed(operation)
@@ -347,7 +350,9 @@ impl OperationError {
                     | DockerError::UnavailableSource { operation, .. }
                     | DockerError::ImageResolutionSource { operation, .. }
                     | DockerError::RequestSource { operation, .. } => Some(*operation),
-                    DockerError::NetworkInUse(_) => Some("delete network"),
+                    DockerError::NetworkInUse(_) | DockerError::NetworkRemoving(_) => {
+                        Some("delete network")
+                    }
                     _ => None,
                 };
                 if let Some(operation) = operation {

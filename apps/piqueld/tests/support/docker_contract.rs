@@ -321,9 +321,10 @@ impl<D: DockerApi> Contract<D> {
 
     /// A network fails removal, as a retryable request, while a service is
     /// attached to it. Once removed, services and networks are no longer
-    /// observed, and removing them again succeeds. Removing a network Swarm
-    /// is still removing in the background returns once it is gone, so the
-    /// next observation no longer reports it.
+    /// observed, and removing them again succeeds. While Swarm still
+    /// releases the network, removing it fails with an error the controller
+    /// retries for longer (see [`DockerError::releases_network`]); once that
+    /// succeeds after the network was deleted, it is no longer observed.
     pub async fn removing_services_and_networks_is_idempotent(&self) {
         let service = self.ensure_web(&self.environment).await;
         self.converged(&service).await;
@@ -351,27 +352,30 @@ impl<D: DockerApi> Contract<D> {
             .remove_service(service.name.as_str(), labels)
             .await
             .unwrap();
+        let remove = async |expected: &str| {
+            self.until(expected, async || {
+                match self
+                    .docker
+                    .remove_network(network.name.as_str(), labels)
+                    .await
+                {
+                    Ok(()) => Some(()),
+                    Err(error) if error.releases_network() => {
+                        assert_eq!(Self::diagnostic(error), DiagnosticCode::DockerRequestFailed);
+                        None
+                    }
+                    Err(error) => panic!("removing the network failed: {error:?}"),
+                }
+            })
+            .await;
+        };
         // Swarm releases a removed service's networks once it has marked its
         // tasks for removal, shortly after removing it.
-        self.until("the network is removed", async || {
-            match self
-                .docker
-                .remove_network(network.name.as_str(), labels)
-                .await
-            {
-                Ok(()) => Some(()),
-                Err(DockerError::NetworkInUse(_)) => None,
-                Err(error) => panic!("removing the network failed: {error:?}"),
-            }
-        })
-        .await;
+        remove("the network is removed").await;
         // Swarm removes the network in the background, and still inspects it
-        // meanwhile, so removing it again waits until it is gone; the fake
+        // meanwhile, but fails deleting it again until it is gone; the fake
         // removes it at once.
-        self.docker
-            .remove_network(network.name.as_str(), labels)
-            .await
-            .unwrap();
+        remove("the network is gone").await;
         let observed = self.observe().await;
         assert!(
             observed.services.is_empty() && observed.networks.is_empty(),
