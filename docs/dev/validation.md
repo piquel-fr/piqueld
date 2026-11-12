@@ -79,12 +79,26 @@ dashboard. The `install` job's Rust cache is also the release workflow's.
 ## Docker test suites
 
 Controller tests run against `FakeDocker`, an in-memory Docker engine in
-`apps/piqueld/src/docker/fake.rs`. `just docker-test` runs
-`apps/piqueld/tests/docker_integration.rs` against a real engine: a throwaway
-Docker-in-Docker daemon, never the host's.
+`apps/piqueld/src/docker/fake.rs`. `just docker-test` runs two suites against
+a real engine: a throwaway Docker-in-Docker daemon, never the host's.
+
+- `ingress` is the daemon library's `ingress_caddy` tests, against Caddy and
+  an ACME test server in the engine.
+- `engine` is `apps/piqueld/tests/docker_integration.rs`, against the engine's
+  Swarm.
+
+The tests of a suite share its engine's Swarm, so they run one at a time. Name
+a suite to run only it, and add nextest's `--partition` to run a shard of it:
+
+```console
+just docker-test engine --partition count:1/2
+```
+
+CI runs three shards side by side, each against an engine of its own: the
+`ingress` suite, and each half of the `engine` suite.
 
 The scenarios in `apps/piqueld/tests/support/docker_contract.rs` check that the
-fake behaves like the real engine. Both suites run each of them:
+fake behaves like the real engine. Two test binaries run each of them:
 `fake_docker/main.rs` against the fake, in the `rust` job, and
 `docker_integration.rs` against the engine, in the `docker-integration` job.
 When the controller starts relying on another engine behavior, add a scenario

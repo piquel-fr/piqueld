@@ -37,7 +37,15 @@ enum Task {
     },
     /// Run the Docker integration tests against a throwaway Docker-in-Docker
     /// engine.
-    DockerTest,
+    DockerTest {
+        /// Run only this suite; every suite, one after the other, without it.
+        #[arg(value_enum)]
+        suite: Option<docker_test::Suite>,
+        /// Run only a shard of each suite's tests: nextest's `--partition`,
+        /// such as `count:1/2`.
+        #[arg(long)]
+        partition: Option<String>,
+    },
     /// Run the Playwright browser suite with Chromium in its pinned container.
     #[command(disable_help_flag = true)]
     Playwright {
@@ -83,7 +91,9 @@ async fn main() -> Result<ExitCode> {
     let workspace = Workspace::current()?;
     match Cli::parse().task {
         Task::Dev { command } => command.unwrap_or(dev::Command::Run).run(workspace).await,
-        Task::DockerTest => docker_test::run(&workspace).await,
+        Task::DockerTest { suite, partition } => {
+            docker_test::run(&workspace, suite, partition.as_deref()).await
+        }
         Task::Playwright { args } => playwright::run(&workspace, &args).await,
         Task::Boundary => boundary::check(&workspace),
         Task::Coverage { args } => coverage::run(&workspace, &args),
