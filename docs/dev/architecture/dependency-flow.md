@@ -62,7 +62,6 @@ Inside the daemon:
 | `auth` | Passkey ceremonies, account management with grant checks, invitations, and durable credentials |
 | `application` | Runtime boundary: resolve accepted inputs during execution, observe runtime for reads, and wake reconciliation |
 | `reconcile` | One async controller; resolve, observe, plan, execute, and verify |
-| `docker` | Docker requests, runtime specifications, ownership, and observation |
 | `git` | Isolated, bounded checkouts and local worktree snapshots |
 | `ingress` | The installation-owned Caddy gateway, certificates, and tunnel and tailnet listeners |
 | `tailnet` | The daemon's own tailnet node serving the website |

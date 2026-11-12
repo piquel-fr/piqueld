@@ -523,6 +523,48 @@ mod tests {
         }
     }
 
+    /// `DockerError::diagnostic_code` drives retries, and
+    /// `docker_classification` the operation's diagnostic; they must agree.
+    #[test]
+    fn docker_errors_classify_alike_for_retries_and_diagnostics() {
+        let rejected = |status_code| bollard::errors::Error::DockerResponseServerError {
+            status_code,
+            message: String::new(),
+        };
+        for error in [
+            DockerError::Unavailable("op"),
+            DockerError::UnavailableSource {
+                operation: "op",
+                source: "cause".into(),
+            },
+            DockerError::NotManager,
+            DockerError::IncompatibleSwarm,
+            DockerError::OwnershipConflict,
+            DockerError::ConfigurationConflict,
+            DockerError::Validation("op"),
+            DockerError::ImageResolution("op"),
+            DockerError::ImageResolutionSource {
+                operation: "op",
+                source: rejected(401),
+            },
+            DockerError::ImageResolutionSource {
+                operation: "op",
+                source: rejected(500),
+            },
+            DockerError::Request("op"),
+            DockerError::RequestSource {
+                operation: "op",
+                source: "cause".into(),
+            },
+        ] {
+            assert_eq!(
+                OperationError::docker_classification(&error).diagnostic_code(),
+                error.diagnostic_code(),
+                "{error:?}"
+            );
+        }
+    }
+
     #[test]
     fn registry_failures_keep_classification_and_original_status() {
         for (status_code, expected) in [

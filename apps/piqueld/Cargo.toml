@@ -23,7 +23,7 @@ include = ["/build.rs", "/build", "/dashboard", "/src", "/LICENSE"]
 # prebuilt bundle it ships instead, without the feature.
 [features]
 embedded-ui = ["dep:wasm-bindgen-cli-support"]
-# The in-memory Docker engine (`piqueld::docker::fake`) of the integration
+# The in-memory Docker engine (`piqueld_docker::fake`) of the integration
 # tests and the browser fixture, and `Store::open_unsynced` for their
 # throwaway stores. It only adds API: the daemon's store syncs regardless.
 # Release builds leave it out.
