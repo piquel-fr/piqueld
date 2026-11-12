@@ -21,24 +21,30 @@
 # ones (Docker, Playwright, macOS) wait until the pull request is marked
 # ready, so iterating on a draft stays cheap. `docs` runs on every pull
 # request, as its links point all over the repository and any change can
-# break one. Merge queue entries, pushes to main and manual runs run
-# everything: the queue tests each pull request on top of the latest main
-# before it merges.
+# break one. Merge queue entries run every job but macOS: the queue tests
+# each pull request on top of the latest main before it merges, and macOS
+# runners are scarce enough to hold up the queue. The commit the queue tested
+# is the one that lands, so pushes to main don't run CI again. Nightly and
+# manual runs on main run everything, macOS included.
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
-# Caches are saved from main only, except the small prebuilt dashboard (see
-# .github/actions/dashboard). Pull requests restore main's caches, so a
-# branch never evicts them with copies no other branch can read.
+# Caches are saved from main only, by the nightly run. The small prebuilt
+# dashboard (.github/actions/dashboard) is also saved by pull requests, and on
+# main by dashboard-cache.yml after each merge that changes it. Pull requests
+# and the merge queue restore main's caches, so a branch never evicts them
+# with copies no other branch can read. While the nightly run fails, the
+# `report` job keeps an issue open.
 
 name: CI
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: [main]
   merge_group:
+  # Refreshes main's caches, and runs the macOS job the queue leaves out.
+  schedule:
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -72,7 +78,7 @@ jobs:
       rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' }}
       deny: ${{ github.event_name != 'pull_request' || steps.filter.outputs.deny == 'true' }}
       ui: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ui == 'true' }}
-      cli: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.cli == 'true' && !github.event.pull_request.draft) }}
+      cli: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || (steps.filter.outputs.cli == 'true' && !github.event.pull_request.draft) }}
       docker: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.docker == 'true' && !github.event.pull_request.draft) }}
       playwright: ${{ github.event_name != 'pull_request' || (steps.filter.outputs.playwright == 'true' && !github.event.pull_request.draft) }}
     steps:
@@ -390,3 +396,24 @@ jobs:
         with:
           allowed-skips: checks, rust, msrv, wasm-ui, docker-integration, browser-playwright, macos-cli
           jobs: ${{ toJSON(needs) }}
+
+  # The nightly run is the only one after merging, and the only one with macOS
+  # once a pull request is queued, so its failures keep an issue open.
+  report:
+    name: report
+    needs: ci
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/report
+        with:
+          title: Nightly CI fails on main
+          failed: ${{ needs.ci.result != 'success' }}

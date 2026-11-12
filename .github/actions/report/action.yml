@@ -1,0 +1,39 @@
+# Keeps one issue open while checks fail on main: opens it on the first
+# failure, comments on it on each later one, and closes it once a run passes
+# again. Release checks and the nightly CI run use it, each with an issue
+# title of its own. The job needs `issues: write`.
+
+name: Report failures on main
+description: Opens, comments on, or closes the issue tracking a workflow's failures on main.
+
+inputs:
+  title:
+    description: The issue's title, which identifies it.
+    required: true
+  failed:
+    description: Whether this run failed, `true` or `false`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+        TITLE: ${{ inputs.title }}
+        FAILED: ${{ inputs.failed }}
+        RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        issue=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
+          --jq '[.[] | select(.title == env.TITLE)][0].number // empty')
+        if [ "$FAILED" = true ]; then
+          body="$GITHUB_WORKFLOW failed on $GITHUB_SHA ($GITHUB_EVENT_NAME): [run]($RUN)."
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body See docs/dev/validation.md."
+          fi
+        elif [ -n "$issue" ]; then
+          gh issue close "$issue" --comment "$GITHUB_WORKFLOW passed again on $GITHUB_SHA: [run]($RUN)."
+        fi

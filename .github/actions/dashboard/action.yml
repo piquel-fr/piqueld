@@ -11,7 +11,9 @@
 #
 # Unlike the Rust caches, this one is saved from pull requests too: entries are
 # a few megabytes, and keyed by content, so a later push that leaves the
-# dashboard alone restores its own.
+# dashboard alone restores its own. On main,
+# .github/workflows/dashboard-cache.yml saves it after each merge that changes
+# it.
 
 name: Prebuilt dashboard
 description: Restores or builds the dashboard's wasm module, and sets PIQUELD_DASHBOARD_WASM to it.
