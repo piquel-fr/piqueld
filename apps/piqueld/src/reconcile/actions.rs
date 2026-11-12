@@ -237,8 +237,8 @@ impl<D: DockerApi> Controller<D> {
     /// journal. Ownership, configuration, swarm, and validation errors are terminal;
     /// other errors are journaled as retries until attempts run out. A network Swarm
     /// still releases is retried, without counting against the attempts, for up
-    /// to [`NETWORK_RELEASE`], so the next attempt finds it gone. Cancellation interrupts the backoff sleep,
-    /// which happens outside the mutation lock.
+    /// to [`NETWORK_RELEASE`], so the next attempt finds it gone. Cancellation
+    /// interrupts the backoff sleep, which happens outside the mutation lock.
     pub(super) async fn retry<F, Fut>(
         &self,
         operation: &Operation,

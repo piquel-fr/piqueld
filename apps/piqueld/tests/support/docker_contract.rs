@@ -335,10 +335,7 @@ impl<D: DockerApi> Contract<D> {
             .remove_network(network.name.as_str(), labels)
             .await
             .expect_err("a network services are attached to stays");
-        assert!(
-            !matches!(in_use, DockerError::NetworkInUse(_)),
-            "{in_use:?}"
-        );
+        assert!(!in_use.releases_network(), "{in_use:?}");
         assert_eq!(
             Self::diagnostic(in_use),
             DiagnosticCode::DockerRequestFailed

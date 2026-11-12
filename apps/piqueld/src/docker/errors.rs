@@ -157,3 +157,51 @@ impl<T> BollardResult<T> for Result<T, bollard::errors::Error> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DockerError;
+
+    /// A failed network deletion with Docker's `status` and `message`.
+    fn deletion(status_code: u16, message: &str) -> DockerError {
+        DockerError::delete_network(bollard::errors::Error::DockerResponseServerError {
+            status_code,
+            message: message.into(),
+        })
+    }
+
+    #[test]
+    fn network_deletion_failures_swarm_still_releases_are_classified() {
+        assert!(matches!(
+            deletion(
+                400,
+                "rpc error: code = FailedPrecondition desc = network n1 is in use by task t1"
+            ),
+            DockerError::NetworkInUse(_)
+        ));
+        assert!(matches!(
+            deletion(500, "network n1 not found"),
+            DockerError::NetworkRemoving(_)
+        ));
+        for other in [
+            deletion(
+                400,
+                "rpc error: code = FailedPrecondition desc = network n1 is in use by service s1",
+            ),
+            deletion(500, "is in use by task t1"),
+            deletion(503, "network n1 not found"),
+        ] {
+            assert!(!other.releases_network(), "{other:?}");
+            assert!(
+                matches!(
+                    other,
+                    DockerError::RequestSource {
+                        operation: "delete network",
+                        ..
+                    }
+                ),
+                "{other:?}"
+            );
+        }
+    }
+}
