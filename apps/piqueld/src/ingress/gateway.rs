@@ -61,17 +61,19 @@ impl DockerVersion {
     }
 }
 
+impl std::fmt::Display for DockerVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Docker Engine {} with API {}", self.engine, self.api)
+    }
+}
+
 /// A host requirement of the gateway that is not met. Unlike other gateway
 /// failures, its message carries no Docker response body, so the ingress
 /// health message shows it.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum UnmetRequirement {
     /// The engine does not [support ingress](DockerVersion::supports_ingress).
-    #[error(
-        "Docker Engine {} with API {} is too old for ingress, which needs Engine 28+ with API 1.48+",
-        .0.engine,
-        .0.api
-    )]
+    #[error("{0} is too old for ingress, which needs Engine 28+ with API 1.48+")]
     Docker(DockerVersion),
     /// Docker could not publish port 80 or 443 because another listener holds it.
     #[error("another program uses port 80 or 443, which the gateway publishes")]

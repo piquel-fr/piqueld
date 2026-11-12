@@ -23,7 +23,7 @@ impl Ingress {
                 );
             }
         };
-        let found = format!("Docker Engine {} with API {}", version.engine, version.api);
+        let found = version.to_string();
         match (self.enabled, version.supports_ingress()) {
             (false, _) => check(
                 CheckStatus::Pass,
