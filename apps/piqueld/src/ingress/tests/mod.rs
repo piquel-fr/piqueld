@@ -119,8 +119,11 @@ pub(super) fn routes(visibility: Visibility, host: &str) -> Vec<ValidatedRoute> 
     manifest.validate().unwrap().spec().routes.clone()
 }
 
+/// An application `name` whose `web` service answers `body` for `host`.
+/// Docker watches each new container for one second instead of the default
+/// 30, so deployments replacing one finish without that wait.
 pub(super) fn application(name: &str, host: &str, body: &str) -> NormalizedApplication {
-    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
+    piqueld_core::parse_toml(&format!("api_version='piqueld.dev/v1alpha1'\nkind='Application'\n[metadata]\nname='{name}'\n[[spec.services]]\nname='web'\ncommand=['caddy']\narguments=['respond','--listen',':8080','--body','{body}']\nrollout={{monitor_seconds=1}}\n[spec.services.source]\ntype='image'\nimage='{CADDY_IMAGE}'\n[[spec.routes]]\nhostname='{host}'\nvisibility='public'\nservice='web'\nport=8080")).unwrap().normalize(piqueld_core::ApplicationId::parse("input-app").unwrap())
 }
 
 /// Saves and deploys `app` on behalf of `actor`, returning its production
