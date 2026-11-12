@@ -551,6 +551,8 @@ mod tests {
                 operation: "op",
                 source: rejected(500),
             },
+            DockerError::NetworkInUse(rejected(400)),
+            DockerError::NetworkRemoving(rejected(500)),
             DockerError::Request("op"),
             DockerError::RequestSource {
                 operation: "op",
