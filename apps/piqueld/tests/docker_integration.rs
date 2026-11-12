@@ -1215,12 +1215,17 @@ async fn converge(
 }
 
 /// Compiles the application `name` with image `services`, resolved through
-/// `images` (reference to digest reference).
+/// `images` (reference to digest reference). Docker watches each service's
+/// new containers for one second instead of the default 30, so converging an
+/// update that replaces one does not wait that long.
 fn compile_images(
     name: &str,
-    services: &serde_json::Value,
+    mut services: serde_json::Value,
     images: &BTreeMap<&str, String>,
 ) -> piqueld_core::ResolvedApplication {
+    for service in services.as_array_mut().unwrap() {
+        service["rollout"] = serde_json::json!({"monitor_seconds": 1});
+    }
     let manifest = serde_json::json!({"api_version": "piqueld.dev/v1alpha1", "kind": "Application", "metadata": {"name": name}, "spec": {"services": services}});
     let id = ApplicationId::parse(format!("app-{name}")).unwrap();
     let app = piqueld_core::parse_json(&manifest.to_string())
@@ -1338,8 +1343,7 @@ async fn links_reach_only_the_imported_service_until_removed() {
         .unwrap();
     let alpine = engine.docker.resolve_image("alpine:3.20").await.unwrap();
     let images = BTreeMap::from([("traefik/whoami:v1.10", whoami), ("alpine:3.20", alpine)]);
-    let compile =
-        |name: &str, services: serde_json::Value| compile_images(name, &services, &images);
+    let compile = |name: &str, services: serde_json::Value| compile_images(name, services, &images);
     let exporter = compile(
         &exporter_name,
         serde_json::json!([
