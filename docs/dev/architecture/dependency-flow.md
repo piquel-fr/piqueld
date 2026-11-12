@@ -50,9 +50,7 @@ Inside the daemon:
 | `git` | Isolated, bounded checkouts and local worktree snapshots |
 | `secrets` | Authenticated encryption and generation of application secrets |
 | `ingress` | The installation-owned Caddy gateway, certificates, and tunnel and tailnet listeners |
-| `dns` | DNS provider APIs for DNS-01 challenges and managed route records |
 | `tailnet` | The daemon's own tailnet node serving the website |
-| `config` | Local configuration and private state-directory preparation |
 
 The API service validates commands. One store transaction compares current
 intent and revision, accepts a change or no-op, and writes its request receipt.
