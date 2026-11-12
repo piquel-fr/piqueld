@@ -1,0 +1,164 @@
+# Release builds of piqueld, checked after merging instead of before.
+#
+#   nix     -> every Nix package
+#   package -> publish --dry-run
+#   install -> dist, then install.sh
+#
+# Each one compiles the workspace with release optimizations, which takes far
+# longer than the few minutes CI aims to take, so they don't gate pull requests
+# or the merge queue. They run on every push to main instead, and nightly to
+# catch what breaks without a commit, such as a new stable Rust or runner
+# image. A failure opens an issue, or comments on the open one, and the next
+# passing run closes it; see docs/dev/validation.md.
+#
+# Caches are saved from main, as in CI. The release workflow restores the
+# install job's.
+
+name: Release checks
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+# Only a branch's latest commit matters: it contains every earlier one. Runs
+# on other branches, started by hand, leave main's alone.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# As in CI and the release workflow: rust-cache's key hashes the CARGO*, RUST*
+# and CC* variables, so the three restore each other's caches only while they
+# match.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+
+jobs:
+  # Builds every Nix package. Crane's dependency builds are rooted with
+  # out-links so the cache action's garbage collection keeps them; without
+  # roots it deletes them, and every run rebuilds every dependency.
+  nix:
+    name: nix packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Purges superseded Nix caches.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          # Keys are immutable, so each main build saves a fresh one; the
+          # newest one with the same lockfiles restores first.
+          primary-key: nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-${{ github.sha }}
+          restore-prefixes-first-match: |
+            nix-x86_64-linux-${{ hashFiles('flake.nix', 'flake.lock', 'Cargo.lock') }}-
+            nix-x86_64-linux-
+          save: ${{ github.ref == 'refs/heads/main' }}
+          gc-max-store-size-linux: 4G
+          # Only caches no run restored for a day: a failed save must not
+          # purge the last usable cache.
+          purge: ${{ github.ref == 'refs/heads/main' }}
+          purge-prefixes: nix-x86_64-linux-
+          purge-last-accessed: P1D
+          purge-primary-key: never
+      - name: Build Nix packages
+        run: nix build -L .#default .#default.cargoArtifacts .#dashboard .#dashboard.cargoArtifacts .#cli .#cli.cargoArtifacts .#daemon
+
+  # Packages every published crate, with the dashboard the daemon ships, and
+  # builds each from its package, as `cargo install` would: everything
+  # `just publish` does except uploading.
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-directories: |
+            target-ui
+            target-probe
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo xtask publish --dry-run
+
+  # Builds the release archive as the release workflow does, then installs it
+  # with install.sh on the runner, which has systemd and Docker Engine like a
+  # user's host. The script runs as the runner's user, as users run it, with
+  # sudo for the steps that need root; --yes also adds that user to the
+  # piqueld group. The second run is an update, which must leave the daemon
+  # running too. The cache is shared with the release workflow's build.
+  install:
+    name: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update -qq && sudo apt-get install --yes --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: dist
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo xtask dist
+      - name: Install with install.sh, then update
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          for run in install update; do
+            echo "::group::$run"
+            PIQUELD_VERSION="$version" PIQUELD_RELEASE_URL="file://$PWD/target/dist" sh apps/site/install.sh --yes
+            echo "::endgroup::"
+          done
+      - run: sudo piquelctl status
+      # A member of the piqueld group reaches the daemon without an account to
+      # print the setup link; sg runs it with the group the script added.
+      - run: sg piqueld -c 'piquelctl setup-link'
+      - name: Show the daemon's logs
+        if: failure()
+        run: sudo journalctl --unit piqueld --no-pager
+
+  # Keeps one issue open while main fails a release check: opens it on the
+  # first failure, comments on it on each later one, and closes it once every
+  # check passes again. Manual runs on another branch leave it alone.
+  report:
+    name: report
+    needs: [nix, package, install]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # A job that hits its timeout reports `cancelled`; the run itself being
+      # cancelled skips this job.
+      FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TITLE: Release checks fail on main
+    steps:
+      - run: |
+          issue=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)][0].number // empty')
+          if [ "$FAILED" = true ]; then
+            body="[The release checks]($RUN) fail on $GITHUB_SHA ($GITHUB_EVENT_NAME)."
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$TITLE" --body "$body See docs/dev/validation.md#release-checks."
+            fi
+          elif [ -n "$issue" ]; then
+            gh issue close "$issue" --comment "[The release checks]($RUN) pass again on $GITHUB_SHA."
+          fi
