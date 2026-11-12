@@ -6,10 +6,12 @@
 #
 # Each one compiles the workspace with release optimizations, which takes far
 # longer than the few minutes CI aims to take, so they don't gate pull requests
-# or the merge queue. They run on every push to main instead, and nightly to
-# catch what breaks without a commit, such as a new stable Rust or runner
-# image. A failure opens an issue, or comments on the open one, and the next
-# passing run closes it; see docs/dev/validation.md.
+# or the merge queue. They run on pushes to main that change what they build
+# from, such as a manifest, a build script, a migration, the flake or
+# install.sh, and nightly to catch the rest, along with what breaks without a
+# commit, such as a new stable Rust or runner image. A failure opens an issue,
+# or comments on the open one, and the next passing run closes it; see
+# docs/dev/validation.md.
 #
 # Caches are saved from main, as in CI. The release workflow restores the
 # install job's.
@@ -19,6 +21,25 @@ name: Release checks
 on:
   push:
     branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - "**/build.rs"
+      - "**/build/**"
+      - "**/migrations/**"
+      - rust-toolchain.toml
+      - .cargo/**
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - apps/piqueld-ui/**
+      - apps/piqueld/piqueld.service
+      - apps/site/install.sh
+      - tools/xtask/**
+      - LICENSE
+      - README.md
+      - .github/workflows/release-checks.yml
   schedule:
     - cron: "0 4 * * *"
   workflow_dispatch:

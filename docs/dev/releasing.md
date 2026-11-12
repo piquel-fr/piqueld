@@ -120,8 +120,8 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    git switch main && git pull
    ```
 
-   Wait for the merge commit's
-   [release checks](validation.md#release-checks) to pass:
+   The version change starts the merge commit's
+   [release checks](validation.md#release-checks). Wait for them to pass:
 
    ```console
    gh run watch --exit-status "$(gh run list --workflow release-checks.yml --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId --jq '.[0].databaseId')"

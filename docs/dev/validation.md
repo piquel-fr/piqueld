@@ -7,12 +7,15 @@ Playwright, and macOS jobs wait until a pull request is marked ready. Release
 builds take too long to gate a merge, so they run after it, in the
 [release checks](#release-checks).
 The `docs` job runs on every pull request. Pull requests merge through a merge
-queue, which tests each one on top of the latest main; merge queue entries and
-pushes to main run every job. The `ci` job summarizes them: it fails if any job
-failed. Failed checks do not cancel unrelated jobs.
+queue, which tests each one on top of the latest main; merge queue entries run
+every job but macOS, whose scarce runners would hold up the queue. The commit
+the queue tested is the one that lands, so pushes to main run no CI. A nightly
+run on main runs every job, macOS included. The `ci` job summarizes them: it
+fails if any job failed. Failed checks do not cancel unrelated jobs.
 
-Rust build caches are scoped to jobs and saved from main only; pull requests
-restore them. Dashboard tools are cached by version.
+Rust build caches are scoped to jobs and saved by the nightly run on main;
+pull requests and the merge queue restore them. Dashboard tools are cached by
+version.
 
 | Capability | Local recipe | CI job |
 | --- | --- | --- |
@@ -59,9 +62,12 @@ these checks run after a pull request merges instead of before:
 | Every published crate packaged and built from its package | `publish --dry-run` | `package` |
 | The static release archive, installed and then updated by `install.sh` | `dist` | `install` |
 
-They run on every push to `main`, and every night at 04:00 UTC to catch what
-breaks without a commit, such as a new stable Rust or a new runner image. Only
-the latest commit is checked: a push cancels the run of the one before it.
+They run on each push to `main` that changes what they build from: a manifest,
+the lockfile, a build script, a migration, the toolchain, the flake, the
+dashboard, `install.sh` or `xtask`. They also run every night at 04:00 UTC,
+which catches the rest and what breaks without a commit, such as a new stable
+Rust or a new runner image. Only the latest commit is checked: a push cancels
+the run of the one before it.
 
 While a check fails on `main`, an issue titled *Release checks fail on main*
 stays open. The first failure opens it, each later one comments on it, and the
