@@ -521,8 +521,9 @@ impl Ingress {
         application: Option<&piqueld_core::EnvironmentId>,
     ) -> Result<()> {
         let mut failures = std::collections::BTreeMap::new();
-        // Health messages name only the failed stage. Error details, which may
-        // include Docker/Caddy response bodies, stay in daemon logs.
+        // Health messages name only the failed stage and any unmet requirement
+        // of the gateway. Error details, which may include Docker/Caddy
+        // response bodies, stay in daemon logs.
         let mut stage = "read deployed routing configuration";
         // Whether the gateway converged (or stopped), even if cloudflared did
         // not: the private listener depends only on the gateway.
@@ -533,11 +534,7 @@ impl Ingress {
                 stage = "verify application ingress networks";
                 let (accepted, networks, rejected) = self.prepare_routes(&table).await?;
                 failures = rejected;
-                stage = if self.tunnel.is_some() {
-                    "prepare the Caddy gateway (requires Docker 28+)"
-                } else {
-                    "prepare the Caddy gateway (requires free ports 80/443 and Docker 28+)"
-                };
+                stage = "prepare the Caddy gateway";
                 self.ensure_gateway(&accepted, &networks).await?;
                 stage = "apply Caddy routes and network attachments";
                 self.configure_gateway(&accepted, &networks).await?;
@@ -596,7 +593,13 @@ impl Ingress {
             Ok(()) => "Ingress is disabled in daemon TOML; its listeners are stopped".into(),
             Err(error) => {
                 tracing::error!(error=?error, "managed ingress is unhealthy");
-                format!("Ingress unavailable: could not {stage}. See daemon logs for details.")
+                let cause = error
+                    .downcast_ref::<gateway::UnmetRequirement>()
+                    .map(|unmet| format!(": {unmet}"))
+                    .unwrap_or_default();
+                format!(
+                    "Ingress unavailable: could not {stage}{cause}. See daemon logs for details."
+                )
             }
         };
         result?;

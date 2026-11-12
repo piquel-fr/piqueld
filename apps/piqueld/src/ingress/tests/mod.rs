@@ -1224,8 +1224,24 @@ async fn failed_gateway_sync_reports_health_without_response_details() {
     assert!(!status.healthy);
     assert_eq!(
         status.message,
-        "Ingress unavailable: could not prepare the Caddy gateway (requires free ports \
-         80/443 and Docker 28+). See daemon logs for details."
+        "Ingress unavailable: could not prepare the Caddy gateway. See daemon logs for details."
+    );
+}
+
+#[tokio::test]
+async fn old_docker_engine_is_named_in_ingress_health() {
+    let engine = Engine::serving(|_| {
+        axum::Router::new()
+            .fallback(|| async { axum::Json(json!({"Version": "27.5.0", "ApiVersion": "1.47"})) })
+    })
+    .await;
+    let ingress = engine.ingress(true);
+    ingress.synchronize().await.unwrap_err();
+    assert_eq!(
+        ingress.status().await.message,
+        "Ingress unavailable: could not prepare the Caddy gateway: Docker Engine 27.5.0 with \
+         API 1.47 is too old for ingress, which needs Engine 28+ with API 1.48+. See daemon \
+         logs for details."
     );
 }
 

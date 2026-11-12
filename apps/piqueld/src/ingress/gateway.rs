@@ -12,7 +12,7 @@
 use super::{
     CADDY_IMAGE, Ingress,
     node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
-    wire::Journaled,
+    wire::{Journaled, ResponseError},
 };
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
@@ -32,6 +32,7 @@ use std::{
 };
 
 /// Docker Engine and API versions, e.g. `28.1.1` and `1.49`.
+#[derive(Debug)]
 pub(super) struct DockerVersion {
     pub(super) engine: String,
     pub(super) api: String,
@@ -58,6 +59,23 @@ impl DockerVersion {
         });
         major >= 28 && api.is_some_and(|v| v >= (1, 48))
     }
+}
+
+/// A host requirement of the gateway that is not met. Unlike other gateway
+/// failures, its message carries no Docker response body, so the ingress
+/// health message shows it.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum UnmetRequirement {
+    /// The engine does not [support ingress](DockerVersion::supports_ingress).
+    #[error(
+        "Docker Engine {} with API {} is too old for ingress, which needs Engine 28+ with API 1.48+",
+        .0.engine,
+        .0.api
+    )]
+    Docker(DockerVersion),
+    /// Docker could not publish port 80 or 443 because another listener holds it.
+    #[error("another program uses port 80 or 443, which the gateway publishes")]
+    Ports,
 }
 
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
@@ -202,9 +220,10 @@ impl Ingress {
 
     /// Requires a Docker Engine that [supports ingress](DockerVersion::supports_ingress).
     async fn check_version(&self) -> Result<()> {
+        let version = self.docker_version().await?;
         ensure!(
-            self.docker_version().await?.supports_ingress(),
-            "Docker Engine 28+ with API 1.48+ is required for ingress network gateway priority"
+            version.supports_ingress(),
+            UnmetRequirement::Docker(version)
         );
         Ok(())
     }
@@ -897,7 +916,18 @@ impl Ingress {
 
     /// Starts the serving container and waits up to 10s for Caddy's admin API.
     async fn start_container(&self, journal: &Journaled<'_>) -> Result<()> {
-        self.start_named(journal, &self.name).await?;
+        self.start_named(journal, &self.name)
+            .await
+            .map_err(|error| {
+                let taken = error
+                    .downcast_ref::<ResponseError>()
+                    .is_some_and(ResponseError::port_in_use);
+                if taken {
+                    error.context(UnmetRequirement::Ports)
+                } else {
+                    error
+                }
+            })?;
         // Docker reports a running process before Caddy opens its admin socket.
         // Wait for startup here instead of failing an otherwise healthy deployment.
         tokio::time::timeout(Duration::from_secs(10), async {
