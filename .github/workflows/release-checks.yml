@@ -10,8 +10,8 @@
 # from, such as a manifest, a build script, a migration, the flake or
 # install.sh, and nightly to catch the rest, along with what breaks without a
 # commit, such as a new stable Rust or runner image. A failure opens an issue,
-# or comments on the open one, and the next passing run closes it; see
-# docs/dev/validation.md.
+# or comments on the open one, and the next passing run closes it
+# (.github/actions/report); see docs/dev/validation.md.
 #
 # Caches are saved from main, as in CI. The release workflow restores the
 # install job's.
@@ -37,6 +37,7 @@ on:
       - apps/piqueld/piqueld.service
       - apps/site/install.sh
       - tools/xtask/**
+      - examples/**
       - LICENSE
       - README.md
       - .github/workflows/release-checks.yml
@@ -150,9 +151,8 @@ jobs:
         if: failure()
         run: sudo journalctl --unit piqueld --no-pager
 
-  # Keeps one issue open while main fails a release check: opens it on the
-  # first failure, comments on it on each later one, and closes it once every
-  # check passes again. Manual runs on another branch leave it alone.
+  # Keeps an issue open while main fails a release check; manual runs on
+  # another branch leave it alone.
   report:
     name: report
     needs: [nix, package, install]
@@ -160,26 +160,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      # A job that hits its timeout reports `cancelled`; the run itself being
-      # cancelled skips this job.
-      FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      TITLE: Release checks fail on main
     steps:
-      - run: |
-          issue=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
-            --jq '[.[] | select(.title == env.TITLE)][0].number // empty')
-          if [ "$FAILED" = true ]; then
-            body="[The release checks]($RUN) fail on $GITHUB_SHA ($GITHUB_EVENT_NAME)."
-            if [ -n "$issue" ]; then
-              gh issue comment "$issue" --body "$body"
-            else
-              gh issue create --title "$TITLE" --body "$body See docs/dev/validation.md#release-checks."
-            fi
-          elif [ -n "$issue" ]; then
-            gh issue close "$issue" --comment "[The release checks]($RUN) pass again on $GITHUB_SHA."
-          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/report
+        with:
+          title: Release checks fail on main
+          # A job that hits its timeout reports `cancelled`; the run itself
+          # being cancelled skips this job.
+          failed: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}

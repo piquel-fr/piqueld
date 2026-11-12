@@ -1,0 +1,46 @@
+# Saves main's prebuilt dashboard (.github/actions/dashboard) as soon as a
+# merge changes what it is compiled from. CI doesn't run on pushes to main, and
+# copies saved by pull requests or the merge queue are scoped to their own
+# refs, so without this the merge queue and every pull request would compile
+# the dashboard until the nightly run. The paths are the action's cache key
+# inputs.
+
+name: Dashboard cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/piqueld-ui/**
+      - crates/piqueld-core/**
+      - crates/piqueld-client/**
+      - crates/piqueld-probe/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/config.toml
+      - .github/actions/dashboard/action.yml
+
+# Only main's latest dashboard matters.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# As in CI, so the module is built the same way.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  dashboard:
+    name: dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/dashboard

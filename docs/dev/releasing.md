@@ -58,7 +58,8 @@ Each crate builds from its package alone, as `cargo install` builds it:
 `apps/piqueld/dashboard/`, runs `cargo publish --workspace`, which publishes
 the crates in dependency order, then removes the dashboard. The `package` job
 of the [release checks](validation.md#release-checks) runs it with `--dry-run`
-on every push to `main`: it packages each crate and builds it from its
+after merges that change what the crates are built from, and nightly: it
+packages each crate and builds it from its
 package, without uploading anything. Run it yourself after changing a
 manifest, a build script, or a file a crate reads at compile time:
 
@@ -79,8 +80,9 @@ any x86_64 Linux: the daemon builds OpenSSL from source for musl targets.
 `just dist`, which runs `cargo xtask dist`, builds them into `target/dist`. It
 needs `musl-gcc`, from the `musl-tools` package on Debian and Ubuntu, for the
 C code of OpenSSL, SQLite and ring. The `install` job of the
-[release checks](validation.md#release-checks) runs it on every push to
-`main`, then installs the archive with the script on the runner, which has
+[release checks](validation.md#release-checks) runs it after merges that
+change what the archive is built from, and nightly, then installs the archive
+with the script on the runner, which has
 systemd and Docker Engine, and installs it again as an update. The script
 reads the archive from `PIQUELD_RELEASE_URL` there, instead of the release.
 
@@ -120,12 +122,17 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    git switch main && git pull
    ```
 
-   The version change starts the merge commit's
-   [release checks](validation.md#release-checks). Wait for them to pass:
+   Run the [release checks](validation.md#release-checks) on it, and wait for
+   them to pass. `gh run watch` asks which run to watch; pick the one you just
+   started:
 
    ```console
-   gh run watch --exit-status "$(gh run list --workflow release-checks.yml --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId --jq '.[0].databaseId')"
+   gh workflow run release-checks.yml --ref main
+   gh run watch --exit-status
    ```
+
+   They check the commit at the tip of `main`, which `just release` tags. If
+   another pull request merges before you release, pull and run them again.
 
 3. Check the release without changing anything:
 

@@ -10,12 +10,15 @@ The `docs` job runs on every pull request. Pull requests merge through a merge
 queue, which tests each one on top of the latest main; merge queue entries run
 every job but macOS, whose scarce runners would hold up the queue. The commit
 the queue tested is the one that lands, so pushes to main run no CI. A nightly
-run on main runs every job, macOS included. The `ci` job summarizes them: it
-fails if any job failed. Failed checks do not cancel unrelated jobs.
+run on main runs every job, macOS included; while it fails, an issue titled
+*Nightly CI fails on main* stays open, as for the
+[release checks](#release-checks). The `ci` job summarizes them: it fails if
+any job failed. Failed checks do not cancel unrelated jobs.
 
 Rust build caches are scoped to jobs and saved by the nightly run on main;
-pull requests and the merge queue restore them. Dashboard tools are cached by
-version.
+pull requests and the merge queue restore them, so after a dependency change
+merges they rebuild dependencies until that night. Dashboard tools are cached
+by version.
 
 | Capability | Local recipe | CI job |
 | --- | --- | --- |
@@ -36,7 +39,9 @@ version.
 
 The `rust` and `browser-playwright` jobs embed a dashboard module built once
 per version of its sources, instead of compiling it each time; see
-[production assets](architecture/dashboard.md#production-assets).
+[production assets](architecture/dashboard.md#production-assets). The
+*Dashboard cache* workflow builds main's module as soon as a merge changes its
+sources, so the merge queue and pull requests find it.
 
 `just` runs the default validation set (`validate`), including a single check of
 the generated OpenAPI specification, client, and manifest JSON Schema. Both local

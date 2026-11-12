@@ -381,3 +381,24 @@ jobs:
         with:
           allowed-skips: checks, rust, msrv, wasm-ui, docker-integration, browser-playwright, macos-cli
           jobs: ${{ toJSON(needs) }}
+
+  # The nightly run is the only one after merging, and the only one with macOS
+  # once a pull request is queued, so its failures keep an issue open.
+  report:
+    name: report
+    needs: ci
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+      - uses: ./.github/actions/report
+        with:
+          title: Nightly CI fails on main
+          failed: ${{ needs.ci.result != 'success' }}
