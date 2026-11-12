@@ -314,7 +314,7 @@ impl From<&Service> for ServiceForm {
                     .iter()
                     .map(|(key, value)| (key.clone(), value.to_string()))
                     .collect();
-                form.target = target.as_ref().map(ToString::to_string).unwrap_or_default();
+                form.target = target.as_ref().map_or_default(ToString::to_string);
             }
         }
         if let Some(check) = &service.healthcheck {

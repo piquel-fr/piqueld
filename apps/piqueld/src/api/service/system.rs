@@ -29,8 +29,7 @@ impl ApplicationService {
             tailscale: self
                 .tailnet
                 .as_ref()
-                .map(|status| status.borrow().clone())
-                .unwrap_or_default(),
+                .map_or_default(|status| status.borrow().clone()),
             dns: match &self.ingress {
                 Some(ingress) => ingress.dns_status().await,
                 None => DnsStatus::default(),
@@ -39,8 +38,7 @@ impl ApplicationService {
             images: self
                 .images
                 .as_ref()
-                .map(|status| status.borrow().clone())
-                .unwrap_or_default(),
+                .map_or_default(|status| status.borrow().clone()),
             snapshots: Some(piqueld_core::api::SnapshotLimits {
                 max_upload_bytes: self.store.max_upload_bytes(),
                 max_tree_bytes: self.store.checkouts().max_bytes(),

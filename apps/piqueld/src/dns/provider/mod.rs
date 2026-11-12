@@ -273,7 +273,7 @@ pub struct RecordId(pub(crate) String);
 /// keeps the API's response; credentials are only ever sent in headers, so
 /// they never appear here.
 #[derive(Debug, Error)]
-#[error("{provider} {operation}{}", zone.as_ref().map(|zone| format!(" in zone {zone}")).unwrap_or_default())]
+#[error("{provider} {operation}{}", zone.as_ref().map_or_default(|zone| format!(" in zone {zone}")))]
 pub struct DnsError {
     provider: &'static str,
     operation: &'static str,

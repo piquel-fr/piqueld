@@ -12,7 +12,8 @@ validated_string!(
     /// use piqueld_core::{ApplicationId, EnvironmentId};
     /// let environment: EnvironmentId = ApplicationId::parse("app-00000001").unwrap();
     /// ```
-    ApplicationId, ApplicationIdError,
+    ApplicationId,
+    ApplicationIdError,
     "application IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
     |value: &str| is_lowercase_label(value, 8..=64)
 );
@@ -24,7 +25,8 @@ validated_string!(
     /// single-environment applications, and the `production` environments of
     /// applications created before every environment got its own ID, keep
     /// their application's `app-…` ID.
-    EnvironmentId, EnvironmentIdError,
+    EnvironmentId,
+    EnvironmentIdError,
     "environment IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
     |value: &str| is_lowercase_label(value, 8..=64)
 );
@@ -32,7 +34,8 @@ validated_string!(
 validated_string!(
     /// Stable release identity, assigned by persistence when a preparation
     /// records content its application has no release for yet.
-    ReleaseId, ReleaseIdError,
+    ReleaseId,
+    ReleaseIdError,
     "release IDs must be 8-64 lowercase ASCII letters, digits, or internal hyphens",
     |value: &str| is_lowercase_label(value, 8..=64)
 );

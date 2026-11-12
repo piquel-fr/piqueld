@@ -173,23 +173,20 @@ pub(super) fn RouteSettings() -> impl IntoView {
     let readiness = context.signals().readiness;
     // Deployed routes of every environment and preview, with its name.
     let deployed = Memo::new(move |_| {
-        readiness
-            .get()
-            .map(|status| {
-                context.saved.with(|saved| {
-                    status
-                        .ingress
-                        .routes
-                        .into_iter()
-                        .filter_map(|route| {
-                            saved
-                                .deployable(&route.environment_id)
-                                .map(|environment| (environment.name.to_string(), route))
-                        })
-                        .collect::<Vec<_>>()
-                })
+        readiness.get().map_or_default(|status| {
+            context.saved.with(|saved| {
+                status
+                    .ingress
+                    .routes
+                    .into_iter()
+                    .filter_map(|route| {
+                        saved
+                            .deployable(&route.environment_id)
+                            .map(|environment| (environment.name.to_string(), route))
+                    })
+                    .collect::<Vec<_>>()
             })
-            .unwrap_or_default()
+        })
     });
     // Saves `rows` as the application's routes, then closes the dialog.
     let save = move |rows: Vec<RouteDraft>| match rows

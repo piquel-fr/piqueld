@@ -57,8 +57,7 @@ impl<T: Dependent> StartupOrder<T> for [T] {
         let mut pending = self
             .iter()
             .find(|service| service.name() == name)
-            .map(|service| service.dependencies().collect::<Vec<_>>())
-            .unwrap_or_default();
+            .map_or_default(|service| service.dependencies().collect::<Vec<_>>());
         let mut dependencies = BTreeSet::new();
         while let Some(name) = pending.pop() {
             if dependencies.insert(name)

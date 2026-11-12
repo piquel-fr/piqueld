@@ -175,7 +175,7 @@ fn stat(
     snapshot: &Snapshot,
     read: impl Fn(&DaemonStats) -> Vec<(u64, Vec<KeyValue>)>,
 ) -> Vec<(u64, Vec<KeyValue>)> {
-    snapshot.stats.as_ref().map(read).unwrap_or_default()
+    snapshot.stats.as_ref().map_or_default(read)
 }
 
 /// A stored count, which is never negative.

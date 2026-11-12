@@ -169,8 +169,7 @@ impl EditorContext {
     /// Name of the environment runtime actions target; empty without one.
     fn selected_name(self) -> String {
         self.selected_environment()
-            .map(|environment| environment.name.to_string())
-            .unwrap_or_default()
+            .map_or_default(|environment| environment.name.to_string())
     }
 
     /// Whether the environment runtime actions target is being deleted.
@@ -953,7 +952,7 @@ trait Rows<T> {
 
 impl<T: Send + Sync + 'static> Rows<T> for RwSignal<Vec<T>> {
     fn field<R: Default>(self, index: usize, read: impl Fn(&T) -> R) -> R {
-        self.with(|rows| rows.get(index).map(read).unwrap_or_default())
+        self.with(|rows| rows.get(index).map_or_default(read))
     }
 
     fn edit(self, index: usize, write: impl FnOnce(&mut T)) {

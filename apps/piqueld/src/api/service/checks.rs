@@ -212,8 +212,7 @@ impl ApplicationService {
         let status = self
             .tailnet
             .as_ref()
-            .map(|status| status.borrow().clone())
-            .unwrap_or_default();
+            .map_or_default(|status| status.borrow().clone());
         let check =
             |status, message: &str| SystemCheck::new(SystemCheckId::Tailnet, status, message);
         let TailnetStatus {

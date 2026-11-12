@@ -315,7 +315,7 @@ fn DeployRevision() -> impl IntoView {
                         {move || {
                             format!(
                                 "Deploys the manifest on another branch or commit of the application's repository once, without saving it. The environment still follows {}: its next deployment, or a push when it deploys on push, returns to it.",
-                                current.get().map(|branch| branch.to_string()).unwrap_or_default(),
+                                current.get().map_or_default(|branch| branch.to_string()),
                             )
                         }}
                     </p>

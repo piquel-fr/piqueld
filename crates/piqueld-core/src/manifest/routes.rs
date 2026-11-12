@@ -14,12 +14,19 @@ validated_string!(
     /// A fully qualified public DNS name, such as `app.example.com`, in
     /// lowercase ASCII, without a scheme, port, path or wildcard. Write
     /// Unicode domains in their IDNA (Punycode) form.
-    Hostname, HostnameError,
+    Hostname,
+    HostnameError,
     "hostname must be an exact public DNS name (use ASCII/Punycode, without a scheme, path, wildcard, or port)",
     |value: &str| value.len() <= 253
         && value.contains('.')
-        && value.split('.').all(|label| is_lowercase_label(label, DNS_LABEL))
-        && value.rsplit('.').next().is_some_and(|tld| tld.bytes().any(|b| b.is_ascii_lowercase()) && !matches!(tld, "localhost" | "local" | "internal"))
+        && value
+            .split('.')
+            .all(|label| is_lowercase_label(label, DNS_LABEL))
+        && value
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| tld.bytes().any(|b| b.is_ascii_lowercase())
+                && !matches!(tld, "localhost" | "local" | "internal"))
 );
 
 impl Hostname {
@@ -53,7 +60,8 @@ validated_string!(
     /// A route's canonical hostname: an exact [`Hostname`], or `*.<parent>`
     /// matching every name exactly one label below a hostname, like a
     /// wildcard certificate. Exact routes win over a wildcard covering them.
-    RouteHostname, RouteHostnameError,
+    RouteHostname,
+    RouteHostnameError,
     "hostname must be an exact public DNS name, or `*.` followed by one (use ASCII/Punycode, without a scheme, path, or port)",
     |value: &str| value.len() <= 253
         && Hostname::parse(value.strip_prefix("*.").unwrap_or(value)).is_ok()
@@ -154,7 +162,8 @@ validated_string!(
     /// Absolute redirect destination: an `http` or `https` scheme, a public
     /// hostname with an optional port, and an optional path. Queries, fragments,
     /// credentials, and Caddy placeholders are rejected.
-    RedirectUrl, RedirectUrlError,
+    RedirectUrl,
+    RedirectUrlError,
     "redirect target must be an http(s) URL with a lowercase public hostname, an optional port and path, and no query, fragment, or braces",
     |value: &str| value.len() <= 2048
         && RedirectUrl::parts(value).is_some_and(|(host, port, path)| {
@@ -164,7 +173,9 @@ validated_string!(
                         && port.bytes().all(|b| b.is_ascii_digit())
                         && port.parse::<NonZeroU16>().is_ok()
                 })
-                && path.bytes().all(|b| b.is_ascii_graphic() && !b"?#{}\\".contains(&b))
+                && path
+                    .bytes()
+                    .all(|b| b.is_ascii_graphic() && !b"?#{}\\".contains(&b))
         })
 );
 

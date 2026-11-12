@@ -40,7 +40,6 @@ use tokio::time::Instant;
 /// # Panics
 ///
 /// If the Tokio runtime cannot start.
-#[must_use]
 #[tokio::main]
 pub async fn run() -> ExitCode {
     let matches = match Cli::command().try_get_matches() {

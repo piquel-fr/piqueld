@@ -40,8 +40,7 @@ impl VariableDraft {
                 default: variables
                     .defaults
                     .get(name)
-                    .map(Variable::to_text)
-                    .unwrap_or_default(),
+                    .map_or_default(Variable::to_text),
                 environments: variables
                     .environments
                     .iter()
@@ -52,8 +51,7 @@ impl VariableDraft {
                 previews: variables
                     .previews
                     .get(name)
-                    .map(Variable::to_text)
-                    .unwrap_or_default(),
+                    .map_or_default(Variable::to_text),
             })
             .collect()
     }

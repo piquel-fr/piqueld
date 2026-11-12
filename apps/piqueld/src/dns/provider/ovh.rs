@@ -149,7 +149,7 @@ impl Ovh {
     ) -> Result<T, ApiError> {
         let time: i64 = send(http.get(format!("{}/auth/time", self.api))).await?;
         let url = format!("{}{path}", self.api);
-        let body = body.map(Value::to_string).unwrap_or_default();
+        let body = body.map_or_default(Value::to_string);
         let signature = self.signature(&method, &url, &body, time);
         send(
             http.request(method, url)

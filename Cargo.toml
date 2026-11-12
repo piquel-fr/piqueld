@@ -100,7 +100,6 @@ uuid = { version = "1.17.0", features = ["v7"] }
 
 # Browser UI and same-origin WASM transport. These are target-gated in the
 # client/UI crates so native daemon and CLI builds do not link browser code.
-gloo-net = { version = "0.6.0", default-features = false }
 gloo-timers = "0.3.0"
 leptos = { version = "0.8.21", default-features = false }
 leptos_router = { version = "0.8.16", default-features = false }

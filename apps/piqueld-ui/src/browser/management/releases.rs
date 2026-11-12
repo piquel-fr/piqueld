@@ -242,8 +242,7 @@ fn release_services(release: &ReleaseView) -> AnyView {
                 .fingerprint
                 .services()
                 .get(service)
-                .map(|inputs| inputs.fields().clone())
-                .unwrap_or_default();
+                .map_or_default(|inputs| inputs.fields().clone());
             let provenance = match source {
                 ResolvedSource::Image { requested, .. } => format!("Pulled {requested}"),
                 ResolvedSource::Git {

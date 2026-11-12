@@ -110,27 +110,21 @@ report!(TelemetryStatus, self, out, {
     }
     for destination in &self.destinations {
         let state = destination.state();
-        let receiver = destination
-            .receiver
-            .as_ref()
-            .map(
-                |receiver| match (&receiver.application, &receiver.environment) {
-                    (Some(application), Some(environment)) => {
-                        format!("{application} {environment} at ")
-                    }
-                    _ => format!("{} at ", receiver.environment_id),
-                },
-            )
-            .unwrap_or_default();
+        let receiver = destination.receiver.as_ref().map_or_default(|receiver| {
+            match (&receiver.application, &receiver.environment) {
+                (Some(application), Some(environment)) => {
+                    format!("{application} {environment} at ")
+                }
+                _ => format!("{} at ", receiver.environment_id),
+            }
+        });
         let last = destination
             .last_success_ms
-            .map(|at| format!(", last export at Unix ms {at}"))
-            .unwrap_or_default();
+            .map_or_default(|at| format!(", last export at Unix ms {at}"));
         let headers = destination
             .headers
             .as_ref()
-            .map(|headers| format!(", headers {headers}"))
-            .unwrap_or_default();
+            .map_or_default(|headers| format!(", headers {headers}"));
         out.label(
             "Telemetry",
             format_args!(

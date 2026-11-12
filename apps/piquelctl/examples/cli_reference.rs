@@ -83,8 +83,7 @@ impl CliReference {
                 let name = format!("{path} {}", subcommand.get_name());
                 let about = subcommand
                     .get_about()
-                    .map(|about| Self::sentence(&about.to_string()))
-                    .unwrap_or_default();
+                    .map_or_default(|about| Self::sentence(&about.to_string()));
                 self.page.item(
                     0,
                     &format!(
@@ -113,8 +112,7 @@ impl CliReference {
         let help = argument
             .get_long_help()
             .or(argument.get_help())
-            .map(|help| Self::sentence(&help.to_string()))
-            .unwrap_or_default();
+            .map_or_default(|help| Self::sentence(&help.to_string()));
         let mut text = format!("`{syntax}`: {}", Page::prose(&help));
         if argument.is_required_set() && !argument.is_positional() {
             text.push_str(" Required.");
@@ -148,8 +146,7 @@ impl CliReference {
             for value in values {
                 let help = value
                     .get_help()
-                    .map(|help| Self::sentence(&help.to_string()))
-                    .unwrap_or_default();
+                    .map_or_default(|help| Self::sentence(&help.to_string()));
                 self.page.item(
                     1,
                     &format!("`{}`: {}", value.get_name(), Page::prose(&help)),

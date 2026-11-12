@@ -203,8 +203,7 @@ impl PairRows {
                                 (self.read)(j)
                                     .get(row)
                                     .cloned()
-                                    .map(|mut pair| std::mem::take(column(&mut pair)))
-                                    .unwrap_or_default()
+                                    .map_or_default(|mut pair| std::mem::take(column(&mut pair)))
                             },
                         )
                     }}
