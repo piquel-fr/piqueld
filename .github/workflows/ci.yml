@@ -26,7 +26,8 @@
 # `ci` is the single status to require: it fails if any job failed and passes
 # when the rest succeeded or were skipped.
 #
-# Caches are saved from main only. Pull requests restore main's caches, so a
+# Caches are saved from main only, except the small prebuilt dashboard (see
+# .github/actions/dashboard). Pull requests restore main's caches, so a
 # branch never evicts them with copies no other branch can read.
 
 name: CI
@@ -81,6 +82,7 @@ jobs:
           filters: |
             workspace: &workspace
               - .github/workflows/**
+              - .github/actions/**
               - Cargo.toml
               - Cargo.lock
               - rust-toolchain.toml
@@ -145,9 +147,10 @@ jobs:
       - run: just fmt-check
       - run: just deny
 
-  # Clippy runs first so lint failures report early; the embedded dashboard it
-  # builds is then reused by the tests. `just lint` also lints the dashboard
-  # and client as wasm32, using the target from rust-toolchain.toml.
+  # Clippy runs first so lint failures report early. Both it and the tests
+  # embed the prebuilt dashboard instead of compiling it. `just lint` also
+  # lints the dashboard and client as wasm32, using the target from
+  # rust-toolchain.toml.
   rust:
     name: rust
     needs: changes
@@ -163,6 +166,7 @@ jobs:
         with:
           cache-directories: target-ui
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/dashboard
       - run: just lint
       - run: just test
       - name: Preserve test report
@@ -298,6 +302,7 @@ jobs:
         with:
           cache-directories: target-ui
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/dashboard
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'

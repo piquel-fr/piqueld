@@ -64,7 +64,10 @@ it. With the `embedded-ui` feature, the daemon build script:
 Setting `PIQUELD_DASHBOARD_WASM` to a compiled `piqueld-ui.wasm` skips step 1
 and embeds that module instead, and the build warns that changes under
 `apps/piqueld-ui` are not included. The Nix packages pass their own cached
-`dashboard` build this way, so daemon-only changes don't recompile the UI.
+`dashboard` build this way, so daemon-only changes don't recompile the UI. So
+do the CI jobs that embed the dashboard, through
+[`.github/actions/dashboard`](https://github.com/sourceorigin-dev/piqueld/tree/main/.github/actions/dashboard),
+which builds the module once per version of its sources and caches it.
 
 No Trunk, wasm-bindgen CLI, binaryen, Tailwind, or Node is involved. The shell
 has no inline scripts, so the Content-Security-Policy is a constant. See

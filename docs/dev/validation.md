@@ -31,6 +31,10 @@ restore them. Dashboard tools are cached by version.
 | CLI on macOS | `validate-cli` | `cli (macOS)` |
 | Documentation book build and link check | `docs` | `docs` |
 
+The `rust` and `browser-playwright` jobs embed a dashboard module built once
+per version of its sources, instead of compiling it each time; see
+[production assets](architecture/dashboard.md#production-assets).
+
 `just` runs the default validation set (`validate`), including a single check of
 the generated OpenAPI specification, client, and manifest JSON Schema. Both local
 validation and CI compare the committed artifacts without rewriting them. CI
