@@ -402,8 +402,9 @@ ALTER USER notes PASSWORD :'pw';
 EOF
 ```
 
-When the application has several environments, add `--env <name>` to
-`env secret` and `app exec`.
+`env secret regenerate` takes the environment as its second argument, as
+above. When the application has several environments, also add
+`--env <name>` to `app exec`.
 
 ## Delete a secret
 
