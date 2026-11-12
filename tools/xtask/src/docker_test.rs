@@ -95,7 +95,10 @@ fn dind(image: String, runtime: &Path) -> ContainerCreateBody {
     let mut body = Engine::dind_container(image, &runtime, [format!("{runtime}:{runtime}")]);
     // The image keeps /var/lib/docker in a volume on the host's filesystem,
     // where overlay2 works. vfs copies every layer, which made the image-heavy
-    // tests several times slower.
+    // tests several times slower. Naming a graph driver also keeps the classic
+    // image store the contract scenarios expect: without one, the engine uses
+    // the containerd image store, where
+    // `an_image_in_two_repositories_lists_both_digests` fails.
     body.cmd
         .get_or_insert_default()
         .push("--storage-driver=overlay2".to_owned());

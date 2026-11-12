@@ -280,9 +280,10 @@ jobs:
             binary: --test docker_integration
             partition: --partition count:2/2
     env:
-      # `just docker-test` bounds each test run; compilation is already warm
-      # through the prebuild below.
-      PIQUELD_DOCKER_TEST_TIMEOUT: 30m
+      # `just docker-test` bounds each test run, within the job's timeout so
+      # its cleanup and the test report still run; compilation is already
+      # warm through the prebuild below.
+      PIQUELD_DOCKER_TEST_TIMEOUT: 20m
       NEXTEST_PROFILE: docker-ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

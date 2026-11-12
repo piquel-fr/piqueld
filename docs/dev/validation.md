@@ -68,7 +68,7 @@ CI runs three shards side by side, each against an engine of its own: the
 `ingress` suite, and each half of the `engine` suite.
 
 The scenarios in `apps/piqueld/tests/support/docker_contract.rs` check that the
-fake behaves like the real engine. Both suites run each of them:
+fake behaves like the real engine. Two test binaries run each of them:
 `fake_docker/main.rs` against the fake, in the `rust` job, and
 `docker_integration.rs` against the engine, in the `docker-integration` job.
 When the controller starts relying on another engine behavior, add a scenario
