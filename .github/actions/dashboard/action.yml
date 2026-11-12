@@ -6,7 +6,8 @@
 #
 # The cache key covers everything the module is compiled from: piqueld-ui and
 # the workspace crates it depends on, the manifests, the lockfile, the Cargo
-# configuration, this build command and the Rust version. The build script still reads the stylesheets and assets themselves.
+# configuration, this build command and the Rust version. The build script
+# still reads the stylesheets and assets themselves.
 #
 # Unlike the Rust caches, this one is saved from pull requests too: entries are
 # a few megabytes, and keyed by content, so a later push that leaves the
