@@ -933,6 +933,26 @@ async fn deletion_proceeds_after_another_node_joins() {
     harness.assert_deleted(&deletion).await;
 }
 
+/// Deletion waits for Swarm to release the network a container just left,
+/// even beyond the attempts other failed requests get.
+#[tokio::test]
+async fn deletion_waits_for_swarm_to_release_the_network() {
+    let mut harness = ControllerHarness::new().await;
+    harness.set_retry_policy(piqueld::reconcile::RetryPolicy {
+        attempts: 2,
+        initial_delay: Duration::from_millis(10),
+        max_delay: Duration::from_millis(10),
+        ..piqueld::reconcile::RetryPolicy::default()
+    });
+    harness.create().await;
+    harness.scan().await;
+    harness.docker.releasing_networks.store(5, Ordering::SeqCst);
+    let deletion = harness.delete().await;
+    harness.scan().await;
+    harness.assert_deleted(&deletion).await;
+    assert_eq!(harness.docker.releasing_networks.load(Ordering::SeqCst), 0);
+}
+
 /// Restoring an earlier deployment rolls out its image again, pulled again
 /// by digest once removed, without running its jobs again.
 #[tokio::test]

@@ -38,6 +38,9 @@ pub struct FakeDocker {
     pub registry: Arc<Mutex<RegistryState>>,
     /// Refuses removing networks as an ownership conflict.
     pub deny_network_removal: Arc<AtomicBool>,
+    /// Refuses this many network removals with [`DockerError::NetworkInUse`],
+    /// as Swarm does for a few seconds after a container left the network.
+    pub releasing_networks: Arc<AtomicUsize>,
     /// Fails observations as if Docker were unavailable.
     pub fail_observations: Arc<AtomicBool>,
     /// Leaves ensured services updating.
@@ -981,6 +984,20 @@ impl DockerApi for FakeDocker {
         Self::check_owned(existing.map(|network| &network.labels), ownership)?;
         if Self::attached(&observed.services, name) {
             return Err(DockerError::Request("remove a network in use"));
+        }
+        if self
+            .releasing_networks
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(DockerError::NetworkInUse(
+                bollard::errors::Error::DockerResponseServerError {
+                    status_code: 400,
+                    message: format!("network {name} is in use by task"),
+                },
+            ));
         }
         observed.networks.retain(|network| network.name != name);
         Ok(())

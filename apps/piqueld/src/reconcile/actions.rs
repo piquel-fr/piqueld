@@ -12,6 +12,11 @@ const SERVICE_POLL: Duration = Duration::from_millis(250);
 /// Longest delay between observations while waiting for a service. Each is
 /// a full observation of the environment.
 const SERVICE_POLL_MAX: Duration = Duration::from_secs(1);
+/// How long removing a network keeps retrying while a task still uses it.
+/// A container that left an attachable overlay, such as the ingress gateway
+/// detached from an environment's network or removed, keeps its Swarm
+/// attachment task on it for a few seconds, until Swarm releases it.
+const NETWORK_RELEASE: Duration = Duration::from_secs(30);
 
 impl<D: DockerApi> Controller<D> {
     /// Executes one planned action inside its own journal entry.
@@ -229,8 +234,10 @@ impl<D: DockerApi> Controller<D> {
     /// Each attempt re-checks that the operation is still current, both before and
     /// after taking the global mutation lock, and records the request attempt in the
     /// journal. Ownership, configuration, swarm, and validation errors are terminal;
-    /// other errors are journaled as retries until attempts run out. Cancellation
-    /// interrupts the backoff sleep.
+    /// other errors are journaled as retries until attempts run out. A network a
+    /// task still uses is retried, without counting against the attempts, for up
+    /// to [`NETWORK_RELEASE`]. Cancellation interrupts the backoff sleep,
+    /// which happens outside the mutation lock.
     pub(super) async fn retry<F, Fut>(
         &self,
         operation: &Operation,
@@ -243,8 +250,12 @@ impl<D: DockerApi> Controller<D> {
         Fut: std::future::Future<Output = Result<(), DockerError>>,
     {
         let attempts = self.retry.attempts.max(1);
+        let started = tokio::time::Instant::now();
         let mut delay = self.retry.initial_delay;
-        for attempt in 0..attempts {
+        let mut failures = 0;
+        let mut request = 0;
+        loop {
+            request += 1;
             self.check_current(operation).await?;
             if cancellation.is_cancelled() {
                 return Err(OperationError::Cancelled);
@@ -252,39 +263,40 @@ impl<D: DockerApi> Controller<D> {
             let result = {
                 let _guard = self.mutations.lock().await;
                 self.check_current(operation).await?;
-                self.store.action_request(journal, attempt + 1).await?;
+                self.store.action_request(journal, request).await?;
                 call().await
             };
-            match result {
+            let error = match result {
                 Ok(()) => return Ok(()),
                 Err(error) if error.is_terminal() => {
                     tracing::error!(error = ?error, "Docker operation rejected");
                     return Err(error.into());
                 }
-                Err(error) if attempt + 1 == attempts => {
+                Err(error) => error,
+            };
+            let releasing = matches!(error, DockerError::NetworkInUse(_))
+                && started.elapsed() < NETWORK_RELEASE;
+            if !releasing {
+                failures += 1;
+                if failures == attempts {
                     tracing::error!(error = ?error, "Docker operation failed after retries");
                     return Err(error.into());
                 }
-                Err(error) => {
-                    let diagnostic = OperationError::from(error).diagnostic();
-                    self.store
-                        .action_retry(journal, attempt + 1, delay, &diagnostic)
-                        .await?;
-                    tracing::warn!(
-                        diagnostic_id = %diagnostic.id,
-                        attempt = attempt + 1,
-                        attempts,
-                        retry_delay_ms = delay.as_secs_f64() * 1_000.0,
-                        "Docker operation failed; retrying"
-                    );
-                    Self::pause(cancellation, delay).await?;
-                    delay = delay.saturating_mul(2).min(self.retry.max_delay);
-                }
             }
+            let diagnostic = OperationError::from(error).diagnostic();
+            self.store
+                .action_retry(journal, request, delay, &diagnostic)
+                .await?;
+            tracing::warn!(
+                diagnostic_id = %diagnostic.id,
+                attempt = request,
+                attempts,
+                retry_delay_ms = delay.as_secs_f64() * 1_000.0,
+                "Docker operation failed; retrying"
+            );
+            Self::pause(cancellation, delay).await?;
+            delay = delay.saturating_mul(2).min(self.retry.max_delay);
         }
-        Err(OperationError::DockerRequestFailed(
-            "execute retryable Docker operation",
-        ))
     }
 
     /// Polls observations, from every [`SERVICE_POLL`] backing off to every

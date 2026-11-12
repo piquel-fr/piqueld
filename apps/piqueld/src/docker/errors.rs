@@ -40,6 +40,11 @@ pub enum DockerError {
         #[source]
         source: bollard::errors::Error,
     },
+    /// Swarm refused to delete a network because a task still uses it, such
+    /// as the attachment task of a container that just left the network,
+    /// which Swarm releases within seconds.
+    #[error("Docker network is still in use by a task")]
+    NetworkInUse(#[source] bollard::errors::Error),
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     Request(&'static str),
@@ -82,6 +87,28 @@ impl DockerError {
         source: bollard::errors::Error,
     ) -> Self {
         Self::ImageResolutionSource { operation, source }
+    }
+
+    /// Classifies the result of deleting a network. A missing network counts
+    /// as deleted, as does one Swarm is still removing in the background: it
+    /// still inspects it, but fails deleting it again with a 500 "network …
+    /// not found". Swarm refuses to delete a network a task still uses with a
+    /// 400 "network … is in use by task …".
+    pub(super) fn deleted_network(result: Result<(), bollard::errors::Error>) -> Result<(), Self> {
+        let Err(source) = result.found() else {
+            return Ok(());
+        };
+        match &source {
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 500,
+                message,
+            } if message.starts_with("network ") && message.ends_with(" not found") => Ok(()),
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 400,
+                message,
+            } if message.contains("is in use by task") => Err(Self::NetworkInUse(source)),
+            _ => Err(Self::request("delete network", source)),
+        }
     }
 
     /// Builds a [`DockerError::RequestSource`] that keeps `source` for diagnostics.

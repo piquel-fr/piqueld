@@ -998,7 +998,8 @@ impl DockerApi for BollardDocker {
         Self::poll_until(|| self.services_stopped(job)).await
     }
     /// Removes the private network by its inspected ID after rechecking
-    /// ownership, role, and canonical name. A missing network counts as removed.
+    /// ownership, role, and canonical name. A missing network, or one Swarm
+    /// is still removing, counts as removed (see [`DockerError::deleted_network`]).
     async fn remove_network(
         &self,
         name: &str,
@@ -1022,12 +1023,7 @@ impl DockerApi for BollardDocker {
                 let labels = existing.labels.unwrap_or_default();
                 Self::check_ownership(labels, ownership, ResourceKind::Network, name)?;
                 // Network IDs make the ownership check and removal target the same object.
-                self.client()?
-                    .remove_network(&id)
-                    .await
-                    .found()
-                    .or_request("delete network")?;
-                Ok(())
+                DockerError::deleted_network(self.client()?.remove_network(&id).await)
             })
             .await
     }
