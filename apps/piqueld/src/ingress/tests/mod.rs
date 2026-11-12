@@ -157,6 +157,8 @@ pub(super) async fn request_deployment(
     (id, operation)
 }
 
+/// Requests a deployment of `app` and scans until it succeeds. A failed
+/// operation fails the test: a deployment never needs a retry here.
 async fn deploy(
     store: &Store,
     controller: &Controller<BollardDocker>,
@@ -171,15 +173,13 @@ async fn deploy(
                 break;
             }
             eprintln!("deploy: {:?} {:?}", status.state, status.error_message);
-            if status.state == OperationState::Failed {
-                assert_ne!(
-                    status.error_code.as_deref(),
-                    Some("ingress_unavailable"),
-                    "healthy ingress deployment must not need a retry: {:?}",
-                    status.error_message
-                );
-                store.retry_operation(&status).await.unwrap();
-            }
+            assert_ne!(
+                status.state,
+                OperationState::Failed,
+                "a deployment must not need a retry: {:?} {:?}",
+                status.error_code,
+                status.error_message
+            );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     })

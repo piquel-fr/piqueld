@@ -983,12 +983,8 @@ impl SwarmScenario {
                 .await
             {
                 Ok(()) => Some(()),
-                Err(DockerError::RequestSource { source, .. })
-                    if matches!(source.downcast_ref::<bollard::errors::Error>(),
-                        Some(bollard::errors::Error::DockerResponseServerError { status_code: 400, message })
-                            if message.contains("is in use by task")) =>
-                {
-                    in_use = Some(source);
+                Err(error) if error.releases_network() => {
+                    in_use = Some(error);
                     None
                 }
                 Err(error) => panic!("network removal failed: {error:?}"),

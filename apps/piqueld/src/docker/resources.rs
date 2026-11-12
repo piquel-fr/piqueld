@@ -998,7 +998,9 @@ impl DockerApi for BollardDocker {
         Self::poll_until(|| self.services_stopped(job)).await
     }
     /// Removes the private network by its inspected ID after rechecking
-    /// ownership, role, and canonical name. A missing network counts as removed.
+    /// ownership, role, and canonical name. A missing network counts as
+    /// removed; one Swarm is still releasing fails with an error the
+    /// controller retries for longer (see [`DockerError::releases_network`]).
     async fn remove_network(
         &self,
         name: &str,
@@ -1026,7 +1028,7 @@ impl DockerApi for BollardDocker {
                     .remove_network(&id)
                     .await
                     .found()
-                    .or_request("delete network")?;
+                    .map_err(DockerError::delete_network)?;
                 Ok(())
             })
             .await

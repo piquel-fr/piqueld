@@ -171,11 +171,16 @@ impl ControllerHarness {
 
     /// Gives the controller `timeout` to wait for each convergence.
     fn set_convergence_timeout(&mut self, timeout: Duration) {
+        self.set_retry_policy(piqueld::reconcile::RetryPolicy {
+            convergence_timeout: timeout,
+            ..piqueld::reconcile::RetryPolicy::default()
+        });
+    }
+
+    /// Replaces the controller with one following `retry`.
+    fn set_retry_policy(&mut self, retry: piqueld::reconcile::RetryPolicy) {
         self.controller = Controller::new(Arc::clone(&self.docker), Arc::clone(&self.store))
-            .with_retry_policy(piqueld::reconcile::RetryPolicy {
-                convergence_timeout: timeout,
-                ..piqueld::reconcile::RetryPolicy::default()
-            });
+            .with_retry_policy(retry);
     }
 
     fn applications(&self) -> TestApplications {

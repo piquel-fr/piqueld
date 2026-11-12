@@ -321,9 +321,10 @@ impl<D: DockerApi> Contract<D> {
 
     /// A network fails removal, as a retryable request, while a service is
     /// attached to it. Once removed, services and networks are no longer
-    /// observed, and removing them again succeeds; while Swarm is still
-    /// removing the network, removing it again may fail (see
-    /// [`Self::still_removing`]).
+    /// observed, and removing them again succeeds. While Swarm still
+    /// releases the network, removing it fails with an error the controller
+    /// retries for longer (see [`DockerError::releases_network`]); once that
+    /// succeeds after the network was deleted, it is no longer observed.
     pub async fn removing_services_and_networks_is_idempotent(&self) {
         let service = self.ensure_web(&self.environment).await;
         self.converged(&service).await;
@@ -334,6 +335,7 @@ impl<D: DockerApi> Contract<D> {
             .remove_network(network.name.as_str(), labels)
             .await
             .expect_err("a network services are attached to stays");
+        assert!(!in_use.releases_network(), "{in_use:?}");
         assert_eq!(
             Self::diagnostic(in_use),
             DiagnosticCode::DockerRequestFailed
@@ -347,38 +349,35 @@ impl<D: DockerApi> Contract<D> {
             .remove_service(service.name.as_str(), labels)
             .await
             .unwrap();
-        // Tasks of a removed service leave its networks after they stopped.
-        self.until("the network is removed", async || {
-            match self
-                .docker
-                .remove_network(network.name.as_str(), labels)
-                .await
-            {
-                Ok(()) => Some(()),
-                Err(error) if !error.is_terminal() => None,
-                Err(error) => panic!("removing the network failed: {error:?}"),
-            }
-        })
-        .await;
-        // Swarm removes the network in the background; the fake removes it
-        // at once.
-        if let Err(error) = self
-            .docker
-            .remove_network(network.name.as_str(), labels)
-            .await
-        {
-            assert!(
-                Self::still_removing(&error),
-                "removing the network again failed: {error:?}"
-            );
-        }
-        let observed = self
-            .until("the network is no longer observed", async || {
-                let observed = self.observe().await;
-                observed.networks.is_empty().then_some(observed)
+        let remove = async |expected: &str| {
+            self.until(expected, async || {
+                match self
+                    .docker
+                    .remove_network(network.name.as_str(), labels)
+                    .await
+                {
+                    Ok(()) => Some(()),
+                    Err(error) if error.releases_network() => {
+                        assert_eq!(Self::diagnostic(error), DiagnosticCode::DockerRequestFailed);
+                        None
+                    }
+                    Err(error) => panic!("removing the network failed: {error:?}"),
+                }
             })
             .await;
-        assert!(observed.services.is_empty(), "{observed:?}");
+        };
+        // Swarm releases a removed service's networks once it has marked its
+        // tasks for removal, shortly after removing it.
+        remove("the network is removed").await;
+        // Swarm removes the network in the background, and still inspects it
+        // meanwhile, but fails deleting it again until it is gone; the fake
+        // removes it at once.
+        remove("the network is gone").await;
+        let observed = self.observe().await;
+        assert!(
+            observed.services.is_empty() && observed.networks.is_empty(),
+            "{observed:?}"
+        );
         self.docker
             .remove_network(network.name.as_str(), labels)
             .await
@@ -722,27 +721,6 @@ impl<D: DockerApi> Contract<D> {
             .iter()
             .find(|observed| observed.name == service.name.as_str())
             .unwrap_or_else(|| panic!("{} is observed", service.name))
-    }
-
-    /// Whether `error` is the Engine failing to delete a network Swarm is
-    /// still removing in the background: it still inspects the network but
-    /// fails deleting it with a 500 "network … not found". The adapter
-    /// should count that network as removed instead.
-    fn still_removing(error: &DockerError) -> bool {
-        let DockerError::RequestSource {
-            operation: "delete network",
-            source,
-        } = error
-        else {
-            return false;
-        };
-        matches!(
-            source.downcast_ref(),
-            Some(bollard::errors::Error::DockerResponseServerError {
-                status_code: 500,
-                message,
-            }) if message.starts_with("network ") && message.ends_with(" not found")
-        )
     }
 
     /// How the controller classifies `error`.

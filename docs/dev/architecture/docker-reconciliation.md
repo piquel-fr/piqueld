@@ -169,6 +169,18 @@ Docker, Swarm, ingress, journal, image resolution, convergence and preparation
 timeout failures retry automatically, and their diagnostics are the ones marked
 `retryable`.
 
+A container that leaves an attachable overlay network, such as the ingress
+gateway when it detaches from an environment's network or is removed, keeps a
+Swarm attachment task on it for a few seconds. Swarm refuses to remove the
+network until it releases that task. Swarm also removes a deleted network in
+the background and still reports it meanwhile, so deleting it again fails until
+it is gone. Removing a network Swarm still releases is therefore retried for up
+to 30 seconds, outside the mutation lock and without counting against the
+request's attempts. Once the network is gone, the next attempt finds nothing to
+remove. After 30 seconds, each refusal counts against the attempts like any
+other failure, so with the default policy the request gets a few more tries,
+about 6 seconds, before it fails as a Docker request failure.
+
 Deletion remains running until a fresh observation confirms services and
 networks are absent. Failed deletion attempts record diagnostics and follow the
 same retry policy. Deletion removes the environment's Swarm secrets. Named volumes

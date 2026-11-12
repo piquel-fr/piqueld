@@ -40,6 +40,16 @@ pub enum DockerError {
         #[source]
         source: bollard::errors::Error,
     },
+    /// Swarm refused to delete a network because a task still uses it, such
+    /// as the attachment task of a container that just left the network,
+    /// which Swarm releases within seconds.
+    #[error("Docker network is still in use by a task")]
+    NetworkInUse(#[source] bollard::errors::Error),
+    /// Swarm is still removing a deleted network in the background: it still
+    /// inspects it, but fails deleting it again with a 500 "network … not
+    /// found" until it is gone, which can take more than ten seconds.
+    #[error("Docker network is still being removed")]
+    NetworkRemoving(#[source] bollard::errors::Error),
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     Request(&'static str),
@@ -84,6 +94,33 @@ impl DockerError {
         Self::ImageResolutionSource { operation, source }
     }
 
+    /// Classifies a failed deletion of a network the adapter just inspected:
+    /// Swarm refuses to delete one a task still uses with a 400 "network … is
+    /// in use by task …", and fails deleting one it is still removing with a
+    /// 500 "network … not found".
+    pub(super) fn delete_network(source: bollard::errors::Error) -> Self {
+        match &source {
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 400,
+                message,
+            } if message.contains("is in use by task") => Self::NetworkInUse(source),
+            bollard::errors::Error::DockerResponseServerError {
+                status_code: 500,
+                message,
+            } if message.starts_with("network ") && message.ends_with(" not found") => {
+                Self::NetworkRemoving(source)
+            }
+            _ => Self::request("delete network", source),
+        }
+    }
+
+    /// Whether Swarm is still releasing the network this failed to delete, so
+    /// the deletion is worth retrying for longer than other failures.
+    #[must_use]
+    pub fn releases_network(&self) -> bool {
+        matches!(self, Self::NetworkInUse(_) | Self::NetworkRemoving(_))
+    }
+
     /// Builds a [`DockerError::RequestSource`] that keeps `source` for diagnostics.
     pub(super) fn request(
         operation: &'static str,
@@ -117,6 +154,54 @@ impl<T> BollardResult<T> for Result<T, bollard::errors::Error> {
                 status_code: 404, ..
             }) => Ok(None),
             Err(error) => Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DockerError;
+
+    /// A failed network deletion with Docker's `status` and `message`.
+    fn deletion(status_code: u16, message: &str) -> DockerError {
+        DockerError::delete_network(bollard::errors::Error::DockerResponseServerError {
+            status_code,
+            message: message.into(),
+        })
+    }
+
+    #[test]
+    fn network_deletion_failures_swarm_still_releases_are_classified() {
+        assert!(matches!(
+            deletion(
+                400,
+                "rpc error: code = FailedPrecondition desc = network n1 is in use by task t1"
+            ),
+            DockerError::NetworkInUse(_)
+        ));
+        assert!(matches!(
+            deletion(500, "network n1 not found"),
+            DockerError::NetworkRemoving(_)
+        ));
+        for other in [
+            deletion(
+                400,
+                "rpc error: code = FailedPrecondition desc = network n1 is in use by service s1",
+            ),
+            deletion(500, "is in use by task t1"),
+            deletion(503, "network n1 not found"),
+        ] {
+            assert!(!other.releases_network(), "{other:?}");
+            assert!(
+                matches!(
+                    other,
+                    DockerError::RequestSource {
+                        operation: "delete network",
+                        ..
+                    }
+                ),
+                "{other:?}"
+            );
         }
     }
 }
