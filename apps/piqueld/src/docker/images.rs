@@ -88,9 +88,10 @@ impl LocalImage {
     /// ID in another form (a non-SHA-256 store), so it is never removed.
     /// Repository digests in another form are skipped.
     ///
-    /// The containerd image store lists an image once per manifest, with
-    /// that manifest's digest as its ID and descriptor, every name pointing
-    /// at it in `RepoTags`, but only one name's digest in `RepoDigests`.
+    /// The containerd image store lists an image once per target, a manifest
+    /// or a multi-platform index, with the target's digest as its ID and
+    /// descriptor, every name pointing at it in `RepoTags`, but only one
+    /// name's digest in `RepoDigests`.
     /// Each name's repository at the ID is a digest of the image, as image
     /// inspection reports, so they are added. The classic store lists every
     /// repository digest, and its IDs are config digests no name points at.
