@@ -104,13 +104,11 @@ jobs:
               - crates/piqueld-core/**
               - crates/piqueld-generated/**
               - crates/piqueld-probe/**
+            # Every crate, so a new one under crates/ is covered too.
             daemon: &daemon
               - *crates
               - apps/piqueld/**
-              - crates/piqueld-build/**
-              - crates/piqueld-config/**
-              - crates/piqueld-docker/**
-              - crates/piqueld-store/**
+              - crates/**
             rust:
               - *daemon
               - apps/**

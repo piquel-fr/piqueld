@@ -39,7 +39,7 @@ never edited, since databases that applied it won't run it again.
 | `piqueld-config` | The daemon's configuration |
 | `piqueld-core` | The contracts the others share |
 | `piqueld-docker` | The daemon's Docker boundary, with the health probe embedded |
-| `piqueld-probe` | The static health probe the daemon embeds |
+| `piqueld-probe` | The static health probe `piqueld-docker` embeds |
 | `piqueld-store` | The daemon's control-plane state |
 
 `piqueld-ui`, `piqueld-generated` and `xtask` set `publish = false`. Cargo
