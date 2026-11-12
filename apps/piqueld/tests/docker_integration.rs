@@ -31,6 +31,12 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 /// How often scenarios poll the Engine for work it finishes in the background.
 const POLL: Duration = Duration::from_millis(250);
 
+/// A `/bin/sh -c` script that runs until its container is stopped, then
+/// lingers for two seconds, so a removed task outlives its service. `sh` as
+/// PID 1 ignores SIGTERM unless it traps it, and would stop only when Docker
+/// kills it after the 10 second grace period.
+const LINGERING: &str = "trap 'sleep 2; exit 0' TERM; while true; do sleep 1; done";
+
 struct IsolatedDocker {
     socket: PathBuf,
     docker: BollardDocker,
@@ -131,7 +137,7 @@ impl SwarmScenario {
             files: vec![Self::motd(app)],
             arguments: vec![
                 "-c".into(),
-                "test $(cat /run/secrets/token) = mounted-value || exit 1; test \"$(cat /etc/piqueld-motd)\" = 'hello ${HOME}' || exit 1; if echo changed 2>/dev/null >/etc/piqueld-motd; then exit 1; fi; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 5; done".into(),
+                "trap 'exit 0' TERM; test $(cat /run/secrets/token) = mounted-value || exit 1; test \"$(cat /etc/piqueld-motd)\" = 'hello ${HOME}' || exit 1; if echo changed 2>/dev/null >/etc/piqueld-motd; then exit 1; fi; until getent hosts web >/dev/null; do sleep 1; done; echo log-stdout; echo log-stderr >&2; while true; do sleep 1; done".into(),
             ],
             ..environment.service("web")
         };
@@ -640,21 +646,17 @@ impl SwarmScenario {
             .job(&self.service, operation, script, volume_access, false)
     }
 
-    /// Starts a service named `name`, mounting `mounts`, that keeps running
-    /// until Docker kills it: `sh` as PID 1 ignores SIGTERM, so a removed
-    /// task stops only after the grace period. Returns once its container
-    /// runs, since Swarm drops a removed task that has none yet at once.
+    /// Starts a service named `name`, mounting `mounts`, that runs
+    /// [`LINGERING`], so a removed task stops a while after its service.
+    /// Returns once its container runs, since Swarm drops a removed task that
+    /// has none yet at once.
     async fn start_lingering_service(
         &self,
         name: &str,
         mounts: Vec<piqueld_core::DesiredMount>,
     ) -> DesiredService {
         let mut service = self.derived_service(name);
-        service.command = vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            "while true; do sleep 1; done".into(),
-        ];
+        service.command = vec!["/bin/sh".into(), "-c".into(), LINGERING.into()];
         service.arguments.clear();
         service.healthcheck = None;
         service.secrets.clear();
@@ -767,9 +769,9 @@ impl SwarmScenario {
 
     /// An exclusive run and a service never share a volume: the run does not
     /// start while a service mounts it, starts once the removed service's
-    /// task stopped, and blocks the service until the run is removed. `sh` as
-    /// PID 1 ignores SIGTERM, so removed tasks stop only after the grace
-    /// period, which starting the run doesn't wait for: callers wait first.
+    /// task stopped, and blocks the service until the run is removed. Removed
+    /// tasks run [`LINGERING`] a while longer, which starting the run doesn't
+    /// wait for: callers wait first.
     async fn exclusive_jobs_hold_their_volume(&self) {
         let docker = &self.engine.docker;
         let writer = self
@@ -778,7 +780,7 @@ impl SwarmScenario {
 
         let job = self.job_with(
             "operation-exclusive",
-            "sleep 300",
+            LINGERING,
             piqueld_core::manifest::JobVolumeAccess::Exclusive,
         );
         assert!(matches!(
@@ -855,12 +857,11 @@ impl SwarmScenario {
     }
 
     /// Waiting for removed job runs covers a run's container until it
-    /// stopped, even after an earlier attempt deleted its service. `sh` as
-    /// PID 1 ignores SIGTERM, so the container outlives its service by the
-    /// stop grace period.
+    /// stopped, even after an earlier attempt deleted its service. The run's
+    /// [`LINGERING`] container outlives its service.
     async fn job_runs_are_waited_for_until_their_containers_stop(&self) {
         let docker = &self.engine.docker;
-        let third = self.job("operation-3", "sleep 300");
+        let third = self.job("operation-3", LINGERING);
         docker.start_job(&third).await.unwrap();
         let running = || async {
             self.docker_api(
@@ -1348,13 +1349,15 @@ async fn links_reach_only_the_imported_service_until_removed() {
         ]),
     );
     let admin = exporter.services[0].name.to_string();
-    let shell = |script: String| serde_json::json!([{"name": "web", "source": {"type": "image", "image": "alpine:3.20"}, "command": ["/bin/sh", "-c", script]}]);
+    // Each shell exits on SIGTERM, so deleting it doesn't wait for Docker to
+    // kill it after the grace period.
+    let shell = |script: String| serde_json::json!([{"name": "web", "source": {"type": "image", "image": "alpine:3.20"}, "command": ["/bin/sh", "-c", format!("trap 'exit 0' TERM; {script}")]}]);
     let importer = compile(
         &format!("notes-{suffix}"),
         shell(format!(
             "until wget -q -T 2 -O /dev/null http://api.{exporter_name}/; do sleep 1; done; echo reached-api; \
              for name in admin.{exporter_name} api {admin}; do getent hosts $name >/dev/null && echo $name-visible; done; \
-             echo checked; while true; do sleep 5; done"
+             echo checked; while true; do sleep 1; done"
         )),
     );
     let unlinked = compile(
