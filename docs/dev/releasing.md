@@ -123,8 +123,8 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    ```
 
    Run the [release checks](validation.md#release-checks) on it, and wait for
-   them to pass. `gh run watch` asks which run to watch; pick the one you just
-   started:
+   them to pass. `gh run watch` asks which run to watch; give the new run a few
+   seconds to appear, then pick it:
 
    ```console
    gh workflow run release-checks.yml --ref main

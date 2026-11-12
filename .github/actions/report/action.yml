@@ -28,12 +28,12 @@ runs:
         issue=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number,title \
           --jq '[.[] | select(.title == env.TITLE)][0].number // empty')
         if [ "$FAILED" = true ]; then
-          body="[$GITHUB_WORKFLOW]($RUN) fails on $GITHUB_SHA ($GITHUB_EVENT_NAME)."
+          body="$GITHUB_WORKFLOW failed on $GITHUB_SHA ($GITHUB_EVENT_NAME): [run]($RUN)."
           if [ -n "$issue" ]; then
             gh issue comment "$issue" --body "$body"
           else
             gh issue create --title "$TITLE" --body "$body See docs/dev/validation.md."
           fi
         elif [ -n "$issue" ]; then
-          gh issue close "$issue" --comment "[$GITHUB_WORKFLOW]($RUN) passes again on $GITHUB_SHA."
+          gh issue close "$issue" --comment "$GITHUB_WORKFLOW passed again on $GITHUB_SHA: [run]($RUN)."
         fi

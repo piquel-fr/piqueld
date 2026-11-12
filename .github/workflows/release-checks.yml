@@ -41,6 +41,7 @@ on:
       - LICENSE
       - README.md
       - .github/workflows/release-checks.yml
+      - .github/actions/report/**
   schedule:
     - cron: "0 4 * * *"
   workflow_dispatch:

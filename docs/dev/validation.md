@@ -67,9 +67,9 @@ these checks run after a pull request merges instead of before:
 | Every published crate packaged and built from its package | `publish --dry-run` | `package` |
 | The static release archive, installed and then updated by `install.sh` | `dist` | `install` |
 
-They run on each push to `main` that changes what they build from: a manifest,
-the lockfile, a build script, a migration, the toolchain, the flake, the
-dashboard, `install.sh` or `xtask`. They also run every night at 04:00 UTC,
+They run on each push to `main` that changes what they build from, such as a
+manifest, the lockfile, a build script, a migration, the toolchain, the flake,
+the dashboard, the examples, `install.sh` or `xtask`. They also run every night at 04:00 UTC,
 which catches the rest and what breaks without a commit, such as a new stable
 Rust or a new runner image. Only the latest commit is checked: a push cancels
 the run of the one before it.
