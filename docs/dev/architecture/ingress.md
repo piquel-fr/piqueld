@@ -419,6 +419,9 @@ the daemon, so a compromised gateway can't take over a domain.
   - Each certificate pass deletes the saved records once planning has
     refreshed the zones, in `ingress_certificate_challenge_delete` actions.
     That covers records whose deletion failed and those a crash left behind.
+  - A deletion that fails is retried after about 1 minute, then after a delay
+    doubling up to 1 hour. The backoff is kept in memory, so a restart retries
+    at once.
   - A saved record whose zone no provider owns is kept, without an action,
     until a provider owns it again.
   - An order whose challenge name still has a saved record deletes it first,
