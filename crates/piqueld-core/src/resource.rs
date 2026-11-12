@@ -1437,14 +1437,7 @@ pub fn image_repository(reference: &str) -> Option<String> {
     if !valid_image_reference(reference) {
         return None;
     }
-    let without_digest = reference
-        .split_once('@')
-        .map_or(reference, |(name, _)| name);
-    let last_slash = without_digest.rfind('/');
-    let repository = match without_digest.rfind(':') {
-        Some(colon) if last_slash.is_none_or(|slash| colon > slash) => &without_digest[..colon],
-        _ => without_digest,
-    };
+    let repository = image_name(reference);
     if repository.is_empty() {
         return None;
     }
@@ -1471,6 +1464,23 @@ pub fn image_repository(reference: &str) -> Option<String> {
     } else {
         format!("docker.io/library/{path}")
     })
+}
+
+/// Returns `reference`'s repository as written, without its tag or digest.
+///
+/// ```text
+/// "nginx:1.27@sha256:..."        -> "nginx"
+/// "registry.io:5000/team/app:v1" -> "registry.io:5000/team/app"
+/// ```
+pub(crate) fn image_name(reference: &str) -> &str {
+    let without_digest = reference
+        .split_once('@')
+        .map_or(reference, |(name, _)| name);
+    let last_slash = without_digest.rfind('/');
+    match without_digest.rfind(':') {
+        Some(colon) if last_slash.is_none_or(|slash| colon > slash) => &without_digest[..colon],
+        _ => without_digest,
+    }
 }
 
 /// Lifecycle state of an observed Docker task.

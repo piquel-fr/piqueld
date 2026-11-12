@@ -1,6 +1,9 @@
 //! Checked requested and immutable image references at the runtime boundary.
 
-use crate::{names::validated_string, resource::Sha256Digest};
+use crate::{
+    names::validated_string,
+    resource::{Sha256Digest, image_name},
+};
 
 validated_string!(
     /// A syntactically valid requested container image reference.
@@ -50,6 +53,21 @@ validated_string!(
     "runtime image must be a repository digest or local SHA-256 image ID",
     |value: &str| crate::resource::immutable_digest_reference(value) || Sha256Digest::parse(value).is_ok()
 );
+
+impl ImageReference {
+    /// The reference's repository, as written, pinned to `digest`.
+    ///
+    /// ```text
+    /// "alpine:3.20", sha256:abc…              -> "alpine@sha256:abc…"
+    /// "ghcr.io/team/app@sha256:abc…", sha256:abc… -> "ghcr.io/team/app@sha256:abc…"
+    /// ```
+    #[must_use]
+    pub fn pinned(&self, digest: &Sha256Digest) -> RepositoryDigest {
+        // A valid reference's repository is at most 255 bytes, so with a
+        // SHA-256 digest it is always a valid repository digest.
+        RepositoryDigest(format!("{}@{digest}", image_name(self.as_str())))
+    }
+}
 
 impl From<RepositoryDigest> for ImmutableImage {
     fn from(value: RepositoryDigest) -> Self {

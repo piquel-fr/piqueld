@@ -97,6 +97,15 @@ just docker-test engine --partition count:1/2
 CI runs three shards side by side, each against an engine of its own: the
 `ingress` suite, and each half of the `engine` suite.
 
+The engine keeps images in the classic image store, which engines upgraded
+from older Docker releases still use. Fresh Docker 29 installs use the
+containerd image store instead, and Docker reports images differently from
+it. `--store containerd` runs the tests against an engine using it:
+
+```console
+just docker-test engine --store containerd
+```
+
 The scenarios in `apps/piqueld/tests/support/docker_contract.rs` check that the
 fake behaves like the real engine. Two test binaries run each of them:
 `fake_docker/main.rs` against the fake, in the `rust` job, and

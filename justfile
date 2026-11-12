@@ -155,8 +155,9 @@ docs-serve *ARGS:
     @mdbook serve {{ARGS}}
 
 # Runs the Docker integration tests against a throwaway Docker-in-Docker engine.
-# ARGS select a suite, `ingress` or `engine`, and a shard of it, such as
-# `engine --partition count:1/2`; see `cargo xtask docker-test --help`.
+# ARGS select a suite, `ingress` or `engine`, a shard of it, such as
+# `engine --partition count:1/2`, and the engine's image store, such as
+# `--store containerd`; see `cargo xtask docker-test --help`.
 [positional-arguments]
 docker-test *ARGS:
     @cargo xtask docker-test "$@"

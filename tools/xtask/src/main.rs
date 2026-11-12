@@ -45,6 +45,9 @@ enum Task {
         /// such as `count:1/2`.
         #[arg(long)]
         partition: Option<String>,
+        /// The image store the engine keeps images in.
+        #[arg(long, value_enum, default_value_t)]
+        store: docker_test::Store,
     },
     /// Run the Playwright browser suite with Chromium in its pinned container.
     #[command(disable_help_flag = true)]
@@ -91,9 +94,11 @@ async fn main() -> Result<ExitCode> {
     let workspace = Workspace::current()?;
     match Cli::parse().task {
         Task::Dev { command } => command.unwrap_or(dev::Command::Run).run(workspace).await,
-        Task::DockerTest { suite, partition } => {
-            docker_test::run(&workspace, suite, partition.as_deref()).await
-        }
+        Task::DockerTest {
+            suite,
+            partition,
+            store,
+        } => docker_test::run(&workspace, suite, partition.as_deref(), store).await,
         Task::Playwright { args } => playwright::run(&workspace, &args).await,
         Task::Boundary => boundary::check(&workspace),
         Task::Coverage { args } => coverage::run(&workspace, &args),

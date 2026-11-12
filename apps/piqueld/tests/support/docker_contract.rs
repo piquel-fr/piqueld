@@ -446,8 +446,7 @@ impl<D: DockerApi> Contract<D> {
     }
 
     /// An image pulled from two repositories is listed once, with both
-    /// repositories' digests. The Engine's containerd image store, which
-    /// `just docker-test` doesn't run, lists only one of them.
+    /// repositories' digests, from either image store.
     pub async fn an_image_in_two_repositories_lists_both_digests(&self) {
         let aliased = self.docker.resolve_image(&self.aliased()).await.unwrap();
         let resolved = [self.environment.image.as_str(), aliased.as_str()];

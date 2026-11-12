@@ -40,12 +40,26 @@ impl Suite {
     }
 }
 
-/// Runs `suite`, or every suite, against one engine. `partition`, nextest's
-/// `--partition` such as `count:1/2`, selects a shard of each suite's tests.
+/// Where the engine keeps images. Docker reports the same images
+/// differently from each store, and hosts use both.
+#[derive(Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Store {
+    /// The classic image store, on the overlay2 graph driver: older engines'
+    /// default, and engines upgraded from them.
+    #[default]
+    Classic,
+    /// The containerd image store: the default of fresh Docker 29 installs.
+    Containerd,
+}
+
+/// Runs `suite`, or every suite, against one engine keeping images in
+/// `store`. `partition`, nextest's `--partition` such as `count:1/2`, selects
+/// a shard of each suite's tests.
 pub async fn run(
     workspace: &Workspace,
     suite: Option<Suite>,
     partition: Option<&str>,
+    store: Store,
 ) -> Result<ExitCode> {
     ensure!(
         cfg!(target_os = "linux"),
@@ -59,7 +73,9 @@ pub async fn run(
         .context("create the engine's directory")?;
     let image = Engine::dind_image();
     engine.pull_missing(&image).await?;
-    let container = engine.launch(None, dind(image, runtime.path())).await?;
+    let container = engine
+        .launch(None, dind(image, runtime.path(), store))
+        .await?;
     let suites = suite.as_ref().map_or(&Suite::ALL[..], std::slice::from_ref);
     let result = test(
         workspace,
@@ -88,20 +104,20 @@ const PUBLISHED: [(&str, &str); 6] = [
     ("8055/tcp", "PIQUELD_CHALLTESTSRV_API_PORT"),
 ];
 
-/// An engine with its socket, and the daemon's data, in `runtime`, publishing
-/// [`PUBLISHED`].
-fn dind(image: String, runtime: &Path) -> ContainerCreateBody {
+/// An engine with its socket, and the daemon's data, in `runtime`, keeping
+/// images in `store` and publishing [`PUBLISHED`].
+fn dind(image: String, runtime: &Path, store: Store) -> ContainerCreateBody {
     let runtime = runtime.display();
     let mut body = Engine::dind_container(image, &runtime, [format!("{runtime}:{runtime}")]);
     // The image keeps /var/lib/docker in a volume on the host's filesystem,
     // where overlay2 works. vfs copies every layer, which made the image-heavy
-    // tests several times slower. Naming a graph driver also keeps the classic
-    // image store the contract scenarios expect: without one, the engine uses
-    // the containerd image store, where
-    // `an_image_in_two_repositories_lists_both_digests` fails.
-    body.cmd
-        .get_or_insert_default()
-        .push("--storage-driver=overlay2".to_owned());
+    // tests several times slower. Naming a graph driver selects the classic
+    // image store; without one, the engine uses the containerd image store.
+    if store == Store::Classic {
+        body.cmd
+            .get_or_insert_default()
+            .push("--storage-driver=overlay2".to_owned());
+    }
     #[expect(
         clippy::zero_sized_map_values,
         reason = "bollard requires HashMap<(), ()> for each exposed port"
