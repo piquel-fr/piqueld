@@ -8,8 +8,12 @@ use std::{
     fmt,
     future::Future,
     io::{self, Read},
+    num::NonZeroU64,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{sync::Notify, time};
@@ -18,8 +22,11 @@ use tokio::{sync::Notify, time};
 pub(crate) const DEFAULT_SOCKET: &str = "/run/piqueld/piqueld.sock";
 /// Page size for exhaustive application listing (the API maximum).
 pub(crate) const PAGE_SIZE: u16 = piqueld_client::MAX_PAGE_SIZE;
-/// Delay between operation status polls.
+/// Delay before the first operation status poll; it doubles after each one,
+/// up to `MAX_POLL_INTERVAL`.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Longest delay between operation status polls.
+pub(crate) const MAX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Delay between readiness polls once an operation ended; each one observes
 /// the runtime, and the daemon checks routes far less often.
 pub(crate) const SETTLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -39,7 +46,12 @@ pub(crate) struct PageArgs {
 /// Set while a blocking operator read or an `exec` session is in progress;
 /// see `interactive`.
 static INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// Wakes the timeout supervisor in `main` when `INTERACTION_ACTIVE` flips.
+/// The current [`Waiting`]'s number, or 0 while the command doesn't wait.
+static WAITING: AtomicU64 = AtomicU64::new(0);
+/// The number the last [`Waiting`] took.
+static WAITS: AtomicU64 = AtomicU64::new(0);
+/// Wakes the timeout supervisor in `main` when `INTERACTION_ACTIVE` flips or
+/// a wait starts or ends.
 static INTERACTION_CHANGED: Notify = Notify::const_new();
 
 /// Updates the interaction flag and wakes the supervisor.
@@ -57,7 +69,7 @@ pub(crate) fn interaction_active() -> bool {
     INTERACTION_ACTIVE.load(Ordering::SeqCst)
 }
 
-/// Resolves whenever the interaction flag changes.
+/// Resolves whenever the interaction flag changes, or a wait starts or ends.
 pub(crate) async fn interaction_changed() {
     INTERACTION_CHANGED.notified().await;
 }
@@ -71,6 +83,50 @@ pub(crate) async fn interactive<T>(session: impl Future<Output = T>) -> T {
     let output = session.await;
     set_interaction(false);
     output
+}
+
+/// Marks the command as waiting for the daemon until dropped. The supervisor
+/// in `main` then suspends the `--timeout` deadline and bounds the wait by
+/// `--wait-timeout` instead.
+pub(crate) struct Waiting;
+
+/// The code of the last failure the current wait went on through.
+static LAST_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+impl Waiting {
+    pub(crate) fn start() -> Self {
+        *LAST_FAILURE.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        WAITING.store(WAITS.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+        INTERACTION_CHANGED.notify_one();
+        Self
+    }
+
+    /// Records `code`, a failure the current wait goes on through, so the
+    /// timeout error can name it.
+    pub(crate) fn failed(code: String) {
+        *LAST_FAILURE.lock().unwrap_or_else(PoisonError::into_inner) = Some(code);
+    }
+
+    /// The code of the last failure the current wait went on through.
+    pub(crate) fn last_failure() -> Option<String> {
+        LAST_FAILURE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The current wait's number; each wait gets a new one, so one starting
+    /// right as another ends is told apart. `None` while not waiting.
+    pub(crate) fn current() -> Option<NonZeroU64> {
+        NonZeroU64::new(WAITING.load(Ordering::SeqCst))
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        WAITING.store(0, Ordering::SeqCst);
+        INTERACTION_CHANGED.notify_one();
+    }
 }
 
 /// Runs a blocking read of operator input off the async runtime, so the

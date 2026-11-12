@@ -137,8 +137,8 @@ new version only ever runs on a migrated database.
    the program itself.
 
 5. Deploy: select **Deploy to production**, or run
-   `piquelctl --timeout 10m app deploy reader`. `--timeout 10m` waits longer
-   than the job may run, five minutes by default, and the rollout after it.
+   `piquelctl app deploy reader`. It waits for the job, which may run for
+   five minutes by default, and the rollout after it.
 
 Each deployment now runs the job before the rollout:
 
@@ -177,7 +177,7 @@ path the service mounts something at, fails validation.
   `job set`, once for each:
 
   ```console
-  piquelctl --timeout 10m app job set reader migrate web --env LOG_LEVEL=debug --deploy -- miniflux -migrate
+  piquelctl app job set reader migrate web --env LOG_LEVEL=debug --deploy -- miniflux -migrate
   ```
 
   They replace the job's own variables and secrets. Without them, `job set`
@@ -207,10 +207,11 @@ The timeout is 300 seconds by default, and at most 86,400 (a day).
   takes the job's service and command:
 
   ```console
-  piquelctl --timeout 15m app job set reader migrate web --timeout-seconds 600 --deploy -- miniflux -migrate
+  piquelctl app job set reader migrate web --timeout-seconds 600 --deploy -- miniflux -migrate
   ```
 
-  `piquelctl --timeout 15m` waits longer than the job may run.
+  `piquelctl` waits up to 15 minutes by default. For a job that may run
+  longer, raise `--wait-timeout` too.
 - **In the manifest,** it's `timeout_seconds`:
 
   ```diff
@@ -230,7 +231,7 @@ With a second job, such as a `seed` job that `reader` doesn't have, run `seed`
 first: select **Move up** next to it on the **Jobs** tab, or run:
 
 ```console
-piquelctl --timeout 10m app job move reader seed 1 --deploy
+piquelctl app job move reader seed 1 --deploy
 ```
 
 In the manifest, jobs run in the order the manifest lists them.
@@ -274,7 +275,7 @@ service first:
 - **With `piquelctl`,** add `--stop-service on` to `job set`:
 
   ```console
-  piquelctl --timeout 10m app job set reader migrate web --stop-service on --deploy -- miniflux -migrate
+  piquelctl app job set reader migrate web --stop-service on --deploy -- miniflux -migrate
   ```
 
   `--stop-service off` turns it off again. Without either, `job set` keeps

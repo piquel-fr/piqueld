@@ -43,7 +43,10 @@ Global options:
   Give an origin without a path, query or credentials, such as `http://127.0.0.1:7845` or `https://piqueld.example.ts.net`. It overrides `PIQUELD_URL`, `PIQUELD_SOCKET` and the profile's endpoint.
 - `--timeout <DURATION>`: Give up on the command after this long, such as `500ms`, `30s`, `2m` or `1h`.
 
-  A number without a unit is seconds. The limit also applies to each request. Confirmation prompts don't count towards it, and it doesn't limit the session of `app exec` and `preview exec`, or how long `login` waits for your approval. `PIQUELD_TIMEOUT` and a profile's `timeout` replace the default. Default: `30s`.
+  A number without a unit is seconds. The limit also applies to each request. Confirmation prompts and waiting for an operation don't count towards it, and it doesn't limit the session of `app exec` and `preview exec`, or how long `login` waits for your approval. `PIQUELD_TIMEOUT` and a profile's `timeout` replace the default. Default: `30s`.
+- `--wait-timeout <DURATION>`: Stop waiting for an operation after this long, such as `5m` or `1h`.
+
+  A number without a unit is seconds. Each wait, such as for a deployment, gets its own limit. Stopping to wait doesn't cancel the operation: the daemon goes on with it. `PIQUELD_WAIT_TIMEOUT` replaces the default. Default: `15m`.
 - `--json`: Print the result as JSON on standard output.
 
   Information, warnings and errors on standard error become one JSON object per line.
@@ -3602,7 +3605,7 @@ Options:
 
 Wait until a deployment of an environment is ready.
 
-The command never follows a newer deployment. It exits with code 3 if a newer deployment or the environment's deletion supersedes it, 5 if it fails, and 4 when `--timeout` runs out. Builds usually take longer than the default `--timeout`.
+The command never follows a newer deployment. It exits with code 3 if a newer deployment or the environment's deletion supersedes it, 5 if it fails, and 4 after `--wait-timeout`, 15 minutes by default.
 
 ```text
 piquelctl env wait [OPTIONS] <APPLICATION> [ENVIRONMENT]
@@ -3803,7 +3806,7 @@ Options:
 
 Wait until a deployment of a preview is ready.
 
-The command never follows a newer deployment. It exits with code 3 if a newer deployment or the preview's deletion supersedes it, 5 if it fails, and 4 when `--timeout` runs out. Builds usually take longer than the default `--timeout`.
+The command never follows a newer deployment. It exits with code 3 if a newer deployment or the preview's deletion supersedes it, 5 if it fails, and 4 after `--wait-timeout`, 15 minutes by default.
 
 ```text
 piquelctl preview wait [OPTIONS] <APPLICATION> <PREVIEW>

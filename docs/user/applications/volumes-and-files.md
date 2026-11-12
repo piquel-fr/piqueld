@@ -45,7 +45,7 @@ content. Each environment gets its own volume: environments never share data.
 ```console
 piquelctl app volume add notes data
 piquelctl app service mount set notes db data /var/lib/postgresql/data
-piquelctl --timeout 5m app deploy notes
+piquelctl app deploy notes
 ```
 
 ### In the manifest
@@ -77,7 +77,7 @@ piquelctl --timeout 5m app deploy notes
 3. Deploy:
 
    ```console
-   piquelctl --timeout 5m app apply --file notes.toml --deploy
+   piquelctl app apply --file notes.toml --deploy
    ```
 
 ### Mount a volume read-only

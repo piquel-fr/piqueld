@@ -3,7 +3,9 @@
 //! `app stop`, `app start`, and `app logs`.
 use crate::{
     cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
-    commands::{finish_operation, resolve_application, wait_for_deletion, wait_for_operation},
+    commands::{
+        Wait, finish_operation, resolve_application, wait_for_deletion, wait_for_operation,
+    },
     deployments::{HistoryArgs, RestoreArgs, Target, UrlArgs, WaitArgs, wait_for_accepted},
     editing::{EditFlags, on_off, visibility},
     error::{CliError, ErrorKind, ErrorReport, Result},
@@ -11,7 +13,7 @@ use crate::{
         Console, TaskOutcome,
         reports::{DeletionReport, EnvironmentRow, EnvironmentShowReport, Named, PromotionReport},
     },
-    support::{POLL_INTERVAL, join_or, retry_transport},
+    support::{join_or, retry_transport},
 };
 use clap::{Args, Subcommand, ValueEnum};
 use piqueld_client::{
@@ -192,8 +194,7 @@ pub(crate) enum EnvCommand {
     ///
     /// The command never follows a newer deployment. It exits with code 3 if
     /// a newer deployment or the environment's deletion supersedes it, 5 if
-    /// it fails, and 4 when `--timeout` runs out. Builds usually take longer
-    /// than the default `--timeout`.
+    /// it fails, and 4 after `--wait-timeout`, 15 minutes by default.
     Wait(WaitArgs<EnvironmentArgs>),
     /// Print the URLs of an environment's routes, and whether each is ready.
     Url(UrlArgs<EnvironmentArgs>),
@@ -1106,34 +1107,46 @@ async fn wait_until_stopped(
     before: Option<Baseline>,
 ) -> Result<EnvironmentView> {
     let id = environment.id.as_str();
-    let progress = console.start_task(id);
+    let mut wait = Wait::start(console, id);
     loop {
-        let status = client.environment_status(id).await?;
-        let environment = client.environment(id).await?;
+        let polled = async {
+            Ok((
+                client.environment_status(id).await?,
+                client.environment(id).await?,
+                client.operation(operation).await?,
+            ))
+        };
+        let Some((status, environment, operation)) = wait.read(polled.await)? else {
+            wait.pause().await;
+            continue;
+        };
         let health = status.runtime_health.as_deref().unwrap_or("unknown");
         if matches!(health, "stopped" | "absent") {
-            progress.finish(TaskOutcome::Succeeded, "services stopped");
+            wait.progress
+                .finish(TaskOutcome::Succeeded, "services stopped");
             return Ok(environment);
         }
         if !environment.stopped() {
-            progress.finish(
+            wait.progress.finish(
                 TaskOutcome::Skipped,
                 "started again before its services stopped",
             );
             return Ok(environment);
         }
-        let operation = client.operation(operation).await?;
         if operation.state.terminal()
             && before
                 .as_ref()
                 .is_none_or(|before| before.outdated_by(&operation))
+            && !wait.retried(client, &operation).await?
             && let Err(error) = finish_operation(operation)
         {
-            progress.finish(TaskOutcome::Failed, &error.to_string());
+            wait.progress
+                .finish(TaskOutcome::Failed, &error.to_string());
             return Err(error);
         }
-        progress.update(&format!("stopping services (runtime {health})"));
-        tokio::time::sleep(POLL_INTERVAL).await;
+        wait.progress
+            .update(&format!("stopping services (runtime {health})"));
+        wait.pause().await;
     }
 }
 

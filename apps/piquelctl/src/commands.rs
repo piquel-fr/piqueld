@@ -7,24 +7,24 @@ use crate::{
     environments,
     error::{CliError, ErrorKind, Result},
     output::{
-        Console, TaskOutcome,
+        Console, ProgressTask, TaskOutcome,
         reports::{
             ApplicationDeletionReport, ApplicationRow, Connection, DoctorReport, ManifestReport,
             Named, ShowReport, StatusReport, ValidManifestReport,
         },
     },
     support::{
-        PAGE_SIZE, POLL_INTERVAL, SETTLE_INTERVAL, join_or, looks_like_application_id,
-        manifest_name, read_manifest, retry_transport,
+        MAX_POLL_INTERVAL, PAGE_SIZE, POLL_INTERVAL, SETTLE_INTERVAL, Waiting, join_or,
+        looks_like_application_id, manifest_name, read_manifest, retry_transport,
     },
 };
 use futures_util::StreamExt;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, ApplyOptions, Client, ClientError,
-    ListApplicationsOptions, Operation, OperationState, Page,
+    ListApplicationsOptions, Operation, OperationState, Page, observability::DiagnosticCode,
 };
 use serde_json::json;
-use std::{collections::BTreeSet, path::Path};
+use std::{cell::Cell, collections::BTreeSet, path::Path, time::Duration};
 use tokio::time;
 
 /// Dispatches every connected command. `login` and `profiles` never reach here:
@@ -590,8 +590,98 @@ pub(crate) async fn resolve_application(
     Ok(client.application(summary.id.as_str()).await?)
 }
 
-/// Polls an operation every `POLL_INTERVAL` with a progress task until it is
-/// terminal. Returns an `ErrorKind::Operation` error unless it succeeded or was superseded.
+/// One wait for the daemon, with its progress task. While it lives,
+/// `--wait-timeout` bounds the command instead of `--timeout` (see
+/// [`Waiting`]). Polls back off from `POLL_INTERVAL` to `MAX_POLL_INTERVAL`,
+/// and, once the daemon answered, failures that polling again may fix, such
+/// as the daemon restarting, are shown as progress instead of ending the wait.
+pub(crate) struct Wait {
+    pub(crate) progress: ProgressTask,
+    interval: Duration,
+    /// Whether the daemon answered a read yet: until then, a failure is more
+    /// likely a wrong endpoint than a restart, and ends the wait.
+    answered: Cell<bool>,
+    _waiting: Waiting,
+}
+
+impl Wait {
+    pub(crate) fn start(console: &mut Console, label: &str) -> Self {
+        Self {
+            progress: console.start_task(label),
+            interval: POLL_INTERVAL,
+            answered: Cell::new(false),
+            _waiting: Waiting::start(),
+        }
+    }
+
+    /// `result`'s value, or `None` after a failure that polling again may
+    /// fix, once the daemon answered a read of this wait.
+    pub(crate) fn read<T>(&self, result: std::result::Result<T, ClientError>) -> Result<Option<T>> {
+        match result.map_err(CliError::from) {
+            Ok(value) => {
+                self.answered.set(true);
+                Ok(Some(value))
+            }
+            Err(error) if error.is_unavailable() && self.answered.get() => {
+                Waiting::failed(error.code_name());
+                self.progress.update(&format!("{error}; retrying"));
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Sleeps until the next poll.
+    pub(crate) async fn pause(&mut self) {
+        time::sleep(self.interval).await;
+        self.interval = (self.interval * 2).min(MAX_POLL_INTERVAL);
+    }
+
+    /// The code of `operation`'s failure when it is one the daemon retries
+    /// on its own while the operation is its environment's latest.
+    pub(crate) fn retryable(operation: &Operation) -> Option<DiagnosticCode> {
+        operation
+            .error_code
+            .as_deref()
+            .filter(|_| operation.state == OperationState::Failed)
+            .and_then(DiagnosticCode::parse)
+            .filter(|code| code.retryable())
+    }
+
+    /// Whether the daemon retries `operation`'s failure on its own: its code
+    /// is retryable, and it is still its environment's latest operation. A
+    /// deleted environment retries nothing.
+    pub(crate) async fn retried(&self, client: &Client, operation: &Operation) -> Result<bool> {
+        let Some(code) = Self::retryable(operation) else {
+            return Ok(false);
+        };
+        let detail = match client
+            .environment_detail(operation.environment_id.as_str())
+            .await
+        {
+            Err(error) if error.is_not_found() => return Ok(false),
+            detail => detail,
+        };
+        // An unavailable daemon can't have replaced the operation yet.
+        let Some(detail) = self.read(detail)? else {
+            return Ok(true);
+        };
+        let latest = detail
+            .latest_operation
+            .is_some_and(|latest| latest.id == operation.id);
+        if latest {
+            Waiting::failed(code.to_string());
+            self.progress.update(&format!(
+                "attempt {} failed with {code}; the daemon retries it",
+                operation.attempt
+            ));
+        }
+        Ok(latest)
+    }
+}
+
+/// Polls an operation with a progress task until it is terminal. Returns an
+/// `ErrorKind::Operation` error unless it succeeded or was superseded.
 pub(crate) async fn wait_for_operation(
     console: &mut Console,
     client: &Client,
@@ -610,46 +700,55 @@ pub(crate) enum Settled<T> {
     Waiting(String),
 }
 
-/// Polls an operation like [`wait_for_operation`]. Once it succeeded or was
-/// superseded, `settle` decides whether waiting is over; while it is not,
-/// the operation is polled again, so a retry that ends differently counts.
+/// Polls an operation like [`wait_for_operation`], through a [`Wait`]. A
+/// failure the daemon retries on its own keeps the wait going. Once it
+/// succeeded or was superseded, `settle` decides whether waiting is over;
+/// while it is not, the operation is polled again, so a retry that ends
+/// differently counts.
 pub(crate) async fn wait_for_operation_until<T>(
     console: &mut Console,
     client: &Client,
     operation_id: &str,
     mut settle: impl AsyncFnMut(Operation) -> Result<Settled<T>>,
 ) -> Result<T> {
-    let progress = console.start_task(operation_id);
+    let mut wait = Wait::start(console, operation_id);
     loop {
-        let operation = client.operation(operation_id).await?;
-        let pause = if operation.state.terminal() {
+        let Some(operation) = wait.read(client.operation(operation_id).await)? else {
+            wait.pause().await;
+            continue;
+        };
+        if !operation.state.terminal() {
+            wait.progress
+                .update(&OperationProgress::message(&operation));
+        } else if !wait.retried(client, &operation).await? {
             let outcome = OperationProgress::outcome(&operation);
             let message = OperationProgress::message(&operation);
-            match finish_operation(operation) {
-                Ok(operation) => match settle(operation).await {
-                    Ok(Settled::Done(value)) => {
-                        progress.finish(outcome, &message);
-                        return Ok(value);
-                    }
-                    Ok(Settled::Waiting(waiting)) => {
-                        progress.update(&waiting);
-                        SETTLE_INTERVAL
-                    }
-                    Err(error) => {
-                        progress.finish(TaskOutcome::Failed, &error.to_string());
-                        return Err(error);
-                    }
-                },
+            let settled = match finish_operation(operation) {
+                Ok(operation) => settle(operation).await,
                 Err(error) => {
-                    progress.finish(outcome, &message);
+                    wait.progress.finish(outcome, &message);
+                    return Err(error);
+                }
+            };
+            match settled {
+                Ok(Settled::Done(value)) => {
+                    wait.progress.finish(outcome, &message);
+                    return Ok(value);
+                }
+                Ok(Settled::Waiting(waiting)) => wait.progress.update(&waiting),
+                Err(error) if error.is_unavailable() => {
+                    wait.progress.update(&format!("{error}; retrying"));
+                }
+                Err(error) => {
+                    wait.progress
+                        .finish(TaskOutcome::Failed, &error.to_string());
                     return Err(error);
                 }
             }
-        } else {
-            progress.update(&OperationProgress::message(&operation));
-            POLL_INTERVAL
-        };
-        time::sleep(pause).await;
+            time::sleep(SETTLE_INTERVAL).await;
+            continue;
+        }
+        wait.pause().await;
     }
 }
 
@@ -680,33 +779,43 @@ pub(crate) async fn wait_for_deletion<T, F>(
 where
     F: std::future::Future<Output = std::result::Result<T, ClientError>>,
 {
-    let progress = console.start_task(operation_ids.first().map_or("deletion", String::as_str));
-    loop {
+    let mut wait = Wait::start(
+        console,
+        operation_ids.first().map_or("deletion", String::as_str),
+    );
+    'poll: loop {
         match resource().await {
             Err(error) if error.is_not_found() => {
-                progress.finish(TaskOutcome::Succeeded, "deleted");
+                wait.progress.finish(TaskOutcome::Succeeded, "deleted");
                 return Ok(());
             }
-            Err(error) => return Err(error.into()),
-            Ok(_) => {}
-        }
-        for operation_id in operation_ids {
-            match client.operation(operation_id).await {
-                Ok(operation) => {
-                    let message = OperationProgress::message(&operation);
-                    progress.update(&message);
-                    if operation.state.terminal()
-                        && let Err(error) = finish_operation(operation)
-                    {
-                        progress.finish(TaskOutcome::Failed, &message);
-                        return Err(error);
-                    }
+            result => {
+                if wait.read(result)?.is_none() {
+                    wait.pause().await;
+                    continue;
                 }
-                Err(error) if error.is_not_found() => {}
-                Err(error) => return Err(error.into()),
             }
         }
-        time::sleep(POLL_INTERVAL).await;
+        for operation_id in operation_ids {
+            let operation = match client.operation(operation_id).await {
+                Err(error) if error.is_not_found() => continue,
+                result => wait.read(result)?,
+            };
+            let Some(operation) = operation else {
+                wait.pause().await;
+                continue 'poll;
+            };
+            let message = OperationProgress::message(&operation);
+            wait.progress.update(&message);
+            if operation.state.terminal()
+                && !wait.retried(client, &operation).await?
+                && let Err(error) = finish_operation(operation)
+            {
+                wait.progress.finish(TaskOutcome::Failed, &message);
+                return Err(error);
+            }
+        }
+        wait.pause().await;
     }
 }
 

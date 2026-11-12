@@ -81,8 +81,7 @@ pub(crate) enum PreviewCommand {
     ///
     /// The command never follows a newer deployment. It exits with code 3 if
     /// a newer deployment or the preview's deletion supersedes it, 5 if it
-    /// fails, and 4 when `--timeout` runs out. Builds usually take longer
-    /// than the default `--timeout`.
+    /// fails, and 4 after `--wait-timeout`, 15 minutes by default.
     Wait(WaitArgs<PreviewArgs>),
     /// Print the URLs of a preview's routes, and whether each is ready.
     Url(UrlArgs<PreviewArgs>),

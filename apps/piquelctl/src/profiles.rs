@@ -21,6 +21,7 @@ pub(crate) struct ProfileSummary<'a> {
 pub(crate) struct ConnectionSources {
     pub(crate) endpoint: Source,
     pub(crate) timeout: Source,
+    pub(crate) wait_timeout: Source,
 }
 
 /// Where one connection setting came from, shown in diagnostics.
@@ -188,6 +189,7 @@ impl Profiles {
     /// - endpoint: `--socket`/`--url`, then `PIQUELD_SOCKET`/`PIQUELD_URL` (only one may be
     ///   set), then the profile.
     /// - timeout: `--timeout`, then `PIQUELD_TIMEOUT`, then the profile, then the default.
+    /// - wait timeout: `--wait-timeout`, then `PIQUELD_WAIT_TIMEOUT`, then the default.
     pub(crate) fn resolve(&self, cli: &mut Cli, matches: &ArgMatches) -> Result<()> {
         let selected = cli
             .profile
@@ -257,6 +259,15 @@ impl Profiles {
                         .configuration(cli.connection_sources.timeout.to_string())
                 })?;
             }
+        }
+        if matches.value_source("wait_timeout") == Some(ValueSource::CommandLine) {
+            cli.connection_sources.wait_timeout = Source::Flag("wait-timeout");
+        } else if let Ok(value) = std::env::var("PIQUELD_WAIT_TIMEOUT") {
+            cli.connection_sources.wait_timeout = Source::Environment("PIQUELD_WAIT_TIMEOUT");
+            cli.wait_timeout = parse_duration(&value).map_err(|message| {
+                Self::invalid(format!("invalid wait timeout: {message}"))
+                    .configuration(cli.connection_sources.wait_timeout.to_string())
+            })?;
         }
         Ok(())
     }

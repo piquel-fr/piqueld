@@ -368,8 +368,8 @@ must be observed, with every service healthy (converged, with every desired
 replica healthy); `--ready routes` also waits until every URL is `ready`. If a newer
 deployment, or the environment's deletion, supersedes it, `wait` exits 3 with
 `deployment_superseded`; if it
-fails, 5; at the command `--timeout`, 4, which ends only the local wait. Use a
-longer `--timeout` than the default 30 seconds for builds. On success, `wait`
+fails, 5; at `--wait-timeout`, 15 minutes by default, 4, which ends only the
+local wait. On success, `wait`
 prints the deployment like `env deploy` does.
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
@@ -420,7 +420,8 @@ Global `--timeout DURATION` defaults to `30s`. Durations are positive integer
 milliseconds (`ms`), seconds (`s`), minutes (`m`), hours (`h`), or days (`d`); a
 bare integer is interpreted as seconds. The timeout bounds the complete command, except
 `login`, which waits for browser approval, and an `app exec` or `preview exec` session; interactive
-confirmation prompts do not consume it. Read requests can use the full remaining
+confirmation prompts and waits for an operation do not consume it. Global
+`--wait-timeout DURATION`, `15m` by default or `PIQUELD_WAIT_TIMEOUT`, bounds each wait instead. Read requests can use the full remaining
 command budget. Idempotent mutations retry one transport failure if time remains;
 a request that exhausts the command budget cannot be retried.
 Manifest files must be regular UTF-8 files no larger than 2 MiB, matching the
@@ -549,7 +550,7 @@ no `request_id`:
 | `invalid_endpoint` | 2 | A rejected endpoint; `details.endpoint_source` |
 | `connection_failed` | 4 | The daemon could not be reached; `details.endpoint` and `endpoint_source` |
 | `request_timeout` | 4 | A request exceeded `--timeout`; also `details.timeout` and `timeout_source` |
-| `timeout` | 4 | The command exceeded `--timeout`; server-side work goes on |
+| `timeout` | 4 | The command exceeded `--timeout`, or a wait `--wait-timeout`; server-side work goes on |
 | `unavailable` | 4 | The daemon stopped answering, e.g. an `app exec` stream ended before the command exited |
 | `invalid_response` | 1 | The endpoint does not serve the piqueld API |
 | `conflict` | 3 | An ambiguous name or a blocked plan |
@@ -573,7 +574,7 @@ For a preview of a branch:
 created=$(piquelctl --json preview create notes --branch feat/login --slot agent-2 --no-wait)
 slug=$(jq -r .slug <<<"$created")
 deployment=$(jq -r .deployment_id <<<"$created")
-piquelctl --json --timeout 15m preview wait notes "$slug" --deployment "$deployment" --ready routes
+piquelctl --json preview wait notes "$slug" --deployment "$deployment" --ready routes
 url=$(piquelctl --json preview url notes "$slug" --route web | jq -r .url)
 piquelctl --json preview logs notes "$slug" --service web --tail 100
 piquelctl --json preview delete notes "$slug" --yes
@@ -584,7 +585,7 @@ To test uncommitted work without pushing it, from the worktree:
 ```sh
 deployed=$(piquelctl --json preview deploy notes --local --slot agent-2 --no-wait)
 slug=$(jq -r .slug <<<"$deployed")
-piquelctl --json --timeout 15m preview wait notes "$slug" --deployment "$(jq -r .deployment_id <<<"$deployed")" --ready routes
+piquelctl --json preview wait notes "$slug" --deployment "$(jq -r .deployment_id <<<"$deployed")" --ready routes
 ```
 
 Its result has `local: true`, the snapshot `commit` and its `base`. Run it
@@ -595,7 +596,7 @@ For an environment, which `env create` adds without deploying:
 ```sh
 piquelctl --json env create notes staging --branch main --yes
 deployment=$(piquelctl --json env deploy notes staging --yes --no-wait | jq -r .deployment_id)
-piquelctl --json --timeout 15m env wait notes staging --deployment "$deployment" --ready routes
+piquelctl --json env wait notes staging --deployment "$deployment" --ready routes
 url=$(piquelctl --json env url notes staging --route web | jq -r .url)
 piquelctl --json env logs notes staging --service web --tail 100
 piquelctl --json env delete notes staging --yes
@@ -982,13 +983,15 @@ before its end) and `--until DURATION` ends it that long ago (default: now),
 so `--since 14d --until 7d` covers the week before last. A warning reports when
 the window reaches before retained history.
 
-By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll every 250 ms
-until a terminal state. Supersession returns immediately with exit code 0 and
+By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll
+until a terminal state, from every 250 ms to every 2 seconds. While they wait,
+an unreachable or busy daemon, or a timed-out request, is retried until
+`--wait-timeout`. Supersession returns immediately with exit code 0 and
 `outcome: "superseded"` in mutation command results (`state: "superseded"` on an
-operation record). It does not wait for the replacement to deploy. An observed
-failed attempt returns failure even if the controller will retry automatically.
-`--no-wait` returns immediately. For long image pulls,
-use a longer `--timeout` or return immediately and inspect the operation later.
+operation record). It does not wait for the replacement to deploy. A failed
+attempt that the daemon retries on its own keeps the wait going. `--no-wait`
+returns immediately. For long image pulls, use a longer `--wait-timeout` or
+return immediately and inspect the operation later.
 Pressing Ctrl-C, or sending SIGTERM or SIGHUP, ends the local command,
 including confirmation and network requests, and restores the terminal. It
 does not cancel an accepted server-side operation, which can still be
@@ -1038,7 +1041,7 @@ a saved account. See [signing in from the CLI](../accounts/cli-and-tokens.md) fo
 from its branch, then explicitly resolve image or Git build sources. They
 supersede pending work for the selected environment. Use `--yes` to skip
 interactive confirmation, `--no-wait` to return after acceptance, or a longer
-global `--timeout` for builds. `--branch NAME` or `--commit SHA` fetches a
+global `--wait-timeout` for long builds. `--branch NAME` or `--commit SHA` fetches a
 repository-backed manifest from another revision for this deployment only,
 without changing the environment's branch; for example, to test a feature
 branch. Once the deployment finishes, they warn about anything it reported, such

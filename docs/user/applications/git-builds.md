@@ -53,11 +53,10 @@ healthy once it answers on `/`, on port 3000.
 piquelctl app create welcome
 piquelctl app service add welcome web --git https://github.com/docker/welcome-to-docker.git --branch main
 piquelctl app service health http welcome web 3000 --path /
-piquelctl --timeout 10m app deploy welcome
+piquelctl app deploy welcome
 ```
 
-`--timeout 10m` gives the build time to finish. By default, `piquelctl`
-waits 30 seconds.
+`piquelctl` waits for the build and the rollout, for up to 15 minutes.
 
 To switch a service you already have to Git:
 
@@ -78,7 +77,7 @@ piquelctl app service source context <app> <service> build
 ```
 
 These commands only save the change. Deploy it with
-`piquelctl --timeout 10m app deploy welcome`, or add `--deploy` to the command.
+`piquelctl app deploy welcome`, or add `--deploy` to the command.
 
 ### From a manifest
 
@@ -118,7 +117,7 @@ These commands only save the change. Deploy it with
 2. Save the manifest and deploy it:
 
    ```console
-   piquelctl --timeout 10m app apply --file welcome.toml --deploy
+   piquelctl app apply --file welcome.toml --deploy
    ```
 
 [Manifest settings](../reference/manifest-settings.md#specservicessource-table)
@@ -316,8 +315,8 @@ prints the earlier part.
   in the daemon's configuration.
 - **`piquelctl` times out, but the build goes on.** The command stopped
   waiting, not the deployment, and exited with code 4. Follow the deployment
-  on the **Builds** page or with `piquelctl --timeout 10m env wait welcome`, or
-  give `piquelctl` a longer `--timeout`.
+  on the **Builds** page or with `piquelctl env wait welcome`, or
+  give `piquelctl` a longer `--wait-timeout`.
 - **The build output says `Permission denied (publickey)` or `Host key
   verification failed`.** The daemon's user has no key the server accepts, or
   doesn't know the server's host key yet. Follow

@@ -160,10 +160,10 @@ piquelctl app delete hello
 
 ## Troubleshooting
 
-- **`piquelctl` times out.** It waits 30 seconds by default, and pulling a
-  large image can take longer. The deployment carries on: follow it in
-  the dashboard, or give `piquelctl` longer, such as
-  `piquelctl --timeout 5m app deploy hello`.
+- **`piquelctl` times out.** It waits 15 minutes for a deployment, and
+  pulling a large image can take longer. The deployment carries on: follow it
+  in the dashboard, or give `piquelctl` longer, such as
+  `piquelctl --wait-timeout 30m app deploy hello`.
 - **The deployment fails.** `piquelctl` prints the error. The environment's
   **Deployments** tab shows each step, and **Diagnostics** on its **Overview**
   says what went wrong.

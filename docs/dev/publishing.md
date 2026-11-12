@@ -105,7 +105,7 @@ host or on any machine where `piquelctl` is signed in to the instance.
 
    ```console
    piquelctl app apply --file deploy/piqueld-dev.toml
-   piquelctl --timeout 10m app deploy piqueld-dev
+   piquelctl app deploy piqueld-dev
    ```
 
    `app apply` and `app deploy` ask you to confirm. `app deploy` then waits
@@ -196,7 +196,7 @@ To preview your worktree without pushing it, uncommitted changes included,
 run this from the worktree:
 
 ```console
-piquelctl --timeout 10m preview deploy piqueld-dev --local
+piquelctl preview deploy piqueld-dev --local
 ```
 
 It deploys to the preview of the current branch, creating it if needed. Add
@@ -272,7 +272,7 @@ set `DOCKER_HOST` to that engine's socket first.
   longer than
   [`reconciliation.prepare_timeout_seconds`](../user/reference/configuration-settings.md#reconciliationprepare_timeout_seconds),
   300 seconds by default. Deploy again with
-  `piquelctl --timeout 10m app deploy piqueld-dev`: the steps that finished
+  `piquelctl app deploy piqueld-dev`: the steps that finished
   stay cached. If it keeps failing, raise the setting.
 - **The deployment fails with `hostname_conflict`.** Another application
   holds `piqueld.dev`, `www.piqueld.dev`, `docs.piqueld.dev` or

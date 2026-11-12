@@ -105,7 +105,7 @@ reads: `POSTGRES_USER` and `POSTGRES_DB`, both `notes`, and
 2. Save it and deploy it:
 
    ```console
-   piquelctl --timeout 5m app apply --file notes.toml --deploy
+   piquelctl app apply --file notes.toml --deploy
    ```
 
 ### Deploy it
@@ -113,22 +113,20 @@ reads: `POSTGRES_USER` and `POSTGRES_DB`, both `notes`, and
 `app apply --deploy` saves the manifest and deploys it at once. A change you
 save in the dashboard, or with `piquelctl app service`, changes the
 application's configuration, not what's running. To apply it, select **Deploy to production** on the application's page, or run
-`piquelctl --timeout 5m app deploy notes`. An application with several
+`piquelctl app deploy notes`. An application with several
 environments deploys one at a time:
-`piquelctl --timeout 5m env deploy notes <environment>`.
+`piquelctl env deploy notes <environment>`.
 
 The deployment deploys `db` first, waits until it passes its health check,
 then deploys `web`.
 
-`--timeout 5m` lets `piquelctl` wait for the deployment for up to five
-minutes, instead of 30 seconds. When a deployment changes a service, Docker
-watches its new replicas for 30 seconds, as [rollout order](#rollout-order)
-explains, so redeploying often takes longer than the default. The commands in
-these guides that deploy use `--timeout 5m` too.
+`piquelctl` waits for the deployment for up to 15 minutes; `--wait-timeout`
+changes that. When a deployment changes a service, Docker watches its new
+replicas for 30 seconds, as [rollout order](#rollout-order) explains.
 
 If `piquelctl` stops waiting first, it exits with code 4, but the deployment
 carries on. Keep following it on the environment's **Deployments** tab, or
-with `piquelctl --timeout 5m env wait notes`.
+with `piquelctl env wait notes`.
 
 The services of an application reach each other by name: `web` reaches the
 database at `db:5432`. Services of other applications can't, unless you

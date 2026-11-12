@@ -3,7 +3,7 @@
 //! `url` to read its URLs. Readiness comes from the daemon; the CLI never
 //! probes a URL.
 use crate::{
-    commands::{Settled, finish_operation, wait_for_operation, wait_for_operation_until},
+    commands::{Settled, Wait, finish_operation, wait_for_operation, wait_for_operation_until},
     error::{CliCode, CliError, ErrorKind, Result},
     output::{
         Console,
@@ -263,8 +263,8 @@ pub(crate) struct WaitArgs<T: Args> {
 impl<T: Args + Target> WaitArgs<T> {
     /// Waits for one deployment of the target to be ready, then emits it.
     /// Never follows a newer deployment: if one supersedes it, fails with a
-    /// conflict. A failed deployment fails with an operation error, and the
-    /// command `--timeout` ends only this wait.
+    /// conflict. A failed deployment fails with an operation error, and
+    /// `--wait-timeout` ends only this wait.
     pub(crate) async fn run(&self, console: &mut Console, client: &Client) -> Result<()> {
         let environment = &self.target.environment(client).await?;
         let id = self.deployment(client, environment).await?;
@@ -287,6 +287,13 @@ impl<T: Args + Target> WaitArgs<T> {
                 };
                 if !latest.state.terminal() {
                     return Ok(Settled::Waiting(format!("{} again", latest.state)));
+                }
+                // The latest operation, so the daemon retries this failure.
+                if let Some(code) = Wait::retryable(&latest) {
+                    return Ok(Settled::Waiting(format!(
+                        "attempt {} failed with {code}; the daemon retries it",
+                        latest.attempt
+                    )));
                 }
                 let latest = finish_operation(latest)?;
                 if latest.state == OperationState::Superseded {

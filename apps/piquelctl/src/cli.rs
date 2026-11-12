@@ -105,10 +105,10 @@ pub(crate) struct Cli {
     /// Give up on the command after this long, such as `500ms`, `30s`, `2m` or `1h`.
     ///
     /// A number without a unit is seconds. The limit also applies to each
-    /// request. Confirmation prompts don't count towards it, and it doesn't
-    /// limit the session of `app exec` and `preview exec`, or how long `login`
-    /// waits for your approval. `PIQUELD_TIMEOUT` and a profile's `timeout`
-    /// replace the default.
+    /// request. Confirmation prompts and waiting for an operation don't count
+    /// towards it, and it doesn't limit the session of `app exec` and
+    /// `preview exec`, or how long `login` waits for your approval.
+    /// `PIQUELD_TIMEOUT` and a profile's `timeout` replace the default.
     #[arg(
         long,
         global = true,
@@ -118,6 +118,22 @@ pub(crate) struct Cli {
         help_heading = GLOBAL
     )]
     pub(crate) timeout: Duration,
+
+    /// Stop waiting for an operation after this long, such as `5m` or `1h`.
+    ///
+    /// A number without a unit is seconds. Each wait, such as for a
+    /// deployment, gets its own limit. Stopping to wait doesn't cancel the
+    /// operation: the daemon goes on with it. `PIQUELD_WAIT_TIMEOUT`
+    /// replaces the default.
+    #[arg(
+        long,
+        global = true,
+        default_value = "15m",
+        value_name = "DURATION",
+        value_parser = parse_duration,
+        help_heading = GLOBAL
+    )]
+    pub(crate) wait_timeout: Duration,
 
     /// Print the result as JSON on standard output.
     ///
