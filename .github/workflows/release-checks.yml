@@ -143,7 +143,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      FAILED: ${{ contains(needs.*.result, 'failure') }}
+      # A job that hits its timeout reports `cancelled`; the run itself being
+      # cancelled skips this job.
+      FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
       RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       TITLE: Release checks fail on main
     steps:

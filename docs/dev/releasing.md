@@ -124,7 +124,7 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    [release checks](validation.md#release-checks) to pass:
 
    ```console
-   gh run watch "$(gh run list --workflow release-checks.yml --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId --jq '.[0].databaseId')"
+   gh run watch --exit-status "$(gh run list --workflow release-checks.yml --commit "$(git rev-parse HEAD)" --limit 1 --json databaseId --jq '.[0].databaseId')"
    ```
 
 3. Check the release without changing anything:

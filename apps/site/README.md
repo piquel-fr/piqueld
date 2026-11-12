@@ -13,8 +13,9 @@ transit map, followed by what sets piqueld apart. `favicon.svg` and
 `favicon.png`, piqueld's logo, link to the dashboard's in
 `apps/piqueld-ui/assets`, and the image copies them from there.
 `install.sh`, served at <https://piqueld.dev/install.sh>, installs piqueld
-from its latest GitHub release; the `install` CI job runs it against binaries
-built from the pull request. `fonts/overpass.woff2` is the Latin subset of Overpass, an OFL-licensed font,
+from its latest GitHub release; the `install` job of the
+[release checks](https://github.com/sourceorigin-dev/piqueld/blob/main/docs/dev/validation.md#release-checks)
+runs it against binaries built from `main`. `fonts/overpass.woff2` is the Latin subset of Overpass, an OFL-licensed font,
 served from this site so that the page makes no third-party requests; its
 licence is in `fonts/OFL.txt`.
 
