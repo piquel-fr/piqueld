@@ -5,8 +5,8 @@
 # start compiling, which takes minutes even with its dependencies cached.
 #
 # The cache key covers everything the module is compiled from: piqueld-ui and
-# the workspace crates it depends on, the manifests, the lockfile and the Rust
-# version. The build script still reads the stylesheets and assets themselves.
+# the workspace crates it depends on, the manifests, the lockfile, the Cargo
+# configuration, this build command and the Rust version. The build script still reads the stylesheets and assets themselves.
 #
 # Unlike the Rust caches, this one is saved from pull requests too: entries are
 # a few megabytes, and keyed by content, so a later push that leaves the
@@ -25,7 +25,7 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/dashboard
-        key: dashboard-${{ steps.rust.outputs.version }}-${{ hashFiles('apps/piqueld-ui/**', 'crates/piqueld-core/**', 'crates/piqueld-client/**', 'crates/piqueld-probe/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+        key: dashboard-${{ steps.rust.outputs.version }}-${{ hashFiles('apps/piqueld-ui/**', 'crates/piqueld-core/**', 'crates/piqueld-client/**', 'crates/piqueld-probe/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', '.github/actions/dashboard/action.yml') }}
     # As the daemon's build script does (apps/piqueld/build/dashboard.rs).
     - if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
