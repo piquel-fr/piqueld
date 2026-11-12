@@ -174,9 +174,12 @@ gateway when it detaches from an environment's network or is removed, keeps a
 Swarm attachment task on it for a few seconds. Swarm refuses to remove the
 network until it releases that task. Removing a network a task still uses is
 therefore retried for up to 30 seconds, outside the mutation lock and without
-counting against the request's attempts. Only then does it fail the attempt,
-as a Docker request failure. Swarm also removes a network in the background and
-still reports it meanwhile. Removing it again then counts as removed.
+counting against the request's attempts. After that, each refusal counts
+against them like any other failure, so with the default policy the request
+gets a few more tries, about 6 seconds, before it fails as a Docker request
+failure. Swarm also removes a network in the background and still reports it
+meanwhile. Removing it again then waits until Swarm no longer reports it, so
+the next plan doesn't remove it again.
 
 Deletion remains running until a fresh observation confirms services and
 networks are absent. Failed deletion attempts record diagnostics and follow the

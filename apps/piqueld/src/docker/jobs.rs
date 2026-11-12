@@ -23,8 +23,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Output retained from one job run; build history applies its own cap too.
 const JOB_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
-/// Delay between checks that a removed run's container has stopped.
-const JOB_STOP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Delay between checks that Docker released what was removed: that a
+/// removed run's container has stopped, or that a removed network is gone.
+const RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Label carrying when a run's timeout expires, in Unix milliseconds.
 const JOB_DEADLINE_LABEL: &str = "io.piqueld.job-deadline";
 /// Label Swarm sets on each task's container, naming its service.
@@ -391,13 +392,13 @@ impl BollardDocker {
                 .any(|container| selected(container.labels.as_ref()))))
     }
 
-    /// Polls `released` every [`JOB_STOP_POLL_INTERVAL`] until it reports
+    /// Polls `released` every [`RELEASE_POLL_INTERVAL`] until it reports
     /// `true`. The caller bounds the wait.
     pub(super) async fn poll_until<F: Future<Output = Result<bool, DockerError>>>(
         mut released: impl FnMut() -> F,
     ) -> Result<(), DockerError> {
         while !released().await? {
-            tokio::time::sleep(JOB_STOP_POLL_INTERVAL).await;
+            tokio::time::sleep(RELEASE_POLL_INTERVAL).await;
         }
         Ok(())
     }

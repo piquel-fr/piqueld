@@ -89,25 +89,28 @@ impl DockerError {
         Self::ImageResolutionSource { operation, source }
     }
 
-    /// Classifies the result of deleting a network. A missing network counts
-    /// as deleted, as does one Swarm is still removing in the background: it
-    /// still inspects it, but fails deleting it again with a 500 "network …
-    /// not found". Swarm refuses to delete a network a task still uses with a
-    /// 400 "network … is in use by task …".
-    pub(super) fn deleted_network(result: Result<(), bollard::errors::Error>) -> Result<(), Self> {
-        let Err(source) = result.found() else {
-            return Ok(());
-        };
-        match &source {
+    /// Whether a failed network deletion means Swarm is still removing the
+    /// network in the background: it still inspects it, but fails deleting
+    /// it again with a 500 "network … not found".
+    pub(super) fn still_removing_network(source: &bollard::errors::Error) -> bool {
+        matches!(
+            source,
             bollard::errors::Error::DockerResponseServerError {
                 status_code: 500,
                 message,
-            } if message.starts_with("network ") && message.ends_with(" not found") => Ok(()),
+            } if message.starts_with("network ") && message.ends_with(" not found")
+        )
+    }
+
+    /// Classifies a failed network deletion: Swarm refuses to delete a
+    /// network a task still uses with a 400 "network … is in use by task …".
+    pub(super) fn delete_network(source: bollard::errors::Error) -> Self {
+        match &source {
             bollard::errors::Error::DockerResponseServerError {
                 status_code: 400,
                 message,
-            } if message.contains("is in use by task") => Err(Self::NetworkInUse(source)),
-            _ => Err(Self::request("delete network", source)),
+            } if message.contains("is in use by task") => Self::NetworkInUse(source),
+            _ => Self::request("delete network", source),
         }
     }
 

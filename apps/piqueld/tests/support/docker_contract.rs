@@ -321,8 +321,9 @@ impl<D: DockerApi> Contract<D> {
 
     /// A network fails removal, as a retryable request, while a service is
     /// attached to it. Once removed, services and networks are no longer
-    /// observed, and removing them again succeeds, even while Swarm is still
-    /// removing the network in the background.
+    /// observed, and removing them again succeeds. Removing a network Swarm
+    /// is still removing in the background returns once it is gone, so the
+    /// next observation no longer reports it.
     pub async fn removing_services_and_networks_is_idempotent(&self) {
         let service = self.ensure_web(&self.environment).await;
         self.converged(&service).await;
@@ -365,18 +366,17 @@ impl<D: DockerApi> Contract<D> {
         })
         .await;
         // Swarm removes the network in the background, and still inspects it
-        // meanwhile; the fake removes it at once.
+        // meanwhile, so removing it again waits until it is gone; the fake
+        // removes it at once.
         self.docker
             .remove_network(network.name.as_str(), labels)
             .await
             .unwrap();
-        let observed = self
-            .until("the network is no longer observed", async || {
-                let observed = self.observe().await;
-                observed.networks.is_empty().then_some(observed)
-            })
-            .await;
-        assert!(observed.services.is_empty(), "{observed:?}");
+        let observed = self.observe().await;
+        assert!(
+            observed.services.is_empty() && observed.networks.is_empty(),
+            "{observed:?}"
+        );
         self.docker
             .remove_network(network.name.as_str(), labels)
             .await

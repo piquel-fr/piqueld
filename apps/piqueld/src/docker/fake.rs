@@ -38,8 +38,9 @@ pub struct FakeDocker {
     pub registry: Arc<Mutex<RegistryState>>,
     /// Refuses removing networks as an ownership conflict.
     pub deny_network_removal: Arc<AtomicBool>,
-    /// Refuses this many network removals with [`DockerError::NetworkInUse`],
-    /// as Swarm does for a few seconds after a container left the network.
+    /// Refuses this many removals of existing networks with
+    /// [`DockerError::NetworkInUse`], as Swarm does for a few seconds after a
+    /// container left the network.
     pub releasing_networks: Arc<AtomicUsize>,
     /// Fails observations as if Docker were unavailable.
     pub fail_observations: Arc<AtomicBool>,
@@ -985,12 +986,13 @@ impl DockerApi for FakeDocker {
         if Self::attached(&observed.services, name) {
             return Err(DockerError::Request("remove a network in use"));
         }
-        if self
-            .releasing_networks
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                left.checked_sub(1)
-            })
-            .is_ok()
+        if existing.is_some()
+            && self
+                .releasing_networks
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
         {
             return Err(DockerError::NetworkInUse(
                 bollard::errors::Error::DockerResponseServerError {

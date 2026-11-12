@@ -251,7 +251,7 @@ impl crate::docker::DockerError {
                 Failure::ImageResolutionFailed(operation)
             }
             crate::docker::DockerError::NetworkInUse(_) => {
-                Failure::DockerRequestFailed("delete a network a stopping task still uses")
+                Failure::DockerRequestFailed("delete a network a task still uses")
             }
             crate::docker::DockerError::Request(operation)
             | crate::docker::DockerError::RequestSource { operation, .. } => {
