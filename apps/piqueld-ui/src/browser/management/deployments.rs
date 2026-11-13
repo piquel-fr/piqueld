@@ -83,9 +83,10 @@ pub(super) fn DeploymentActions() -> impl IntoView {
             </Show>
         }
     };
-    let deploy = move |_| {
+    // Deploys the shown environment, building its images again on `rebuild`.
+    let deploy = move |rebuild| {
         let (environment, navigate) = (context.environment_id(), navigate.get_value());
-        context.deploy(environment.clone(), None, move || {
+        context.deploy(environment.clone(), None, rebuild, move || {
             context.show_deployments(&environment, navigate);
         });
     };
@@ -192,12 +193,27 @@ pub(super) fn DeploymentActions() -> impl IntoView {
                 }}>
                     <DeployRevision />
                 </Show>
+                // A deployment reuses the images of unchanged builds.
+                <Show when={move || {
+                    context.can(AppPermission::Deploy) && context.builds_from_git()
+                }}>
+                    <button
+                        type="button"
+                        class="btn"
+                        title="Deploy and build every image again, with newer base images, instead of reusing the images of unchanged builds"
+                        disabled={move || context.environment_action_blocked()}
+                        on:click={move |_| deploy(true)}
+                    >
+                        {icon(Icon::Refresh)}
+                        "Rebuild"
+                    </button>
+                </Show>
                 <button
                     type="button"
                     class="btn btn-primary"
                     hidden={move || !context.can(AppPermission::Deploy)}
                     disabled={move || context.environment_action_blocked()}
-                    on:click={deploy}
+                    on:click={move |_| deploy(false)}
                 >
                     {icon(Icon::Rocket)}
                     // Its own page names the environment already.
@@ -292,7 +308,7 @@ fn DeployRevision() -> impl IntoView {
             return;
         }
         let (environment, navigate) = (context.environment_id(), navigate.get_value());
-        context.deploy(environment.clone(), Some(revision), move || {
+        context.deploy(environment.clone(), Some(revision), false, move || {
             opened.set(false);
             context.show_deployments(&environment, navigate);
         });
@@ -448,6 +464,7 @@ pub(super) fn EnvironmentAction(
                     .deploy(
                         id.clone(),
                         None,
+                        false,
                         move || {
                             context.show_deployments(&id, navigate);
                             if let Some(dialog) = dialog {

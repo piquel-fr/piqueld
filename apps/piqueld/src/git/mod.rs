@@ -620,45 +620,6 @@ impl Checkouts {
         .await
         .context("measure Git checkout")?
     }
-
-    /// Checks a repository out and builds its local image, labelled for
-    /// `owner` and queued with `priority`, streaming Git and Docker output
-    /// into `log` and recording the resolved commit on it when supplied.
-    /// Returns the commit and built image ID; the checkout is removed once
-    /// the build finishes.
-    pub(crate) async fn prepare(
-        &self,
-        repository: &GitRepository,
-        build: &piqueld_core::manifest::ValidatedBuild,
-        (owner, priority): (&piqueld_core::InstanceId, piqueld_docker::BuildPriority),
-        docker: &impl piqueld_docker::DockerApi,
-        build_log: Option<&crate::build::BuildLog>,
-    ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
-        let log = build_log.map(|log| log as &dyn piqueld_docker::command::OutputLog);
-        let checkout = self.checkout(repository, log).await?;
-        if let Some(build_log) = build_log {
-            build_log.commit(&checkout.commit).await?;
-        }
-        let piqueld_core::manifest::ValidatedBuild::Docker {
-            dockerfile,
-            context,
-            args,
-            target,
-        } = build;
-        let build = piqueld_docker::ImageBuild {
-            owner,
-            dockerfile: checkout.path(dockerfile).await?,
-            context: checkout.path(context).await?,
-            args,
-            target: target.as_deref(),
-            priority,
-        };
-        let image = docker
-            .build_image(&build, log)
-            .await
-            .context("build Git source image")?;
-        Ok((checkout.commit, image))
-    }
 }
 
 /// A private checkout pinned once, retained until preparation finishes.
@@ -672,6 +633,36 @@ pub(crate) struct Checkout {
 }
 
 impl Checkout {
+    /// Builds the checkout's local image, labelled for `owner` and queued
+    /// with `priority`, streaming Docker's output into `log` when supplied.
+    /// Returns the built image ID.
+    pub(crate) async fn build(
+        &self,
+        build: &piqueld_core::manifest::ValidatedBuild,
+        (owner, priority): (&piqueld_core::InstanceId, piqueld_docker::BuildPriority),
+        docker: &impl piqueld_docker::DockerApi,
+        log: Option<&dyn piqueld_docker::command::OutputLog>,
+    ) -> anyhow::Result<piqueld_core::resource::Sha256Digest> {
+        let piqueld_core::manifest::ValidatedBuild::Docker {
+            dockerfile,
+            context,
+            args,
+            target,
+        } = build;
+        let build = piqueld_docker::ImageBuild {
+            owner,
+            dockerfile: self.path(dockerfile).await?,
+            context: self.path(context).await?,
+            args,
+            target: target.as_deref(),
+            priority,
+        };
+        docker
+            .build_image(&build, log)
+            .await
+            .context("build Git source image")
+    }
+
     /// Most memory one Git allocation may take, such as an object being
     /// inflated or resolved from its deltas: a small pack can describe huge
     /// objects. Larger files are streamed instead (`core.bigFileThreshold`).

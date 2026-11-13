@@ -80,6 +80,9 @@ pub enum Mutation {
         /// Fetch the manifest from this revision instead, for this deployment only.
         #[serde(skip_serializing_if = "Option::is_none")]
         revision: Option<piqueld_core::manifest::ManifestRevision>,
+        /// Build every Git source, even one whose image could be reused.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        rebuild: bool,
     },
     /// Request an environment's resource deletion.
     Delete {
@@ -436,7 +439,11 @@ impl Mutation {
     /// Deploys saved configuration at its configured manifest revision.
     #[must_use]
     pub fn deploy(id: EnvironmentId) -> Self {
-        Self::Deploy { id, revision: None }
+        Self::Deploy {
+            id,
+            revision: None,
+            rebuild: false,
+        }
     }
 
     /// Creates save intent, optionally deploying the saved snapshot atomically.

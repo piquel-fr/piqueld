@@ -750,6 +750,7 @@ mod contract {
 /// successful deployment where `rollback = "automatic"`, which is never
 /// rolled back itself, and leaves other environments degraded.
 mod automatic_rollback;
+mod build_reuse;
 mod controller;
 mod environments;
 /// Image retention: cleanup removes only this installation's unretained

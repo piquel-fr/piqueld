@@ -8640,6 +8640,10 @@ impl Client {
     configuration, or the repository manifest at the environment's branch (or
     the one-time `branch`/`commit`)
 
+    A Git source whose commit and build settings an earlier build of the
+    application already built reuses that build's image while it is still
+    present; `rebuild=true` builds every Git source again.
+
     Returns 202 with the accepted durable operation. Requires
     `expected_generation` unless `force=true`; a stale generation fails with 409.
     A promoted environment fails with 409 `environment_promoted`; it deploys
@@ -8656,6 +8660,7 @@ impl Client {
     - `commit`: Fetch the repository manifest from this full commit, without saving it.
     - `expected_generation`: Current intent revision; required unless forced.
     - `force`: Explicitly bypass intent preconditions.
+    - `rebuild`: Build every Git source again, even one whose image could be reused.
     - `idempotency_key`
     */
     pub async fn deploy_environment<'a>(
@@ -8665,6 +8670,7 @@ impl Client {
         commit: Option<&'a str>,
         expected_generation: Option<u64>,
         force: Option<bool>,
+        rebuild: Option<bool>,
         idempotency_key: Option<&'a str>,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::AcceptedOperation>>,
@@ -8698,6 +8704,7 @@ impl Client {
                 &expected_generation,
             ))
             .query(&progenitor_client::QueryParam::new("force", &force))
+            .query(&progenitor_client::QueryParam::new("rebuild", &rebuild))
             .headers(header_map)
             .build()?;
         let info = OperationInfo {

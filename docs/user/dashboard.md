@@ -128,7 +128,11 @@ environment deploys: the saved one for an environment following the branch
 `spec.manifest` names, once the application has read a manifest from it (it is
 deployed until a push changes the manifest there); for one that follows another
 branch, the one last fetched from it, so Preview is disabled until its first
-deployment. An environment following a branch also offers **Deploy revision**.
+deployment. When the manifest builds a service from Git, **Rebuild** deploys
+like **Deploy**, but [builds every image
+again](applications/git-builds.md#build-an-image-again) instead of reusing the
+images of unchanged builds. An environment following a branch also offers
+**Deploy revision**.
 It deploys the manifest on the head of another branch of the application's
 repository, or on a commit given by its full hash, once, like
 `piquelctl env deploy --branch` or `--commit`. Nothing is saved: the
@@ -475,7 +479,8 @@ These diagnostics never disable configuration controls.
 
 Build history is available from the main navigation and each application's Builds
 tab. Compact attempt rows expand to show source, revision, Docker build settings,
-operation timing, commit, image, and retained output size. Opening a row loads its
+operation timing, commit, image, and retained output size. A build that reused
+the image of an earlier build is tagged **Reused**, and names that build. Opening a row loads its
 output into the same accessible log viewer used by the Logs tab. Running attempts
 refresh output every 30 seconds while expanded and visible, stopping after the
 final completed output loads. Opening shows the newest output; Load older output

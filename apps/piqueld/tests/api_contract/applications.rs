@@ -111,12 +111,12 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     assert!(detail.latest_operation.is_none());
     let first = api
         .client
-        .deploy_environment(&production, saved.generation, None)
+        .deploy_environment(&production, saved.generation, None, false)
         .await
         .unwrap();
     let second = api
         .client
-        .deploy_environment(&production, saved.generation, None)
+        .deploy_environment(&production, saved.generation, None, false)
         .await
         .unwrap();
     assert_ne!(first.operation_id, second.operation_id);
@@ -165,7 +165,7 @@ async fn saved_configuration_preview_and_deployment_are_separate_even_offline() 
     );
     assert!(
         api.client
-            .deploy_environment(&production, 1, None)
+            .deploy_environment(&production, 1, None, false)
             .await
             .is_err()
     );
@@ -200,7 +200,7 @@ async fn deploy_after_rename_captures_saved_name_and_spec() {
     api.client.apply_application(&edited).await.unwrap();
     let refreshed = api
         .client
-        .deploy_environment(&accepted.environment_id, 3, None)
+        .deploy_environment(&accepted.environment_id, 3, None, false)
         .await
         .unwrap();
     let snapshot = api

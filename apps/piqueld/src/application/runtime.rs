@@ -32,6 +32,9 @@ pub struct ApplicationRuntime<D> {
     progress: Option<(Arc<piqueld_store::Store>, String)>,
     /// The build queue its Git sources wait in.
     priority: BuildPriority,
+    /// Whether Git sources build even when an earlier build's image could
+    /// be reused.
+    rebuild: bool,
     /// The local snapshot `"self"` sources are checked out from, if any.
     snapshot: Option<crate::git::snapshot::SnapshotSource>,
     /// The lock image cleanup takes exclusively; see `ImagesInUse`.
@@ -65,6 +68,7 @@ impl<D> ApplicationRuntime<D> {
             prepare_timeout,
             progress: None,
             priority: BuildPriority::Environment,
+            rebuild: false,
             snapshot: None,
             images,
             mutations,
@@ -93,6 +97,14 @@ impl<D> ApplicationRuntime<D> {
     #[must_use]
     pub(crate) fn with_build_priority(mut self, kind: &EnvironmentKind) -> Self {
         self.priority = kind.into();
+        self
+    }
+
+    /// Builds every Git source when `rebuild` is set, instead of reusing the
+    /// image of an earlier build with the same commit and build settings.
+    #[must_use]
+    pub(crate) const fn with_rebuild(mut self, rebuild: bool) -> Self {
+        self.rebuild = rebuild;
         self
     }
 
@@ -403,11 +415,14 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         }
     }
 
-    /// Checks out and builds a Git source, returning the commit and built image ID.
+    /// Checks out a Git source and builds it, or reuses the image an earlier
+    /// build produced from the same commit and build settings, returning the
+    /// commit and image ID.
     ///
     /// During execution the build is recorded as a `BuildAttempt`: output is streamed
     /// into its log, a failure message is appended on error, and the attempt is
-    /// finished as succeeded or failed. Without progress the build runs unrecorded.
+    /// finished as succeeded, naming the build it reused, or failed. Without
+    /// progress the build runs unrecorded, and reuses nothing.
     async fn prepare_git(
         &self,
         environment: &EnvironmentId,
@@ -421,10 +436,9 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             crate::git::snapshot::SnapshotSource::checkout(self.snapshot.as_ref(), repository);
         let owner = (&self.instance_id, self.priority);
         let Some((store, operation)) = &self.progress else {
-            return self
-                .checkouts
-                .prepare(repository, build, owner, docker, None)
-                .await;
+            let checkout = self.checkouts.checkout(repository, None).await?;
+            let image = checkout.build(build, owner, docker, None).await?;
+            return Ok((checkout.commit, image));
         };
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(store),
@@ -435,18 +449,33 @@ impl<D: DockerApi> ApplicationRuntime<D> {
             None,
         )
         .await?;
-        let result = self
-            .checkouts
-            .prepare(repository, build, owner, docker, Some(&attempt.log))
-            .await;
-        match &result {
-            Ok((_, image)) => {
+        let log = &attempt.log;
+        let result = async {
+            let checkout = self.checkouts.checkout(repository, Some(log)).await?;
+            log.commit(&checkout.commit).await?;
+            let image = match self
+                .reusable_build(store, environment, source, &checkout.commit)
+                .await?
+            {
+                Some(earlier) => GitImage::Reused(earlier),
+                None => GitImage::Built(checkout.build(build, owner, docker, Some(log)).await?),
+            };
+            anyhow::Ok((checkout.commit, image))
+        }
+        .await;
+        match result {
+            Ok((commit, GitImage::Built(image))) => {
                 attempt
                     .finish(
                         piqueld_core::api::BuildState::Succeeded,
                         Some(image.as_str()),
                     )
                     .await?;
+                Ok((commit, image))
+            }
+            Ok((commit, GitImage::Reused(earlier))) => {
+                attempt.reuse(&earlier).await?;
+                Ok((commit, earlier.image))
             }
             Err(error) => {
                 attempt
@@ -459,8 +488,43 @@ impl<D: DockerApi> ApplicationRuntime<D> {
                 attempt
                     .finish(piqueld_core::api::BuildState::Failed, None)
                     .await?;
+                Err(error)
             }
         }
-        result
     }
+
+    /// The newest earlier build whose image a build of `source` at `commit`
+    /// can use instead of building: one of the same application with the
+    /// same commit and build settings, whose image the engine still has.
+    /// None when the deployment asked for a rebuild.
+    async fn reusable_build(
+        &self,
+        store: &piqueld_store::Store,
+        environment: &EnvironmentId,
+        source: &Source,
+        commit: &str,
+    ) -> anyhow::Result<Option<piqueld_store::ReusableBuild>> {
+        if self.rebuild {
+            return Ok(None);
+        }
+        let earlier = store.reusable_builds(environment, source, commit).await?;
+        if earlier.is_empty() {
+            return Ok(None);
+        }
+        let images = DockerTimeout::Request
+            .run("list images", self.docker.images())
+            .await?;
+        let present = piqueld_docker::LocalImage::present(&images);
+        Ok(earlier
+            .into_iter()
+            .find(|build| present.contains(&build.image.clone().into())))
+    }
+}
+
+/// Where the image of a Git source came from.
+enum GitImage {
+    /// Built from the checkout.
+    Built(piqueld_core::resource::Sha256Digest),
+    /// Reused from an earlier build of the same commit and build settings.
+    Reused(piqueld_store::ReusableBuild),
 }

@@ -149,7 +149,7 @@ async fn app(
                 &application,
                 &environment,
                 &args.target.flags,
-                &args.revision,
+                &args.overrides,
             )
             .await
         }

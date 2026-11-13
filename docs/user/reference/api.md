@@ -137,7 +137,7 @@ when the complete normalized manifest is needed.
 | GET | `/api/v1/environments/{id}` | Environment metadata |
 | GET | `/api/v1/environments/{id}/detail` | Environment, application intent, the `manifest` it deploys, resolved generation, `status`, current release, observed runtime, operation, diagnostics, the URL of each rendered route with its state (see [URL readiness](#url-readiness)), and its `links` (see below) |
 | GET | `/api/v1/environments/{id}/status` | Intent progress and separate runtime health |
-| POST | `/api/v1/environments/{id}/deploy` | Deploy the environment from its source with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision instead of the environment's branch, for this deployment only |
+| POST | `/api/v1/environments/{id}/deploy` | Deploy the environment from its source with fresh source resolution; supersede pending work. `branch=NAME` or `commit=SHA` fetches a repository-backed manifest from that revision instead of the environment's branch, for this deployment only. `rebuild=true` builds every Git source again |
 | GET | `/api/v1/environments/{id}/deployments` | Deployment snapshots, newest first; `limit` per page, from 1 to 100, three without it |
 | GET | `/api/v1/environments/{id}/deployments/{deployment}/attempts` | Retained outcomes, newest first, 100 per page |
 | GET | `/api/v1/applications/{id}/releases` | The application's releases, newest first, twenty per page |
@@ -628,7 +628,10 @@ The Unix socket serves the API alone. See [the CLI guide](cli.md) and
 [the generated contract](../../openapi-v1.json).
 
 `POST /api/v1/environments/{id}/deploy` prepares all sources again, including
-Git builds. It requires the inspected application generation unless forced and
+Git builds. A Git source reuses the image of an earlier build of the
+application with the same commit and build settings, while the image is still
+present; `rebuild=true` builds every Git source regardless. It requires the
+inspected application generation unless forced and
 supersedes pending work in that environment. An identical idempotency-key replay
 returns the original acceptance. Use `piquelctl env deploy NAME [ENV] --yes` (or
 `app deploy NAME --yes` for an application with one environment) to request and
@@ -847,7 +850,9 @@ dashboard, read this field.
 `cursor`, and `limit` (1–100, default 50). Each executed Git-service preparation
 creates an independent record before checkout. Image pulls do not create records.
 Outcomes are running, succeeded, failed, or interrupted. Resolved commits and
-image IDs are recorded when available; retries create new attempts. Job runs
+image IDs are recorded when available; retries create new attempts. A build
+that reused an image succeeds with `reused_build`, the ID of the build that
+produced it. Job runs
 appear in the same history with `job` set, the service whose container they
 reuse, the image that ran, and `exit_code` once the container exited. Notes
 from piqueld, such as Docker's explanation of a failed task or unavailable

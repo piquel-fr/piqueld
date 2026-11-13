@@ -2,7 +2,7 @@
 //! selection and runtime commands shared with `app deploy`, `app reconcile`,
 //! `app stop`, `app start`, and `app logs`.
 use crate::{
-    cli::{Cli, DeletionFlags, LogArgs, OperationFlags, RevisionArgs, expected_generation},
+    cli::{Cli, DeletionFlags, DeployOverrides, LogArgs, OperationFlags, expected_generation},
     commands::{
         Wait, finish_operation, resolve_application, wait_for_deletion, wait_for_operation,
     },
@@ -129,7 +129,7 @@ pub(crate) enum EnvCommand {
         #[command(flatten)]
         flags: OperationFlags,
         #[command(flatten)]
-        revision: RevisionArgs,
+        overrides: DeployOverrides,
     },
     /// Retry an environment's latest operation with the inputs it was given.
     ///
@@ -276,10 +276,18 @@ impl EnvCommand {
             Self::Deploy {
                 target,
                 flags,
-                revision,
+                overrides,
             } => {
                 let (application, environment) = target.resolve(client).await?;
-                deploy(client, console, &application, &environment, flags, revision).await
+                deploy(
+                    client,
+                    console,
+                    &application,
+                    &environment,
+                    flags,
+                    overrides,
+                )
+                .await
             }
             Self::Reconcile { target, flags } => {
                 Lifecycle::Reconcile
@@ -919,7 +927,7 @@ pub(crate) fn rows(
 
 /// Confirms and deploys an environment from its source, fetching the manifest
 /// from its branch (or `--branch` or `--commit`, for this deployment only) and
-/// resolving sources again. Guarded by the expected generation, defaulting to
+/// resolving sources again; `--rebuild` also builds images that could be reused. Guarded by the expected generation, defaulting to
 /// the current one. Waits unless `--no-wait`, then warns about anything the
 /// deployment reported, such as an ignored `spec.manifest`.
 pub(crate) async fn deploy(
@@ -928,7 +936,7 @@ pub(crate) async fn deploy(
     application: &ApplicationView,
     environment: &EnvironmentView,
     flags: &OperationFlags,
-    revision: &RevisionArgs,
+    overrides: &DeployOverrides,
 ) -> Result<()> {
     console
         .confirm(
@@ -940,12 +948,13 @@ pub(crate) async fn deploy(
             ),
         )
         .await?;
-    let revision = revision.revision();
+    let revision = overrides.revision();
     let accepted = retry_transport(|| {
         client.deploy_environment(
             environment.id.as_str(),
             flags.expected_generation.unwrap_or(application.generation),
             revision.as_ref(),
+            overrides.rebuild,
         )
     })
     .await?;

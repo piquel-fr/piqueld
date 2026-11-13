@@ -1602,6 +1602,10 @@ pub struct BuildRecord {
     pub commit: Option<String>,
     /// Built image identifier, when successful; for job runs, the image that ran.
     pub image_id: Option<String>,
+    /// The earlier build whose image this build reused instead of building,
+    /// because its commit and build settings were the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reused_build: Option<i64>,
     /// Job container exit code, when the job ran to completion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i64>,

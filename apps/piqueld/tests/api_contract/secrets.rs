@@ -475,7 +475,7 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
     );
     denied(
         client
-            .deploy_environment(staging.id.as_str(), saved.generation, None)
+            .deploy_environment(staging.id.as_str(), saved.generation, None, false)
             .await
             .unwrap_err(),
     );
@@ -484,7 +484,7 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
         .await
         .unwrap();
     client
-        .deploy_environment(production.as_str(), saved.generation, None)
+        .deploy_environment(production.as_str(), saved.generation, None, false)
         .await
         .unwrap();
 }

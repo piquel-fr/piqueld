@@ -3030,6 +3030,9 @@ Options:
 
   The environment keeps following its own branch.
 - `--commit <SHA>`: Fetch the repository manifest at this full commit hash, for this deployment only.
+- `--rebuild`: Build every service's image from Git again.
+
+  Without it, a service whose commit and build settings an earlier build of the application already built reuses that build's image. A rebuild also pulls newer base images.
 
 ## `piquelctl app rename`
 
@@ -3399,6 +3402,9 @@ Options:
 
   The environment keeps following its own branch.
 - `--commit <SHA>`: Fetch the repository manifest at this full commit hash, for this deployment only.
+- `--rebuild`: Build every service's image from Git again.
+
+  Without it, a service whose commit and build settings an earlier build of the application already built reuses that build's image. A rebuild also pulls newer base images.
 
 ## `piquelctl env reconcile`
 

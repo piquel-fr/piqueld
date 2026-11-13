@@ -67,7 +67,12 @@ deployment creates a new deployment even when the manifest is unchanged.
 Explicit reconcile requests
 a failed operation again under its existing ID. Explicit `reconcile`, periodic repair, and restart recovery use the
 same execution path. They reuse the latest intent's prepared digests, or retry
-preparation if it never completed. New deployments resolve all sources again.
+preparation if it never completed. New deployments resolve all sources again:
+each Git source is checked out, then built unless a succeeded build of the
+application has the same build inputs (the repository, the commit, and the
+rendered build settings) and its image is still in the engine. That build's
+image is then reused, and the build record names it. A deployment requested
+with `rebuild` builds every Git source regardless.
 Maintaining the active target during preparation does not replace the requested
 candidate or report it as successfully deployed.
 

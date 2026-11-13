@@ -2,7 +2,8 @@
 
 A service can build its image from a Git repository with a Dockerfile, instead
 of pulling one from a registry. Each time you deploy, piqueld checks the
-repository out and builds the image on the host.
+repository out and builds the image on the host, unless it already built that
+commit.
 
 ## Before you start
 
@@ -125,10 +126,17 @@ lists every setting of a source.
 
 ### How it builds
 
-Each deployment builds the latest commit of the branch. Docker reuses the
-steps that didn't change, so later builds are faster. It pulls base images
-every time, so they stay up to date. If the checkout or the build fails, the
-deployment fails and the application keeps running what it ran before.
+Each deployment checks out the latest commit of the branch and builds it.
+Docker reuses the steps that didn't change, so later builds are faster, and
+pulls base images, so they stay up to date. If the checkout or the build
+fails, the deployment fails and the application keeps running what it ran
+before.
+
+When the application already built that commit with the same build settings,
+the deployment reuses the image instead of building it. Deploying a change to
+a variable or a secret, for example, builds nothing. A reused image keeps the
+base images it was built with: [build it again](#build-an-image-again) to pull
+newer ones.
 
 To build one exact commit instead, pin its full hash: fill in **Commit
 (optional)** in the dashboard, or run:
@@ -148,6 +156,23 @@ commit = "68c1b9f87c41fb3fef2667e27149865c2f42d1eb"
 
 To follow the branch again, empty **Commit (optional)**, run
 `piquelctl app service source commit welcome web --clear`, or remove `commit`.
+
+## Build an image again
+
+A deployment that rebuilds builds every service's image from Git, even one it
+could reuse, and pulls base images again. Use it to pick up a newer base
+image, such as a security fix, without a new commit.
+
+- **In the dashboard,** select **Rebuild**, next to **Deploy**, on the
+  application's page. It deploys the environment the page shows.
+- **With `piquelctl`,** add `--rebuild` to `app deploy` or `env deploy`:
+
+  ```console
+  piquelctl --timeout 10m app deploy welcome --rebuild
+  ```
+
+- **The manifest** has no setting for it: rebuilding is a choice you make for
+  one deployment.
 
 ## Pass build arguments and choose a stage
 
@@ -288,8 +313,9 @@ $ piquelctl builds list --application app-01a16d91fb2c7b93bfe138a7d95dc56f
 ```
 
 Each line is a build: its number, the environment's ID, the service, its
-state, and when it started, in Unix milliseconds. Read a build's output by its
-number:
+state, and when it started, in Unix milliseconds. A build that reused an
+image ends with `reused #<number>`, the build that produced it, and the
+dashboard marks it **Reused**. Read a build's output by its number:
 
 ```console
 piquelctl builds logs 1
