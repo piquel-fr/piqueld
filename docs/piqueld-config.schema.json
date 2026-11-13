@@ -66,6 +66,18 @@
             "string",
             "null"
           ]
+        },
+        "unavailable": {
+          "default": null,
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/WhenUnavailable",
+              "description": "What a deployment that has to build does while the build machine\ncan't be reached: `fail`, the default, fails it with\n`builder_unavailable`, and `local` builds on this host's Docker Engine\ninstead, where a build competes with the applications the host runs.\nRequires `builder`."
+            }
+          ]
         }
       },
       "type": "object"
@@ -650,6 +662,14 @@
         }
       },
       "type": "object"
+    },
+    "WhenUnavailable": {
+      "description": "What a build does while its build machine can't be reached.",
+      "enum": [
+        "fail",
+        "local"
+      ],
+      "type": "string"
     }
   },
   "description": "The daemon's configuration file, `/etc/piqueld/config.toml` unless\n`piqueld --config` selects another. Every setting is optional unless it\nsays otherwise. The daemon reads the file once at startup, so restart it\nto apply a change.",

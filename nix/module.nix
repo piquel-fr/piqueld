@@ -203,6 +203,16 @@ in
             default = null;
             description = "Image repository the build machine pushes to and this host pulls from, as registry-host[:port]/path without a tag. Docker requires HTTPS of a registry on another machine. Requires build.builder.";
           };
+          build.unavailable = lib.mkOption {
+            type = lib.types.nullOr (
+              lib.types.enum [
+                "fail"
+                "local"
+              ]
+            );
+            default = null;
+            description = "What a deployment that has to build does while the build machine is unreachable: fail (the default) fails it with builder_unavailable, local builds on this host instead. Requires build.builder.";
+          };
           ingress.enabled = lib.mkOption {
             type = lib.types.bool;
             default = false;
@@ -425,6 +435,10 @@ in
       {
         assertion = (cfg.settings.build.builder == null) == (cfg.settings.build.repository == null);
         message = "services.piqueld.settings.build needs both builder and repository, or neither";
+      }
+      {
+        assertion = cfg.settings.build.unavailable != null -> cfg.settings.build.builder != null;
+        message = "services.piqueld.settings.build.unavailable requires build.builder";
       }
       {
         assertion = tunnel.enabled -> tunnel.credentials_file != null;

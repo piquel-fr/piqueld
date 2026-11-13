@@ -351,10 +351,10 @@ prints the earlier part.
 - **Validation fails with `git_credentials_inline`.** The repository URL is an
   HTTP or HTTPS URL with a user name or token in it, or has a password. Use an
   SSH URL, such as `git@github.com:example/notes.git`, and a key instead.
-- **The build output ends with `context deadline exceeded`, after `waiting
-  for connection`.** The host has a [build
+- **The deployment fails with `builder_unavailable`.** The host has a [build
   machine](../reference/configuration.md#build-machine), and could not reach
-  its BuildKit daemon. Start the build machine, then deploy again.
+  its BuildKit daemon. Start the build machine, then deploy again, or run
+  `piquelctl env reconcile`.
 - **A Git setting of the host doesn't apply,** such as a rule rewriting
   GitHub URLs to SSH. Git ignores `/etc/gitconfig`: add the setting to the
   daemon user's `~/.gitconfig`.

@@ -144,6 +144,12 @@ Type: string. Optional.
 
 The image repository the build machine pushes to and this host pulls from, as `registry-host[:port]/path`, without a tag. Both reach it under this name, without credentials, and Docker requires HTTPS of a registry on another machine. Every image goes to this one repository, by digest, so they share their layers.
 
+### `build.unavailable`
+
+Type: `"fail"` or `"local"`. Optional.
+
+What a deployment that has to build does while the build machine can't be reached: `fail`, the default, fails it with `builder_unavailable`, and `local` builds on this host's Docker Engine instead, where a build competes with the applications the host runs. Requires `builder`.
+
 ## `[build_history]` table
 
 How much output of each build is kept, and for how long. Builds themselves are listed until their environment is deleted.

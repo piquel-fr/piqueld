@@ -96,6 +96,9 @@ pub enum OperationError {
     /// Git source preparation failed before rollout.
     #[error("Git source build failed")]
     GitBuildFailed(#[source] anyhow::Error),
+    /// The build machine could not be reached to build an image.
+    #[error("the build machine is unreachable")]
+    BuilderUnavailable,
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     DockerRequestFailed(&'static str),
@@ -170,6 +173,7 @@ impl OperationError {
             | Self::ManifestInvalid => DiagnosticCode::ManifestInvalid,
             Self::ImageUnavailable { .. } => DiagnosticCode::ImageUnavailable,
             Self::GitBuildFailed(_) => DiagnosticCode::GitBuildFailed,
+            Self::BuilderUnavailable => DiagnosticCode::BuilderUnavailable,
             Self::Cancelled => DiagnosticCode::Cancelled,
             Self::Superseded => DiagnosticCode::Superseded,
             Self::OwnershipConflict => DiagnosticCode::OwnershipConflict,
@@ -241,6 +245,7 @@ impl OperationError {
             DockerError::NetworkRemoving(_) => {
                 Self::DockerRequestFailed("delete a network Swarm is still removing")
             }
+            DockerError::BuilderUnavailable(_) => Self::BuilderUnavailable,
             DockerError::Request(operation) | DockerError::RequestSource { operation, .. } => {
                 Self::DockerRequestFailed(operation)
             }

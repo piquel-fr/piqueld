@@ -52,6 +52,9 @@ pub enum DockerError {
     /// found" until it is gone, which can take more than ten seconds.
     #[error("Docker network is still being removed")]
     NetworkRemoving(#[source] bollard::errors::Error),
+    /// The build machine could not be reached to build an image.
+    #[error(transparent)]
+    BuilderUnavailable(#[from] crate::builder::BuilderUnavailable),
     /// A Docker request failed while performing the described operation.
     #[error("Docker request failed while {0}")]
     Request(&'static str),
@@ -95,6 +98,7 @@ impl DockerError {
             Self::ImageResolution(_) | Self::ImageResolutionSource { .. } => {
                 DiagnosticCode::ImageResolutionFailed
             }
+            Self::BuilderUnavailable(_) => DiagnosticCode::BuilderUnavailable,
             Self::NetworkInUse(_)
             | Self::NetworkRemoving(_)
             | Self::Request(_)

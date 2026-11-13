@@ -249,9 +249,10 @@ runs. Without it, images build on the host's Docker Engine.
 [build]
 builder = "tcp://build.example.ts.net:1234"
 repository = "build.example.ts.net:5000/piqueld"
+unavailable = "fail"
 ```
 
-Set both settings, or neither. The host still checks repositories out, so Git
+Set `builder` and `repository` together, or neither. The host still checks repositories out, so Git
 credentials stay there, and sends each build's files to the build machine,
 which needs:
 
@@ -275,10 +276,21 @@ so nothing depends on the daemon user's Docker configuration.
 The build machine only has to be reachable while a deployment builds.
 Services keep running without it, and so do restores, promotions and
 deployments that [reuse their
-images](../applications/git-builds.md#how-it-builds). While it is unreachable,
-a deployment that has to build fails with `git_build_failed`. Restoring a
-deployment whose image the host no longer has pulls it from the registry
-again.
+images](../applications/git-builds.md#how-it-builds). Restoring a deployment
+whose image the host no longer has pulls it from the registry again.
+
+Before each build, the host checks that the BuildKit daemon accepts a
+connection, for up to 5 seconds. `unavailable` says what happens when it
+doesn't:
+
+- `fail`, the default, fails the deployment with `builder_unavailable`.
+  Nothing retries it: deploy
+  again, or run `piquelctl env reconcile`, once the build machine is back.
+  It counts as a build failure for
+  [notifications](../operations/notifications.md).
+- `local` builds the image on the host's Docker Engine instead, as without a
+  build machine, and the build's output says so. A build then competes with
+  the applications the host runs.
 
 ## TCP listen modes and Tailscale
 

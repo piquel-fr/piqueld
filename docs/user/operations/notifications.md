@@ -73,7 +73,7 @@ Each destination picks:
 
 | Category | Dashboard label | Sent when |
 | --- | --- | --- |
-| `build_failures` | Build failures | A build fails |
+| `build_failures` | Build failures | A build fails, or the [build machine](../reference/configuration.md#build-machine) it needs is unreachable |
 | `deployment_failures` | Deployment failures | A deployment fails |
 | `service_degradation` | Service degradation | A deployed service stays unhealthy for two minutes |
 | `daemon_failures` | Daemon failures | Docker, the Swarm or the ingress gateway stays unavailable for two minutes, a certificate piqueld needs keeps failing to renew in its last 14 days, or the daemon hits an internal error |
