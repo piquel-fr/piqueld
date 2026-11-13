@@ -1,6 +1,7 @@
 //! Retention of the images this installation builds: cleanup, and making
 //! sure a retained image is present before a deployment uses it again.
 use super::{Controller, DockerApi, OperationError};
+use piqueld_core::Phase;
 use piqueld_core::{
     InstanceId, ServiceImage, ServiceName, api::ImageStatus, resource::ResolvedSource,
 };
@@ -195,7 +196,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<bool, piqueld_store::StoreError> {
         let journal = self
             .store
-            .begin_daemon_action(None, "remove_image", Some(image.id.as_str()))
+            .begin_daemon_action(None, Phase::RemoveImage, Some(image.id.as_str()))
             .await?;
         let removed = self
             .request_once(&journal, async {

@@ -130,7 +130,7 @@ report!(AnalyticsReport<'_> as DeploymentAnalytics = analytics, self, out, {
         ["PHASE", "ACTIONS", "MEAN DURATION"],
         |action| {
             [
-                action.phase.clone(),
+                action.phase.to_string(),
                 action.count.to_string(),
                 Elapsed::from_millis_f64(action.mean_ms).to_string(),
             ]

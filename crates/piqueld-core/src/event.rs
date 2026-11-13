@@ -26,7 +26,7 @@ pub struct Event {
     /// Stable failure classification, when this event records failure.
     pub error_code: Option<String>,
     /// Execution phase at the time of the event.
-    pub phase: Option<String>,
+    pub phase: Option<crate::Phase>,
     /// Related logical or Docker resource.
     pub resource: Option<String>,
     /// Lifetime owner, independent of contextual environment references.
@@ -54,8 +54,23 @@ pub struct Event {
     /// Safe, independently readable failure details.
     #[serde(default)]
     pub diagnostic: Option<crate::observability::Diagnostic>,
+    /// Structured facts specific to the event's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<EventDetail>,
     /// Unix timestamp in milliseconds.
     pub created_at_ms: i64,
+}
+
+/// Structured facts an event records beyond its common fields, tagged by
+/// `type`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EventDetail {
+    /// A typed configuration edit (`application_edited`).
+    Edited {
+        /// The part of the configuration it changed.
+        field: crate::edit::EditedField,
+    },
 }
 
 /// Who caused an event: exactly one kind of actor.

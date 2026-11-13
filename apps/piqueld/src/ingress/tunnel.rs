@@ -31,6 +31,7 @@ use super::{CLOUDFLARED_IMAGE, Ingress};
 use anyhow::{Context, Result};
 use piqueld_config::TunnelCredentials;
 use piqueld_config::directories::PrivateFile;
+use piqueld_core::Phase;
 use piqueld_core::api::PublicIngressStatus;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -111,7 +112,7 @@ impl Ingress {
         self.ensure_container(
             &name,
             &self.tunnel_spec(credentials),
-            "ingress_start_tunnel",
+            Phase::IngressStartTunnel,
             self.prepare_tunnel(credentials),
         )
         .await

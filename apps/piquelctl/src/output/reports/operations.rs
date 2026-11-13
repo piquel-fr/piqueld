@@ -3,7 +3,7 @@
 use crate::deployments::Deployed;
 use piqueld_client::{
     AcceptedOperation, ApplicationLogs, BuildLogPage, BuildRecord, DeletedApplication, Event,
-    Operation, OperationState, Page, SavedApplication,
+    Operation, OperationState, Page, Phase, SavedApplication,
 };
 use serde::Serialize;
 
@@ -87,7 +87,7 @@ report!(Page<Event>, self, out, {
             event.kind,
             event.operation_id.as_deref().unwrap_or("-"),
             event.attempt.map_or_else(|| "-".into(), |v| v.to_string()),
-            event.phase.as_deref().unwrap_or(""),
+            event.phase.map_or("", Phase::as_str),
             event.resource.as_deref().unwrap_or(""),
             event.error_code.as_deref().unwrap_or(""),
             event.message.as_deref().unwrap_or(""),
@@ -104,8 +104,8 @@ report!(Operation, self, out, {
     out.label("Operation", &self.id)?;
     out.label("  State", self.state)?;
     out.label("  Environment", &self.environment_id)?;
-    if let Some(phase) = &self.phase {
-        out.label("  Phase", phase.replace('_', " "))?;
+    if let Some(phase) = self.phase {
+        out.label("  Phase", phase.as_str().replace('_', " "))?;
     }
     if let Some(resource) = &self.resource {
         out.label("  Resource", resource)?;

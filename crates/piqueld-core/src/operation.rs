@@ -107,7 +107,7 @@ pub struct Operation {
     pub state: OperationState,
     /// Current execution phase, retained on failure.
     #[serde(default)]
-    pub phase: Option<String>,
+    pub phase: Option<Phase>,
     /// Logical or Docker resource currently being processed.
     #[serde(default)]
     pub resource: Option<String>,
@@ -143,5 +143,92 @@ string_enum! {
         Deleting => "deleting",
         /// Reconciliation failed.
         Failed => "failed",
+    }
+}
+
+string_enum! {
+    #[serde]
+    /// What a journaled runtime action does, recorded on its events and on the
+    /// operation it belongs to. The stored names predate this type and stay as
+    /// they are, so history and analytics group old and new actions together.
+    pub enum Phase {
+        /// Prepare an operation's target: everything before planning.
+        Preparing => "preparing",
+        /// Fetch a repository-backed manifest.
+        FetchManifest => "fetching_manifest",
+        /// Build a service's Git source.
+        BuildGit => "building_git",
+        /// Resolve a service's image to an immutable digest.
+        ResolveImage => "resolving_image",
+        /// Plan the runtime changes from a fresh observation.
+        Planning => "planning",
+        /// Run a before-rollout job to completion.
+        RunJob => "run_job",
+        /// Stop and remove the job runs of earlier operations.
+        RemoveJobs => "remove_jobs",
+        /// Create or verify a private network.
+        EnsureNetwork => "ensure_network",
+        /// Create or verify a named volume.
+        EnsureVolume => "ensure_volume",
+        /// Create or update a service.
+        EnsureService => "ensure_service",
+        /// Wait for a service to converge.
+        WaitForService => "wait_for_service",
+        /// Wait for a removed service to disappear.
+        WaitForServiceRemoval => "wait_for_service_removal",
+        /// Remove a service.
+        RemoveService => "remove_service",
+        /// Remove a private network.
+        RemoveNetwork => "remove_network",
+        /// Keep a volume by retention policy.
+        RetainVolume => "retain_volume",
+        /// Detach a service from a link network.
+        DetachNetwork => "detach_network",
+        /// Remove a preview's volumes.
+        RemoveVolumes => "remove_volumes",
+        /// Remove Docker versions of secrets.
+        RemoveSecrets => "remove_secrets",
+        /// Apply the environment's routes.
+        Routing => "routing",
+        /// Observe the environment after a failed observation.
+        Observation => "observation",
+        /// Initialize or repair the local Swarm.
+        EnsureSwarm => "ensure_swarm",
+        /// Remove an unused image.
+        RemoveImage => "remove_image",
+        /// Create the managed ingress gateway's network.
+        IngressCreateNetwork => "ingress_create_network",
+        /// Start the managed ingress gateway.
+        IngressStartGateway => "ingress_start_gateway",
+        /// Stop the managed ingress gateway.
+        IngressStopGateway => "ingress_stop_gateway",
+        /// Remove a managed ingress container.
+        IngressRemoveContainer => "ingress_remove_container",
+        /// Pull the managed ingress gateway's image.
+        IngressPullImage => "ingress_pull_image",
+        /// Replace the managed ingress gateway.
+        IngressReplaceGateway => "ingress_replace_gateway",
+        /// Start the managed Cloudflare tunnel connector.
+        IngressStartTunnel => "ingress_start_tunnel",
+        /// Start the managed tailnet node.
+        IngressStartTailnet => "ingress_start_tailnet",
+        /// Recover the managed ingress gateway.
+        IngressRecoverGateway => "ingress_recover_gateway",
+        /// Load routes into the managed ingress gateway.
+        IngressConfigureRoutes => "ingress_configure_routes",
+        /// Create DNS records for a site.
+        IngressDnsCreate => "ingress_dns_create",
+        /// Update DNS records of a site.
+        IngressDnsUpdate => "ingress_dns_update",
+        /// Delete DNS records of a site.
+        IngressDnsDelete => "ingress_dns_delete",
+        /// Issue a certificate through DNS-01.
+        IngressCertificateIssue => "ingress_certificate_issue",
+        /// Renew a certificate through DNS-01.
+        IngressCertificateRenew => "ingress_certificate_renew",
+        /// Delete an expired certificate.
+        IngressCertificateDelete => "ingress_certificate_delete",
+        /// Delete a leftover ACME challenge record.
+        IngressCertificateChallengeDelete => "ingress_certificate_challenge_delete",
     }
 }

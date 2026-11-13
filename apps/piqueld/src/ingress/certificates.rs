@@ -36,6 +36,7 @@ use piqueld_config::dns::{
     Dns, ZoneError,
     provider::{Record, RecordId, Zone},
 };
+use piqueld_core::Phase;
 use piqueld_core::{
     api::{CertificateStatus, DnsStatus},
     manifest::{Hostname, RouteHostname},
@@ -497,16 +498,16 @@ impl Ingress {
         self.delete_leftover_challenges(now_ms).await;
         for due in due {
             let phase = if due.renewal {
-                "ingress_certificate_renew"
+                Phase::IngressCertificateRenew
             } else {
-                "ingress_certificate_issue"
+                Phase::IngressCertificateIssue
             };
             let result = self.issue_certificate(phase, &due, cancellation).await;
             let mut entries = certificates.entries.write();
             let entry = entries.entry(due.name.clone()).or_default();
             match result {
                 Ok(stored) => {
-                    tracing::info!(certificate=%due.name, phase, "obtained DNS-01 certificate");
+                    tracing::info!(certificate=%due.name, phase=%phase, "obtained DNS-01 certificate");
                     *entry = Entry {
                         stored: Some(stored),
                         hostnames: std::mem::take(&mut entry.hostnames),
@@ -514,7 +515,7 @@ impl Ingress {
                     };
                 }
                 Err(error) => {
-                    tracing::warn!(certificate=%due.name, phase, error=format!("{error:#}"), "DNS-01 certificate failed; will retry with backoff");
+                    tracing::warn!(certificate=%due.name, phase=%phase, error=format!("{error:#}"), "DNS-01 certificate failed; will retry with backoff");
                     // Backoff starts when the attempt failed, which can be
                     // minutes into the pass.
                     let failed_at_ms = now_ms.saturating_add(
@@ -577,7 +578,7 @@ impl Ingress {
                 let journal = self
                     .journal_as(
                         DiagnosticCode::CertificateRenewalFailed,
-                        "ingress_certificate_delete",
+                        Phase::IngressCertificateDelete,
                         &name.to_string(),
                     )
                     .await?;
@@ -606,7 +607,7 @@ impl Ingress {
     /// Orders and stores one certificate in its own journal action.
     async fn issue_certificate(
         &self,
-        phase: &str,
+        phase: Phase,
         due: &Due,
         cancellation: &CancellationToken,
     ) -> Result<Stored> {
@@ -703,7 +704,7 @@ impl Ingress {
                 let journal = self
                     .journal_as(
                         DiagnosticCode::CertificateRenewalFailed,
-                        "ingress_certificate_challenge_delete",
+                        Phase::IngressCertificateChallengeDelete,
                         &challenge.name,
                     )
                     .await?;

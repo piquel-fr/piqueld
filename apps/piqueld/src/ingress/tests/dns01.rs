@@ -434,7 +434,7 @@ impl Scenario {
             .await
             .unwrap()
             .items;
-        events.retain(|e| e.phase.as_deref() == Some(phase));
+        events.retain(|e| e.phase.map(piqueld_core::Phase::as_str) == Some(phase));
         events
     }
 

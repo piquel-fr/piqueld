@@ -227,6 +227,25 @@ impl ActionKind {
             Self::RunJob { .. } => "run_job",
         }
     }
+
+    /// The phase this action is journaled as when it runs.
+    #[must_use]
+    pub const fn phase(&self) -> crate::Phase {
+        use crate::Phase;
+        match self {
+            Self::BuildGit { .. } => Phase::BuildGit,
+            Self::ResolveImage { .. } => Phase::ResolveImage,
+            Self::EnsureNetwork { .. } => Phase::EnsureNetwork,
+            Self::EnsureVolume { .. } => Phase::EnsureVolume,
+            Self::EnsureService { .. } => Phase::EnsureService,
+            Self::WaitForService { .. } => Phase::WaitForService,
+            Self::WaitForServiceRemoval { .. } => Phase::WaitForServiceRemoval,
+            Self::RemoveService { .. } => Phase::RemoveService,
+            Self::RemoveNetwork { .. } => Phase::RemoveNetwork,
+            Self::RetainVolume { .. } => Phase::RetainVolume,
+            Self::RunJob { .. } => Phase::RunJob,
+        }
+    }
 }
 
 impl fmt::Display for ActionKind {

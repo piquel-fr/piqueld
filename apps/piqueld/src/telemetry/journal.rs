@@ -24,6 +24,7 @@ use opentelemetry::trace::{
 };
 use opentelemetry::{InstrumentationScope, KeyValue};
 use opentelemetry_sdk::trace::{SpanData, SpanEvents, SpanLinks};
+use piqueld_core::Phase;
 use piqueld_core::observability::DiagnosticCode;
 use piqueld_core::operation::OperationKind;
 use piqueld_core::{Event, Operation};
@@ -125,8 +126,8 @@ impl Journal {
             _ => "unknown",
         };
         let duration = event.duration_ms.map(Duration::from_millis);
-        let phase = event.phase.as_deref().unwrap_or("action");
-        if phase == "building_git" {
+        let phase = event.phase.map_or("action", Phase::as_str);
+        if event.phase == Some(Phase::BuildGit) {
             let labels = labels(context, outcome);
             self.telemetry.with_instruments(|instruments| {
                 instruments.builds.add(1, &labels);
@@ -300,7 +301,7 @@ impl Journal {
                 ("piqueld.event.kind", Some(event.kind.clone())),
                 ("piqueld.event.scope", Some(event.scope.as_str().to_owned())),
                 ("piqueld.action.id", event.action_id.clone()),
-                ("piqueld.phase", event.phase.clone()),
+                ("piqueld.phase", event.phase.map(|phase| phase.to_string())),
                 ("piqueld.resource", event.resource.clone()),
                 (
                     "piqueld.diagnostic.id",
@@ -527,6 +528,7 @@ mod tests {
             request_id: None,
             actor: None,
             diagnostic: None,
+            detail: None,
             created_at_ms: at,
         }
     }
@@ -549,7 +551,7 @@ mod tests {
         let build = journal.spans(
             &Event {
                 action_id: Some("build".into()),
-                phase: Some("building_git".into()),
+                phase: Some(Phase::BuildGit),
                 resource: Some("web".into()),
                 duration_ms: Some(1_500),
                 ..event("action_succeeded", 2, 5_000)

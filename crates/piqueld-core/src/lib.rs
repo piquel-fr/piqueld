@@ -33,7 +33,7 @@ pub mod urls;
 
 pub use docker_names::{DockerConfigName, DockerNetworkName, DockerServiceName, DockerVolumeName};
 pub use environment::{EnvironmentKind, EnvironmentSource, Preview, PromotedFrom, TrackedBranch};
-pub use event::{Event, EventActor};
+pub use event::{Event, EventActor, EventDetail};
 pub use identity::{
     ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ReleaseId,
     ReleaseIdError, ResourceKind, docker_resource_name, docker_resource_readable_prefix,
@@ -50,7 +50,7 @@ pub use names::{
     PreviewSlugError, RouteName, RouteNameError, ServiceName, ServiceNameError, VolumeName,
     VolumeNameError,
 };
-pub use operation::{ApplicationState, Operation, OperationKind, OperationState};
+pub use operation::{ApplicationState, Operation, OperationKind, OperationState, Phase};
 pub use planner::{
     ActionKind, ActionReason, ActionRisk, DiagnosticSeverity, Plan, PlanAction, PlanDiagnostic,
     PlanRequest, PlanSummary,

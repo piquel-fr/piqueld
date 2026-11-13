@@ -1,6 +1,7 @@
 //! Fetch a candidate manifest without changing accepted intent or runtime state.
 use super::{Controller, DockerApi, Operation, OperationError};
 use crate::git::snapshot::SnapshotSource;
+use piqueld_core::Phase;
 use piqueld_core::{
     NormalizedApplication,
     api::{DeploymentOrigin, DiagnosticView},
@@ -74,7 +75,7 @@ impl<D: DockerApi> Controller<D> {
             return Ok((rendering.application, None));
         };
         self.store
-            .progress(&operation.id, "fetching_manifest", None)
+            .progress(&operation.id, Phase::FetchManifest, None)
             .await?;
         let checkout = self
             .sources

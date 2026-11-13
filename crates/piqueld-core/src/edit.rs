@@ -138,6 +138,64 @@ pub enum ApplicationEdit {
     },
 }
 
+crate::names::string_enum! {
+    #[serde]
+    /// The part of an application's configuration a typed edit changed, as
+    /// its history records it.
+    pub enum EditedField {
+        /// The display name.
+        Name => "name",
+        /// The repository manifest connection.
+        Repository => "repository",
+        /// The set of services.
+        Services => "services",
+        /// One service's settings.
+        Service => "service",
+        /// The volumes.
+        Volumes => "volumes",
+        /// The routes.
+        Routes => "routes",
+        /// The before-rollout jobs.
+        Jobs => "jobs",
+        /// The exports.
+        Exports => "exports",
+        /// The imports.
+        Imports => "imports",
+        /// The generated secrets.
+        Secrets => "secrets",
+        /// The variables.
+        Variables => "variables",
+        /// The environments' settings.
+        Environments => "environments",
+    }
+}
+
+impl ApplicationEdit {
+    /// The part of the configuration this edit changes.
+    #[must_use]
+    pub const fn field(&self) -> EditedField {
+        match self {
+            Self::Name(_) => EditedField::Name,
+            Self::Repository(_)
+            | Self::RepositoryUrl(_)
+            | Self::RepositoryPath(_)
+            | Self::RepositorySync(_) => EditedField::Repository,
+            Self::AddService(_) | Self::RemoveService(_) => EditedField::Services,
+            Self::Service { .. } => EditedField::Service,
+            Self::AddVolume(_) | Self::Volumes(_) | Self::RemoveVolume(_) => EditedField::Volumes,
+            Self::Routes(_) => EditedField::Routes,
+            Self::Jobs(_) => EditedField::Jobs,
+            Self::Exports(_) => EditedField::Exports,
+            Self::Imports(_) => EditedField::Imports,
+            Self::GeneratedSecrets(_) => EditedField::Secrets,
+            Self::Variables(_) => EditedField::Variables,
+            Self::EnvironmentVisibility { .. } | Self::EnvironmentRollback { .. } => {
+                EditedField::Environments
+            }
+        }
+    }
+}
+
 /// Every variable value of an application, replaced together.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]

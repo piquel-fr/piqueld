@@ -101,6 +101,7 @@ pub use piqueld_core::{
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, EventActor, Operation, OperationKind, OperationState,
+    Phase,
 };
 pub use previews::{
     ApplicationPreviews, BranchState, CountedPreview, CreatePreviewRequest, CreatedPreview,

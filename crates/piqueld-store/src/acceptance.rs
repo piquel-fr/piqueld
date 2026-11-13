@@ -6,7 +6,7 @@ use piqueld_core::access::{AppPermission, Grants, Target};
 use piqueld_core::api::{
     AcceptedOperation, CreatedPreview, DeletedApplication, EnvironmentView, RenamedApplication,
 };
-use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
+use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName, EventDetail};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -826,26 +826,6 @@ impl Store {
         )
         .await?;
         let application = manifest.validate_template()?.normalize(id.clone());
-        let field = match &edit {
-            ApplicationEdit::Name(_) => "name",
-            ApplicationEdit::Repository(_)
-            | ApplicationEdit::RepositoryUrl(_)
-            | ApplicationEdit::RepositoryPath(_)
-            | ApplicationEdit::RepositorySync(_) => "repository",
-            ApplicationEdit::AddService(_) | ApplicationEdit::RemoveService(_) => "services",
-            ApplicationEdit::Service { .. } => "service",
-            ApplicationEdit::AddVolume(_)
-            | ApplicationEdit::Volumes(_)
-            | ApplicationEdit::RemoveVolume(_) => "volumes",
-            ApplicationEdit::Routes(_) => "routes",
-            ApplicationEdit::Jobs(_) => "jobs",
-            ApplicationEdit::Exports(_) => "exports",
-            ApplicationEdit::Imports(_) => "imports",
-            ApplicationEdit::GeneratedSecrets(_) => "secrets",
-            ApplicationEdit::Variables(_) => "variables",
-            ApplicationEdit::EnvironmentVisibility { .. }
-            | ApplicationEdit::EnvironmentRollback { .. } => "environments",
-        };
         let resource = match &edit {
             ApplicationEdit::Service { name, .. } | ApplicationEdit::RemoveService(name) => {
                 Some(name.as_str())
@@ -866,7 +846,11 @@ impl Store {
                 Self::save_configuration_on(tx, &application, Some(current.generation)).await?;
             let generation = i64::try_from(saved.generation).map_err(StoreError::corrupt)?;
             let app_id = id.as_str();
-            sqlx::query!("INSERT INTO events(application_id,generation,kind,message,phase,resource,created_at_ms) VALUES(?1,?2,'application_edited','Saved application configuration',?3,?4,?5)",app_id,generation,field,resource,now).execute(&mut **tx).await.map_err(StoreError::database)?;
+            let detail = serde_json::to_string(&EventDetail::Edited {
+                field: edit.field(),
+            })
+            .map_err(StoreError::corrupt)?;
+            sqlx::query!("INSERT INTO events(application_id,generation,kind,message,detail_json,resource,created_at_ms) VALUES(?1,?2,'application_edited','Saved application configuration',?3,?4,?5)",app_id,generation,detail,resource,now).execute(&mut **tx).await.map_err(StoreError::database)?;
             saved
         };
         Self::deploy_saved(tx, &id, &mut saved, deploy).await?;

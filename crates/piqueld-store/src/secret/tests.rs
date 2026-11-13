@@ -824,7 +824,12 @@ async fn secret_writes_use_the_callers_current_grants() {
         .await
         .unwrap();
     store
-        .begin_application_action(by, &production, "remove_secrets", Some("token"))
+        .begin_application_action(
+            by,
+            &production,
+            piqueld_core::Phase::RemoveSecrets,
+            Some("token"),
+        )
         .await
         .unwrap();
     store.interrupt_actions(None).await.unwrap();

@@ -326,10 +326,12 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
     assert!(
         failed
             .iter()
-            .any(|event| event.phase.as_deref() == Some("remove_secrets")
-                && event.resource.as_deref() == Some("token")
-                && event.environment_id.as_ref() == Some(&environment)
-                && event.diagnostic.is_some()),
+            .any(
+                |event| event.phase.map(piqueld_core::Phase::as_str) == Some("remove_secrets")
+                    && event.resource.as_deref() == Some("token")
+                    && event.environment_id.as_ref() == Some(&environment)
+                    && event.diagnostic.is_some()
+            ),
         "{failed:#?}"
     );
     assert!(

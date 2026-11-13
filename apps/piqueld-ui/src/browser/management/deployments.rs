@@ -1177,7 +1177,7 @@ fn DeploymentCard(deployment: Signal<DeploymentView>, newer: Signal<bool>) -> im
                                         <dt>"Attempts"</dt>
                                         <dd>{op.attempt}</dd>
                                         <dt>"Phase"</dt>
-                                        <dd>{op.phase.unwrap_or_else(|| "Waiting".into())}</dd>
+                                        <dd>{op.phase.map_or("Waiting", piqueld_client::Phase::as_str)}</dd>
                                         {op
                                             .resource
                                             .map(|resource| {

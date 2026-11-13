@@ -10,6 +10,7 @@ use super::{
     Plan, PlanRequest,
 };
 use crate::build::BuildLog;
+use piqueld_core::Phase;
 use piqueld_core::{
     DesiredJobRun, ResolvedApplication,
     api::{BuildState, DeploymentOrigin, LogStream},
@@ -147,7 +148,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), OperationError> {
         let name = job.logical_name.as_str();
         self.store
-            .progress(&operation.id, "running_job", Some(name))
+            .progress(&operation.id, Phase::RunJob, Some(name))
             .await?;
         let attempt = crate::build::BuildAttempt::start(
             Arc::clone(&self.store),
@@ -160,7 +161,7 @@ impl<D: DockerApi> Controller<D> {
         .await?;
         let journal = self
             .store
-            .begin_action(Some(&operation.id), "run_job", Some(name))
+            .begin_action(Some(&operation.id), Phase::RunJob, Some(name))
             .await?;
         let result = self
             .execute_job(
@@ -422,7 +423,7 @@ impl<D: DockerApi> Controller<D> {
     ) -> Result<(), OperationError> {
         let journal = self
             .store
-            .begin_action(Some(&operation.id), "remove_jobs", None)
+            .begin_action(Some(&operation.id), Phase::RemoveJobs, None)
             .await?;
         let result = async {
             self.retry(operation, &journal, cancellation, || {
@@ -489,7 +490,7 @@ impl<D: DockerApi> Controller<D> {
         operation: &str,
         ownership: &BTreeMap<String, String>,
     ) -> Result<(), OperationError> {
-        self.journaled(operation, "remove_jobs", None, async {
+        self.journaled(operation, Phase::RemoveJobs, None, async {
             {
                 let _guard = self.mutations.lock().await;
                 self.docker

@@ -492,7 +492,7 @@ async fn saving_preserves_active_images_until_deploy_and_rename_preserves_resour
     );
     let events = harness.store.events(None, None, 100).await.unwrap().items;
     assert!(events.iter().any(|event| event.kind == "resource_mutated"
-        && event.phase.as_deref() == Some("ensure_service")
+        && event.phase.map(piqueld_core::Phase::as_str) == Some("ensure_service")
         && event.resource.as_deref() == Some(after.services[0].name.as_str())));
     assert!(
         !serde_json::to_string(&events)
@@ -516,7 +516,10 @@ async fn failed_preparation_preserves_active_repair_and_save_does_not_retry() {
     harness.scan().await;
     let failure = harness.operation(&failed.id).await;
     assert_eq!(failure.state, OperationState::Failed);
-    assert_eq!(failure.phase.as_deref(), Some("resolving_image"));
+    assert_eq!(
+        failure.phase.map(piqueld_core::Phase::as_str),
+        Some("resolving_image")
+    );
     assert_eq!(failure.resource.as_deref(), Some("web"));
     let pulls = harness.pulls().await;
     let response = applications
@@ -634,8 +637,13 @@ async fn a_service_removed_while_waiting_for_it_fails_the_attempt() {
     let operation = harness.create().await;
     let remove = async {
         eventually(Duration::from_secs(10), POLL, async || {
-            (harness.operation(&operation.id).await.phase.as_deref() == Some("wait_for_service"))
-                .then_some(())
+            (harness
+                .operation(&operation.id)
+                .await
+                .phase
+                .map(piqueld_core::Phase::as_str)
+                == Some("wait_for_service"))
+            .then_some(())
         })
         .await
         .expect("the deployment waits for its service");
@@ -749,7 +757,10 @@ async fn git_deploy_prepares_before_rollout_and_supersedes_pending_requests() {
     harness.scan().await;
     let failure = harness.operation(&failed.id).await;
     assert_eq!(failure.state, OperationState::Failed);
-    assert_eq!(failure.phase.as_deref(), Some("building_git"));
+    assert_eq!(
+        failure.phase.map(piqueld_core::Phase::as_str),
+        Some("building_git")
+    );
     assert_eq!(failure.resource.as_deref(), Some("web"));
     assert_eq!(failure.error_code.as_deref(), Some("git_build_failed"));
     assert_eq!(
@@ -794,7 +805,7 @@ async fn mixed_sources_report_the_failing_source() {
         } else {
             ("resolving_image", "web", "image_resolution_failed")
         };
-        assert_eq!(failure.phase.as_deref(), Some(phase));
+        assert_eq!(failure.phase.map(piqueld_core::Phase::as_str), Some(phase));
         assert_eq!(failure.resource.as_deref(), Some(service));
         assert_eq!(failure.error_code.as_deref(), Some(code));
     }

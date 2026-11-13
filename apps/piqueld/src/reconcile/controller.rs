@@ -3,6 +3,7 @@ use super::{
     OperationError, OperationKind, OperationState, Plan, PlanRequest, StoreError,
 };
 use crate::application::RuntimeBoundary;
+use piqueld_core::Phase;
 use piqueld_core::api::DeploymentOrigin;
 use piqueld_docker::JobRuns;
 use std::sync::Arc;
@@ -224,7 +225,7 @@ impl<D: DockerApi> Controller<D> {
         }
         self.journaled(
             &operation.id,
-            "remove_volumes",
+            Phase::RemoveVolumes,
             None,
             self.remove_volumes(operation, &names),
         )
@@ -262,7 +263,7 @@ impl<D: DockerApi> Controller<D> {
         names: &[String],
     ) -> Result<(), OperationError> {
         let ownership = self.ownership_labels(&operation.environment_id);
-        self.journaled(&operation.id, "remove_secrets", None, async {
+        self.journaled(&operation.id, Phase::RemoveSecrets, None, async {
             Ok(self.docker.remove_secrets(names, &ownership).await?)
         })
         .await?;
@@ -423,7 +424,7 @@ impl<D: DockerApi> Controller<D> {
         cancellation: &CancellationToken,
     ) -> Result<PlanRequest, OperationError> {
         self.store
-            .progress(&operation.id, "preparing", None)
+            .progress(&operation.id, Phase::Preparing, None)
             .await?;
         let application = self.store.get(&operation.environment_id).await?;
         if operation.kind == OperationKind::Delete {
@@ -454,7 +455,9 @@ impl<D: DockerApi> Controller<D> {
         if routes.is_empty() && !self.store.has_routes(&operation.environment_id).await? {
             return Ok(());
         }
-        self.store.progress(&operation.id, "routing", None).await?;
+        self.store
+            .progress(&operation.id, Phase::Routing, None)
+            .await?;
         // Staging rejects an operation that a newer request replaced while it
         // waited, including behind another application's gateway update.
         if let Some(ingress) = &self.ingress {
@@ -501,7 +504,7 @@ impl<D: DockerApi> Controller<D> {
             .find(|diagnostic| diagnostic.blocking)
             .map(|diagnostic| diagnostic.resource.as_str());
         self.store
-            .progress(&operation.id, "planning", resource)
+            .progress(&operation.id, Phase::Planning, resource)
             .await?;
         if plan.is_blocked() {
             return Err(BlockedPlan::of(plan).error());
@@ -776,14 +779,7 @@ mod tests {
             async move { controller.sync_routes(&operation, &routes, true).await }
         });
         // The routing phase commits just before staging waits for the gateway.
-        while store
-            .operation(&operation.id)
-            .await
-            .unwrap()
-            .phase
-            .as_deref()
-            != Some("routing")
-        {
+        while store.operation(&operation.id).await.unwrap().phase != Some(Phase::Routing) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         store
@@ -820,7 +816,7 @@ mod tests {
         let controller = harness.controller();
         // Another worker, such as ingress, is mid-change when reconciliation starts.
         let action = store
-            .begin_action(None, "ingress_start_gateway", None)
+            .begin_action(None, Phase::IngressStartGateway, None)
             .await
             .unwrap();
         let cancellation = CancellationToken::new();
@@ -908,12 +904,12 @@ mod tests {
             .unwrap();
         let controller = harness.controller();
         let abandoned = store
-            .begin_action(Some(&operation.id), "resolving_image", Some("web"))
+            .begin_action(Some(&operation.id), Phase::ResolveImage, Some("web"))
             .await
             .unwrap();
         let guard = controller.mutations.lock().await;
         let repair = store
-            .begin_action(Some(&operation.id), "ensure_service", Some("web"))
+            .begin_action(Some(&operation.id), Phase::EnsureService, Some("web"))
             .await
             .unwrap();
         store.action_request(&repair, 1).await.unwrap();

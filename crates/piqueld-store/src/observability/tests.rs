@@ -3,6 +3,7 @@ use crate::testing::template;
 use crate::*;
 use crate::{Mutation, MutationResponse};
 use piqueld_config::DaemonConfig;
+use piqueld_core::Phase;
 use piqueld_core::observability::{
     ApplicationSelection, DeliveryState, DestinationKind, DestinationName, DestinationRequest,
     DestinationSettings, Diagnostic, EventFilter, EventScope, NotificationCategory,
@@ -45,7 +46,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
     let store = Store::open_unsynced(&path).await.unwrap();
     let op = application(&store).await;
     let action = store
-        .begin_action(Some(&op.id), "ensure_service", Some("web"))
+        .begin_action(Some(&op.id), Phase::EnsureService, Some("web"))
         .await
         .unwrap();
     store.action_request(&action, 1).await.unwrap();
@@ -1314,4 +1315,50 @@ async fn deployments_follow_cancelled_recoveries_and_stay_retryable() {
         .retry_delivery(crate::Actor::Daemon, &deployed.id)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn migration_types_the_phases_recorded_before_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let pool = Store::migrated(&temp.path().join("db"), 33).await;
+    for (kind, phase) in [
+        ("application_edited", "jobs"),
+        ("action_started", "running_job"),
+        ("operation_failed", "preparing_sources"),
+        ("action_started", "deploy"),
+        ("action_started", "ensure_service"),
+    ] {
+        sqlx::query("INSERT INTO events(scope,kind,phase,created_at_ms) VALUES('daemon',?1,?2,1)")
+            .bind(kind)
+            .bind(phase)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    pool.close().await;
+    let store = Store::open_unsynced(temp.path().join("db")).await.unwrap();
+    let events = store
+        .filtered_events(&EventFilter::default(), &Visibility::ALL, None, 10)
+        .await
+        .unwrap()
+        .items;
+    let recorded: Vec<_> = events
+        .iter()
+        .map(|event| (event.phase, event.detail.clone()))
+        .collect();
+    assert_eq!(
+        recorded,
+        [
+            (
+                None,
+                Some(piqueld_core::EventDetail::Edited {
+                    field: piqueld_core::edit::EditedField::Jobs
+                })
+            ),
+            (Some(Phase::RunJob), None),
+            (Some(Phase::Preparing), None),
+            (None, None),
+            (Some(Phase::EnsureService), None),
+        ]
+    );
 }

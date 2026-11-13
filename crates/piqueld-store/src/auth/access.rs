@@ -649,10 +649,14 @@ mod tests {
             .len();
         store.mark_running(&operation.operation_id).await;
         let id = &operation.operation_id;
-        let action = store.begin_action(Some(id), "deploy", None).await;
+        let action = store
+            .begin_action(Some(id), piqueld_core::Phase::EnsureService, None)
+            .await;
         let action = action.unwrap();
         // Shared gateway work a deployment needs stays daemon-scoped.
-        let shared = store.begin_daemon_action(Some(id), "ingress", None).await;
+        let shared = store
+            .begin_daemon_action(Some(id), piqueld_core::Phase::IngressConfigureRoutes, None)
+            .await;
         let shared = shared.unwrap();
         store.finish_action(&shared, None).await.unwrap();
         let only_shared = EventFilter {

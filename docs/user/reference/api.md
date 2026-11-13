@@ -607,7 +607,11 @@ Event retention is independently configured by `retention.event_days` (default
 90; zero disables pruning). Events contain safe diagnostics and identifiers,
 never manifests, environment values, or raw Docker errors. Failure events preserve
 `error_code`, `phase`, and `resource`; operation reads expose the current phase and
-resource. Significant resource mutations and active-target repairs are recorded,
+resource. `phase` names what a journaled action does, such as `building_git`,
+`run_job` or `ensure_service`. Some events carry a `detail` object tagged by
+its `type` field: typed configuration edits (`application_edited`) record
+`{"type": "edited", "field": "jobs"}`, naming the part of the configuration
+they changed. Significant resource mutations and active-target repairs are recorded,
 while unchanged observations and timer ticks are omitted.
 
 The API requires a session cookie or bearer credential on every transport,

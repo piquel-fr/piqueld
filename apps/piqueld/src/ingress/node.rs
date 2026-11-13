@@ -31,6 +31,7 @@ use crate::tailnet::ProxyListener;
 use anyhow::{Context, Result};
 use piqueld_config::directories::PrivateFile;
 use piqueld_config::{Credential, PrivateIngressConfig};
+use piqueld_core::Phase;
 use piqueld_core::api::PrivateIngressStatus;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -178,7 +179,7 @@ impl Ingress {
         self.ensure_container(
             &name,
             &self.node_spec(node),
-            "ingress_start_tailnet",
+            Phase::IngressStartTailnet,
             self.prepare_node(node),
         )
         .await

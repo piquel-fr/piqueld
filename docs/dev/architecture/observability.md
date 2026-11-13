@@ -9,8 +9,14 @@ guide's operations pages: [history](../../user/operations/history.md),
 
 ## History and diagnostics
 
-Saved typed edits record their field and resource once, in the application's
-history with no environment, without copying configuration values.
+Saved typed edits record their field (in the event's `detail`) and resource
+once, in the application's history with no environment, without copying
+configuration values.
+
+An event's `phase` is a `Phase`: what the journaled action does, typed in
+`piqueld-core`, with the names stored before the type existed. A plan action
+is journaled under `ActionKind::phase`, so the plan and the journal use one
+vocabulary.
 
 Secret writes and deletions record `secret_saved` and `secret_deleted` events with
 the logical name as their resource; history never contains values. Removing a
