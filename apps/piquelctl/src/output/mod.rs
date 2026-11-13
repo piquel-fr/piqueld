@@ -9,6 +9,7 @@ mod progress;
 pub(crate) mod reports;
 #[cfg(test)]
 mod tests;
+mod timeline;
 
 use crate::{
     cli::Cli,
@@ -16,13 +17,14 @@ use crate::{
 };
 use parking_lot::Mutex;
 use progress::ProgressOutput;
-pub(crate) use progress::{ProgressTask, TaskOutcome};
+pub(crate) use progress::{Progress, ProgressTask, TaskOutcome};
 use serde::Serialize;
 use std::{
     fmt,
     io::{self, IsTerminal, Write},
     sync::Arc,
 };
+pub(crate) use timeline::TimelineProgress;
 
 type Writer = Box<dyn Write + Send>;
 /// Stderr shared between the console and progress tasks.
@@ -61,6 +63,12 @@ pub(crate) enum Event<'a> {
         message: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         outcome: Option<&'static str>,
+    },
+    /// A step of an operation `task` follows, each time it starts or changes.
+    Step {
+        task: &'a str,
+        #[serde(flatten)]
+        step: &'a piqueld_client::operations::Step,
     },
     /// The command's failure, shaped like the API's error envelope.
     Error(crate::error::ErrorBody<'a>),
@@ -289,6 +297,11 @@ impl Console {
     /// Transient task state on stderr; hidden in quiet mode. Updates are best effort.
     pub(crate) fn start_task(&mut self, label: &str) -> ProgressTask {
         self.progress.start(label)
+    }
+
+    /// The live steps of the operation `label` names on stderr, like a task.
+    pub(crate) fn follow_timeline(&mut self, label: &str) -> TimelineProgress {
+        TimelineProgress::new(&self.progress, label)
     }
 }
 

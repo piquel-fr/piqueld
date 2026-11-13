@@ -16,7 +16,7 @@ pub(crate) enum TaskOutcome {
     Skipped,
 }
 impl TaskOutcome {
-    fn text(self) -> &'static str {
+    pub(super) fn text(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
@@ -26,7 +26,7 @@ impl TaskOutcome {
 }
 
 /// How progress is presented, chosen once per console.
-enum Backend {
+pub(super) enum Backend {
     /// Animated spinner rows on an interactive stderr.
     Terminal(MultiProgress),
     /// One permanent line per start, change, and finish (logs, pipes, `TERM=dumb`).
@@ -39,11 +39,11 @@ enum Backend {
 
 /// Console-owned progress renderer; tasks keep their own reference to the output.
 pub(super) struct ProgressOutput {
-    inner: Arc<Output>,
+    pub(super) inner: Arc<Output>,
 }
 /// Progress backend plus the shared stderr writer used for permanent lines.
-struct Output {
-    backend: Backend,
+pub(super) struct Output {
+    pub(super) backend: Backend,
     writer: SharedWriter,
 }
 
@@ -118,31 +118,51 @@ impl Output {
         }
     }
 
-    /// Prints a permanent `label: message` line, or a `progress` event with
-    /// `--json` (best effort, skipped when hidden).
-    fn line(&self, label: &str, message: &str, outcome: Option<TaskOutcome>) {
+    /// Writes permanent output with spinner rows hidden, then flushes; best
+    /// effort, skipped when hidden. Permanent lines are ordinary lines, not
+    /// indicatif zombie rows, so they survive later drops and redraws.
+    pub(super) fn write(&self, write: impl FnOnce(&mut dyn io::Write) -> io::Result<()>) {
         if matches!(self.backend, Backend::Hidden) {
             return;
         }
-        // Completion is a permanent ordinary line, not an indicatif zombie row.
-        // This survives later task drops and progress redraws.
         let _ = self.suspend(|| -> io::Result<()> {
             let mut writer = self.writer.lock();
+            write(writer.as_mut())?;
+            writer.flush()
+        });
+    }
+
+    /// Prints a permanent `label: message` line, or a `progress` event with
+    /// `--json`.
+    pub(super) fn line(&self, label: &str, message: &str, outcome: Option<TaskOutcome>) {
+        self.write(|writer| {
             if matches!(self.backend, Backend::Json) {
                 Event::Progress {
                     task: label,
                     message,
                     outcome: outcome.map(TaskOutcome::text),
                 }
-                .write(writer.as_mut())?;
+                .write(writer)
             } else {
                 let outcome =
                     outcome.map_or_else(String::new, |outcome| format!("{} · ", outcome.text()));
-                HumanWriter::new(writer.as_mut())
-                    .line(format_args!("{label}: {outcome}{message}"))?;
+                HumanWriter::new(writer).line(format_args!("{label}: {outcome}{message}"))
             }
-            writer.flush()
         });
+    }
+}
+
+/// How a wait shows what it waits on, or goes on through, such as the
+/// daemon restarting: a [`ProgressTask`]'s message, or a line under a
+/// [`super::TimelineProgress`]'s steps.
+pub(crate) trait Progress {
+    /// Shows `message`; unchanged messages are skipped.
+    fn show(&self, message: &str);
+}
+
+impl Progress for ProgressTask {
+    fn show(&self, message: &str) {
+        self.update(message);
     }
 }
 

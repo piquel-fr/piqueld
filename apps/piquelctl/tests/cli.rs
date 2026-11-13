@@ -92,6 +92,26 @@ impl Reply {
         }
     }
 
+    /// Streams each of `timelines` as a `timeline` server-sent event, then
+    /// ends the stream, as the daemon's timeline stream does when it stops.
+    fn timelines(timelines: &[Value]) -> Self {
+        let mut body = Vec::new();
+        for timeline in timelines {
+            write!(body, "event: timeline\ndata: {timeline}\n\n").expect("writes to a Vec");
+        }
+        Self {
+            status: "200 OK",
+            content_type: "text/event-stream",
+            body,
+            drop_connection: false,
+        }
+    }
+
+    /// Streams a timeline of `operation` alone; see [`timeline`].
+    fn timeline(operation: &Value) -> Self {
+        Self::timelines(&[timeline(operation, &json!([]))])
+    }
+
     fn dropped() -> Self {
         Self {
             status: "200 OK",
@@ -522,6 +542,14 @@ fn operation(state: &str) -> Value {
         "finished_at_ms": if state == "succeeded" { json!(2) } else { Value::Null }
     })
 }
+
+/// The timeline of `operation`, with `steps`.
+fn timeline(operation: &Value, steps: &Value) -> Value {
+    json!({"operation": operation, "steps": steps, "cursor": 1})
+}
+
+/// The path of `operation-01`'s timeline stream.
+const TIMELINE_STREAM: &str = "/api/v1/operations/operation-01/timeline/stream";
 
 fn assert_json_success(output: &Output) -> Value {
     assert!(
@@ -1087,16 +1115,20 @@ fn partial_list_failures_preserve_results_and_context_in_all_modes() {
 fn progress_is_visible_before_the_server_completes_the_command() {
     let (release, wait) = mpsc::channel();
     let mut calls = 0;
-    let server = start_server(false, 2, move |_| {
+    // The first stream ends after one timeline; the client reconnects.
+    let server = start_server(false, 2, move |request| {
+        assert_eq!(request.path, TIMELINE_STREAM);
         calls += 1;
         if calls == 1 {
-            let mut value = operation("running");
-            value["phase"] = json!("resolving_image");
-            Reply::json(value)
+            let steps = json!([{
+                "phase": "resolving_image", "resource": "web", "state": "running",
+                "action_id": "a1", "started_at_ms": 1
+            }]);
+            Reply::timelines(&[timeline(&operation("running"), &steps)])
         } else {
             wait.recv_timeout(Duration::from_secs(5))
                 .expect("release final response");
-            Reply::json(operation("succeeded"))
+            Reply::timeline(&operation("succeeded"))
         }
     });
     let mut child = server
@@ -1110,7 +1142,7 @@ fn progress_is_visible_before_the_server_completes_the_command() {
     let (visible, observed) = mpsc::channel();
     let reader = thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
-            if line.unwrap().contains("Resolving image") {
+            if line.unwrap().contains("resolving_image") {
                 visible.send(()).unwrap();
             }
         }
@@ -1170,28 +1202,103 @@ fn blocked_plan_emits_json_then_fails_and_quiet_keeps_the_reason() {
     }
 }
 
-#[test]
-fn human_operation_progress_omits_duplicate_poll_results() {
-    let mut calls = 0;
-    let server = start_server(true, 3, move |_| {
-        calls += 1;
-        let mut value = operation(if calls < 3 { "running" } else { "succeeded" });
-        value["phase"] = json!(if calls < 3 {
-            "resolving_image"
-        } else {
-            "planning"
-        });
-        value["resource"] = json!("web");
-        Reply::json(value)
+/// Streams a deployment's timeline: a build that took unusually long, then
+/// an update that retried once, each timeline sent whole as the daemon does.
+fn stepped_timelines() -> Vec<Value> {
+    let step = |phase: &str, state: &str, action: &str, started: i64| {
+        json!({
+            "phase": phase, "resource": "api", "state": state,
+            "action_id": action, "started_at_ms": started
+        })
+    };
+    let running = operation("running");
+    let mut build = step("building_git", "running", "a1", 1_000);
+    build["expected_ms"] = json!(25_000);
+    let update = json!({"phase": "ensure_service", "resource": "api", "state": "planned", "expected_ms": 2_000});
+    let first = timeline(&running, &json!([build, update]));
+    build["state"] = json!("succeeded");
+    build["finished_at_ms"] = json!(39_200);
+    let mut retrying = step("ensure_service", "retrying", "a2", 39_200);
+    retrying["expected_ms"] = json!(2_000);
+    retrying["diagnostic"] = json!({
+        "id": "d1", "code": "docker_unavailable", "summary": "Docker is unavailable",
+        "causes": [], "retryable": true, "next_action": "", "scope": "application"
     });
+    let mut updated = retrying.clone();
+    updated["state"] = json!("succeeded");
+    updated["retries"] = json!(1);
+    updated["finished_at_ms"] = json!(41_200);
+    updated.as_object_mut().unwrap().remove("diagnostic");
+    let mut succeeded = operation("succeeded");
+    succeeded["started_at_ms"] = json!(1_000);
+    succeeded["finished_at_ms"] = json!(42_000);
+    vec![
+        first.clone(),
+        // Unchanged steps print nothing again.
+        first,
+        timeline(&running, &json!([build, retrying])),
+        timeline(&succeeded, &json!([build, updated])),
+    ]
+}
 
+/// Without a terminal, each step prints a line when it starts or changes,
+/// then the outcome with how long the deployment took and usually takes.
+#[test]
+fn non_terminal_progress_prints_a_line_per_step_change() {
+    let server = start_server(true, 1, |request| {
+        assert_eq!(request.path, TIMELINE_STREAM);
+        Reply::timelines(&stepped_timelines())
+    });
     let output = run_human(&server, &["operation", "operation-01"]);
+    server.finish();
     assert!(output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(stderr.matches("Resolving image · web").count(), 1);
-    assert!(stderr.contains("succeeded"));
-    assert!(stderr.contains("Planning · web"));
-    let _ = server.finish();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "operation-01: running\n\
+         operation-01: Build api · running\n\
+         operation-01: Build api · succeeded · 38.2 s  (usual 25.0 s)\n\
+         operation-01: Update api · retrying · retry 1: Docker is unavailable\n\
+         operation-01: Update api · succeeded · 2.0 s  after 1 retry\n\
+         operation-01: succeeded · 41.0 s (usual 27.0 s)\n"
+    );
+}
+
+/// With `--json`, each step change is a `step` event carrying the step, and
+/// stdout keeps only the result.
+#[test]
+fn json_progress_emits_a_step_event_per_step_change() {
+    let server = start_server(true, 1, |_| Reply::timelines(&stepped_timelines()));
+    let output = run(&server, &["operation", "operation-01"]);
+    server.finish();
+    assert_eq!(assert_json_success(&output)["state"], "succeeded");
+    let events: Vec<Value> = String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let steps: Vec<_> = events
+        .iter()
+        .filter_map(|event| event.get("step"))
+        .map(|step| {
+            assert_eq!(step["task"], "operation-01");
+            (
+                step["phase"].as_str().unwrap(),
+                step["state"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("building_git", "running"),
+            ("building_git", "succeeded"),
+            ("ensure_service", "retrying"),
+            ("ensure_service", "succeeded"),
+        ]
+    );
+    assert_eq!(
+        events.last().unwrap()["progress"],
+        json!({"task": "operation-01", "message": "41.0 s (usual 27.0 s)", "outcome": "succeeded"})
+    );
 }
 
 /// A failed deployment exits 5, reporting the failure with bounded context
@@ -1205,11 +1312,11 @@ fn apply_reports_a_failed_operation_with_exit_5_and_bounded_context() {
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
-        "/api/v1/operations/operation-01" => {
+        TIMELINE_STREAM => {
             let mut value = operation("failed");
             value["phase"] = json!("ensure_network");
             value["resource"] = json!("app-notes-network");
-            Reply::json(value)
+            Reply::timeline(&value)
         }
         path => panic!("unexpected path {path}"),
     });
@@ -1380,16 +1487,13 @@ fn delete_stops_on_failed_or_cancelled_operation() {
 }
 
 #[test]
-fn operation_polls_by_default_and_no_wait_fetches_once() {
-    let mut calls = 0;
-    let server = start_server(false, 2, move |request| {
-        assert_eq!(request.path, "/api/v1/operations/operation-01");
-        calls += 1;
-        Reply::json(if calls == 1 {
-            operation("requested")
-        } else {
-            operation("succeeded")
-        })
+fn operation_follows_its_timeline_by_default_and_no_wait_fetches_once() {
+    let server = start_server(false, 1, move |request| {
+        assert_eq!(request.path, TIMELINE_STREAM);
+        Reply::timelines(&[
+            timeline(&operation("requested"), &json!([])),
+            timeline(&operation("succeeded"), &json!([])),
+        ])
     });
     let output = run(&server, &["operation", "operation-01"]);
     let value = assert_json_success(&output);
@@ -1452,29 +1556,36 @@ fn logout_without_a_credential_sends_nothing() {
 
 #[test]
 fn waits_ride_out_an_unavailable_daemon_and_retried_failures() {
-    let mut polls = 0;
-    let server = start_server(false, 5, move |request| match request.path.as_str() {
-        "/api/v1/operations/operation-01" => {
-            polls += 1;
-            match polls {
-                1 => Reply::json(operation("running")),
-                2 => Reply::status(
-                    "503 Service Unavailable",
-                    &json!({"code": "unavailable", "message": "restarting"}),
-                ),
-                3 => {
-                    let mut failed = operation("failed");
-                    failed["error_code"] = json!("swarm_manager_unavailable");
-                    Reply::json(failed)
-                }
-                _ => Reply::json(operation("succeeded")),
+    let mut reads = 0;
+    let server = start_server(false, 6, move |request| {
+        reads += 1;
+        match (reads, request.path.as_str()) {
+            // The stream ends as the daemon restarts…
+            (1, TIMELINE_STREAM) => Reply::timeline(&operation("running")),
+            // …which then refuses it, so the timeline is polled instead…
+            (2, TIMELINE_STREAM) => Reply::status(
+                "503 Service Unavailable",
+                &json!({"code": "unavailable", "message": "too many streams"}),
+            ),
+            // …through a gateway error while it starts.
+            (3, "/api/v1/operations/operation-01/timeline") => Reply::status(
+                "502 Bad Gateway",
+                &json!({"code": "unavailable", "message": "restarting"}),
+            ),
+            (4, "/api/v1/operations/operation-01/timeline") => {
+                let mut failed = operation("failed");
+                failed["error_code"] = json!("swarm_manager_unavailable");
+                Reply::json(timeline(&failed, &json!([])))
             }
+            // Still the latest operation, so the daemon retries its failure.
+            (5, "/api/v1/environments/app-notes-01/detail") => {
+                Reply::json(detail("operation-01", true, "ready"))
+            }
+            (6, "/api/v1/operations/operation-01/timeline") => {
+                Reply::json(timeline(&operation("succeeded"), &json!([])))
+            }
+            (read, path) => panic!("unexpected read {read} of {path}"),
         }
-        // Still the latest operation, so the daemon retries its failure.
-        "/api/v1/environments/app-notes-01/detail" => {
-            Reply::json(detail("operation-01", true, "ready"))
-        }
-        path => panic!("unexpected path {path}"),
     });
     // `--timeout` bounds each request, not the wait.
     let output = run_with_timeout(&server, &["operation", "operation-01"], "100ms");
@@ -1493,10 +1604,11 @@ fn a_retryable_failure_is_waited_on_only_while_it_is_the_latest_operation() {
     ] {
         let server = start_server(false, usize::MAX, move |request| {
             match request.path.as_str() {
-                "/api/v1/operations/operation-01" => {
+                // Each stream ends, and is reopened, while the wait goes on.
+                TIMELINE_STREAM => {
                     let mut failed = operation("failed");
                     failed["error_code"] = json!("swarm_manager_unavailable");
-                    Reply::json(failed)
+                    Reply::timeline(&failed)
                 }
                 "/api/v1/environments/app-notes-01/detail" => {
                     Reply::json(detail(latest, true, "ready"))
@@ -1543,8 +1655,8 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
         (false, "environment variable PIQUELD_WAIT_TIMEOUT"),
     ] {
         let timeout_server = start_server(false, 1, move |request| {
-            assert_eq!(request.path, "/api/v1/operations/operation-01");
-            Reply::json(operation("requested"))
+            assert_eq!(request.path, TIMELINE_STREAM);
+            Reply::timeline(&operation("requested"))
         });
         let mut command = timeout_server.command();
         if flag {
@@ -1569,7 +1681,7 @@ fn timeout_and_ctrl_c_end_only_the_local_wait() {
     }
 
     let interrupt_server = start_server(false, usize::MAX, move |request| {
-        assert_eq!(request.path, "/api/v1/operations/operation-01");
+        assert_eq!(request.path, TIMELINE_STREAM);
         // Keep the request pending when SIGINT arrives, rather than only
         // testing interruption during the sleep between completed requests.
         thread::sleep(Duration::from_millis(300));
@@ -2107,7 +2219,7 @@ fn apply_returns_superseded_success_without_following_the_replacement() {
         "/api/v1/applications/apply?deploy=true" => {
             Reply::accepted(saved_deployment("app-notes-01"))
         }
-        "/api/v1/operations/operation-01" => Reply::json(operation("superseded")),
+        TIMELINE_STREAM => Reply::timeline(&operation("superseded")),
         _ => panic!("unexpected request {}", request.path),
     });
     let output = run(
@@ -3630,21 +3742,23 @@ fn detail(latest: &str, healthy: bool, url_state: &str) -> Value {
 }
 
 /// Serves `env wait` for `app-notes-01`: its latest deployment is
-/// `operation-01`, which reads as each of `states` in turn, and its detail as
-/// each of `details` in turn (the last ones repeat).
+/// `operation-01`, whose timeline streams as each of `states` in turn, and
+/// its detail as each of `details` in turn (the last one repeats).
 fn wait_server(states: Vec<&'static str>, details: Vec<Value>) -> TestServer {
-    let (mut states, mut details) = (states.into_iter(), details.into_iter());
-    let (mut state, mut current) = (None, None);
+    let state = *states.last().unwrap();
+    let timelines: Vec<_> = states
+        .into_iter()
+        .map(|state| timeline(&operation(state), &json!([])))
+        .collect();
+    let mut details = details.into_iter();
+    let mut current = None;
     start_server(false, usize::MAX, move |request| {
         match request.path.split('?').next().unwrap() {
             "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
             "/api/v1/environments/app-notes-01/deployments" => {
-                Reply::json(page(vec![deployment(state.unwrap_or("running"))], None))
+                Reply::json(page(vec![deployment(state)], None))
             }
-            "/api/v1/operations/operation-01" => {
-                state = states.next().or(state);
-                Reply::json(operation(state.unwrap()))
-            }
+            TIMELINE_STREAM => Reply::timelines(&timelines),
             "/api/v1/environments/app-notes-01/detail" => {
                 current = details.next().or(current.take());
                 Reply::json(current.clone().unwrap())
@@ -3696,7 +3810,7 @@ fn wait_reports_the_local_snapshot_a_restore_runs() {
             "/api/v1/environments/app-notes-01/deployments" => {
                 Reply::json(page(vec![restored.clone(), snapshot.clone()], None))
             }
-            "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
+            TIMELINE_STREAM => Reply::timeline(&operation("succeeded")),
             "/api/v1/environments/app-notes-01/detail" => {
                 Reply::json(detail("operation-01", true, "ready"))
             }
@@ -3801,7 +3915,7 @@ fn deploy_output_carries_the_deployment_fields_agents_need() {
                 "/api/v1/environments/app-notes-01/deploy" => {
                     Reply::accepted(accepted("app-notes-01"))
                 }
-                "/api/v1/operations/operation-01" => Reply::json(operation("succeeded")),
+                TIMELINE_STREAM => Reply::timeline(&operation("succeeded")),
                 "/api/v1/environments/app-notes-01/deployments" => {
                     Reply::json(page(vec![deployment("succeeded")], None))
                 }

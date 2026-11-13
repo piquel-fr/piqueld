@@ -372,6 +372,38 @@ fails, 5; at `--wait-timeout`, 15 minutes by default, 4, which ends only the
 local wait. On success, `wait`
 prints the deployment like `env deploy` does.
 
+While a command waits for a deployment, it shows the deployment's steps as
+they run: those done, the one running, and those left.
+
+```text
+⠹ Deploying 019a6f3e-…  ▕████████░░░░▏ 6/9  48.2 s  ~30.0 s left
+  ✓ Fetch manifest  412 ms
+  ✓ Build api       38.2 s  (usual 25.0 s)
+  ✓ Resolve redis   900 ms
+  ✓ Job migrate     4.1 s
+  ⠹ Update api      3.2 s
+  ○ Wait for api    ~30.0 s
+  ○ Update web
+```
+
+A step that ran much longer or shorter than usual shows how long it usually
+takes, from the environment's last successful deployments. Steps left show
+how long they usually take, and the time left adds them up. A failed step
+shows why it failed, and a step retrying a request shows which retry it waits
+for. Below the steps, the command says what else it waits on, such as the
+daemon restarting or a failed attempt the daemon retries. Once the deployment ends, the command prints how long it took and, after
+a clean run, how long its steps usually take, then the steps as they ended.
+That is every command that deploys and waits, `operation`, `env wait` and
+`preview wait`. Use `wait` to watch a deployment someone else started: Ctrl-C
+stops watching, never the deployment.
+
+Without a terminal, such as in CI, the command prints a line instead each time
+a step starts or changes:
+
+```text
+019a6f3e-…: Build api · succeeded · 38.2 s  (usual 25.0 s)
+```
+
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
 HTTP or HTTPS origin such as `http://127.0.0.1:7845/`; the two transport options are
 mutually exclusive. The default socket is
@@ -535,7 +567,9 @@ The DTO fields are defined by the versioned API and the `piqueld-client` crate.
 With `--json`, stderr is one JSON object per line too, keyed by its kind:
 `{"info":{"message":…}}`, `{"warning":{"message":…}}`,
 `{"progress":{"task":…,"message":…,"outcome":…}}` (`outcome` once the task
-finished), `{"prompt":{"message":…}}` for a confirmation asked on a terminal,
+finished), `{"step":{"task":…,…}}` with the fields of a timeline `Step` each
+time a step of an awaited operation starts or changes (see
+[operation timelines](api.md#operation-timelines)), `{"prompt":{"message":…}}` for a confirmation asked on a terminal,
 and, when the command fails, exactly one
 `{"error":{"code":…,"message":…,"details":…,"request_id":…}}`. An API error keeps the
 daemon's error envelope: its `code`, `message`, `details` and `request_id`.
@@ -983,9 +1017,11 @@ before its end) and `--until DURATION` ends it that long ago (default: now),
 so `--since 14d --until 7d` covers the week before last. A warning reports when
 the window reaches before retained history.
 
-By default, apply with `--deploy`, delete, reconcile, deploy, and operation poll
-until a terminal state, from every 250 ms to every 2 seconds. While they wait,
-an unreachable or busy daemon, or a timed-out request, is retried until
+By default, apply with `--deploy`, delete, reconcile, deploy, and operation wait
+until a terminal state. They follow an operation's
+[timeline](api.md#operation-timelines) as it changes, and poll a deletion from
+every 250 ms to every 2 seconds. While they wait, an unreachable or busy
+daemon, a dropped connection, or a timed-out request, is retried until
 `--wait-timeout`. Supersession returns immediately with exit code 0 and
 `outcome: "superseded"` in mutation command results (`state: "superseded"` on an
 operation record). It does not wait for the replacement to deploy. A failed

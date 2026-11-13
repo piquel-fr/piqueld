@@ -211,6 +211,54 @@ async fn request_timeout_is_reported_by_the_client() {
     assert_timed_out(&client.system_status().await);
 }
 
+/// A timeline stream outlives the client's request timeout, and ends with
+/// the daemon's reason once access ended.
+#[tokio::test]
+async fn timeline_streams_outlive_the_request_timeout() {
+    let (listener, client) = listen().await;
+    let operation: piqueld_client::Operation = serde_json::from_value(serde_json::json!({
+        "id": "operation-01", "environment_id": "app-notes-01", "kind": "apply",
+        "generation": 1, "attempt": 1, "state": "running", "error_code": null,
+        "error_message": null, "created_at_ms": 1, "updated_at_ms": 1,
+        "started_at_ms": 1, "finished_at_ms": null
+    }))
+    .unwrap();
+    let timeline = serde_json::to_string(&piqueld_client::operations::Timeline::new(
+        operation,
+        Vec::new(),
+        Vec::new(),
+    ))
+    .unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = accept_head(listener).await;
+        let head =
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+        let first = format!("{head}event: timeline\ndata: {timeline}\n\n");
+        socket.write_all(first.as_bytes()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let ended =
+            r#"{"code":"forbidden","message":"access ended","details":null,"request_id":"r1"}"#;
+        let last = format!(":\n\nevent: access_ended\ndata: {ended}\n\n");
+        socket.write_all(last.as_bytes()).await.unwrap();
+    });
+    let mut stream = client
+        .with_timeout(Duration::from_millis(50))
+        .operation_timeline_stream("operation-01")
+        .await
+        .unwrap();
+    let timeline = stream.next().await.unwrap().unwrap().unwrap();
+    assert_eq!(timeline.operation.id, "operation-01");
+    // A keep-alive tells the caller the daemon is still there.
+    assert!(matches!(stream.next().await, Some(Ok(None))));
+    let ended = stream.next().await.unwrap().unwrap_err();
+    assert!(
+        matches!(&ended, ClientError::Api { status, error } if status.as_u16() == 403 && error.code == "forbidden"),
+        "{ended:?}"
+    );
+    assert!(stream.next().await.is_none());
+    server.await.unwrap();
+}
+
 #[tokio::test]
 async fn stalled_response_bodies_time_out_over_tcp_and_unix_sockets() {
     let (listener, tcp) = listen().await;

@@ -10,7 +10,7 @@ use crate::{ClientError, Envelope, ErrorBody, TransportFailure, generated};
 use piqueld_core::auth::is_localhost;
 
 /// Upper bound on buffered response bodies for every operation.
-const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// Default whole-request deadline, and the native connection deadline.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Transport message used for timeouts; `ClientError::from_generated` matches on
@@ -22,8 +22,9 @@ const TIMEOUT_MESSAGE: &str = "request timed out";
 /// every outgoing request by `ClientState::prepare`.
 #[derive(Clone, Debug)]
 pub(crate) struct ClientState {
-    /// Whole-request deadline, including reading the response body.
-    timeout: Duration,
+    /// Whole-request deadline, including reading the response body; none
+    /// for streams, which last as long as what they follow.
+    timeout: Option<Duration>,
     /// Sent as `idempotency-key` on mutating requests so retries replay one command.
     request_id: Option<String>,
     /// Pre-built, sensitive `Authorization` header value.
@@ -35,7 +36,7 @@ pub(crate) struct ClientState {
 impl Default for ClientState {
     fn default() -> Self {
         Self {
-            timeout: DEFAULT_TIMEOUT,
+            timeout: Some(DEFAULT_TIMEOUT),
             request_id: None,
             bearer: None,
             allow_insecure_http: false,
@@ -174,8 +175,16 @@ impl Client {
     /// Overrides the per-request timeout.
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.generated.inner.timeout = timeout;
+        self.generated.inner.timeout = Some(timeout);
         self
+    }
+
+    /// This client without a whole-request deadline, for a stream that lasts
+    /// as long as what it follows. Its caller bounds the stream instead.
+    pub(crate) fn streaming(&self) -> Self {
+        let mut client = self.clone();
+        client.generated.inner.timeout = None;
+        client
     }
 
     /// Sets one command's replay identity. Reuse this client for transport retries only;
@@ -299,9 +308,11 @@ impl ClientState {
         self.validate_auth_transport(request.url())?;
         // reqwest passes this duration to the signed 32-bit browser timer.
         #[cfg(target_arch = "wasm32")]
-        i32::try_from(self.timeout.as_millis())
-            .map_err(|_| "browser request timeout exceeds i32::MAX milliseconds".to_owned())?;
-        *request.timeout_mut() = Some(self.timeout);
+        if let Some(timeout) = self.timeout {
+            i32::try_from(timeout.as_millis())
+                .map_err(|_| "browser request timeout exceeds i32::MAX milliseconds".to_owned())?;
+        }
+        *request.timeout_mut() = self.timeout;
         if let Some(bearer) = &self.bearer {
             request
                 .headers_mut()
@@ -533,7 +544,7 @@ impl ClientError {
         clippy::needless_pass_by_value,
         reason = "map_err passes ownership; retaining reqwest's error beyond this conversion is unnecessary"
     )]
-    fn transport(error: reqwest::Error) -> Self {
+    pub(crate) fn transport(error: reqwest::Error) -> Self {
         use std::error::Error as _;
 
         if error.is_timeout() {
@@ -567,7 +578,7 @@ impl ClientError {
 
     /// Decodes a non-success body as an `ErrorBody`, substituting a synthetic
     /// `invalid_error_response` body when the server's error is not valid JSON.
-    fn api(status: reqwest::StatusCode, payload: &[u8]) -> Self {
+    pub(crate) fn api(status: reqwest::StatusCode, payload: &[u8]) -> Self {
         Self::Api {
             status,
             error: serde_json::from_slice(payload).unwrap_or_else(|error| ErrorBody {
