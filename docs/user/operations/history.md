@@ -142,9 +142,10 @@ deployment from the last 90 days. An older deployment goes only when it is
 past both limits. An environment always keeps its current deployment, its
 latest one, and the deployments
 [image cleanup](../reference/configuration-settings.md#imageskeep_deployments)
-keeps images for, so you can restore them. A preview keeps only its current,
-latest and newest successful deployments. A deployment a remaining one
-restored stays too. A removed deployment takes its build and job records with
+keeps images for, so you can restore them: at least its newest successful one,
+even when `images.keep_deployments` is `0`. A preview keeps only its current,
+latest and newest successful deployments, and those that finished in the last
+hour, however few it has. A deployment a remaining one restored stays too. A removed deployment takes its build and job records with
 it once their output has expired. A release no remaining deployment uses goes
 once it isn't among its application's newest 50. Setting either setting to
 `0` keeps every deployment, release and build record, of previews too.

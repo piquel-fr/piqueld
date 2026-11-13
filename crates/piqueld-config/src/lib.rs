@@ -899,10 +899,13 @@ pub struct RetentionConfig {
     /// Days each environment's deployment history is kept; `0` keeps it
     /// forever. A deployment is removed only once it is older than this and
     /// beyond the newest `deployments_per_environment`, never while it is
-    /// its environment's current or latest deployment or one of its newest
-    /// `images.keep_deployments` successful ones, or one a remaining
-    /// deployment restored. Previews keep only those, of their deployments
-    /// that finished over an hour ago. Releases no remaining deployment uses
+    /// its environment's current or latest deployment, one of its newest
+    /// `images.keep_deployments` successful ones (at least one, even when
+    /// that is `0`, so automatic rollback has a target), or one a remaining
+    /// deployment restored. A preview keeps only its current and latest
+    /// deployments, its newest successful one, and those a remaining
+    /// deployment restored, of the deployments that finished over an hour
+    /// ago, however recent or few. Releases no remaining deployment uses
     /// are removed beyond each application's newest 50, and build and job
     /// records once their deployment is gone and their output expired. `0`
     /// here or in `deployments_per_environment` stops all of this pruning,

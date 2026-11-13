@@ -201,9 +201,11 @@ It runs the release of the deployment it restored.
   succeeded. Restore one that did.
 - **The deployment to restore isn't listed.** piqueld removed it from the
   [deployment history](../operations/history.md#how-long-history-is-kept), and
-  it can't be restored any more. A preview keeps only its current, latest and
-  newest successful deployments, so it can only go back to the newest one that
-  succeeded.
+  it can't be restored any more. By default, an environment keeps its newest
+  50 deployments and those from the last 90 days. A preview removes a
+  deployment an hour after it finished, unless it is its current, latest or
+  newest successful one. That page lists every deployment piqueld keeps, and
+  how to turn pruning off.
 - **Restoring fails with `image_unavailable`.** piqueld removed one of the
   deployment's images, and can't pull it again from a registry. The error
   names the service and image. piqueld keeps the images of each environment's
