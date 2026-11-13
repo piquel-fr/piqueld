@@ -595,8 +595,7 @@ impl Ingress {
                 tracing::error!(error=?error, "managed ingress is unhealthy");
                 let cause = error
                     .downcast_ref::<gateway::UnmetRequirement>()
-                    .map(|unmet| format!(": {unmet}"))
-                    .unwrap_or_default();
+                    .map_or_default(|unmet| format!(": {unmet}"));
                 format!(
                     "Ingress unavailable: could not {stage}{cause}. See daemon logs for details."
                 )
