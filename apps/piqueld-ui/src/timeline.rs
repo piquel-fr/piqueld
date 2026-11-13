@@ -266,15 +266,12 @@ impl Waterfall {
                         .zip(time)
                         .filter(|_| step.expected_ms.is_some())
                         .map(|(axis, (start, _))| axis.span(start, start + expected(step))),
-                    down: axis
-                        .zip(time)
-                        .map(|(axis, (_, end))| {
-                            step.gaps()
-                                .into_iter()
-                                .map(|gap| axis.span(gap.from_ms, gap.until(end)))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    down: axis.zip(time).map_or_default(|(axis, (_, end))| {
+                        step.gaps()
+                            .into_iter()
+                            .map(|gap| axis.span(gap.from_ms, gap.until(end)))
+                            .collect()
+                    }),
                     duration_ms,
                     slow,
                     stage: (stage.replace(opens) != Some(opens)).then_some(opens),
