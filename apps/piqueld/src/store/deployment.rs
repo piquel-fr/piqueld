@@ -392,8 +392,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::Actor::Daemon;
-    use crate::api::{Mutation, MutationResponse};
+    use crate::store::Actor::Daemon;
+    use crate::store::{Mutation, MutationResponse};
     use piqueld_core::{ApplicationState, OperationState};
 
     fn empty() -> ApplicationTemplate {

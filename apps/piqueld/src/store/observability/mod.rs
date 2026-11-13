@@ -6,6 +6,7 @@ mod destinations;
 mod event;
 mod notifications;
 
+pub use containers::ContainerCursors;
 pub use destinations::DestinationError;
 pub use notifications::RetryError;
 

@@ -11,7 +11,7 @@ use super::{
     ApplicationState, EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError,
     StoredEnvironment, acceptance::Accepted, now_ms,
 };
-use crate::api::Restore;
+use crate::store::Restore;
 use piqueld_core::{
     NormalizedApplication, api::DeploymentOrigin, manifest::ApplicationTemplate,
     resource::ResolvedApplication,

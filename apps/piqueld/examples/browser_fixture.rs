@@ -16,6 +16,7 @@ use piqueld::{
     api::http::{ApiState, UiAssets, UnixPeer},
     application::{BoundaryError, RuntimeBoundary},
     docker::{DockerError, Exec, ExecIo, fake::FakeDocker},
+    git::Sources,
     reconcile::Controller,
     store::{Store, StoredEnvironment},
 };
@@ -154,14 +155,15 @@ impl Backend {
         }
     }
 
-    /// The API over `store`, and the work behind it, which runs until aborted
-    /// and returns only once it fails.
+    /// The API over `store` and `sources`, and the work behind it, which runs
+    /// until aborted and returns only once it fails.
     fn serve(
         self,
         store: Arc<Store>,
+        sources: Arc<Sources>,
     ) -> anyhow::Result<(ApiState, JoinHandle<anyhow::Result<()>>)> {
         let Self::FakeDocker = self else {
-            let state = ApiState::new(store, Arc::new(Runtime))?;
+            let state = ApiState::new(store, Arc::new(Runtime), sources)?;
             return Ok((state, tokio::spawn(std::future::pending())));
         };
         let config = piqueld_config::DaemonConfig::default();
@@ -172,10 +174,11 @@ impl Backend {
             .expect("the new registry is unshared")
             .missing
             .insert(MISSING_IMAGE.to_owned());
-        let controller = Controller::new(Arc::new(docker), Arc::clone(&store))
-            .with_config(&config.reconciliation);
+        let controller =
+            Controller::new(Arc::new(docker), Arc::clone(&store), Arc::clone(&sources))
+                .with_config(&config.reconciliation);
         let wake = Arc::new(tokio::sync::Notify::new());
-        let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)))?
+        let state = ApiState::new(store, controller.runtime(Arc::clone(&wake)), sources)?
             .with_image_status(controller.image_status())
             .with_webhook_hostname(Hostname::parse("hooks.example.com").ok());
         let notifications = state.clone();
@@ -224,7 +227,8 @@ async fn main() -> anyhow::Result<()> {
         dir.join("data").display(),
         dir.display()
     ))?;
-    let (state, mut controller) = Backend::from_env().serve(store)?;
+    let sources = Arc::new(Sources::open(&dir).await?);
+    let (state, mut controller) = Backend::from_env().serve(store, sources)?;
     let state = state.with_configuration(&config);
     let router = piqueld::api::http::web_router(state.clone(), UiAssets::resolve(), auth.clone());
     let mut server = tokio::spawn(async move {

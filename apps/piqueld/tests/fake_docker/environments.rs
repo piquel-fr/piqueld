@@ -352,7 +352,8 @@ async fn deleting_an_exporter_removes_networks_its_deleted_importers_left() {
 async fn telemetry_sockets_are_mounted_while_the_environment_is_granted() {
     let mut harness = ControllerHarness::new().await;
     let data = tempfile::tempdir().unwrap();
-    harness.controller = Controller::new(Arc::clone(&harness.docker), Arc::clone(&harness.store))
+    harness.controller = harness
+        .new_controller()
         .with_telemetry(Some(piqueld::telemetry::Sockets::new(data.path())));
     let mut manifest = harness.application.to_manifest();
     manifest.spec.services[0].receives_telemetry = true;

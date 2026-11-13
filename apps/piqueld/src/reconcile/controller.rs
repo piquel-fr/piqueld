@@ -550,6 +550,7 @@ impl<D: DockerApi> Controller<D> {
         let runtime = crate::application::ApplicationRuntime::new(
             Arc::clone(&self.docker),
             &self.store,
+            &self.sources,
             Arc::new(tokio::sync::Notify::new()),
             self.prepare_timeout,
             self.images_lock(),
@@ -667,6 +668,7 @@ mod tests {
     struct Harness {
         directory: tempfile::TempDir,
         store: Arc<Store>,
+        sources: Arc<crate::git::Sources>,
         socket: std::path::PathBuf,
         _listener: tokio::net::UnixListener,
     }
@@ -679,11 +681,13 @@ mod tests {
                     .await
                     .unwrap(),
             );
+            let sources = Arc::new(crate::git::Sources::open(directory.path()).await.unwrap());
             let socket = directory.path().join("unused.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             Self {
                 directory,
                 store,
+                sources,
                 socket,
                 _listener: listener,
             }
@@ -694,6 +698,7 @@ mod tests {
             Controller::new(
                 Arc::new(BollardDocker::connect(&self.socket).unwrap()),
                 Arc::clone(&self.store),
+                Arc::clone(&self.sources),
             )
         }
     }
@@ -863,6 +868,7 @@ mod tests {
         let service = crate::api::ApplicationService::new(
             Arc::clone(store),
             controller.runtime(Arc::default()),
+            Arc::clone(&harness.sources),
         )
         .unwrap();
         let deleting = async || store.secrets(environment).await.unwrap()[0].deleting;

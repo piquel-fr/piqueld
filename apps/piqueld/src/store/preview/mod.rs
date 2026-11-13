@@ -33,51 +33,17 @@ impl Store {
         &self.previews
     }
 
-    /// Applies the daemon's `[snapshots] max_upload_bytes`.
-    #[must_use]
-    pub const fn with_snapshot_uploads(mut self, max_upload_bytes: std::num::NonZeroU64) -> Self {
-        self.max_upload_bytes = max_upload_bytes;
-        self
-    }
-
-    /// The largest local snapshot bundle an upload may carry, in bytes.
-    pub(crate) const fn max_upload_bytes(&self) -> u64 {
-        self.max_upload_bytes.get()
-    }
-
-    /// Applies the daemon's `[checkouts] max_bytes`.
-    #[must_use]
-    pub fn with_checkouts(mut self, max_bytes: std::num::NonZeroU64) -> Self {
-        self.checkouts = std::sync::Arc::new(self.checkouts.with_max_bytes(max_bytes));
-        self
-    }
-
-    /// Admission for every Git checkout.
-    pub(crate) const fn checkouts(&self) -> &std::sync::Arc<crate::git::Checkouts> {
-        &self.checkouts
-    }
-
-    /// Snapshots uploaded from local worktrees.
-    pub(crate) fn snapshots(&self) -> &crate::git::snapshot::Snapshots {
-        &self.snapshots
-    }
-
-    /// Removes the snapshots no preview's latest deployment uses, finding
-    /// those that are while no upload is being accepted.
+    /// The commits of the local snapshots previews' latest deployments use.
     ///
     /// # Errors
-    /// Returns a storage or file system error.
-    pub async fn prune_snapshots(&self) -> Result<(), StoreError> {
-        self.snapshots
-            .prune(async {
-                sqlx::query_scalar!(
-                    r#"SELECT json_extract(d.origin_json,'$.commit') AS "commit!: String" FROM environments e JOIN deployments d ON d.id=(SELECT id FROM operations WHERE environment_id=e.id ORDER BY created_at_ms DESC,id DESC LIMIT 1) WHERE e.kind='preview' AND json_extract(d.origin_json,'$.type')='local'"#
-                )
-                .fetch_all(&self.pool)
-                .await
-                .map_err(StoreError::database)
-            })
-            .await
+    /// Returns a storage error.
+    pub async fn local_snapshot_commits(&self) -> Result<Vec<String>, StoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT json_extract(d.origin_json,'$.commit') AS "commit!: String" FROM environments e JOIN deployments d ON d.id=(SELECT id FROM operations WHERE environment_id=e.id ORDER BY created_at_ms DESC,id DESC LIMIT 1) WHERE e.kind='preview' AND json_extract(d.origin_json,'$.type')='local'"#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(StoreError::database)
     }
 
     /// Lists an application's previews in slug order.

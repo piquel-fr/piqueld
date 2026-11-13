@@ -404,9 +404,9 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::Actor::Daemon;
-    use crate::api::{Mutation, MutationResponse};
+    use crate::store::Actor::Daemon;
     use crate::store::testing::template;
+    use crate::store::{Mutation, MutationResponse};
     use piqueld_core::{ApplicationId, EnvironmentId, OperationState, ResolutionSet};
 
     #[tokio::test]
@@ -446,7 +446,7 @@ mod tests {
             .normalize(captured.id().clone());
         store
             .accept(
-                crate::api::Actor::Daemon,
+                crate::store::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(edited.clone()),
                     expected_application_id: Some(captured.id().to_string()),
@@ -514,7 +514,7 @@ mod tests {
     ) -> (Operation, piqueld_core::ResolvedApplication) {
         let (MutationResponse::Operation(accepted), _) = store
             .accept(
-                crate::api::Actor::Daemon,
+                crate::store::Actor::Daemon,
                 Mutation::deploy(environment.clone()),
                 None,
                 true,
@@ -858,11 +858,11 @@ mod tests {
         let production = store.production(&application).await;
         let (MutationResponse::Environment(staging), _) = store
             .accept(
-                crate::api::Actor::Daemon,
+                crate::store::Actor::Daemon,
                 Mutation::CreateEnvironment {
                     application,
                     name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-                    source: Some(crate::api::SourceChoice::Branch(
+                    source: Some(crate::store::SourceChoice::Branch(
                         piqueld_core::TrackedBranch::new("release".into(), None).unwrap(),
                     )),
                 },
@@ -991,10 +991,10 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
-        let (MutationResponse::Synced(crate::api::SyncOutcome::Deployed(synced)), _) = store
+        let (MutationResponse::Synced(crate::store::SyncOutcome::Deployed(synced)), _) = store
             .accept(
-                crate::api::Actor::System(piqueld_core::sync::SystemActor::SyncPoll),
-                Mutation::Sync(crate::api::ListedHead {
+                crate::store::Actor::System(piqueld_core::sync::SystemActor::SyncPoll),
+                Mutation::Sync(crate::store::ListedHead {
                     id: staging.id.clone(),
                     repository: "https://example.com/notes.git".into(),
                     branch: piqueld_core::GitBranch::parse("main").unwrap(),
@@ -1183,7 +1183,7 @@ mod tests {
                 Mutation::CreateEnvironment {
                     application: application.clone(),
                     name: piqueld_core::EnvironmentName::parse("staging").unwrap(),
-                    source: Some(crate::api::SourceChoice::Branch(
+                    source: Some(crate::store::SourceChoice::Branch(
                         piqueld_core::TrackedBranch::new("release".into(), None).unwrap(),
                     )),
                 },

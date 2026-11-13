@@ -10,8 +10,9 @@
 use super::{ApplicationService, Names, RECEIVERS_INTERVAL, interval, step};
 use crate::application::{BoundaryError, RuntimeBoundary};
 use crate::docker::{ContainerState, DockerError, ManagedContainer, Workload};
+use crate::store::ContainerCursors;
 use crate::store::{StoreError, now_ns};
-use crate::telemetry::{ContainerCursors, ContainerExport, ContainerSample, Telemetry};
+use crate::telemetry::{ContainerExport, ContainerSample, Telemetry};
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap};

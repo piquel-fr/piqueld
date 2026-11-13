@@ -40,8 +40,8 @@ impl ApplicationService {
                 .as_ref()
                 .map_or_default(|status| status.borrow().clone()),
             snapshots: Some(piqueld_core::api::SnapshotLimits {
-                max_upload_bytes: self.store.max_upload_bytes(),
-                max_tree_bytes: self.store.checkouts().max_bytes(),
+                max_upload_bytes: self.sources.max_upload_bytes(),
+                max_tree_bytes: self.sources.checkouts().max_bytes(),
                 max_files: crate::git::Checkouts::FILES as u64,
             }),
             telemetry: self.telemetry_status(readable).await,

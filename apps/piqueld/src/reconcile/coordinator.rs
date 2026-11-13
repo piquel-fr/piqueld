@@ -758,7 +758,7 @@ impl<D: DockerApi> Controller<D> {
         self.store.prune_receipts().await?;
         self.store.prune_auth().await?;
         self.store.prune_build_logs().await?;
-        self.store.prune_snapshots().await?;
+        self.sources.prune_snapshots(&self.store).await?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

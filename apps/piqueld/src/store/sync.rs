@@ -3,8 +3,8 @@
 //! listing, and webhook secrets.
 use super::acceptance::Accepted;
 use super::{Actor, Store, StoreError, StoredEnvironment, now_ms};
-use crate::api::{ListedHead, MutationResponse, SyncOutcome};
 use crate::secrets::{Envelope, Generate, SecretCipher, SecretOwner};
+use crate::store::{ListedHead, MutationResponse, SyncOutcome};
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Permission},
@@ -554,8 +554,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{Mutation, MutationResponse};
     use crate::store::testing::template;
+    use crate::store::{Mutation, MutationResponse};
     use piqueld_core::sync::{RepositorySync, SyncedHead};
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -977,7 +977,7 @@ mod tests {
         application: &ApplicationId,
         head: Option<&str>,
     ) -> EnvironmentId {
-        let mutation = Mutation::Preview(crate::api::PreviewMutation::Local {
+        let mutation = Mutation::Preview(crate::store::PreviewMutation::Local {
             application: application.clone(),
             branch: piqueld_core::GitBranch::parse("main").unwrap(),
             slot: Some(piqueld_core::PreviewSlot::parse("agent").unwrap()),

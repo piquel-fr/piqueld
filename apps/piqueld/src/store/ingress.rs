@@ -552,8 +552,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{Mutation, MutationResponse};
     use crate::store::testing::template;
+    use crate::store::{Mutation, MutationResponse};
     use piqueld_core::NormalizedApplication;
     use piqueld_core::manifest::{ApplicationTemplate, Variable};
     use std::fmt::Write as _;
@@ -586,7 +586,7 @@ mod tests {
     ) -> Result<piqueld_core::api::SavedApplication, StoreError> {
         let (response, _) = store
             .accept(
-                crate::api::Actor::Daemon,
+                crate::store::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&application)),
                     expected_application_id: None,
@@ -721,7 +721,7 @@ mod tests {
         for environment in [&production, &staging.id] {
             let (MutationResponse::Operation(operation), _) = store
                 .accept(
-                    crate::api::Actor::Daemon,
+                    crate::store::Actor::Daemon,
                     Mutation::deploy(environment.clone()),
                     None,
                     true,
@@ -793,7 +793,7 @@ mod tests {
         let id = store.saved_production(&saved).await;
         let result = store
             .accept(
-                crate::api::Actor::Daemon,
+                crate::store::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&app(
                         "two",
@@ -829,7 +829,7 @@ mod tests {
         // The rejected request must not consume the replay key.
         store
             .accept(
-                crate::api::Actor::Daemon,
+                crate::store::Actor::Daemon,
                 Mutation::Save {
                     application: Box::new(ApplicationTemplate::from(&app(
                         "two",
@@ -877,7 +877,7 @@ mod tests {
         let routes = &input.spec().routes;
         store.stage_routes(&id, routes, true, None).await.unwrap();
         let accept = async |mutation| {
-            let accepted = store.accept(crate::api::Actor::Daemon, mutation, None, true, None);
+            let accepted = store.accept(crate::store::Actor::Daemon, mutation, None, true, None);
             accepted.await.unwrap();
         };
 

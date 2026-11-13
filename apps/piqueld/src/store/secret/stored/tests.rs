@@ -1,6 +1,6 @@
 use super::*;
-use crate::api::Actor::Daemon;
-use crate::api::{Mutation, MutationResponse};
+use crate::store::Actor::Daemon;
+use crate::store::{Mutation, MutationResponse};
 use piqueld_core::{
     EnvironmentName,
     manifest::{ApplicationManifest, ApplicationTemplate, SecretMount, Variable},

@@ -1,6 +1,6 @@
 use super::*;
-use crate::api::Actor::Daemon;
-use crate::api::{Mutation, MutationResponse, Restore};
+use crate::store::Actor::Daemon;
+use crate::store::{Mutation, MutationResponse, Restore};
 use crate::store::{
     OperationState,
     testing::{prebuilt, template},

@@ -1,5 +1,5 @@
 //! Upgrade coverage for environment identity, captured targets and encrypted secrets.
-use crate::api;
+
 use crate::store::testing::template;
 use crate::store::*;
 use piqueld_core::manifest::ApplicationTemplate;
@@ -239,10 +239,10 @@ async fn existing_applications_become_one_production_environment_with_the_same_i
         .await;
 
     // Deletion also removes receipts accepted before environments existed.
-    let (api::MutationResponse::Deleted(deleted), _) = store
+    let (MutationResponse::Deleted(deleted), _) = store
         .accept(
             crate::store::Actor::Daemon,
-            api::Mutation::DeleteApplication {
+            Mutation::DeleteApplication {
                 id: id.clone(),
                 environments: Vec::new(),
             },

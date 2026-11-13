@@ -52,7 +52,7 @@ impl ApplicationService {
                 promotion,
             })
         };
-        request(None).check_submission(expected_generation, force, request_id)?;
+        Self::check_submission(&request(None), expected_generation, force, request_id)?;
         let replayed = self
             .store
             .replay(

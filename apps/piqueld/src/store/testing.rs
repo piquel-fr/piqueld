@@ -3,7 +3,7 @@ use super::{
     Actor, ApplicationId, Caller, CredentialKind, MIGRATIONS, NewCredential, OperationState, Store,
     StoreError,
 };
-use crate::api::{Mutation, MutationResponse};
+use crate::store::{Mutation, MutationResponse};
 use piqueld_core::{
     EnvironmentId, EnvironmentName, NormalizedApplication, access::Grants, api::SavedApplication,
     auth::User, manifest::ValidatedTemplate,

@@ -1,7 +1,7 @@
 use super::*;
-use crate::api::Actor::Daemon;
-use crate::api::{Mutation, MutationResponse, PreviewMutation};
+use crate::store::Actor::Daemon;
 use crate::store::testing::template;
+use crate::store::{Mutation, MutationResponse, PreviewMutation};
 use crate::store::{Operation, OperationState};
 use piqueld_core::{
     ApplicationId, EnvironmentId, GitBranch, ResolutionSet, ResolvedSource, ServiceName,
@@ -123,7 +123,7 @@ async fn each_root_keeps_its_deployments_and_previews_keep_no_history() {
             .environment
             .application_id,
         name: piqueld_core::EnvironmentName::parse("canary").unwrap(),
-        source: Some(crate::api::SourceChoice::PromoteFrom(production.clone())),
+        source: Some(crate::store::SourceChoice::PromoteFrom(production.clone())),
     };
     store.force(create).await.unwrap();
     assert_eq!(

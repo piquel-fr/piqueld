@@ -73,13 +73,23 @@ impl ApplicationService {
             config,
             Arc::clone(&store),
         )?);
+        let sources = Arc::new(
+            crate::git::Sources::open(&config.server.data_dir)
+                .await
+                .context("failed to prepare the Git checkouts and snapshots directories")?
+                .configured(config),
+        );
         let wake = Arc::new(Notify::new());
-        let reconciler = Controller::new(Arc::clone(&docker), Arc::clone(&store))
-            .with_config(&config.reconciliation)
-            .with_images(&config.images)
-            .with_ingress(Arc::clone(&ingress))
-            .with_telemetry(telemetry.sockets().cloned());
-        let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)))?
+        let reconciler = Controller::new(
+            Arc::clone(&docker),
+            Arc::clone(&store),
+            Arc::clone(&sources),
+        )
+        .with_config(&config.reconciliation)
+        .with_images(&config.images)
+        .with_ingress(Arc::clone(&ingress))
+        .with_telemetry(telemetry.sockets().cloned());
+        let service = Self::new(store, reconciler.runtime(Arc::clone(&wake)), sources)?
             .with_image_status(reconciler.image_status())
             .with_configuration(config)
             .with_ingress(Arc::clone(&ingress))
@@ -216,9 +226,7 @@ impl ApplicationService {
             .context("failed to open control-plane state")?
             .with_build_history(config.build_history.clone())
             .with_observability(config)
-            .with_previews(config.previews.clone())
-            .with_snapshot_uploads(config.snapshots.max_upload_bytes)
-            .with_checkouts(config.checkouts.max_bytes);
+            .with_previews(config.previews.clone());
         info!(path = %config.server.database_path().display(), "opened control-plane state");
         telemetry.start(store.instance_id());
         let journaled = store.journal_position().await?;

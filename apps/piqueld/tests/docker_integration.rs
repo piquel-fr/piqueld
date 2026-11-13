@@ -1075,15 +1075,17 @@ async fn git_build_runs_as_a_local_swarm_image() {
         .unwrap()
         .normalize(ApplicationId::parse("git-local-build").unwrap());
     let environment = EnvironmentId::parse("env-git-local-build").unwrap();
-    // The store gives the build its owner and its checkout admission.
+    // The store gives the build its owner, the sources its checkout admission.
     let state = tempfile::tempdir().unwrap();
     let store = piqueld::store::Store::open_unsynced(state.path().join("state.db"))
         .await
         .unwrap();
+    let sources = piqueld::git::Sources::open(state.path()).await.unwrap();
     let owner = store.instance_id().clone();
     let runtime = piqueld::application::ApplicationRuntime::new(
         std::sync::Arc::new(docker.clone()),
         &store,
+        &sources,
         std::sync::Arc::new(tokio::sync::Notify::new()),
         Duration::from_mins(2),
         std::sync::Arc::default(),

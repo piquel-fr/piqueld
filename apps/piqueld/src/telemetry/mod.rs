@@ -29,7 +29,7 @@ mod journal;
 mod metrics;
 mod sockets;
 
-pub(crate) use containers::{ContainerCursors, ContainerExport, ContainerSample};
+pub(crate) use containers::{ContainerExport, ContainerSample};
 use destination::{Destination, LogItem};
 pub(crate) use journal::{EventContext, Journal};
 pub use metrics::{ServiceSample, Snapshot};

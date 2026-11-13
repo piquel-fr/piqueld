@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::Actor::Daemon;
+use crate::store::Actor::Daemon;
 use crate::store::Attribution;
 use piqueld_core::manifest::ApplicationTemplate;
 
@@ -37,7 +37,7 @@ fn with_generated_secret(app: &NormalizedApplication) -> NormalizedApplication {
 
 #[tokio::test]
 async fn captured_deployment_protects_secrets_before_pinning() {
-    use crate::api::Mutation;
+    use crate::store::Mutation;
     let (_temp, store) = Store::temporary().await;
     let app = application();
     let captured = with_secret(&app);
@@ -678,7 +678,7 @@ async fn deployments_replace_generated_values_discarded_by_key_recovery() {
 
 #[tokio::test]
 async fn sibling_environment_deletions_do_not_block_another_environments_deployment() {
-    use crate::api::{Mutation, MutationResponse};
+    use crate::store::{Mutation, MutationResponse};
     let (_temp, store) = Store::temporary().await;
     let app = application();
     let captured = with_generated_secret(&app);

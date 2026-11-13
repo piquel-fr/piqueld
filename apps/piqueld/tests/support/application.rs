@@ -2,6 +2,7 @@
 
 use piqueld::api::{ApplicationError, ApplicationService, Mutation, MutationResponse};
 use piqueld::application::RuntimeBoundary;
+use piqueld::git::Sources;
 use piqueld::store::{Store, StoreError};
 use piqueld_core::api::SavedApplication;
 use piqueld_core::manifest::ValidatedTemplate;
@@ -23,9 +24,13 @@ impl std::ops::Deref for TestApplications {
 }
 
 impl TestApplications {
-    pub fn new(store: Arc<Store>, runtime: Arc<dyn RuntimeBoundary>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        runtime: Arc<dyn RuntimeBoundary>,
+        sources: Arc<Sources>,
+    ) -> Self {
         Self {
-            service: ApplicationService::new(Arc::clone(&store), runtime).unwrap(),
+            service: ApplicationService::new(Arc::clone(&store), runtime, sources).unwrap(),
             store,
         }
     }

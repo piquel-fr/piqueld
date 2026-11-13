@@ -1,7 +1,7 @@
 //! Behavioral tests for durable diagnostics, deletion, crash recovery and delivery policies.
-use crate::api::{Mutation, MutationResponse};
 use crate::store::testing::template;
 use crate::store::*;
+use crate::store::{Mutation, MutationResponse};
 use piqueld_config::DaemonConfig;
 use piqueld_core::observability::{
     ApplicationSelection, DeliveryState, DestinationKind, DestinationName, DestinationRequest,
@@ -97,7 +97,7 @@ async fn interrupted_actions_and_diagnostics_survive_restart_and_scope_controls_
     // Application history, including its environments', goes with the application.
     let (MutationResponse::Deleted(deleted), _) = store
         .accept(
-            crate::api::Actor::Daemon,
+            crate::store::Actor::Daemon,
             Mutation::DeleteApplication {
                 id: application_of(&store, &op).await,
                 environments: Vec::new(),
@@ -196,7 +196,7 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
         if failed_before_close {
             // The same failure remains retryable while its condition is open.
             store
-                .retry_delivery(crate::api::Actor::Daemon, &failure.id)
+                .retry_delivery(crate::store::Actor::Daemon, &failure.id)
                 .await
                 .unwrap();
             store
@@ -215,7 +215,7 @@ async fn closed_incidents_cannot_be_retried_after_failed_delivery() {
         }
         assert!(matches!(
             store
-                .retry_delivery(crate::api::Actor::Daemon, &failure.id)
+                .retry_delivery(crate::store::Actor::Daemon, &failure.id)
                 .await,
             Err(StoreError::Retry(RetryError::Closed))
         ));
@@ -252,7 +252,7 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
         .unwrap();
     // Before the incident reopens, the recovery is still accurate and retryable.
     store
-        .retry_delivery(crate::api::Actor::Daemon, &recovery.id)
+        .retry_delivery(crate::store::Actor::Daemon, &recovery.id)
         .await
         .unwrap();
     store
@@ -262,7 +262,7 @@ async fn failed_recovery_cannot_be_retried_after_its_incident_reopens() {
     finish(false).await;
     assert!(matches!(
         store
-            .retry_delivery(crate::api::Actor::Daemon, &recovery.id)
+            .retry_delivery(crate::store::Actor::Daemon, &recovery.id)
             .await,
         Err(StoreError::Retry(RetryError::Reopened))
     ));
@@ -296,10 +296,10 @@ async fn failed_daemon_delivery(store: &Store) -> String {
 async fn retry_refusals_name_their_reason() {
     let (_temp, store) = Store::temporary().await;
     let delivery = failed_daemon_delivery(&store).await;
-    let retry = || store.retry_delivery(crate::api::Actor::Daemon, &delivery);
+    let retry = || store.retry_delivery(crate::store::Actor::Daemon, &delivery);
     assert!(matches!(
         store
-            .retry_delivery(crate::api::Actor::Daemon, "missing")
+            .retry_delivery(crate::store::Actor::Daemon, "missing")
             .await,
         Err(StoreError::NotFound)
     ));
@@ -377,7 +377,7 @@ async fn an_undeliverable_delivery_does_not_block_the_next() {
     );
     assert!(matches!(
         store
-            .retry_delivery(crate::api::Actor::Daemon, &poisoned)
+            .retry_delivery(crate::store::Actor::Daemon, &poisoned)
             .await,
         Err(StoreError::Retry(RetryError::UnknownCategory))
     ));
@@ -864,7 +864,7 @@ async fn recovery_waits_for_all_pending_failure_categories_at_the_same_destinati
         .unwrap();
     assert!(matches!(
         store
-            .retry_delivery(crate::api::Actor::Daemon, &second.id)
+            .retry_delivery(crate::store::Actor::Daemon, &second.id)
             .await,
         Err(StoreError::Retry(RetryError::Recovered))
     ));
@@ -1037,7 +1037,7 @@ async fn refusal_bursts_and_new_addresses_notify_as_security() {
         .await
         .unwrap();
     store
-        .retry_delivery(crate::api::Actor::Daemon, failed)
+        .retry_delivery(crate::store::Actor::Daemon, failed)
         .await
         .unwrap();
     let mut notified = Vec::new();
@@ -1317,7 +1317,7 @@ async fn deployments_follow_cancelled_recoveries_and_stay_retryable() {
         .await
         .unwrap();
     store
-        .retry_delivery(crate::api::Actor::Daemon, &deployed.id)
+        .retry_delivery(crate::store::Actor::Daemon, &deployed.id)
         .await
         .unwrap();
 }

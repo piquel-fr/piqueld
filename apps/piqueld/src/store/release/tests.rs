@@ -1,7 +1,7 @@
 use super::*;
-use crate::api::Actor::Daemon;
-use crate::api::{Mutation, MutationResponse};
+use crate::store::Actor::Daemon;
 use crate::store::testing::prebuilt;
+use crate::store::{Mutation, MutationResponse};
 use piqueld_core::{
     EnvironmentName, InstanceId, NormalizedApplication, ResolutionSet, ResolvedSource, ServiceName,
     compile_application, manifest::ApplicationTemplate,

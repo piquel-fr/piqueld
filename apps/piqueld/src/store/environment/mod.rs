@@ -9,7 +9,7 @@ use super::{
     EnvironmentStatus, Operation, OperationKind, Paging, ResolvedApplication, Store, StoreError,
     StoredEnvironment, StoredEnvironmentRow, now_ms,
 };
-use crate::api::SourceChoice;
+use crate::store::SourceChoice;
 use piqueld_core::{
     EnvironmentKind, EnvironmentName, EnvironmentSource, PromotedFrom, TrackedBranch,
     manifest::RenderTarget,

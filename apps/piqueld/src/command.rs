@@ -160,7 +160,7 @@ impl LoggedCommand {
             }
             if let Some(log) = log {
                 pending.extend_from_slice(&buffer[..read]);
-                let end = crate::build::BuildLog::complete_prefix(&pending);
+                let end = piqueld_core::api::BuildLogChunk::complete_prefix(&pending);
                 log.append(&pending[..end], source).await?;
                 pending.drain(..end);
             }
