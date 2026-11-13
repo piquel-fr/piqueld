@@ -276,7 +276,9 @@ REVISION = "${{{{ git.sha }}}}"
                 ResolvedSource::Git {
                     requested: web.source.clone(),
                     commit: COMMIT.into(),
-                    image_id: Sha256Digest::parse(format!("sha256:{}", "a".repeat(64))).unwrap(),
+                    image_id: Sha256Digest::parse(format!("sha256:{}", "a".repeat(64)))
+                        .unwrap()
+                        .into(),
                 },
             )]),
             secret_names: BTreeMap::new(),

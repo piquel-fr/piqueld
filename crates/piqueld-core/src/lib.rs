@@ -7,6 +7,7 @@ pub mod access;
 pub mod api;
 pub mod audit;
 pub mod auth;
+pub mod build_machine;
 mod changes;
 pub mod codes;
 pub mod docker_names;
@@ -38,7 +39,7 @@ pub use identity::{
     ApplicationId, ApplicationIdError, EnvironmentId, EnvironmentIdError, ReleaseId,
     ReleaseIdError, ResourceKind, docker_resource_name, docker_resource_readable_prefix,
 };
-pub use images::{ImageReference, ImmutableImage, RepositoryDigest};
+pub use images::{BuiltImage, ImageReference, ImmutableImage, RepositoryDigest};
 pub use manifest::{
     APPLICATION_API_VERSION, APPLICATION_KIND, ApplicationSpec, HealthCheck, Metadata, Mount,
     NormalizedApplication, ResourceLimits, Service, Source, ValidatedApplication, ValidationError,

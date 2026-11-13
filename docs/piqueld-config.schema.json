@@ -47,6 +47,29 @@
       },
       "type": "object"
     },
+    "BuildConfig": {
+      "additionalProperties": false,
+      "description": "A build machine that builds this installation's images instead of\nthis host. piqueld still checks repositories out here, and sends each build\nto the machine's `BuildKit` daemon, which pushes the image to a registry\nthis host's Docker Engine pulls it from. Set both settings, or neither: without\nthem, images build on this host's Docker Engine.",
+      "properties": {
+        "builder": {
+          "default": null,
+          "description": "The build machine's `BuildKit` daemon, as `tcp://host:port`. The\nconnection is not authenticated, so only this host should be able to\nreach that port, such as over a tailnet whose access rules allow\nnothing else.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "default": null,
+          "description": "The image repository the build machine pushes to and this host pulls\nfrom, as `registry-host[:port]/path`, without a tag. Both reach it\nunder this name, without credentials, and Docker requires HTTPS of a\nregistry on another machine. Every image goes to this one repository,\nby digest, so they share their layers.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "BuildHistoryConfig": {
       "additionalProperties": false,
       "description": "How much output of each build is kept, and for how long. Builds\nthemselves are listed until their environment is deleted.",
@@ -634,6 +657,10 @@
     "auth": {
       "$ref": "#/definitions/AuthConfig",
       "description": "The website's origin and API token lifetimes."
+    },
+    "build": {
+      "$ref": "#/definitions/BuildConfig",
+      "description": "A build machine that builds images instead of this host."
     },
     "build_history": {
       "$ref": "#/definitions/BuildHistoryConfig",

@@ -20,7 +20,8 @@ commit.
   private ones need [an SSH key](#build-from-a-private-repository).
 - The host's `docker` command has the Buildx plugin, which builds the images.
 - You trust the repository. Its Dockerfile's instructions run on the host's
-  Docker engine.
+  Docker engine, or on the [build
+  machine](../reference/configuration.md#build-machine) if the host has one.
 
 ## Build a service from a repository
 
@@ -350,6 +351,10 @@ prints the earlier part.
 - **Validation fails with `git_credentials_inline`.** The repository URL is an
   HTTP or HTTPS URL with a user name or token in it, or has a password. Use an
   SSH URL, such as `git@github.com:example/notes.git`, and a key instead.
+- **The build output ends with `context deadline exceeded`, after `waiting
+  for connection`.** The host has a [build
+  machine](../reference/configuration.md#build-machine), and could not reach
+  its BuildKit daemon. Start the build machine, then deploy again.
 - **A Git setting of the host doesn't apply,** such as a rule rewriting
   GitHub URLs to SSH. Git ignores `/etc/gitconfig`: add the setting to the
   daemon user's `~/.gitconfig`.

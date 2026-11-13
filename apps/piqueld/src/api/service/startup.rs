@@ -34,7 +34,8 @@ impl ApplicationService {
     /// 2. Reserve the website's and webhooks' hostnames so applications
     ///    cannot route them.
     /// 3. Create the Docker client, which needs neither Docker nor its socket
-    ///    yet, and interrupt stale actions.
+    ///    yet, register the build machine if one is configured, and
+    ///    interrupt stale actions.
     /// 4. Build the ingress, reconciliation controller, and service.
     /// 5. Bind the webhook listener, then record the daemon start, which
     ///    notifies as `daemon_started`.
@@ -58,11 +59,7 @@ impl ApplicationService {
         for hostname in store.reserve_installation_hostnames(&reserved).await? {
             tracing::error!(%hostname, "route hostname is reserved for the piqueld website or its webhooks; the gateway will not publish it");
         }
-        // Docker and its socket need not exist yet; `establish_swarm` waits for them.
-        let docker = Arc::new(
-            BollardDocker::connect(&config.docker.socket)
-                .context("failed to configure the Docker Engine client")?,
-        );
+        let docker = Arc::new(Self::connect_docker(config).await?);
         // Actions left open by a previous process can never finish; close them first.
         store.interrupt_actions(None).await?;
         store.restart_failure_windows().await?;
@@ -208,6 +205,22 @@ impl ApplicationService {
             .finish_action(&action, Some(error.diagnostic()))
             .await?;
         Ok(false)
+    }
+
+    /// Configures the Docker Engine client, which builds on the build machine
+    /// when one is configured. Neither need be reachable yet:
+    /// `establish_swarm` waits for Docker and its socket, and registering the
+    /// build machine only records its address.
+    async fn connect_docker(config: &DaemonConfig) -> anyhow::Result<BollardDocker> {
+        let docker = BollardDocker::connect(&config.docker.socket)
+            .context("failed to configure the Docker Engine client")?;
+        let Some(remote) = &config.build.remote else {
+            return Ok(docker);
+        };
+        let builder = piqueld_docker::RemoteBuilder::register(remote, &config.server.data_dir)
+            .await
+            .context("failed to register the build machine with Docker Buildx")?;
+        Ok(docker.with_builder(builder))
     }
 
     /// Opens the control-plane state with the daemon's settings, starts

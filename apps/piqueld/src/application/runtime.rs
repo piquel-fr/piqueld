@@ -430,7 +430,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
         source: &Source,
         repository: &piqueld_core::manifest::GitRepository,
         build: &piqueld_core::manifest::ValidatedBuild,
-    ) -> anyhow::Result<(String, piqueld_core::resource::Sha256Digest)> {
+    ) -> anyhow::Result<(String, piqueld_core::BuiltImage)> {
         let docker = self.docker.as_ref();
         let repository =
             crate::git::snapshot::SnapshotSource::checkout(self.snapshot.as_ref(), repository);
@@ -524,7 +524,7 @@ impl<D: DockerApi> ApplicationRuntime<D> {
 /// Where the image of a Git source came from.
 enum GitImage {
     /// Built from the checkout.
-    Built(piqueld_core::resource::Sha256Digest),
+    Built(piqueld_core::BuiltImage),
     /// Reused from an earlier build of the same commit and build settings.
     Reused(piqueld_store::ReusableBuild),
 }

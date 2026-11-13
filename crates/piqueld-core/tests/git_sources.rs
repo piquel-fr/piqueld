@@ -73,7 +73,7 @@ fn git_resolution_retains_commit_and_local_image_and_rejects_mismatched_inputs()
         ResolvedSource::Git {
             requested: app.spec().services[0].source.clone(),
             commit: "b".repeat(40),
-            image_id: image_id.clone(),
+            image_id: image_id.clone().into(),
         },
     );
     let instance = InstanceId::parse("test").unwrap();
@@ -186,7 +186,9 @@ fn docker_build_arguments_and_target_validate_and_are_part_of_source_identity() 
             ResolvedSource::Git {
                 requested: app.spec().services[0].source.clone(),
                 commit: "b".repeat(40),
-                image_id: Sha256Digest::parse(format!("sha256:{}", "a".repeat(64))).unwrap(),
+                image_id: Sha256Digest::parse(format!("sha256:{}", "a".repeat(64)))
+                    .unwrap()
+                    .into(),
             },
         )]
         .into(),

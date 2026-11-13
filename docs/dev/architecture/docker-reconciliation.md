@@ -73,6 +73,14 @@ application has the same build inputs (the repository, the commit, and the
 rendered build settings) and its image is still in the engine. That build's
 image is then reused, and the build record names it. A deployment requested
 with `rebuild` builds every Git source regardless.
+
+Images build through Docker Buildx: on the engine's own builder, which yields
+a local image ID, or, with a `[build]` machine, on its BuildKit daemon through
+Buildx's `remote` driver. That daemon pushes the image by digest to the
+configured repository, the engine pulls it, and the source resolves to the
+repository digest, like an image source. A resolved Git source therefore holds
+either (`BuiltImage`), and only a pushed one can be pulled again when the
+engine has lost it.
 Maintaining the active target during preparation does not replace the requested
 candidate or report it as successfully deployed.
 

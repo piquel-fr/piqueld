@@ -1482,6 +1482,19 @@
         ],
         "type": "string"
       },
+      "BuiltImage": {
+        "description": "The image a Git source was built into.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Sha256Digest",
+            "description": "An image only the local engine has, under Docker's content-addressed\nimage ID. Rebuilding it may produce another one."
+          },
+          {
+            "$ref": "#/components/schemas/RepositoryDigest",
+            "description": "An image a build machine pushed to its registry, which Docker pulls\nit from, again if it goes missing."
+          }
+        ]
+      },
       "CategoryRule": {
         "additionalProperties": false,
         "description": "How one category is delivered to a destination.",
@@ -10352,15 +10365,15 @@
             "type": "object"
           },
           {
-            "description": "A Git revision built into an immutable local image.",
+            "description": "A Git revision built into an immutable image.",
             "properties": {
               "commit": {
                 "description": "Resolved full commit hash.",
                 "type": "string"
               },
               "image_id": {
-                "$ref": "#/components/schemas/Sha256Digest",
-                "description": "Docker's content-addressed local image ID."
+                "$ref": "#/components/schemas/BuiltImage",
+                "description": "The image it was built into: Docker's content-addressed local\nimage ID, or its digest in a build machine's registry."
               },
               "requested": {
                 "$ref": "#/components/schemas/ValidatedSource",

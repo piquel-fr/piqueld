@@ -91,7 +91,15 @@ impl BollardDocker {
         Ok(Self {
             docker: Arc::default(),
             socket: Arc::from(socket),
+            builder: None,
         })
+    }
+
+    /// Builds images on `builder`'s build machine instead of the engine.
+    #[must_use]
+    pub fn with_builder(mut self, builder: super::RemoteBuilder) -> Self {
+        self.builder = Some(Arc::new(builder));
+        self
     }
 
     /// The typed Bollard client, created on first use. Bollard refuses a
@@ -462,6 +470,20 @@ impl BollardDocker {
             .await
             .map_err(|source| DockerError::unavailable(operation, source))?;
         Ok(info.swarm.unwrap_or_default())
+    }
+
+    /// The platform the engine runs images of, as Buildx names it, such as
+    /// `linux/arm64`: a build machine may have another architecture.
+    pub(super) async fn platform(&self) -> Result<String, DockerError> {
+        let version = self
+            .client()?
+            .version()
+            .await
+            .map_err(|source| DockerError::unavailable("read the engine's platform", source))?;
+        match (version.os, version.arch) {
+            (Some(os), Some(arch)) => Ok(format!("{os}/{arch}")),
+            _ => Err(DockerError::Request("read the engine's platform")),
+        }
     }
 
     /// Returns the local manager's immutable node ID, which pins services to this
