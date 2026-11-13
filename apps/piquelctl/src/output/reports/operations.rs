@@ -3,7 +3,7 @@
 use crate::deployments::Deployed;
 use piqueld_client::{
     AcceptedOperation, ApplicationLogs, BuildLogPage, BuildRecord, DeletedApplication, Event,
-    Operation, OperationState, Page, SavedApplication,
+    Operation, OperationState, Page, SavedApplication, system::BuiltOn,
 };
 use serde::Serialize;
 
@@ -61,10 +61,14 @@ report!(Page<BuildRecord>, self, out, {
             || build.service.clone(),
             |job| format!("job {job} ({})", build.service),
         );
-        // A build that used an earlier build's image names it.
-        let reused = build
-            .reused_build
-            .map_or_default(|earlier| format!("  reused #{earlier}"));
+        // A build that used an earlier build's image names it; one that
+        // built says where.
+        let reused = match (build.reused_build, build.built_on) {
+            (Some(earlier), _) => format!("  reused #{earlier}"),
+            (None, Some(BuiltOn::BuildMachine)) => "  on the build machine".into(),
+            (None, Some(BuiltOn::Host)) => "  on the host".into(),
+            (None, None) => String::new(),
+        };
         out.line(format_args!(
             "{}  {}  {}  {:?}  {}{reused}",
             build.id, build.environment_id, subject, build.state, build.started_at_ms

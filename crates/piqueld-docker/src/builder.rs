@@ -40,6 +40,8 @@ pub struct RemoteBuilder {
     pub(super) repository: BuildRepository,
     /// What a build does while the build machine can't be reached.
     pub(super) unavailable: WhenUnavailable,
+    /// The latest check of its `BuildKit` daemon; see [`Self::probe`].
+    last_check: parking_lot::Mutex<Option<piqueld_core::api::BuilderCheck>>,
 }
 
 impl RemoteBuilder {
@@ -61,6 +63,7 @@ impl RemoteBuilder {
             endpoint: remote.builder.clone(),
             repository: remote.repository.clone(),
             unavailable: remote.unavailable,
+            last_check: parking_lot::Mutex::default(),
         };
         match tokio::fs::remove_dir_all(&builder.config).await {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -78,22 +81,41 @@ impl RemoteBuilder {
     }
 
     /// Checks that the build machine's `BuildKit` daemon accepts a
-    /// connection within [`Self::PROBE_TIMEOUT`]. Its registry is the
-    /// engine's to reach, not the daemon's, and is on the same machine.
+    /// connection within [`Self::PROBE_TIMEOUT`], and keeps the result for
+    /// [`Self::status`]. Its registry is the engine's to reach, not the
+    /// daemon's, and is on the same machine.
     ///
     /// # Errors
     /// Returns why it could not be reached.
-    pub(super) async fn probe(&self) -> Result<(), BuilderUnavailable> {
+    pub async fn probe(&self) -> Result<(), BuilderUnavailable> {
         let address = self.endpoint.address();
-        tokio::time::timeout(Self::PROBE_TIMEOUT, tokio::net::TcpStream::connect(address))
-            .await
-            .map_err(std::io::Error::from)
-            .flatten()
-            .map(drop)
-            .map_err(|source| BuilderUnavailable {
-                address: address.to_owned(),
-                source,
-            })
+        let result =
+            tokio::time::timeout(Self::PROBE_TIMEOUT, tokio::net::TcpStream::connect(address))
+                .await
+                .map_err(std::io::Error::from)
+                .flatten()
+                .map(drop)
+                .map_err(|source| BuilderUnavailable {
+                    address: address.to_owned(),
+                    source,
+                });
+        *self.last_check.lock() = Some(piqueld_core::api::BuilderCheck {
+            reachable: result.is_ok(),
+            checked_at_ms: crate::now_ns() / 1_000_000,
+            // Why the connection failed; the rest is the status's.
+            message: result.as_ref().err().map(|error| error.source.to_string()),
+        });
+        result
+    }
+
+    /// Where the build machine is, and its latest check.
+    #[must_use]
+    pub fn status(&self) -> piqueld_core::api::BuilderStatus {
+        piqueld_core::api::BuilderStatus {
+            builder: self.endpoint.to_string(),
+            repository: self.repository.to_string(),
+            last_check: self.last_check.lock().clone(),
+        }
     }
 
     /// A `docker` command that reads this builder's Buildx configuration.
@@ -129,6 +151,7 @@ mod tests {
             repository: BuildRepository::try_from("build.example.ts.net:5000/piqueld".to_owned())
                 .unwrap(),
             unavailable: WhenUnavailable::Fail,
+            last_check: parking_lot::Mutex::default(),
         }
     }
 
@@ -147,19 +170,28 @@ mod tests {
     #[tokio::test]
     async fn a_build_machine_is_reachable_once_its_daemon_accepts_connections() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        builder(listener.local_addr().unwrap())
-            .probe()
-            .await
-            .unwrap();
+        let reachable = builder(listener.local_addr().unwrap());
+        assert_eq!(reachable.status().last_check, None);
+        reachable.probe().await.unwrap();
+        assert!(reachable.status().last_check.unwrap().reachable);
         // A port nothing listens on: bound, then released.
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .unwrap()
             .local_addr()
             .unwrap();
+        let unreachable = builder(closed);
+        let error = unreachable.probe().await.unwrap_err().to_string();
         assert_eq!(
-            builder(closed).probe().await.unwrap_err().to_string(),
+            error,
             format!("the build machine's BuildKit daemon at {closed} is unreachable")
+        );
+        let check = unreachable.status().last_check.unwrap();
+        assert!(!check.reachable);
+        assert!(
+            check
+                .message
+                .is_some_and(|message| !error.contains(&message))
         );
     }
 }

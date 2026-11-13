@@ -479,8 +479,12 @@ These diagnostics never disable configuration controls.
 
 Build history is available from the main navigation and each application's Builds
 tab. Compact attempt rows expand to show source, revision, Docker build settings,
-operation timing, commit, image, and retained output size. A build that reused
-the image of an earlier build is tagged **Reused**, and names that build. Opening a row loads its
+operation timing, commit, image, where it was built, and retained output size. A
+build that reused the image of an earlier build is tagged **Reused**, and names
+that build. With `system:read`, a host with a [build
+machine](reference/configuration.md#build-machine) shows it above the list, with
+its latest check, warning while it was unreachable; **Check now**, with
+`system:operate`, checks it again. Opening a row loads its
 output into the same accessible log viewer used by the Logs tab. Running attempts
 refresh output every 30 seconds while expanded and visible, stopping after the
 final completed output loads. Opening shows the newest output; Load older output

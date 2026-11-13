@@ -328,6 +328,7 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(granted!(Global(SystemRead) => system::configuration))
         .routes(granted!(Global(SystemRead) => system::checks))
         .routes(granted!(Global(SystemOperate) => system::refresh_dns))
+        .routes(granted!(Global(SystemOperate) => system::check_builder))
         .routes(authenticated!(openapi::openapi))
         .routes(authenticated!(applications::list))
         .routes(authenticated!(applications::apply))

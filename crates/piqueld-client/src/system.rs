@@ -1,10 +1,10 @@
 //! Control-plane status, configuration, and readiness.
 pub use piqueld_core::api::{
-    CertificateStatus, CheckStatus, DependencyStatus, DnsProviderStatus, DnsRecordState,
-    DnsRecords, DnsStatus, HostConfiguration, ImageStatus, IngressStatus, PrivateIngressStatus,
-    PublicIngressStatus, ReadinessStatus, RouteStatus, SnapshotLimits, SystemCheck, SystemCheckId,
-    SystemChecks, SystemStatus, TailnetStatus, TelemetryDestinationStatus, TelemetryReceiver,
-    TelemetryStatus,
+    BuilderCheck, BuilderStatus, BuiltOn, CertificateStatus, CheckStatus, DependencyStatus,
+    DnsProviderStatus, DnsRecordState, DnsRecords, DnsStatus, HostConfiguration, ImageStatus,
+    IngressStatus, PrivateIngressStatus, PublicIngressStatus, ReadinessStatus, RouteStatus,
+    SnapshotLimits, SystemCheck, SystemCheckId, SystemChecks, SystemStatus, TailnetStatus,
+    TelemetryDestinationStatus, TelemetryReceiver, TelemetryStatus,
 };
 
 use crate::{Client, ClientError, client::EnvelopedCall};
@@ -25,6 +25,16 @@ impl Client {
     /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
     pub async fn refresh_dns(&self) -> Result<DnsStatus, ClientError> {
         self.generated.refresh_dns().data().await
+    }
+
+    /// Checks the build machine's `BuildKit` daemon now, returning the build
+    /// machine with that check as its latest. Fails with
+    /// `builder_not_configured` when the host builds images itself.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] when transport, decoding, or API response handling fails.
+    pub async fn check_builder(&self) -> Result<BuilderStatus, ClientError> {
+        self.generated.check_builder().data().await
     }
 
     /// Reads effective daemon configuration without changing host settings.

@@ -74,6 +74,16 @@ impl BuildRow {
     /// Converts raw columns into a build record, reporting unknown states as
     /// corruption.
     fn decode(self) -> Result<BuildRecord, StoreError> {
+        // Its image tells where a build ran; a job run or a reused image
+        // ran no build. It is only shown, so an image that doesn't parse
+        // leaves it unknown.
+        let built_on = self
+            .image_id
+            .as_deref()
+            .filter(|_| self.job.is_none() && self.reused_build_id.is_none())
+            .and_then(|image| BuiltImage::parse(image).ok())
+            .as_ref()
+            .map(piqueld_core::api::BuiltOn::of);
         Ok(BuildRecord {
             id: self.id,
             environment_id: self.environment_id,
@@ -85,6 +95,7 @@ impl BuildRow {
             started_at_ms: self.started_at_ms,
             finished_at_ms: self.finished_at_ms,
             commit: self.commit_hash,
+            built_on,
             image_id: self.image_id,
             reused_build: self.reused_build_id,
             exit_code: self.exit_code,

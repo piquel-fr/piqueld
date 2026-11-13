@@ -1,5 +1,6 @@
 //! Build metadata and bounded output pages, independent of application runtime logs.
-use super::format::timestamp;
+use super::access::can;
+use super::format::{relative, timestamp};
 use super::logs::{LogKind, LogViewer, StreamFilter};
 use super::ui::{
     Icon, PageHeader, Tone, build_badge, code_or, empty, expander_summary, icon, load_older,
@@ -13,8 +14,9 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use piqueld_client::{
     BuildRecord, BuildState, Client, ValidatedBuild as Build, ValidatedSource as Source,
-    access::AppPermission,
+    access::{AppPermission, GlobalPermission, Permission},
     observability::{Bytes, Elapsed},
+    system::{BuilderStatus, BuiltOn},
 };
 
 /// `/builds` page: build history across all applications.
@@ -25,6 +27,7 @@ pub(super) fn BuildsPage() -> impl IntoView {
             title="Builds"
             description="Every Git source preparation and job run is recorded, including failed checkouts and cached builds. Image pulls do not create builds."
         />
+        <BuildMachine />
         <BuildHistory />
     }
 }
@@ -145,6 +148,81 @@ pub(super) fn BuildHistory(
     }
 }
 
+/// Where images build, when the host has a build machine the caller may see
+/// (`system:read`): its address and its latest check, warning while it was
+/// unreachable. With `system:operate`, **Check now** checks it again.
+#[component]
+fn BuildMachine() -> impl IntoView {
+    let signals = dashboard_context().signals;
+    let operate = can(Permission::Global(GlobalPermission::SystemOperate));
+    let checking = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let builder = move || {
+        signals
+            .system
+            .with(|system| system.as_ref().and_then(|system| system.builder.clone()))
+    };
+    let check = move |_| {
+        checking.set(true);
+        spawn_local(async move {
+            match Client::browser().check_builder().await {
+                Ok(builder) => {
+                    error.set(None);
+                    signals.system.update(|system| {
+                        if let Some(system) = system {
+                            system.builder = Some(builder);
+                        }
+                    });
+                }
+                Err(e) => error.set(Some(e.user_message())),
+            }
+            checking.set(false);
+        });
+    };
+    move || {
+        builder().map(|builder: BuilderStatus| {
+            let location = format!(
+                "Images build on the build machine at {}, which pushes them to {}.",
+                builder.builder, builder.repository
+            );
+            let state = match &builder.last_check {
+                None => notice(Tone::Neutral, format!("{location} It has not been checked yet.")),
+                Some(check) if check.reachable => notice(
+                    Tone::Ok,
+                    format!("{location} It answered {}.", relative(check.checked_at_ms)),
+                ),
+                Some(check) => notice(
+                    Tone::Warn,
+                    format!(
+                        "{location} It was unreachable {}: {}. Deployments that have to build can't use it until it answers.",
+                        relative(check.checked_at_ms),
+                        check.message.as_deref().unwrap_or("no reason given"),
+                    ),
+                ),
+            };
+            view! {
+                <div class="stack-sm" role="group" aria-label="Build machine">
+                    {state}
+                    {move || error.get().map(|e| notice(Tone::Bad, e))}
+                    <Show when={move || operate.get()}>
+                        <div>
+                            <button
+                                type="button"
+                                class="btn btn-sm"
+                                disabled={move || checking.get()}
+                                on:click={check}
+                            >
+                                {icon(Icon::Refresh)}
+                                {move || if checking.get() { "Checking…" } else { "Check now" }}
+                            </button>
+                        </div>
+                    </Show>
+                </div>
+            }
+        })
+    }
+}
+
 /// Expandable summary of one build; expanding shows metadata and mounts
 /// `BuildOutput`. See `BuildHistory` for `allowed`.
 #[component]
@@ -233,6 +311,19 @@ fn BuildCard(
                             </dd> <dt>"Duration"</dt> <dd>{duration}</dd> {source_details(b.source)}
                             <dt>"Resolved commit"</dt> <dd>{code_or(b.commit, "Not resolved")}</dd>
                             <dt>"Image"</dt> <dd>{code_or(b.image_id, "Not produced")}</dd>
+                            {b
+                                .built_on
+                                .map(|built_on| {
+                                    view! {
+                                        <dt>"Built on"</dt>
+                                        <dd>
+                                            {match built_on {
+                                                BuiltOn::Host => "This host",
+                                                BuiltOn::BuildMachine => "The build machine",
+                                            }}
+                                        </dd>
+                                    }
+                                })}
                             {b
                                 .reused_build
                                 .map(|earlier| {

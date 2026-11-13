@@ -76,6 +76,7 @@ Commands:
 - [`piquelctl settings`](#piquelctl-settings): Show the daemon's effective host settings, read-only (requires system:read). Change them in its TOML configuration and restart it.
 - [`piquelctl doctor`](#piquelctl-doctor): Check this CLI's connection and the installation's health.
 - [`piquelctl dns`](#piquelctl-dns): Inspect the daemon's DNS providers.
+- [`piquelctl builder`](#piquelctl-builder): Inspect the build machine images build on.
 - [`piquelctl app`](#piquelctl-app): Create, inspect, edit and deploy applications.
 - [`piquelctl env`](#piquelctl-env): Create, inspect, deploy and delete an application's environments.
 - [`piquelctl preview`](#piquelctl-preview): Create, inspect, deploy and delete previews: disposable deployments of a branch.
@@ -817,6 +818,28 @@ The daemon otherwise checks them every hour. It reads credential files only when
 
 ```text
 piquelctl dns refresh [OPTIONS]
+```
+
+## `piquelctl builder`
+
+Inspect the build machine images build on.
+
+```text
+piquelctl builder [OPTIONS] <COMMAND>
+```
+
+Commands:
+
+- [`piquelctl builder check`](#piquelctl-builder-check): Check that the build machine answers now.
+
+## `piquelctl builder check`
+
+Check that the build machine answers now.
+
+The daemon otherwise checks it before each build, and `piquelctl status` shows the latest check. Fails when the host has no build machine. Needs `system:operate`.
+
+```text
+piquelctl builder check [OPTIONS]
 ```
 
 ## `piquelctl app`

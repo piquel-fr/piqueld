@@ -45,6 +45,7 @@ impl ApplicationService {
                 max_files: crate::git::Checkouts::FILES as u64,
             }),
             telemetry: self.telemetry_status(readable).await,
+            builder: self.builder.as_ref().map(|builder| builder.status()),
         }
     }
 
@@ -55,6 +56,15 @@ impl ApplicationService {
             Some(ingress) => ingress.refresh_dns().await,
             None => DnsStatus::default(),
         }
+    }
+
+    /// Checks the build machine's `BuildKit` daemon now, and returns its
+    /// status; `None` without a build machine.
+    pub async fn check_builder(&self) -> Option<piqueld_core::api::BuilderStatus> {
+        let builder = self.builder.as_ref()?;
+        // The outcome is in the status, as its latest check.
+        let _unreachable = builder.probe().await;
+        Some(builder.status())
     }
 
     /// Returns effective host settings without exposing mutable configuration.

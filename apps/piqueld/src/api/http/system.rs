@@ -1,15 +1,20 @@
 use crate::auth::Identity;
-use axum::{Extension, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Extension,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use piqueld_core::access::{AppPermission, GlobalPermission};
-use piqueld_core::api::{DnsStatus, Envelope, SystemStatus};
+use piqueld_core::api::{BuilderStatus, DnsStatus, Envelope, SystemStatus};
 
-use super::{ApiState, ok};
+use super::{ApiError, ApiState, ok};
 
 /// Gets daemon status.
 ///
-/// DNS providers and certificates are empty without `system:read`; see
-/// [`redact_dns`]. Preview counts per application list only readable
-/// applications.
+/// DNS providers and certificates are empty without `system:read`, and the
+/// build machine is absent; see [`redact_host`]. Preview counts per
+/// application list only readable applications.
 #[utoipa::path(
     get,
     path = "/api/v1/system/status",
@@ -26,16 +31,51 @@ pub(super) async fn status(
     let mut status = state
         .system_status(&identity.grants.app_scope(AppPermission::Read))
         .await;
-    redact_dns(&identity, &mut status.dns);
+    redact_host(&identity, &mut status);
     ok(status)
 }
 
-/// Empties `dns` without `system:read`: providers and certificates are host
-/// configuration, naming every application's routed hostnames.
+/// Empties host configuration in `status` without `system:read`: DNS
+/// providers and certificates, which name every application's routed
+/// hostnames, and the build machine.
+fn redact_host(identity: &Identity, status: &mut SystemStatus) {
+    if !identity.grants.has_global(GlobalPermission::SystemRead) {
+        redact_dns(identity, &mut status.dns);
+        status.builder = None;
+    }
+}
+
+/// Empties `dns` without `system:read`; see [`redact_host`].
 fn redact_dns(identity: &Identity, dns: &mut DnsStatus) {
     if !identity.grants.has_global(GlobalPermission::SystemRead) {
         *dns = DnsStatus::default();
     }
+}
+
+/// Checks the build machine now.
+///
+/// Connects to its `BuildKit` daemon, as before each build, and returns its
+/// status with that check as its latest. 404 `builder_not_configured` when
+/// the host builds images itself.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/builder/check",
+    operation_id = "checkBuilder",
+    summary = "Check the build machine now",
+    responses(
+        (status = 200, description = "Success", body = Envelope<BuilderStatus>),
+        (status = 404, response = inline(super::openapi::ApiErrorResponse)),
+    )
+)]
+pub(super) async fn check_builder(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let status = state.check_builder().await.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "builder_not_configured",
+            "this host has no build machine; it builds images itself",
+        )
+    })?;
+    Ok(ok(status).into_response())
 }
 
 /// Checks DNS provider credentials now.

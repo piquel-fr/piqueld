@@ -1,8 +1,8 @@
 //! Connected command implementations plus shared application lookup and operation waiting.
 use crate::{
     cli::{
-        AppCommand, ApplyArgs, BuildCommand, Cli, Command, DeleteArgs, DnsCommand, ManifestArgs,
-        OperationArgs, expected_generation,
+        AppCommand, ApplyArgs, BuildCommand, BuilderCommand, Cli, Command, DeleteArgs, DnsCommand,
+        ManifestArgs, OperationArgs, expected_generation,
     },
     environments,
     error::{CliError, ErrorKind, Result},
@@ -53,6 +53,9 @@ pub(crate) async fn run(cli: &Cli, client: &Client, console: &mut Console) -> Re
         Command::Dns {
             command: DnsCommand::Refresh,
         } => refresh_dns(client, console).await,
+        Command::Builder {
+            command: BuilderCommand::Check,
+        } => check_builder(client, console).await,
         Command::App { command } => app(cli, client, console, command).await,
         Command::Env { command } => command.run(cli, client, console).await,
         Command::Preview { command } => command.run(client, console).await,
@@ -270,6 +273,20 @@ async fn refresh_dns(client: &Client, console: &mut Console) -> Result<()> {
         console.warning("no DNS providers are configured ([[dns.providers]] in daemon TOML)")?;
     }
     console.emit(&status)
+}
+
+/// Checks the build machine now and prints it, failing like a deployment
+/// that needs it when it is unreachable.
+async fn check_builder(client: &Client, console: &mut Console) -> Result<()> {
+    let status = client.check_builder().await?;
+    console.emit(&status)?;
+    match &status.last_check {
+        Some(check) if !check.reachable => Err(CliError::new(
+            ErrorKind::Unhealthy,
+            "the build machine is unreachable; start it, then check again",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Lists every application with its environments' statuses. Applications are
