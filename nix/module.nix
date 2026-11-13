@@ -317,7 +317,7 @@ in
           retention.deployments_per_environment = lib.mkOption {
             type = lib.types.ints.u32;
             default = 50;
-            description = "Deployments each environment retains however old they are; zero disables all deployment, preview, release and build-record pruning.";
+            description = "Deployments each environment retains however old they are; previews instead keep only their current, latest and newest successful deployments and those finished in the last hour. Zero disables all deployment, preview, release and build-record pruning.";
           };
           build_history.log_max_bytes = lib.mkOption {
             type = lib.types.ints.between 1 67108864;

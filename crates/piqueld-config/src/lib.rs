@@ -901,8 +901,8 @@ pub struct RetentionConfig {
     /// beyond the newest `deployments_per_environment`, never while it is
     /// its environment's current or latest deployment, one of its newest
     /// `images.keep_deployments` successful ones (at least one, even when
-    /// that is `0`, so automatic rollback has a target), or one a remaining
-    /// deployment restored. A preview keeps only its current and latest
+    /// that is `0`, so automatic rollback has a target), one a remaining
+    /// deployment restored, or one whose jobs still need cleaning up. A preview keeps only its current and latest
     /// deployments, its newest successful one, and those a remaining
     /// deployment restored, of the deployments that finished over an hour
     /// ago, however recent or few. Releases no remaining deployment uses

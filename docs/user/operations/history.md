@@ -145,8 +145,10 @@ latest one, and the deployments
 keeps images for, so you can restore them: at least its newest successful one,
 even when `images.keep_deployments` is `0`. A preview keeps only its current,
 latest and newest successful deployments, and those that finished in the last
-hour, however few it has. A deployment a remaining one restored stays too. A removed deployment takes its build and job records with
-it once their output has expired. A release no remaining deployment uses goes
+hour, however few it has. A deployment a remaining one restored stays too,
+and so does one whose [jobs](../applications/jobs.md) piqueld still has to
+clean up. A removed deployment takes its build and job records with it once
+their output has expired. A release no remaining deployment uses goes
 once it isn't among its application's newest 50. Setting either setting to
 `0` keeps every deployment, release and build record, of previews too.
 
