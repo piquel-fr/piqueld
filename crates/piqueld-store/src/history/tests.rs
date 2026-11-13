@@ -225,3 +225,27 @@ async fn pruning_removes_expired_builds_and_unused_releases_of_pruned_deployment
     assert_eq!(releases.len(), 51);
     assert_eq!(releases[..2], ["rel-test-000", "rel-test-002"]);
 }
+
+#[tokio::test]
+async fn deployment_analytics_over_pruned_history_are_incomplete() {
+    let (_temp, store, production) = store().await;
+    let old = Outcome::Failed { old: true };
+    deploy(&store, &production, &[old, old, old, old, Outcome::Pending]).await;
+    // History recorded since the epoch, so only pruning can make it partial.
+    execute(
+        &store,
+        "UPDATE history_coverage SET started_at_ms=0 WHERE singleton=?1",
+        "1",
+    )
+    .await;
+    let incomplete = async || {
+        store
+            .deployment_analytics(None, &crate::Visibility::ALL, 0, crate::now_ms())
+            .await
+            .unwrap()
+            .incomplete
+    };
+    assert!(!incomplete().await);
+    store.prune_deployment_history().await.unwrap();
+    assert!(incomplete().await);
+}

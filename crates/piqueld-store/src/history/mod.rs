@@ -50,7 +50,9 @@ impl Store {
     /// The candidates are chosen once, then deleted [`PRUNE_BATCH`] at a time,
     /// each batch rechecking what can change meanwhile: job cleanup, and
     /// restores accepted since. Deleting a deployment's operation cascades to
-    /// it, its attempts, inputs and secret pins.
+    /// it, its attempts, inputs and secret pins, so each batch also advances
+    /// `history_coverage.pruned_through_ms`: deployment analytics over the
+    /// pruned span are then marked incomplete.
     ///
     /// # Errors
     /// Returns storage or encoding errors.
@@ -88,14 +90,28 @@ impl Store {
         .map_err(StoreError::database)?;
         for batch in candidates.chunks(PRUNE_BATCH) {
             let ids = serde_json::to_string(batch).map_err(StoreError::corrupt)?;
-            self.write(sqlx::query!(
-                "DELETE FROM operations WHERE id IN (SELECT value FROM json_each(?1))
+            let (_writer, mut tx) = self.begin_immediate().await?;
+            let finished = sqlx::query_scalar!(
+                r#"DELETE FROM operations WHERE id IN (SELECT value FROM json_each(?1))
                     AND NOT EXISTS(SELECT 1 FROM job_cleanup j WHERE j.operation_id=operations.id)
-                    AND id NOT IN (SELECT json_extract(origin_json,'$.deployment') FROM deployments WHERE json_extract(origin_json,'$.type')='restore')",
+                    AND id NOT IN (SELECT json_extract(origin_json,'$.deployment') FROM deployments WHERE json_extract(origin_json,'$.type')='restore')
+                    RETURNING finished_at_ms AS "finished_at_ms!""#,
                 ids
-            ))
+            )
+            .fetch_all(&mut *tx)
             .await
             .map_err(StoreError::database)?;
+            // Analytics count deployments by their attempts, which went too.
+            if let Some(last) = finished.into_iter().max() {
+                sqlx::query!(
+                    "UPDATE history_coverage SET pruned_through_ms=MAX(COALESCE(pruned_through_ms,0),?1) WHERE singleton=1",
+                    last
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(StoreError::database)?;
+            }
+            tx.commit().await.map_err(StoreError::database)?;
         }
         let (_writer, mut tx) = self.begin_immediate().await?;
         sqlx::query!("DELETE FROM builds WHERE log_expired=1 AND NOT EXISTS(SELECT 1 FROM operations o WHERE o.id=builds.operation_id)")
