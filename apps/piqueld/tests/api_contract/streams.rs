@@ -33,7 +33,7 @@ async fn exec_rechecks_grants_when_the_command_starts() {
     // The start is recorded once the command runs; without input it exits.
     let (_, input) = tokio::sync::mpsc::channel(1);
     let (output, _output) = tokio::sync::mpsc::channel(1);
-    let io = piqueld::docker::ExecIo {
+    let io = piqueld_docker::ExecIo {
         input,
         output,
         stop: tokio_util::sync::CancellationToken::new(),

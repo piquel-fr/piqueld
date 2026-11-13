@@ -1,6 +1,5 @@
-//! Embeds the static health probe and the dashboard bundle into the daemon
-//! binary: built under `--features embedded-ui`, or the prebuilt one a
-//! published crate ships.
+//! Embeds the dashboard bundle into the daemon binary: built under
+//! `--features embedded-ui`, or the prebuilt one a published crate ships.
 
 use std::{
     env,
@@ -11,20 +10,14 @@ use std::{
 
 #[path = "build/dashboard.rs"]
 mod dashboard;
-#[path = "build/nested.rs"]
-mod nested;
-#[path = "build/probe.rs"]
-mod probe;
 
-/// Embeds the health probe and any dashboard bundle.
+/// Embeds any dashboard bundle.
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR")
             .ok_or("Cargo did not provide CARGO_MANIFEST_DIR to the piqueld build script")?,
     );
-    probe::embed(&manifest_dir)?;
-    dashboard::embed(&manifest_dir)?;
-    Ok(())
+    dashboard::embed(&manifest_dir)
 }
 
 /// This build script's `OUT_DIR`, where everything it generates goes.

@@ -97,7 +97,10 @@ impl BollardDocker {
     /// The typed Bollard client, created on first use. Bollard refuses a
     /// socket that does not exist, so until Docker creates it, every call
     /// fails as unavailable and the next one tries again.
-    pub(crate) fn client(&self) -> Result<&Docker, DockerError> {
+    ///
+    /// # Errors
+    /// [`DockerError::Unavailable`] while the socket doesn't exist.
+    pub fn client(&self) -> Result<&Docker, DockerError> {
         if let Some(docker) = self.docker.get() {
             return Ok(docker);
         }
@@ -686,9 +689,9 @@ mod tests {
             .downcast_ref::<std::io::Error>()
             .unwrap();
         assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
-        assert_eq!(
-            crate::operations::OperationError::from(error).code(),
-            "docker_unavailable"
+        assert!(
+            matches!(error, super::DockerError::UnavailableSource { .. }),
+            "{error:?}"
         );
     }
 
@@ -715,9 +718,9 @@ mod tests {
             } else {
                 assert!(source.is::<hyper::Error>(), "{error:?}");
             }
-            assert_eq!(
-                crate::operations::OperationError::from(error).code(),
-                "docker_request_failed"
+            assert!(
+                matches!(error, super::DockerError::RequestSource { .. }),
+                "{error:?}"
             );
         }
     }
@@ -743,9 +746,12 @@ mod tests {
             .await
             .unwrap_err();
         stub.task.await.unwrap();
-        assert_eq!(
-            crate::operations::OperationError::from(error).code(),
-            "docker_request_failed"
+        assert!(
+            matches!(
+                error,
+                super::DockerError::Request(_) | super::DockerError::RequestSource { .. }
+            ),
+            "{error:?}"
         );
     }
 

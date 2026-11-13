@@ -1,4 +1,6 @@
-//! Docker Engine/Swarm boundary.
+//! The piqueld daemon's Docker Engine/Swarm boundary, and the external
+//! commands, Git's and Docker's, it runs with bounded output capture (see
+//! [`command`]).
 //!
 //! The reconciler only depends on [`DockerApi`]. Bollard is deliberately kept at
 //! this edge so unit tests can use a deterministic in-memory implementation.
@@ -51,6 +53,17 @@ const NANO_CPUS_PER_MILLICORE: i64 = 1_000_000;
 /// Delay Swarm waits before restarting an exited task.
 const RESTART_DELAY: i64 = 2 * NANOSECONDS_PER_SECOND;
 
+/// Returns the current Unix time in nanoseconds, as Docker and OpenTelemetry
+/// timestamps are; unlike the store's `now_ms`, it may step back with the clock.
+#[must_use]
+pub fn now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+        .unwrap_or_default()
+}
+
 /// Concurrent per-service inspections performed during one observation.
 const OBSERVATION_INSPECT_CONCURRENCY: usize = 8;
 
@@ -70,7 +83,7 @@ pub struct BollardDocker {
 }
 
 mod timeout;
-pub(crate) use timeout::DockerTimeout;
+pub use timeout::DockerTimeout;
 mod build_queue;
 pub use build_queue::BuildPriority;
 mod configs;
@@ -85,9 +98,10 @@ mod files;
 pub use exec::{Exec, ExecIo};
 mod limited;
 mod logs;
-pub(crate) use limited::LimitedDocker;
+pub use limited::LimitedDocker;
+pub mod command;
 mod errors;
-#[cfg(feature = "fake-docker")]
+#[cfg(feature = "fake")]
 pub mod fake;
 mod identity;
 mod images;
@@ -322,7 +336,7 @@ pub trait DockerApi: Send + Sync + 'static {
     async fn build_image(
         &self,
         build: &ImageBuild<'_>,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn crate::command::OutputLog>,
     ) -> Result<piqueld_core::resource::Sha256Digest, DockerError>;
     /// Provisions an immutable secret with the expected application ownership.
     async fn ensure_secret(

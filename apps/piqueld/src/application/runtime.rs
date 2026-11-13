@@ -1,10 +1,7 @@
 //! Resolves accepted manifest inputs during operation execution.
 
 use super::{BoundaryError, RuntimeBoundary};
-use crate::{
-    docker::{BuildPriority, DockerApi, DockerError, DockerTimeout},
-    reconcile::ImagesInUse,
-};
+use crate::reconcile::ImagesInUse;
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use piqueld_core::{
@@ -13,6 +10,7 @@ use piqueld_core::{
     manifest::{SourceRepository, ValidatedSource as Source},
     resource::ResolvedSource,
 };
+use piqueld_docker::{BuildPriority, DockerApi, DockerError, DockerTimeout};
 use piqueld_store::StoredEnvironment;
 use std::sync::Arc;
 use std::time::Duration;
@@ -166,7 +164,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         &self,
         environment: &piqueld_core::EnvironmentId,
         request: &piqueld_core::exec::ExecRequest,
-    ) -> Result<Option<crate::docker::Exec>, BoundaryError> {
+    ) -> Result<Option<piqueld_docker::Exec>, BoundaryError> {
         Ok(self
             .docker
             .create_exec(&self.instance_id, environment, request)
@@ -174,8 +172,8 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     }
     async fn run_exec(
         &self,
-        exec: &crate::docker::Exec,
-        io: crate::docker::ExecIo,
+        exec: &piqueld_docker::Exec,
+        io: piqueld_docker::ExecIo,
     ) -> Result<i64, BoundaryError> {
         Ok(self.docker.run_exec(exec, io).await?)
     }
@@ -260,7 +258,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
         let images = DockerTimeout::Request
             .run("list images", self.docker.images())
             .await?;
-        Ok(crate::docker::LocalImage::present(&images))
+        Ok(piqueld_docker::LocalImage::present(&images))
     }
 
     async fn reuse_images(
@@ -298,22 +296,22 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             .map_err(BoundaryError::from)
     }
 
-    async fn containers(&self) -> Result<Vec<crate::docker::ManagedContainer>, BoundaryError> {
+    async fn containers(&self) -> Result<Vec<piqueld_docker::ManagedContainer>, BoundaryError> {
         Ok(self.docker.managed_containers(&self.instance_id).await?)
     }
 
     async fn container_usage(
         &self,
         id: &str,
-    ) -> Result<Option<crate::docker::ContainerUsage>, BoundaryError> {
+    ) -> Result<Option<piqueld_docker::ContainerUsage>, BoundaryError> {
         Ok(self.docker.container_usage(id).await?)
     }
 
-    fn container_logs(&self, id: &str, since: i32) -> crate::docker::ContainerLogs {
+    fn container_logs(&self, id: &str, since: i32) -> piqueld_docker::ContainerLogs {
         self.docker.container_logs(id, since)
     }
 
-    fn container_starts(&self, since: i64) -> crate::docker::ContainerStarts {
+    fn container_starts(&self, since: i64) -> piqueld_docker::ContainerStarts {
         self.docker.container_starts(since)
     }
 }

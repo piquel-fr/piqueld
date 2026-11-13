@@ -1,4 +1,4 @@
-# The profile the daemon build script builds `piqueld-probe` with, passed to
+# The profile the Docker crate's build script builds `piqueld-probe` with, passed to
 # its nested Cargo with `--config`. It lives here rather than in the workspace
 # manifest because the published crates build the probe outside the
 # workspace, from the `piqueld-probe` package.

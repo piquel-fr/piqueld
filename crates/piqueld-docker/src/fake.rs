@@ -1,5 +1,5 @@
 //! An in-memory Docker engine for tests and the browser fixture, built with
-//! the `fake-docker` feature. It runs every service as declared, healthy and
+//! the `fake` feature. It runs every service as declared, healthy and
 //! converged, unless a test arms one of its failure knobs. Commands run in a
 //! service print nothing and exit with 0.
 
@@ -542,7 +542,7 @@ impl DockerApi for FakeDocker {
     async fn build_image(
         &self,
         build: &ImageBuild<'_>,
-        _log: Option<&crate::build::BuildLog>,
+        _log: Option<&dyn crate::command::OutputLog>,
     ) -> Result<Sha256Digest, DockerError> {
         if !build.context.is_dir() {
             return Err(DockerError::Validation("find the build context"));

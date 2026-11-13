@@ -1,10 +1,10 @@
 //! One-off commands in running service tasks, recorded in environment history.
 use super::{Actor, ApplicationError, ApplicationService};
-use crate::docker::{DockerError, Exec, ExecIo};
 use piqueld_core::{
     ApplicationId, EnvironmentId, ServiceName, access::AppPermission, auth::HostOperator,
     exec::ExecRequest,
 };
+use piqueld_docker::{DockerError, Exec, ExecIo};
 
 /// A created command, recorded in history once it runs.
 pub struct ExecSession {

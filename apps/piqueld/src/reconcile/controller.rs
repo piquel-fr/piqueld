@@ -3,8 +3,8 @@ use super::{
     OperationError, OperationKind, OperationState, Plan, PlanRequest, StoreError,
 };
 use crate::application::RuntimeBoundary;
-use crate::docker::JobRuns;
 use piqueld_core::api::DeploymentOrigin;
+use piqueld_docker::JobRuns;
 use std::sync::Arc;
 
 impl<D: DockerApi> Controller<D> {
@@ -658,10 +658,8 @@ impl<D: DockerApi> Controller<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        api::{Mutation, MutationResponse},
-        docker::BollardDocker,
-    };
+    use crate::api::{Mutation, MutationResponse};
+    use piqueld_docker::BollardDocker;
     use piqueld_store::Store;
 
     /// A store in a temporary directory, and a Docker socket nothing serves.

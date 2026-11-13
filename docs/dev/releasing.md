@@ -34,10 +34,12 @@ never edited, since databases that applied it won't run it again.
 | --- | --- |
 | `piqueld` | The daemon, with its dashboard and health probe embedded |
 | `piquelctl` | The CLI |
+| `piqueld-build` | The nested Cargo builds of the daemon's and Docker crate's build scripts |
 | `piqueld-client` | The typed Rust client, with its documentation on [docs.rs](https://docs.rs/piqueld-client) |
 | `piqueld-config` | The daemon's configuration |
 | `piqueld-core` | The contracts the others share |
-| `piqueld-probe` | The static health probe the daemon embeds |
+| `piqueld-docker` | The daemon's Docker boundary, with the health probe embedded |
+| `piqueld-probe` | The static health probe `piqueld-docker` embeds |
 | `piqueld-store` | The daemon's control-plane state |
 
 `piqueld-ui`, `piqueld-generated` and `xtask` set `publish = false`. Cargo
@@ -48,10 +50,11 @@ Each crate builds from its package alone, as `cargo install` builds it:
 
 - The store's migrations are in `crates/piqueld-store/migrations`, inside its
   crate, whose build script checks its queries against them.
-- The daemon's build script builds the health probe from the `piqueld-probe`
-  crate, whose build script exports its directory as `DEP_PIQUELD_PROBE_DIR`,
-  with the `probe` profile of `apps/piqueld/build/probe.toml`. This works the
-  same from the workspace and from crates.io.
+- `piqueld-docker`'s build script builds the health probe from the
+  `piqueld-probe` crate, whose build script exports its directory as
+  `DEP_PIQUELD_PROBE_DIR`, with the `probe` profile of
+  `crates/piqueld-docker/build/probe.toml`. This works the same from the
+  workspace and from crates.io.
 - The published daemon can't build the dashboard, so it ships it prebuilt; see
   the [dashboard architecture](architecture/dashboard.md#production-assets).
 - `piqueld` and `piquelctl` leave out their tests and examples, which read

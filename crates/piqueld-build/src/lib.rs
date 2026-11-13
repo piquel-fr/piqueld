@@ -1,5 +1,6 @@
-//! Nested Cargo builds of artifacts the daemon embeds but compiles for another
-//! target: the dashboard (wasm32) and the health probe (musl).
+//! Nested Cargo builds, for the build scripts of piqueld's crates that embed
+//! an artifact compiled for another target: the daemon's dashboard (wasm32)
+//! and the Docker crate's health probe (musl).
 
 use std::{
     env,
@@ -29,10 +30,17 @@ pub struct NestedCargo {
 }
 
 impl NestedCargo {
-    /// Prepares a nested build into `<outer target dir>-<suffix>`.
+    /// Prepares a nested build into `<outer target dir>-<suffix>`, for the
+    /// build script running it.
+    ///
+    /// # Errors
+    /// Cargo gave the build script no `OUT_DIR`, or its target directory
+    /// can't be derived from it.
     pub fn new(suffix: &str) -> Result<Self, Box<dyn Error>> {
+        let out_dir =
+            env::var_os("OUT_DIR").ok_or("Cargo did not provide OUT_DIR to the build script")?;
         Ok(Self {
-            target_dir: Self::sibling_target_dir(&crate::out_dir()?, suffix)?,
+            target_dir: Self::sibling_target_dir(Path::new(&out_dir), suffix)?,
         })
     }
 
@@ -44,6 +52,10 @@ impl NestedCargo {
     /// lockfile it builds against change. These are the workspace's when `dir`
     /// is a workspace member, and the package's own when it is a published
     /// crate.
+    ///
+    /// # Errors
+    /// The nested Cargo can't run or fails, such as when the target isn't
+    /// installed.
     pub fn build(
         &self,
         dir: &Path,
@@ -72,8 +84,8 @@ impl NestedCargo {
         for input in inputs.iter().map(PathBuf::as_path).chain(config) {
             println!("cargo:rerun-if-changed={}", input.display());
         }
-        let cargo = env::var_os("CARGO")
-            .ok_or("Cargo did not provide CARGO to the piqueld build script")?;
+        let cargo =
+            env::var_os("CARGO").ok_or("Cargo did not provide CARGO to the build script")?;
         println!(
             "cargo:warning=building embedded {package} (nested target dir: {})",
             self.target_dir.display()

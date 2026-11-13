@@ -1,14 +1,11 @@
 //! Production service construction and reconciliation startup.
 
 use super::ApplicationService;
-use crate::{
-    docker::{BollardDocker, DockerApi},
-    operations::OperationError,
-    reconcile::Controller,
-};
+use crate::{operations::OperationError, reconcile::Controller};
 use anyhow::Context;
 use piqueld_config::DaemonConfig;
 use piqueld_core::manifest::Hostname;
+use piqueld_docker::{BollardDocker, DockerApi};
 use piqueld_store::{Store, StoreError};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::Notify, task::JoinHandle};

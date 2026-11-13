@@ -16,7 +16,7 @@ use std::{env, io};
 use sha2::{Digest, Sha256};
 
 #[cfg(feature = "embedded-ui")]
-use crate::nested::NestedCargo;
+use piqueld_build::NestedCargo;
 
 /// Where a published crate ships its prebuilt bundle, relative to the crate.
 /// `cargo xtask publish` writes it there before packaging, and removes it

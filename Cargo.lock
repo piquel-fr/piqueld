@@ -2649,11 +2649,12 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "piqueld",
+ "piqueld-build",
  "piqueld-client",
  "piqueld-config",
  "piqueld-core",
+ "piqueld-docker",
  "piqueld-generated",
- "piqueld-probe",
  "piqueld-store",
  "prettyplease",
  "progenitor",
@@ -2686,6 +2687,10 @@ dependencies = [
  "x509-parser 0.16.0",
  "zeroize",
 ]
+
+[[package]]
+name = "piqueld-build"
+version = "0.1.0"
 
 [[package]]
 name = "piqueld-client"
@@ -2751,6 +2756,36 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 0.8.23",
  "utoipa",
+]
+
+[[package]]
+name = "piqueld-docker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bollard",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "parking_lot",
+ "piqueld-build",
+ "piqueld-core",
+ "piqueld-probe",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]

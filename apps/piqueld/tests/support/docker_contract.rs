@@ -5,7 +5,6 @@
 //! test per scenario through [`scenarios`].
 
 use crate::poll::eventually;
-use piqueld::docker::{DockerApi, DockerError, Exec, ExecIo, JobOutput, JobRuns, JobStatus};
 use piqueld::operations::OperationError;
 use piqueld_core::api::LogStream;
 use piqueld_core::exec::{ExecCommand, ExecRequest};
@@ -16,6 +15,7 @@ use piqueld_core::resource::{
     ObservedService, Ownership, ResolvedSource, SERVICE_LABEL, TaskState,
 };
 use piqueld_core::{EnvironmentId, InstanceId, ResourceKind, docker_resource_name};
+use piqueld_docker::{DockerApi, DockerError, Exec, ExecIo, JobOutput, JobRuns, JobStatus};
 use std::{collections::BTreeMap, time::Duration};
 
 /// The image every service and job runs.

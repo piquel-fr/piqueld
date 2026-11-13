@@ -5,7 +5,6 @@ mod tunnel;
 use super::*;
 use crate::{
     api::{Actor, Mutation, MutationResponse},
-    docker::{BollardDocker, DockerApi},
     git::Sources,
     reconcile::Controller,
 };
@@ -16,6 +15,7 @@ use piqueld_core::{
     observability::{DiagnosticCode, EventScope},
     resource::{APPLICATION_LABEL, INGRESS_LABEL, INSTANCE_LABEL, MANAGED_LABEL},
 };
+use piqueld_docker::{BollardDocker, DockerApi};
 use serde_json::json;
 
 /// A data directory and store for test ingresses, and the Docker Engine

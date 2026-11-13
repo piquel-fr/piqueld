@@ -2,7 +2,7 @@
 
 use std::{env, error::Error, fs, path::Path};
 
-use crate::nested::NestedCargo;
+use piqueld_build::NestedCargo;
 
 /// Builds `piqueld-probe` for the musl target matching the daemon's
 /// architecture with the size-optimised `probe` profile of `build/probe.toml`,

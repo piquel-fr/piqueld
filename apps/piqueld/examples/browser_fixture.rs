@@ -1,7 +1,7 @@
 //! Isolated UI/API fixture for Playwright. Docker execution is deliberately
 //! stubbed: nothing ever deploys, and commands in service `web` run a
 //! scripted terminal instead. With `PIQUELD_PLAYWRIGHT_FAKE_DOCKER=1`, the real
-//! controller deploys to the in-memory engine of [`piqueld::docker::fake`]
+//! controller deploys to the in-memory engine of [`piqueld_docker::fake`]
 //! instead, so deployments succeed and services report healthy, as the
 //! documentation screenshots show them. Its registry lacks [`MISSING_IMAGE`],
 //! so deploying that image fails, and notifications are delivered. Webhook
@@ -15,7 +15,6 @@ use futures_util::StreamExt as _;
 use piqueld::{
     api::http::{ApiState, UiAssets, UnixPeer},
     application::{BoundaryError, RuntimeBoundary},
-    docker::{DockerError, Exec, ExecIo, fake::FakeDocker},
     git::Sources,
     reconcile::Controller,
 };
@@ -25,6 +24,7 @@ use piqueld_core::{
     manifest::Hostname,
     resource::ResolvedApplication,
 };
+use piqueld_docker::{DockerError, Exec, ExecIo, fake::FakeDocker};
 use piqueld_store::{Store, StoredEnvironment};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -65,20 +65,20 @@ impl RuntimeBoundary for Runtime {
         Ok(ObservedApplication::default())
     }
     /// The fixture runs no containers.
-    async fn containers(&self) -> Result<Vec<piqueld::docker::ManagedContainer>, BoundaryError> {
+    async fn containers(&self) -> Result<Vec<piqueld_docker::ManagedContainer>, BoundaryError> {
         Ok(Vec::new())
     }
     async fn container_usage(
         &self,
         _: &str,
-    ) -> Result<Option<piqueld::docker::ContainerUsage>, BoundaryError> {
+    ) -> Result<Option<piqueld_docker::ContainerUsage>, BoundaryError> {
         Ok(None)
     }
-    fn container_logs(&self, _: &str, _: i32) -> piqueld::docker::ContainerLogs {
+    fn container_logs(&self, _: &str, _: i32) -> piqueld_docker::ContainerLogs {
         futures_util::stream::empty().boxed()
     }
     /// No container ever starts.
-    fn container_starts(&self, _: i64) -> piqueld::docker::ContainerStarts {
+    fn container_starts(&self, _: i64) -> piqueld_docker::ContainerStarts {
         futures_util::stream::pending().boxed()
     }
     async fn readiness(&self) -> (bool, bool) {

@@ -455,8 +455,8 @@ impl From<BoundaryError> for ApiError {
         let mut error = match value {
             BoundaryError::Store(error) => error.into(),
             BoundaryError::Runtime(
-                crate::docker::DockerError::Unavailable(_)
-                | crate::docker::DockerError::UnavailableSource { .. },
+                piqueld_docker::DockerError::Unavailable(_)
+                | piqueld_docker::DockerError::UnavailableSource { .. },
             ) => Self::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "docker_unavailable",

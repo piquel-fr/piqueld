@@ -104,11 +104,11 @@ jobs:
               - crates/piqueld-core/**
               - crates/piqueld-generated/**
               - crates/piqueld-probe/**
+            # Every crate, so a new one under crates/ is covered too.
             daemon: &daemon
               - *crates
               - apps/piqueld/**
-              - crates/piqueld-config/**
-              - crates/piqueld-store/**
+              - crates/**
             rust:
               - *daemon
               - apps/**
@@ -224,7 +224,7 @@ jobs:
         with:
           persist-credentials: false
       # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml for every later step,
-      # including the cache key and the daemon build script's nested build.
+      # including the cache key and piqueld-docker's nested health-probe build.
       - name: Install the minimum supported Rust
         run: |
           msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)

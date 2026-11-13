@@ -1,14 +1,12 @@
 //! Docker-backed runtime preparation and durable reconciliation.
 
-use crate::{
-    docker::{DockerApi, DockerError},
-    operations::OperationError,
-};
+use crate::operations::OperationError;
 use piqueld_core::{
     Plan, PlanRequest, codes,
     planner::ActionKind,
     resource::{APPLICATION_LABEL, Convergence},
 };
+use piqueld_docker::{DockerApi, DockerError};
 use piqueld_store::{
     ApplicationState, Operation, OperationKind, OperationState, Store, StoreError,
     StoredEnvironment,
@@ -20,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 /// Executes durable operations against `Docker` and `SQLite`.
 pub struct Controller<D> {
     /// Docker client with concurrency limits shared by API observation and preview.
-    docker: Arc<crate::docker::LimitedDocker<D>>,
+    docker: Arc<piqueld_docker::LimitedDocker<D>>,
     /// Serializes plan-action Docker mutations across applications (operation
     /// execution and active-target repair), so each journaled request is checked
     /// against the latest operation. Secret deletion takes it too, through
@@ -51,7 +49,7 @@ impl<D> Controller<D> {
     #[must_use]
     pub fn new(docker: Arc<D>, store: Arc<Store>, sources: Arc<crate::git::Sources>) -> Self {
         Self {
-            docker: Arc::new(crate::docker::LimitedDocker::new(docker)),
+            docker: Arc::new(piqueld_docker::LimitedDocker::new(docker)),
             mutations: Arc::default(),
             prepare_timeout: Duration::from_mins(5),
             store,

@@ -24,15 +24,34 @@ impl Drop for ProcessGroup {
     }
 }
 
+/// Where a command streams its output as it runs, such as a build's
+/// durable log.
+#[async_trait::async_trait]
+pub trait OutputLog: Send + Sync {
+    /// Appends `bytes` the command wrote to `stream`. They end on a character
+    /// boundary unless the command wrote invalid UTF-8.
+    ///
+    /// # Errors
+    /// The output couldn't be recorded; the command then fails rather than
+    /// silently losing it.
+    async fn append(
+        &self,
+        bytes: &[u8],
+        stream: piqueld_core::api::LogStream,
+    ) -> anyhow::Result<()>;
+}
+
 /// Namespace for running external commands with bounded output capture.
-pub(crate) struct LoggedCommand;
+pub struct LoggedCommand;
 
 /// Typed facts are safe to expose; output tails remain internal diagnostics.
 #[derive(Debug, thiserror::Error)]
 #[error("{operation} failed ({status}):\nstdout: {stdout}\nstderr: {stderr}")]
-pub(crate) struct CommandFailure {
-    pub(crate) operation: &'static str,
-    pub(crate) status: std::process::ExitStatus,
+pub struct CommandFailure {
+    /// What the command was for, such as `clone Git repository`.
+    pub operation: &'static str,
+    /// How the command exited.
+    pub status: std::process::ExitStatus,
     stdout: String,
     stderr: String,
 }
@@ -40,26 +59,25 @@ pub(crate) struct CommandFailure {
 /// A command printed more than [`LoggedCommand::output`] reads.
 #[derive(Debug, thiserror::Error)]
 #[error("output exceeds {0} bytes")]
-pub(crate) struct OutputLimit(pub(crate) usize);
+pub struct OutputLimit(pub usize);
 
 impl LoggedCommand {
     /// Bytes of each output stream retained for failure diagnostics.
     const TAIL_BYTES: usize = 8192;
 
-    /// Runs a command without recording its output to a build log.
-    #[cfg(test)]
-    pub(crate) async fn run(command: &mut Command, operation: &'static str) -> anyhow::Result<()> {
-        Self::run_recorded(command, operation, None).await
-    }
     /// Drain both streams concurrently with a fixed memory bound, streaming them
     /// into `log` when supplied. A non-zero exit returns a [`CommandFailure`] with
     /// the last `TAIL_BYTES` of each stream. The command runs in its own process
     /// group, which is killed if this future is dropped before the command exits.
     /// Error tails stay in internal diagnostics, never the public API response.
-    pub(crate) async fn run_recorded(
+    ///
+    /// # Errors
+    /// The command can't start, exits unsuccessfully ([`CommandFailure`]), or
+    /// its output can't be read or recorded.
+    pub async fn run_recorded(
         command: &mut Command,
         operation: &'static str,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn crate::command::OutputLog>,
     ) -> anyhow::Result<()> {
         let stdout =
             |stdout| Self::tail_recorded(stdout, log, piqueld_core::api::LogStream::Stdout);
@@ -71,7 +89,10 @@ impl LoggedCommand {
     /// Runs a command like [`Self::run_recorded`], without a log, and returns
     /// its whole standard output. More than `limit` bytes is an
     /// [`OutputLimit`] error.
-    pub(crate) async fn output(
+    ///
+    /// # Errors
+    /// The errors of [`Self::run_recorded`], and [`OutputLimit`].
+    pub async fn output(
         command: &mut Command,
         operation: &'static str,
         limit: usize,
@@ -97,7 +118,7 @@ impl LoggedCommand {
         command: &mut Command,
         operation: &'static str,
         read_stdout: impl FnOnce(tokio::process::ChildStdout) -> F,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn crate::command::OutputLog>,
     ) -> anyhow::Result<Vec<u8>> {
         let mut child = command
             .stdin(Stdio::null())
@@ -144,7 +165,7 @@ impl LoggedCommand {
     /// incomplete trailing UTF-8 character until the next read or end of stream.
     async fn tail_recorded(
         mut stream: impl AsyncRead + Unpin,
-        log: Option<&crate::build::BuildLog>,
+        log: Option<&dyn crate::command::OutputLog>,
         source: piqueld_core::api::LogStream,
     ) -> anyhow::Result<Vec<u8>> {
         let mut tail = VecDeque::with_capacity(Self::TAIL_BYTES);
@@ -178,37 +199,11 @@ mod tests {
     /// Failures report only the end of each stream, read to completion.
     #[tokio::test]
     async fn drains_both_streams_and_preserves_non_utf8_failures() {
-        let error = LoggedCommand::run(
-            Command::new("sh").args(["-c", "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; printf '\\377stdout tail'; printf '\\377stderr tail' >&2; exit 7"]),
-            "fixture",
-        ).await.unwrap_err().to_string();
+        let error = LoggedCommand::run_recorded(Command::new("sh").args(["-c", "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; printf '\\377stdout tail'; printf '\\377stderr tail' >&2; exit 7"]), "fixture", None).await.unwrap_err().to_string();
         assert!(error.contains("exit status: 7"), "{error}");
         assert!(error.contains("�stdout tail"));
         assert!(error.contains("�stderr tail"));
         assert!(error.len() < LoggedCommand::TAIL_BYTES * 2 + 200);
-    }
-
-    #[tokio::test]
-    async fn command_diagnostics_keep_stage_and_exit_code_without_output() {
-        let error = LoggedCommand::run(
-            Command::new("sh").args(["-c", "printf private-token >&2; exit 7"]),
-            "clone Git repository",
-        )
-        .await
-        .unwrap_err();
-        let diagnostic = crate::application::BoundaryError::GitBuild(error).diagnostic();
-        assert_eq!(
-            diagnostic.causes,
-            [
-                "Command stage: clone Git repository",
-                "Command exit code: 7"
-            ]
-        );
-        assert!(
-            !serde_json::to_string(&diagnostic)
-                .unwrap()
-                .contains("private-token")
-        );
     }
 
     #[tokio::test]
@@ -221,9 +216,10 @@ mod tests {
             let path = pidfile.clone();
             let script = format!(r#"sh -c 'echo $$ > "$1"; exec sleep 60' child "$1" & {ending}"#);
             let command = tokio::spawn(async move {
-                LoggedCommand::run(
+                LoggedCommand::run_recorded(
                     Command::new("sh").args(["-c", &script, "parent", path.to_str().unwrap()]),
                     "cancellation fixture",
+                    None,
                 )
                 .await
             });
