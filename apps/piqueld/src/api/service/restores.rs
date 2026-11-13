@@ -29,7 +29,7 @@ impl ApplicationService {
         // A repeated request returns what it got, whatever changed since.
         if let Some(response) = self
             .store
-            .replay(actor, &request, None, false, request_id)
+            .replay(actor, &request, false, request_id)
             .await?
         {
             return Self::restore_response(response);

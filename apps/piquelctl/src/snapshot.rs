@@ -216,13 +216,22 @@ impl Worktree {
             ));
         }
         let message = format!("piquelctl snapshot of {branch}");
+        // Dated like `HEAD`, so the same worktree always makes the same
+        // commit, and rerunning an upload with its `--request-id` replays.
+        let date = Git::run(
+            Git::command(&self.root).args(["show", "-s", "--format=%cd", "--date=raw", &head]),
+            "read HEAD's date",
+        )
+        .await?;
         let commit = Git::run(
             snapshot
                 .staged(&["commit-tree", &tree, "-p", &head, "-m", &message])
                 .env("GIT_AUTHOR_NAME", "piquelctl")
                 .env("GIT_AUTHOR_EMAIL", "snapshot@piquelctl.invalid")
+                .env("GIT_AUTHOR_DATE", &date)
                 .env("GIT_COMMITTER_NAME", "piquelctl")
-                .env("GIT_COMMITTER_EMAIL", "snapshot@piquelctl.invalid"),
+                .env("GIT_COMMITTER_EMAIL", "snapshot@piquelctl.invalid")
+                .env("GIT_COMMITTER_DATE", &date),
             "commit the snapshot",
         )
         .await?;
@@ -757,6 +766,19 @@ mod tests {
              echo untracked > untracked.txt && echo secret > ignored && rm hook-ran",
         );
         root.join("work")
+    }
+
+    /// The same worktree snapshots to the same commit, so a rerun can replay.
+    #[tokio::test]
+    async fn snapshots_of_an_unchanged_worktree_are_the_same_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let work = fixture(root.path());
+        let worktree = Worktree::at(&work).await.unwrap();
+        let first = worktree.snapshot("feat/x", None).await.unwrap().commit;
+        // Commit dates have one-second resolution.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let second = worktree.snapshot("feat/x", None).await.unwrap().commit;
+        assert_eq!(first, second);
     }
 
     #[tokio::test]

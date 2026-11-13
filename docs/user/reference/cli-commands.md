@@ -56,6 +56,9 @@ Global options:
 - `--noninteractive`: Never prompt, even on a terminal.
 
   Commands that ask for confirmation then fail unless you pass `--yes`.
+- `--request-id <ID>`: Make a change to an application, environment or preview safe to run again: it is made only once.
+
+  Run the same command with the same ID, such as after losing the connection, and the daemon returns the earlier result instead of making the change again, within 24 hours. Secret, notification, account, token and sign-in commands, and `preview prune`, ignore it, so rerunning one makes its change again. Use a new ID, of up to 128 letters, digits, `-`, `_`, `.` or `:`, for each command you mean to run. Defaults to `PIQUELD_REQUEST_ID`, else a new ID each time.
 
 Commands:
 

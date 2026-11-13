@@ -81,6 +81,35 @@ async fn generations_deploy_reconcile_and_event_pagination_share_the_http_contra
     );
 }
 
+/// Rerunning a command with its request ID returns what the first run got,
+/// even though the rerun inspected the preconditions again, after the first
+/// run changed them, and never applies the change twice. Other content under
+/// the same ID still conflicts.
+#[tokio::test]
+async fn a_rerun_with_the_same_request_id_replays_its_acceptance() {
+    let temp = tempfile::tempdir().unwrap();
+    let api = AcceptanceApi::start(&temp).await;
+    let request = new_application();
+    let keyed = api.client.clone().with_request_id("agent-run-7");
+    let accepted = keyed.apply_and_deploy(&request).await.unwrap();
+    let mut rerun = request.clone();
+    rerun.expected_generation = Some(accepted.generation);
+    rerun.expected_application_id = Some(accepted.application_id.clone());
+    let replayed = keyed.apply_and_deploy(&rerun).await.unwrap();
+    assert_eq!(replayed.operation_id, accepted.operation_id);
+    assert_eq!(
+        api.client
+            .application(&accepted.application_id)
+            .await
+            .unwrap()
+            .generation,
+        accepted.generation
+    );
+    rerun.manifest.spec.services[0].replicas = 2.into();
+    let error = keyed.apply_and_deploy(&rerun).await.unwrap_err();
+    assert_eq!(api_error(error).code, "request_id_conflict");
+}
+
 #[tokio::test]
 async fn acceptance_receipts_survive_restart_and_supersession() {
     let temp = tempfile::tempdir().unwrap();

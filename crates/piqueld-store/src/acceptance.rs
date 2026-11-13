@@ -10,6 +10,16 @@ use piqueld_core::{ApplicationId, EnvironmentId, EnvironmentName};
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
+/// A save as fingerprinted: its mutation without the inspected application
+/// ID, in `Mutation::Save`'s serialized form.
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename = "save")]
+struct SaveIdentity<'a> {
+    application: &'a piqueld_core::manifest::ApplicationTemplate,
+    expected_application_id: Option<String>,
+    deploy: bool,
+}
+
 /// Application deletion as serialized before environments existed, in its
 /// original field order, so its request fingerprint still matches.
 #[derive(serde::Serialize)]
@@ -81,14 +91,14 @@ impl Store {
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(StoreError::database)?;
-        let fingerprint = Self::mutation_fingerprint(&mutation, expected_generation, force)?;
+        let fingerprint = Self::mutation_fingerprint(&mutation, force)?;
         let checked = Self::check_request_on(
             &mut tx,
             actor,
             &mutation,
             [
                 Some(&fingerprint),
-                Self::legacy_fingerprint(&mutation, expected_generation, force)?.as_ref(),
+                Self::legacy_fingerprint(&mutation, force)?.as_ref(),
             ],
             request_id,
             now,
@@ -171,12 +181,11 @@ impl Store {
         &self,
         actor: Actor<'_>,
         mutation: &Mutation,
-        expected_generation: Option<u64>,
         force: bool,
         request_id: Option<&str>,
     ) -> Result<Option<MutationResponse>, StoreError> {
         let mut tx = self.snapshot().await?;
-        let fingerprint = Self::mutation_fingerprint(mutation, expected_generation, force)?;
+        let fingerprint = Self::mutation_fingerprint(mutation, force)?;
         let checked = Self::check_request_on(
             &mut tx,
             actor,
@@ -346,18 +355,37 @@ impl Store {
         Ok(matches!(target, Target::New))
     }
 
-    /// Hashes the full request (mutation, precondition, and `force`) so a reused
-    /// request ID can be told apart from an exact retry.
-    fn mutation_fingerprint(
-        mutation: &impl serde::Serialize,
-        expected_generation: Option<u64>,
-        force: bool,
-    ) -> Result<String, StoreError> {
+    /// Hashes the request so a reused request ID can be told apart from a
+    /// rerun of the same command. It covers the mutation and `force`, but
+    /// not the preconditions the caller inspected beforehand, the expected
+    /// generation and application ID: a rerun inspects them again after the
+    /// first run changed them, and must still replay.
+    fn mutation_fingerprint(mutation: &Mutation, force: bool) -> Result<String, StoreError> {
+        match mutation {
+            Mutation::Save {
+                application,
+                expected_application_id: Some(_),
+                deploy,
+            } => Self::fingerprint(
+                &SaveIdentity {
+                    application: application.as_ref(),
+                    expected_application_id: None,
+                    deploy: *deploy,
+                },
+                force,
+            ),
+            mutation => Self::fingerprint(mutation, force),
+        }
+    }
+
+    /// Hashes `request` and `force`. `null` stands where the expected
+    /// generation once was, so receipts of requests sent without one keep
+    /// their fingerprint.
+    fn fingerprint(request: &impl serde::Serialize, force: bool) -> Result<String, StoreError> {
         Ok(format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&(mutation, expected_generation, force))
-                    .map_err(StoreError::corrupt)?
+                serde_json::to_vec(&(request, None::<u64>, force)).map_err(StoreError::corrupt)?
             )
         ))
     }
@@ -365,11 +393,7 @@ impl Store {
     /// Fingerprints the form a request had before environments existed, when
     /// it differs, so receipts accepted by an older daemon still replay.
     /// Deleting an application was then `{"kind":"delete","id":...}`.
-    fn legacy_fingerprint(
-        mutation: &Mutation,
-        expected_generation: Option<u64>,
-        force: bool,
-    ) -> Result<Option<String>, StoreError> {
+    fn legacy_fingerprint(mutation: &Mutation, force: bool) -> Result<Option<String>, StoreError> {
         let Mutation::DeleteApplication { id, environments } = mutation else {
             return Ok(None);
         };
@@ -377,7 +401,7 @@ impl Store {
             return Ok(None);
         }
         let legacy = LegacyDelete { kind: "delete", id };
-        Self::mutation_fingerprint(&legacy, expected_generation, force).map(Some)
+        Self::fingerprint(&legacy, force).map(Some)
     }
 
     /// Returns the stored response for an unexpired receipt of `owner` (the
@@ -1106,7 +1130,9 @@ mod tests {
     async fn application_deletions_accepted_before_environments_replay() {
         let (_directory, store) = Store::temporary().await;
         let id = ApplicationId::parse("app-legacy-01").unwrap();
-        let original = Sha256::digest(br#"[{"kind":"delete","id":"app-legacy-01"},3,false]"#);
+        // Fingerprinted without its expected generation, which a rerun
+        // inspects again.
+        let original = Sha256::digest(br#"[{"kind":"delete","id":"app-legacy-01"},null,false]"#);
         let fingerprint = format!("{original:x}");
         let response = r#"{"Operation":{"operation_id":"operation-1","application_id":"app-legacy-01","generation":4}}"#;
         sqlx::query!(
@@ -1138,13 +1164,27 @@ mod tests {
         assert!(!wake);
         assert_eq!(replayed.operation_id, "operation-1");
         assert_eq!(replayed.environment_id, "app-legacy-01");
-        assert!(matches!(
+        // Another inspected generation still replays; forcing is another
+        // request.
+        assert!(
             store
                 .accept(
                     crate::Actor::Daemon,
                     delete(),
                     Some(2),
                     false,
+                    Some("legacy-delete")
+                )
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            store
+                .accept(
+                    crate::Actor::Daemon,
+                    delete(),
+                    None,
+                    true,
                     Some("legacy-delete")
                 )
                 .await,
@@ -1471,7 +1511,7 @@ mod tests {
         let deploy = Mutation::deploy(EnvironmentId::parse("input-app").unwrap());
         let original = Sha256::digest(br#"[{"kind":"deploy","id":"input-app"},null,false]"#);
         assert_eq!(
-            Store::mutation_fingerprint(&deploy, None, false).unwrap(),
+            Store::mutation_fingerprint(&deploy, false).unwrap(),
             format!("{original:x}")
         );
     }

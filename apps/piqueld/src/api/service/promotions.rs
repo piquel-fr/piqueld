@@ -55,13 +55,7 @@ impl ApplicationService {
         Self::check_submission(&request(None), expected_generation, force, request_id)?;
         let replayed = self
             .store
-            .replay(
-                actor,
-                &request(None),
-                expected_generation,
-                force,
-                request_id,
-            )
+            .replay(actor, &request(None), force, request_id)
             .await?;
         if let Some(response) = replayed {
             return Self::promotion_response(response);

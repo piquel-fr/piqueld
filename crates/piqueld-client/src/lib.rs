@@ -97,7 +97,7 @@ pub use piqueld_core::planner::{ActionReason, ActionRisk};
 pub use piqueld_core::{
     ApplicationId, ApplicationName, BuildFingerprint, BuildInputs, EnvironmentId, Release,
     ReleaseAvailability, ReleaseId, ResolvedSource, RouteName, ServiceImage, ServiceName,
-    TomlDiagnostic, ValidatedApplication, ValidationError, ValidationErrors,
+    TomlDiagnostic, ValidatedApplication, ValidationError, ValidationErrors, is_request_id,
 };
 pub use piqueld_core::{
     ApplicationState, Convergence, Event, EventActor, Operation, OperationKind, OperationState,

@@ -158,14 +158,7 @@ impl ApplicationService {
         if !force && mutation.lacks_precondition(expected_generation) {
             return Err(ApplicationError::PreconditionRequired);
         }
-        // Request IDs are idempotency keys: 1–128 chars of `[A-Za-z0-9-_.:]`.
-        if request_id.is_some_and(|id| {
-            id.is_empty()
-                || id.len() > 128
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
-        }) {
+        if request_id.is_some_and(|id| !piqueld_core::is_request_id(id)) {
             return Err(StoreError::InvalidInput.into());
         }
         if let Mutation::Rename { name, .. } = mutation
