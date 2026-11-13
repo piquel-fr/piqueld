@@ -62,9 +62,9 @@ pub struct Event {
 }
 
 /// Structured facts an event records beyond its common fields, tagged by
-/// `detail`.
+/// `type`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(tag = "detail", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventDetail {
     /// A typed configuration edit (`application_edited`).
     Edited {

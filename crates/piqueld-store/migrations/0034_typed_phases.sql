@@ -5,7 +5,7 @@
 ALTER TABLE events ADD COLUMN detail_json TEXT;
 
 UPDATE events
-SET detail_json = json_object('detail', 'edited', 'field', phase), phase = NULL
+SET detail_json = json_object('type', 'edited', 'field', phase), phase = NULL
 WHERE kind = 'application_edited' AND phase IS NOT NULL;
 
 UPDATE events SET phase = 'run_job' WHERE phase = 'running_job';

@@ -7479,25 +7479,25 @@
         ]
       },
       "EventDetail": {
-        "description": "Structured facts an event records beyond its common fields, tagged by\n`detail`.",
+        "description": "Structured facts an event records beyond its common fields, tagged by\n`type`.",
         "oneOf": [
           {
             "description": "A typed configuration edit (`application_edited`).",
             "properties": {
-              "detail": {
+              "field": {
+                "$ref": "#/components/schemas/EditedField",
+                "description": "The part of the configuration it changed."
+              },
+              "type": {
                 "enum": [
                   "edited"
                 ],
                 "type": "string"
-              },
-              "field": {
-                "$ref": "#/components/schemas/EditedField",
-                "description": "The part of the configuration it changed."
               }
             },
             "required": [
               "field",
-              "detail"
+              "type"
             ],
             "type": "object"
           }
