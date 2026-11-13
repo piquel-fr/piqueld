@@ -301,7 +301,7 @@ async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() 
     };
     assert!(
         store
-            .set_secret_access(Daemon, &application, "stripe", &named)
+            .set_secret_access(Daemon, &application, "stripe", &named, None)
             .await
             .is_err()
     );
@@ -310,7 +310,7 @@ async fn previews_mount_shared_secrets_only_when_their_access_allows_previews() 
         previews: true,
     };
     store
-        .set_secret_access(Daemon, &application, "stripe", &previews)
+        .set_secret_access(Daemon, &application, "stripe", &previews, None)
         .await
         .unwrap();
     store

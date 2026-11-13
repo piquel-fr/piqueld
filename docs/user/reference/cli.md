@@ -1185,7 +1185,9 @@ Services mount these secrets with `app service secret add`.
 `--environments a,b` (names or IDs; `--environments ''` for none) or
 `--all-environments` sets the environments, and `--previews` or `--no-previews`
 whether previews may mount it; `--all-environments` never includes previews.
-Unset flags keep the current access. Environments
+Unset flags keep the current access. `access` sends the access it read, so if
+someone changed it meanwhile, it fails with exit 3 and `secret_access_conflict`;
+run it again to apply your change on top of theirs. Environments
 are stored by ID, so renaming one keeps its access and deleting one removes it.
 Deploying, or `app plan --env`, for an environment or preview that mounts a
 secret it may not use fails with `secret_access_denied`.

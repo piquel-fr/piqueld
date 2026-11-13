@@ -196,29 +196,32 @@ impl Store {
         Ok(secret)
     }
 
-    /// Replaces the access list of a stored secret. A narrower list only
-    /// affects later deployments; running ones keep their pinned versions.
-    /// Rejected while the secret is being deleted. `actor` needs
+    /// Replaces the access list of a stored secret, if it is still
+    /// `expected` when given, so a concurrent change isn't lost. A narrower
+    /// list only affects later deployments; running ones keep their pinned
+    /// versions. Rejected while the secret is being deleted. `actor` needs
     /// `secrets:write` on the application, checked in the transaction.
     ///
     /// # Errors
-    /// Returns refusal, absence, deletion in progress (`SecretDeleting`),
-    /// unknown environments (`InvalidInput`), or database errors.
+    /// Returns refusal, absence, deletion in progress (`SecretDeleting`), a
+    /// changed access (`SecretAccessConflict`), unknown environments
+    /// (`InvalidInput`), or database errors.
     pub async fn set_secret_access(
         &self,
         actor: Actor<'_>,
         application: &ApplicationId,
         name: &str,
         access: &SecretAccess,
+        expected: Option<&SecretAccess>,
     ) -> Result<StoredSecret, StoreError> {
         let (_writer, mut tx) = self.begin_immediate().await?;
         Self::require_secrets_write_on(&mut tx, actor, application).await?;
-        if Self::stored_secret_on(&mut tx, application, name)
-            .await?
-            .metadata
-            .deleting
-        {
+        let current = Self::stored_secret_on(&mut tx, application, name).await?;
+        if current.metadata.deleting {
             return Err(StoreError::SecretDeleting);
+        }
+        if expected.is_some_and(|expected| *expected != current.access) {
+            return Err(StoreError::SecretAccessConflict);
         }
         let description = Self::write_access_on(&mut tx, application, name, access).await?;
         let (scope, by) = (SecretScope::Application(application), actor.attribution());

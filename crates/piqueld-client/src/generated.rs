@@ -2800,7 +2800,9 @@ impl Client {
     Environments are listed by ID and must belong to the application. A
     narrower list fails later deployments that mount the secret with
     `secret_access_denied`; running deployments keep their pinned versions.
-    Fails with 409 `secret_deleting` while the secret is being deleted.
+    Fails with 409 `secret_deleting` while the secret is being deleted, and
+    with 409 `secret_access_conflict` when `expected` is given and no longer
+    the secret's access.
 
     Sends a `PUT` request to `/api/v1/applications/{id}/secrets/{name}/access`
 
@@ -2809,7 +2811,7 @@ impl Client {
         &'a self,
         id: &'a str,
         name: &'a str,
-        body: &'a piqueld_core::api::SecretAccess,
+        body: &'a piqueld_core::api::SecretAccessChange,
     ) -> Result<
         ResponseValue<piqueld_core::api::Envelope<piqueld_core::api::StoredSecret>>,
         Error<piqueld_core::api::ErrorBody>,

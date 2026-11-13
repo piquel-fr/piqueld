@@ -116,7 +116,7 @@ pub use system::{
 pub use piqueld_core::api::{
     API_PREFIX, ApplicationLogs, BuildLogChunk, BuildLogPage, BuildRecord, BuildState, Envelope,
     EnvironmentAccess, ErrorBody, LogRecord, LogStream, ManifestChange, MountedSecret, Page,
-    SecretAccess, SecretKeyRecovery, SecretMetadata, StoredSecret,
+    SecretAccess, SecretAccessChange, SecretKeyRecovery, SecretMetadata, StoredSecret,
 };
 
 use http::StatusCode;

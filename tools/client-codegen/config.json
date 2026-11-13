@@ -171,6 +171,11 @@
       "rustType": "piqueld_core::api::SecretAccess"
     },
     {
+      "schema": "SecretAccessChange",
+      "name": "SecretAccessChange",
+      "rustType": "piqueld_core::api::SecretAccessChange"
+    },
+    {
       "schema": "EnvironmentAccess",
       "name": "EnvironmentAccess",
       "rustType": "piqueld_core::api::EnvironmentAccess"

@@ -378,20 +378,23 @@ impl ApplicationService {
             .await?)
     }
 
-    /// Replaces the access list of an application's secret.
+    /// Replaces the access list of an application's secret, if it is still
+    /// `expected` when given.
     ///
     /// # Errors
-    /// Returns absence, unknown environments, or storage errors.
+    /// Returns absence, unknown environments, a changed access, or storage
+    /// errors.
     pub async fn set_secret_access(
         &self,
         actor: Actor<'_>,
         application: &ApplicationId,
         name: &str,
         access: &SecretAccess,
+        expected: Option<&SecretAccess>,
     ) -> Result<StoredSecret, ApplicationError> {
         Ok(self
             .store
-            .set_secret_access(actor, application, name, access)
+            .set_secret_access(actor, application, name, access, expected)
             .await?)
     }
 

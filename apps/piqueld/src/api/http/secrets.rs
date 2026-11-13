@@ -13,8 +13,8 @@ use axum::{
 use piqueld_core::{
     ApplicationId, EnvironmentId,
     api::{
-        Envelope, EnvironmentAccess, MAX_SECRET_VALUE_BYTES, SecretAccess, SecretMetadata,
-        StoredSecret,
+        Envelope, EnvironmentAccess, MAX_SECRET_VALUE_BYTES, SecretAccess, SecretAccessChange,
+        SecretMetadata, StoredSecret,
     },
 };
 use serde::Deserialize;
@@ -231,16 +231,25 @@ pub(super) async fn put_stored(
 /// Environments are listed by ID and must belong to the application. A
 /// narrower list fails later deployments that mount the secret with
 /// `secret_access_denied`; running deployments keep their pinned versions.
-/// Fails with 409 `secret_deleting` while the secret is being deleted.
-#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}/access",operation_id="setSecretAccess",params(("id"=String,Path),("name"=String,Path)),request_body=SecretAccess,responses((status=200,description="Updated metadata; no secret value",body=Envelope<StoredSecret>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
+/// Fails with 409 `secret_deleting` while the secret is being deleted, and
+/// with 409 `secret_access_conflict` when `expected` is given and no longer
+/// the secret's access.
+#[utoipa::path(put,path="/api/v1/applications/{id}/secrets/{name}/access",operation_id="setSecretAccess",params(("id"=String,Path),("name"=String,Path)),request_body=SecretAccessChange,responses((status=200,description="Updated metadata; no secret value",body=Envelope<StoredSecret>),(status=400,response=inline(ApiErrorResponse)),(status=404,response=inline(ApiErrorResponse)),(status=409,response=inline(ApiErrorResponse)),(status=415,response=inline(ApiErrorResponse)),(status=503,response=inline(ApiErrorResponse))))]
 pub(super) async fn set_access(
     State(state): State<ApiState>,
     axum::Extension(identity): axum::Extension<crate::auth::Identity>,
     ApiPath((id, name)): ApiPath<(String, String)>,
-    ApiJson(access): ApiJson<SecretAccess>,
+    ApiJson(change): ApiJson<SecretAccessChange>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let (access, expected) = change.into_parts();
     Ok(ok(state
-        .set_secret_access(identity.actor(), &ApplicationId::parse(id)?, &name, &access)
+        .set_secret_access(
+            identity.actor(),
+            &ApplicationId::parse(id)?,
+            &name,
+            &access,
+            expected.as_ref(),
+        )
         .await?))
 }
 

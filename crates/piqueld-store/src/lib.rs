@@ -140,6 +140,9 @@ pub enum StoreError {
     /// Runtime cleanup is pending and may already have removed some versions.
     #[error("secret deletion is in progress; retry deletion to finish cleanup")]
     SecretDeleting,
+    /// The secret's access changed since the caller read it.
+    #[error("the secret's access changed since it was read")]
+    SecretAccessConflict,
     /// A store holds a bounded number of secrets and retained ciphertext,
     /// without evicting deployment pins.
     #[error(

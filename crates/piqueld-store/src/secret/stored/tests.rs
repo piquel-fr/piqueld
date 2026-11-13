@@ -202,7 +202,13 @@ async fn capture_and_pinning_deny_stored_secrets_outside_the_access_list() {
     // Captured while staging may still mount it, pinned after access narrowed.
     let captured = store.request_deploy(&staging, None).await.unwrap();
     store
-        .set_secret_access(Daemon, &application, "stripe-dev", &only([&production]))
+        .set_secret_access(
+            Daemon,
+            &application,
+            "stripe-dev",
+            &only([&production]),
+            None,
+        )
         .await
         .unwrap();
     let denied = |result: Result<_, StoreError>| {
@@ -229,6 +235,37 @@ async fn capture_and_pinning_deny_stored_secrets_outside_the_access_list() {
     assert!(denied(
         store.check_secret_access(&environment, &rendered).await
     ));
+}
+
+/// An access change made from the access it read fails once someone else
+/// changed it, keeping theirs; made from the current one, it applies.
+#[tokio::test]
+async fn access_changes_from_an_outdated_read_are_refused() {
+    let (_temp, store, production, staging) = fixture().await;
+    let application = template().id().clone();
+    let secret = "stripe-dev";
+    store
+        .put_stored_secret(Daemon, &application, secret, 0, b"test".to_vec(), None)
+        .await
+        .unwrap();
+    let read = SecretAccess::default();
+    let theirs = only([&production]);
+    store
+        .set_secret_access(Daemon, &application, secret, &theirs, Some(&read))
+        .await
+        .unwrap();
+    let mine = only([&staging]);
+    assert!(matches!(
+        store
+            .set_secret_access(Daemon, &application, secret, &mine, Some(&read))
+            .await,
+        Err(StoreError::SecretAccessConflict)
+    ));
+    let current = store
+        .set_secret_access(Daemon, &application, secret, &mine, Some(&theirs))
+        .await
+        .unwrap();
+    assert_eq!(current.access, mine);
 }
 
 #[tokio::test]
@@ -353,7 +390,7 @@ async fn access_lists_keep_renamed_environments_and_drop_deleted_ones() {
     assert!(!secrets[1].access.allows(&production_view));
     assert!(matches!(
         store
-            .set_secret_access(Daemon, &application, "shared", &only([&staging]))
+            .set_secret_access(Daemon, &application, "shared", &only([&staging]), None)
             .await,
         Err(StoreError::InvalidInput)
     ));
@@ -396,7 +433,7 @@ async fn access_is_fixed_while_a_secret_is_deleted() {
         .unwrap();
     assert!(matches!(
         store
-            .set_secret_access(Daemon, &application, "shared", &only([&staging]))
+            .set_secret_access(Daemon, &application, "shared", &only([&staging]), None)
             .await,
         Err(StoreError::SecretDeleting)
     ));
