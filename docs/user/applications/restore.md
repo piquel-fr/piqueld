@@ -204,8 +204,8 @@ It runs the release of the deployment it restored.
   it can't be restored any more. By default, an environment keeps its newest
   50 deployments and those from the last 90 days. A preview's deployment can
   be removed once it finished over an hour ago, unless it is its current,
-  latest or newest successful one; piqueld removes it on its next history
-  pass. That page lists every deployment piqueld keeps, and how to turn
+  latest or newest successful one; piqueld may then remove it during a later
+  history pass. That page lists every deployment piqueld keeps, and how to turn
   pruning off.
 - **Restoring fails with `image_unavailable`.** piqueld removed one of the
   deployment's images, and can't pull it again from a registry. The error
