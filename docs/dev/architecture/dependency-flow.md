@@ -30,12 +30,19 @@ recompiles only the crates it touches and those above them:
 | Crate | Modules | Depends on |
 | --- | --- | --- |
 | `piqueld-config` (`crates/piqueld-config`) | `config` (the crate root), `dns`, `directories`, `runtime_dir` | `piqueld-core` |
+| `piqueld-store` (`crates/piqueld-store`) | `store` (the crate root), `secrets`, and the migrations | `piqueld-config` |
 | `piqueld` (`apps/piqueld`) | every other module, the binary, and the embedded health probe and dashboard | all of the above |
 
 `piqueld-config` holds the configuration file, the DNS provider accounts it
 configures, which are also their API clients, and the private state and
 runtime directories. Its `testing` feature adds the in-memory and
 `challtestsrv` DNS providers the daemon's ingress tests use.
+
+`piqueld-store` holds the control-plane state, the mutations its acceptance
+commits, and secret encryption. Its build script checks the `sqlx::query!`
+macros against its migrations. Its `testing` feature adds
+`Store::open_unsynced` and fixtures the daemon's tests share; the daemon's
+`fake-docker` feature enables it.
 
 Inside the daemon:
 
@@ -44,11 +51,9 @@ Inside the daemon:
 | `api` | HTTP decoding, authentication and per-route authorization middleware, the transport-independent service that validates commands, response composition, and error mapping |
 | `auth` | Passkey ceremonies, account management with grant checks, invitations, and durable credentials |
 | `application` | Runtime boundary: resolve accepted inputs during execution, observe runtime for reads, and wake reconciliation |
-| `store` | Atomic intent comparison, receipts, records, and guarded writes |
 | `reconcile` | One async controller; resolve, observe, plan, execute, and verify |
 | `docker` | Docker requests, runtime specifications, ownership, and observation |
 | `git` | Isolated, bounded checkouts and local worktree snapshots |
-| `secrets` | Authenticated encryption and generation of application secrets |
 | `ingress` | The installation-owned Caddy gateway, certificates, and tunnel and tailnet listeners |
 | `tailnet` | The daemon's own tailnet node serving the website |
 
@@ -65,4 +70,5 @@ server, Docker, database, or browser framework (`axum`, `bollard`, `sqlx`,
 `leptos`), including through build and development dependencies. It also
 checks that the daemon's crates don't depend on those they build alongside:
 `piqueld-config` depends on no Docker, database, or browser framework, nor on
-the daemon.
+the daemon, and `piqueld-store` on no server, Docker, or browser framework,
+nor on the daemon.

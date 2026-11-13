@@ -1,13 +1,13 @@
 //! Durable history, manifest export, and runtime logs.
 
 use super::{ApplicationError, ApplicationService};
-use crate::store::StoreError;
 use piqueld_core::{
     ApplicationId, EnvironmentId, Operation,
     api::{
         ApplicationLogs, BuildLogPage, BuildRecord, DeploymentView, LogStream, Page, ReleaseView,
     },
 };
+use piqueld_store::StoreError;
 
 /// Saved configuration rendered for download or export.
 pub struct ManifestExport {
@@ -106,7 +106,7 @@ impl ApplicationService {
         self.store.deployment_snapshot(deployment).await?;
         Ok(self
             .store
-            .deployment_attempts(deployment, cursor, crate::store::MAX_PAGE_SIZE)
+            .deployment_attempts(deployment, cursor, piqueld_store::MAX_PAGE_SIZE)
             .await?)
     }
 
@@ -134,7 +134,7 @@ impl ApplicationService {
     pub async fn build_owner(
         &self,
         id: i64,
-    ) -> Result<Option<crate::store::EnvironmentOwner>, ApplicationError> {
+    ) -> Result<Option<piqueld_store::EnvironmentOwner>, ApplicationError> {
         Ok(self.store.build_owner(id).await?)
     }
 

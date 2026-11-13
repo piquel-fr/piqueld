@@ -180,7 +180,7 @@ deleting an enrollment's target account deletes its enrollment links.
 
 Setting grants, deleting an account and removing a passkey are refused with
 409 `account_lockout` when no account would keep `admin` on every application
-together with a passkey (`store/auth/access.rs`). The host operator is not an
+together with a passkey (`crates/piqueld-store/src/auth/access.rs`). The host operator is not an
 account and never counts, and the rule applies to its changes too. Revoking a
 host operator browser session requires `accounts:manage` and `admin` on every
 application.

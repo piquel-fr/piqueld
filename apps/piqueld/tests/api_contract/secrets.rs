@@ -253,11 +253,9 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
 
 #[tokio::test]
 async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_failure() {
-    use piqueld::{
-        api::{ApplicationError, Mutation},
-        store::StoreError,
-    };
+    use piqueld::api::{ApplicationError, Mutation};
     use piqueld_core::edit::{ApplicationEdit, ServiceEdit};
+    use piqueld_store::StoreError;
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open_unsynced(temp.path().join("db")).await.unwrap());
     let app = manifest()
@@ -318,7 +316,7 @@ async fn secret_cleanup_releases_writers_and_remains_reserved_after_runtime_fail
                 kind: Some("action_failed".into()),
                 ..Default::default()
             },
-            &piqueld::store::Visibility::ALL,
+            &piqueld_store::Visibility::ALL,
             None,
             100,
         )

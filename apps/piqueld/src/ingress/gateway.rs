@@ -14,7 +14,6 @@ use super::{
     node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
     wire::Journaled,
 };
-use crate::store::ingress::RoutingTable;
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
 use hyper::Method;
@@ -24,6 +23,7 @@ use piqueld_core::{
     manifest::ValidatedRoute,
     resource::{APPLICATION_LABEL, INGRESS_LABEL, INSTANCE_LABEL, MANAGED_LABEL},
 };
+use piqueld_store::ingress::RoutingTable;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{

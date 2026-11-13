@@ -709,7 +709,7 @@ async fn authentication_errors_preserve_request_and_diagnostic_ids() {
                 assert!(id.starts_with("diagnostic-"));
                 assert!(matches!(
                     store.diagnostic(id).await,
-                    Err(piqueld::store::StoreError::NotFound)
+                    Err(piqueld_store::StoreError::NotFound)
                 ));
             } else {
                 assert!(error.details.get("diagnostic_id").is_none());

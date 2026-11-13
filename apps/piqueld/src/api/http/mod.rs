@@ -494,7 +494,7 @@ async fn bind_error_request_id(
         .get::<piqueld_core::observability::Diagnostic>()
         .cloned();
     let identity = parts.extensions.get::<crate::auth::Identity>();
-    let actor = identity.map_or(crate::store::Actor::Daemon, crate::auth::Identity::actor);
+    let actor = identity.map_or(piqueld_store::Actor::Daemon, crate::auth::Identity::actor);
     state
         .record_failure(
             parts.status,
@@ -521,7 +521,7 @@ impl ApiState {
         error: &mut ErrorBody,
         diagnostic: Option<piqueld_core::observability::Diagnostic>,
         environment: Option<&piqueld_core::EnvironmentId>,
-        actor: crate::store::Attribution<'_>,
+        actor: piqueld_store::Attribution<'_>,
     ) {
         if !status.is_server_error()
             || matches!(

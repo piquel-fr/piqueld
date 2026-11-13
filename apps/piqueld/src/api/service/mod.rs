@@ -18,10 +18,7 @@ mod telemetry;
 mod views;
 mod webhooks;
 
-use crate::{
-    application::{BoundaryError, RuntimeBoundary},
-    store::{Store, StoreError},
-};
+use crate::application::{BoundaryError, RuntimeBoundary};
 pub use admission::Expensive;
 pub use exec::ExecSession;
 pub use history::ManifestExport;
@@ -30,6 +27,7 @@ use piqueld_core::{
     access::Grants,
     api::{SecretAccess, SecretMetadata, StoredSecret},
 };
+use piqueld_store::{Store, StoreError};
 use std::sync::Arc;
 pub use webhooks::{Delivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH, WebhookError};
 
@@ -74,7 +72,7 @@ pub enum ApplicationError {
     Busy(Expensive),
 }
 
-pub use crate::store::{
+pub use piqueld_store::{
     Actor, ListedHead, Mutation, MutationResponse, PreviewMutation, PromotionMutation, Restore,
     SourceChoice, SyncOutcome,
 };
@@ -478,7 +476,7 @@ impl ApplicationService {
         &self,
         actor: Actor<'_>,
         name: &str,
-        deletion: &crate::store::SecretDeletion,
+        deletion: &piqueld_store::SecretDeletion,
     ) -> Result<(), ApplicationError> {
         for (environment, versions) in &deletion.versions {
             let journal = self

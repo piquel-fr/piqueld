@@ -167,7 +167,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             .apply(manifest.clone().validate_template().unwrap(), Some(1))
             .await,
         Err(piqueld::api::ApplicationError::Store(
-            piqueld::store::StoreError::GenerationConflict {
+            piqueld_store::StoreError::GenerationConflict {
                 expected: 1,
                 actual: 2
             }
@@ -219,7 +219,7 @@ async fn generations_protect_full_replacement_and_deletion_without_merging() {
             .apply(manifest.validate_template().unwrap(), Some(4))
             .await,
         Err(piqueld::api::ApplicationError::Store(
-            piqueld::store::StoreError::IllegalTransition
+            piqueld_store::StoreError::IllegalTransition
         ))
     ));
     let deleting = harness.store.get(&first.environment_id).await.unwrap();
@@ -397,7 +397,7 @@ async fn pending_pulls_do_not_block_other_apps_and_superseded_preparation_is_dis
     eventually(Duration::from_secs(3), POLL, async || {
         matches!(
             store.operation(&deleted.id).await,
-            Err(piqueld::store::StoreError::NotFound)
+            Err(piqueld_store::StoreError::NotFound)
         )
         .then_some(())
     })

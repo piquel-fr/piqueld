@@ -3,10 +3,7 @@
 //! The certificates serve a private route on the private listener, which this
 //! test reaches through a relay adding a PROXY header, as the apps node does.
 use super::Scenario;
-use crate::{
-    ingress::{Ingress, certificates::Certificates, node::proxy_relay},
-    store::ingress::AcmeChallenge,
-};
+use crate::ingress::{Ingress, certificates::Certificates, node::proxy_relay};
 use hickory_resolver::{
     Resolver,
     config::{ConnectionConfig, NameServerConfig, ResolverConfig},
@@ -23,6 +20,7 @@ use piqueld_core::{
     manifest::{Hostname, RouteHostname},
     observability::EventFilter,
 };
+use piqueld_store::ingress::AcmeChallenge;
 use serde_json::json;
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -432,7 +430,7 @@ impl Scenario {
         };
         let mut events = self
             .store
-            .filtered_events(&filter, &crate::store::Visibility::ALL, None, 100)
+            .filtered_events(&filter, &piqueld_store::Visibility::ALL, None, 100)
             .await
             .unwrap()
             .items;
@@ -464,7 +462,7 @@ impl Scenario {
         let ingress = self.pebble_ingress(&root_path);
         let admin = self.deploy_private_route().await;
         let desired = routes(&["admin.example.test", "www.example.test", "example.test"]);
-        let now = crate::store::now_ms();
+        let now = piqueld_store::now_ms();
         let expires = self.dns01_issue(&ingress, &desired, now).await;
         self.private_listener_serves_private_routes(&ingress).await;
         self.applications_cannot_reach_private_routes(&admin).await;

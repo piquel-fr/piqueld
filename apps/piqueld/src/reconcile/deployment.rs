@@ -1,8 +1,6 @@
 //! Fetch a candidate manifest without changing accepted intent or runtime state.
 use super::{Controller, DockerApi, Operation, OperationError};
 use crate::git::snapshot::SnapshotSource;
-use crate::store::StoreError;
-use crate::store::{DeploymentInput, Tracking};
 use piqueld_core::{
     NormalizedApplication,
     api::{DeploymentOrigin, DiagnosticView},
@@ -11,6 +9,8 @@ use piqueld_core::{
         RepositoryManifest, ServiceFile,
     },
 };
+use piqueld_store::StoreError;
+use piqueld_store::{DeploymentInput, Tracking};
 
 impl<D: DockerApi> Controller<D> {
     /// Resolves the rendered manifest an operation should deploy, with `"self"`
@@ -223,7 +223,7 @@ impl<D: DockerApi> Controller<D> {
         tracked: Option<&str>,
         backing: &RepositoryManifest,
         (checkout, local): (&crate::git::Checkout, bool),
-    ) -> Result<Option<crate::store::BranchHead>, OperationError> {
+    ) -> Result<Option<piqueld_store::BranchHead>, OperationError> {
         let Some(tracked) = tracked else {
             return Ok(None);
         };
@@ -249,7 +249,7 @@ impl<D: DockerApi> Controller<D> {
                 .map(str::to_owned)
         };
         Ok(
-            (commit.is_some() || local).then(|| crate::store::BranchHead {
+            (commit.is_some() || local).then(|| piqueld_store::BranchHead {
                 url,
                 branch: tracked.to_owned(),
                 commit,

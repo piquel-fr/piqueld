@@ -73,8 +73,8 @@ impl Sources {
     /// Returns a storage or file system error.
     pub(crate) async fn prune_snapshots(
         &self,
-        store: &crate::store::Store,
-    ) -> Result<(), crate::store::StoreError> {
+        store: &piqueld_store::Store,
+    ) -> Result<(), piqueld_store::StoreError> {
         self.snapshots.prune(store.local_snapshot_commits()).await
     }
 }

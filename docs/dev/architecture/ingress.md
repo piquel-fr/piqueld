@@ -328,7 +328,7 @@ audited.
 ## Hostname reservations
 
 Hostnames are reserved per environment in `hostname_reservations`
-(`store/ingress.rs`): the routes of its manifest rendered for that
+(`crates/piqueld-store/src/ingress.rs`): the routes of its manifest rendered for that
 environment, plus those its resolved spec, latest operation's target and
 deployment manifest, and desired and applied gateway routes still hold. They
 are recomputed in the transaction that changes their source, so they survive

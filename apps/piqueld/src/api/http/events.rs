@@ -6,7 +6,7 @@ use super::{
     ok,
     openapi::ApiErrorResponse,
 };
-use crate::{api::Expensive, auth::Identity, store::Visibility};
+use crate::{api::Expensive, auth::Identity};
 use axum::{
     Extension,
     extract::State,
@@ -21,6 +21,7 @@ use piqueld_core::{
     api::{Envelope, Page},
     observability::{EventFilter, EventKinds, EventScope},
 };
+use piqueld_store::Visibility;
 use serde::Deserialize;
 use std::{collections::VecDeque, convert::Infallible};
 
@@ -99,7 +100,7 @@ pub(super) async fn list(
             &query.filter(),
             &visible,
             query.cursor.as_deref(),
-            query.limit.unwrap_or(crate::store::DEFAULT_PAGE_SIZE),
+            query.limit.unwrap_or(piqueld_store::DEFAULT_PAGE_SIZE),
         )
         .await?))
 }
@@ -162,9 +163,9 @@ pub(super) async fn stream(
         })?
         .or(query.cursor.clone())
         .unwrap_or_else(|| "v1:0".into());
-    let after = crate::store::Store::event_cursor(&cursor)?;
+    let after = piqueld_store::Store::event_cursor(&cursor)?;
     let filter = query.filter();
-    let batch_size = query.limit.unwrap_or(crate::store::MAX_PAGE_SIZE);
+    let batch_size = query.limit.unwrap_or(piqueld_store::MAX_PAGE_SIZE);
     let admitted = state.admit(Expensive::EventStream)?;
     // Validate before sending headers; all later errors explicitly terminate the stream.
     let (initial, checkpoint) = state
@@ -281,7 +282,7 @@ impl Follow {
                     let kind = if matches!(
                         error,
                         crate::api::ApplicationError::Store(
-                            crate::store::StoreError::HistoryExpired
+                            piqueld_store::StoreError::HistoryExpired
                         )
                     ) {
                         "history_expired"

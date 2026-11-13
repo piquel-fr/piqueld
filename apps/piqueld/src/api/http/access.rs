@@ -16,7 +16,6 @@
 //! and handlers narrow results to the applications the caller may see.
 use super::{ApiError, ApiState, ui};
 use crate::auth::{AuthError, Identity};
-use crate::store::EnvironmentOwner;
 use axum::{
     extract::{
         ConnectInfo, MatchedPath, RawPathParams, Request, State, rejection::RawPathParamsRejection,
@@ -32,6 +31,7 @@ use piqueld_core::{
     ApplicationId, EnvironmentId,
     access::{AppPermission, Denied, GlobalPermission, Grants, Permission, Target},
 };
+use piqueld_store::EnvironmentOwner;
 use serde_json::json;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tower_http::request_id::RequestId;
@@ -480,7 +480,7 @@ impl Audit {
             action.push(' ');
             action.extend(detail.chars().take(AuditDetail::LIMIT));
         }
-        state.record_audit(crate::store::NewAuditEvent {
+        state.record_audit(piqueld_store::NewAuditEvent {
             action,
             outcome,
             status: status.as_u16(),
@@ -491,7 +491,7 @@ impl Audit {
                 .map(str::to_owned),
             credential_kind: credential
                 .and_then(Identity::kind)
-                .map(crate::store::CredentialKind::as_str),
+                .map(piqueld_store::CredentialKind::as_str),
             scoped: credential.map(|identity| identity.scoped),
             peer: self.peer.map(|peer| peer.to_string()),
             tailnet,
@@ -525,8 +525,8 @@ fn check(
 ///
 /// # Errors
 /// Returns [`Denied::Missing`] when it may read no history at all.
-pub(super) fn history(grants: &Grants) -> Result<crate::store::Visibility, Denied> {
-    let visible = crate::store::Visibility {
+pub(super) fn history(grants: &Grants) -> Result<piqueld_store::Visibility, Denied> {
+    let visible = piqueld_store::Visibility {
         applications: grants.app_scope(AppPermission::EventsRead),
         daemon: grants.has_global(GlobalPermission::SystemRead),
     };

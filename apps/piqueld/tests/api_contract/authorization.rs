@@ -322,8 +322,8 @@ async fn creators_receive_matching_grants_on_new_applications() {
 #[tokio::test]
 async fn telemetry_grants_need_the_telemetry_grant_permission() {
     use piqueld::api::{Actor, ApplicationError, Mutation, MutationResponse};
-    use piqueld::store::{Caller, StoreError};
     use piqueld_core::access::Denied;
+    use piqueld_store::{Caller, StoreError};
     let temp = tempfile::tempdir().unwrap();
     let state = state(&temp).await;
     let database = database(&temp);

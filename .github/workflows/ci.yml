@@ -108,6 +108,7 @@ jobs:
               - *crates
               - apps/piqueld/**
               - crates/piqueld-config/**
+              - crates/piqueld-store/**
             rust:
               - *daemon
               - apps/**

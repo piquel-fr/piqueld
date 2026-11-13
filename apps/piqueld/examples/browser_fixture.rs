@@ -18,7 +18,6 @@ use piqueld::{
     docker::{DockerError, Exec, ExecIo, fake::FakeDocker},
     git::Sources,
     reconcile::Controller,
-    store::{Store, StoredEnvironment},
 };
 use piqueld_core::{
     EnvironmentId, NormalizedApplication, ObservedApplication, ResolutionSet,
@@ -26,6 +25,7 @@ use piqueld_core::{
     manifest::Hostname,
     resource::ResolvedApplication,
 };
+use piqueld_store::{Store, StoredEnvironment};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 struct Runtime;

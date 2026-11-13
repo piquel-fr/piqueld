@@ -1,7 +1,6 @@
 //! Background observation and webhook delivery, and test notifications.
 //! Neither executes infrastructure mutations.
 use super::{ApplicationError, ApplicationService, notification_message::Notification};
-use crate::store::{StoreError, now_ms};
 use piqueld_core::{
     Event,
     observability::{
@@ -9,6 +8,7 @@ use piqueld_core::{
         NotificationSubject,
     },
 };
+use piqueld_store::{StoreError, now_ms};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -282,8 +282,8 @@ impl ApplicationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use piqueld_core::observability::DestinationSettings;
+    use piqueld_store::Store;
     use std::{
         future::IntoFuture,
         sync::{
@@ -341,7 +341,7 @@ mod tests {
                 ),
                 None,
                 None,
-                crate::store::Attribution::default(),
+                piqueld_store::Attribution::default(),
             )
             .await
             .unwrap();

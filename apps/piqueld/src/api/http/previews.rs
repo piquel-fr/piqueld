@@ -134,7 +134,7 @@ pub(super) async fn deploy_local(
     );
     match Box::pin(deployed).await? {
         MutationResponse::Preview(preview) => Ok(accepted(preview)),
-        _ => Err(crate::store::StoreError::Corrupt.into()),
+        _ => Err(piqueld_store::StoreError::Corrupt.into()),
     }
 }
 

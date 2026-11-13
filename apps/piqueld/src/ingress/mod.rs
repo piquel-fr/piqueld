@@ -11,7 +11,6 @@ mod records;
 mod tunnel;
 mod wire;
 
-use crate::store::{Store, ingress::RoutingTable, now_ms};
 use anyhow::{Context, Result};
 use certificates::Certificates;
 use futures_util::{StreamExt, stream};
@@ -24,6 +23,7 @@ use piqueld_core::{
     api::{DnsRecords, IngressStatus, PrivateIngressStatus, PublicIngressStatus, RouteStatus},
     manifest::{Hostname, RouteHostname, ValidatedRoute, Visibility},
 };
+use piqueld_store::{Store, ingress::RoutingTable, now_ms};
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,

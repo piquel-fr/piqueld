@@ -1,11 +1,11 @@
 use super::*;
 use piqueld::api::ApplicationError;
-use piqueld::store::{PromotionError, StoreError};
 use piqueld_core::api::{
     AcceptedPromotion, DeploymentOrigin, DeploymentView, EnvironmentAccess, PromotionSelection,
     SecretAccess, SecretProblem,
 };
 use piqueld_core::{ReleaseId, manifest::parse_template_toml};
+use piqueld_store::{PromotionError, StoreError};
 
 /// `shop`, whose `web` service renders `ORIGIN` from each environment's
 /// `domain`, with more `staging` and `production` variables, then `spec`.

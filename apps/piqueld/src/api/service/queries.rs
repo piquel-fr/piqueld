@@ -1,7 +1,6 @@
 //! Application and environment queries and previews shared by every transport.
 use super::views::{detail_diagnostics, observed_view};
 use super::{ApplicationError, ApplicationService, BoundaryError};
-use crate::store::{StoreError, StoredApplication, StoredEnvironment};
 use piqueld_core::{
     ApplicationId, EnvironmentId, NormalizedApplication, ObservedApplication, Plan, PlanRequest,
     ResolutionSet,
@@ -18,6 +17,7 @@ use piqueld_core::{
     },
     preview_resolution,
 };
+use piqueld_store::{StoreError, StoredApplication, StoredEnvironment};
 
 impl ApplicationService {
     /// Lists saved application summaries and their environments without
@@ -110,7 +110,7 @@ impl ApplicationService {
     pub async fn environment_owner(
         &self,
         id: &EnvironmentId,
-    ) -> Result<Option<crate::store::EnvironmentOwner>, ApplicationError> {
+    ) -> Result<Option<piqueld_store::EnvironmentOwner>, ApplicationError> {
         Ok(self.store.environment_owner(id).await?)
     }
     /// Reads persisted deployment progress and runtime health.
@@ -239,7 +239,7 @@ impl ApplicationService {
     /// `expected_id` match it.
     fn check_plan(
         grants: &Grants,
-        current: Option<&crate::store::StoredApplication>,
+        current: Option<&piqueld_store::StoredApplication>,
         expected: Option<u64>,
         expected_id: Option<String>,
     ) -> Result<(), ApplicationError> {
@@ -249,7 +249,7 @@ impl ApplicationService {
         grants
             .require_change(&[AppPermission::Write], target)
             .map_err(StoreError::Denied)?;
-        crate::store::Store::check_generation(expected, current.map_or(0, |app| app.generation))?;
+        piqueld_store::Store::check_generation(expected, current.map_or(0, |app| app.generation))?;
         if let Some(expected_id) = expected_id
             && current.is_none_or(|app| app.application.id().as_str() != expected_id)
         {

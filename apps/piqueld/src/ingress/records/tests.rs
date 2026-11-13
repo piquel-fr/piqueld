@@ -1,8 +1,5 @@
 use super::*;
-use crate::{
-    ingress::tests::{Engine, application, private_config, request_deployment},
-    store::{Store, ingress::AcmeChallenge},
-};
+use crate::ingress::tests::{Engine, application, private_config, request_deployment};
 use piqueld_config::TunnelCredentials;
 use piqueld_config::dns::provider::{
     DnsProvider, DnsProviderConfig,
@@ -12,6 +9,7 @@ use piqueld_core::{
     EnvironmentId,
     manifest::{RouteHostname, ValidatedRoute},
 };
+use piqueld_store::{Store, ingress::AcmeChallenge};
 use std::sync::Arc;
 
 const PUBLIC: &str = "203.0.113.10";

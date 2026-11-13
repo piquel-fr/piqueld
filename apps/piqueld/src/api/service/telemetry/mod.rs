@@ -2,12 +2,12 @@
 mod containers;
 
 use super::ApplicationService;
-use crate::store::{JournalPosition, StoreError, Visibility, now_ms};
 use crate::telemetry::{EventContext, Journal, ServiceSample};
 use piqueld_core::EnvironmentId;
 use piqueld_core::access::Scope;
 use piqueld_core::api::TelemetryStatus;
 use piqueld_core::observability::EventFilter;
+use piqueld_store::{JournalPosition, StoreError, Visibility, now_ms};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;

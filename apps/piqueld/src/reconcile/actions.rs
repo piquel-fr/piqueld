@@ -2,7 +2,7 @@ use super::{
     ActionKind, CancellationToken, Controller, Convergence, DockerApi, DockerError, Duration,
     Operation, OperationError,
 };
-use crate::store::JournalAction;
+use piqueld_store::JournalAction;
 
 /// Decrypted values keyed by their immutable Docker secret names.
 pub(super) type SecretValues = Vec<(String, zeroize::Zeroizing<Vec<u8>>)>;

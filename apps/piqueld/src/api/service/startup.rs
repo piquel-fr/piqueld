@@ -5,11 +5,11 @@ use crate::{
     docker::{BollardDocker, DockerApi},
     operations::OperationError,
     reconcile::Controller,
-    store::{Store, StoreError},
 };
 use anyhow::Context;
 use piqueld_config::DaemonConfig;
 use piqueld_core::manifest::Hostname;
+use piqueld_store::{Store, StoreError};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -220,7 +220,7 @@ impl ApplicationService {
     async fn open_store(
         config: &DaemonConfig,
         telemetry: &crate::telemetry::Telemetry,
-    ) -> anyhow::Result<(Arc<Store>, crate::store::JournalPosition)> {
+    ) -> anyhow::Result<(Arc<Store>, piqueld_store::JournalPosition)> {
         let store = Store::open(config.server.database_path())
             .await
             .context("failed to open control-plane state")?

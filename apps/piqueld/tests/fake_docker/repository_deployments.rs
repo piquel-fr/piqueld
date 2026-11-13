@@ -1,10 +1,10 @@
 use super::*;
 use piqueld::api::{Mutation, MutationResponse, PreviewMutation};
-use piqueld::store::StoreError;
 use piqueld_core::manifest::{
     GitRepository, ManifestRevision, RepositoryManifest, SourceRepository,
 };
 use piqueld_core::{EnvironmentName, TrackedBranch};
+use piqueld_store::StoreError;
 use repository::Repository;
 
 impl Repository {

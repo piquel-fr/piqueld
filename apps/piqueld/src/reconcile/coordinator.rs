@@ -625,7 +625,7 @@ impl<D: DockerApi> Controller<D> {
                 diagnostic,
                 None,
                 Some(application),
-                crate::store::Attribution::default(),
+                piqueld_store::Attribution::default(),
             )
             .await?;
         recorded.insert(key);

@@ -661,8 +661,8 @@ mod tests {
     use crate::{
         api::{Mutation, MutationResponse},
         docker::BollardDocker,
-        store::Store,
     };
+    use piqueld_store::Store;
 
     /// A store in a temporary directory, and a Docker socket nothing serves.
     struct Harness {

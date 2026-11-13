@@ -314,7 +314,7 @@ pub(super) async fn accept_mutation(
         MutationResponse::Promotion(promotion) => accepted(promotion),
         MutationResponse::Deleted(deleted) => accepted(deleted),
         // Only sync submits the mutations answered with this.
-        MutationResponse::Synced(_) => return Err(crate::store::StoreError::Corrupt.into()),
+        MutationResponse::Synced(_) => return Err(piqueld_store::StoreError::Corrupt.into()),
     })
 }
 

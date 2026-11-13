@@ -4,7 +4,6 @@
 use super::JSON;
 use crate::api::ApplicationError;
 use crate::application::BoundaryError;
-use crate::store::{PromotionError, RestoreError, StoreError};
 use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
@@ -13,6 +12,7 @@ use piqueld_core::api::ErrorBody;
 use piqueld_core::{
     ApplicationIdError, EnvironmentIdError, EnvironmentNameError, GitBranchError, PreviewSlotError,
 };
+use piqueld_store::{PromotionError, RestoreError, StoreError};
 use serde_json::{Value, json};
 
 /// Handler failure rendered as a structured JSON `ErrorBody` response.
@@ -405,10 +405,10 @@ impl From<StoreError> for ApiError {
     }
 }
 
-impl From<crate::store::DestinationError> for ApiError {
+impl From<piqueld_store::DestinationError> for ApiError {
     /// Rejects an invalid destination change with 400.
-    fn from(error: crate::store::DestinationError) -> Self {
-        use crate::store::DestinationError;
+    fn from(error: piqueld_store::DestinationError) -> Self {
+        use piqueld_store::DestinationError;
         let code = match error {
             DestinationError::UrlRequired => "destination_url_required",
             DestinationError::UrlInvalid => "destination_url_invalid",
@@ -418,9 +418,9 @@ impl From<crate::store::DestinationError> for ApiError {
     }
 }
 
-impl From<crate::store::RetryError> for ApiError {
+impl From<piqueld_store::RetryError> for ApiError {
     /// Refuses a delivery that cannot be retried with 409, saying why.
-    fn from(error: crate::store::RetryError) -> Self {
+    fn from(error: piqueld_store::RetryError) -> Self {
         Self::new(
             StatusCode::CONFLICT,
             "delivery_not_retryable",

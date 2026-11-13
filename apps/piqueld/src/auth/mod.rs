@@ -10,9 +10,9 @@ pub(crate) use throttle::bucket as network;
 #[cfg(test)]
 mod tests;
 
-use crate::store::{CredentialKind, NewCredential, now_secs};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use piqueld_core::auth::{AuthStatus, SetupLink};
+use piqueld_store::{CredentialKind, NewCredential, now_secs};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
@@ -53,7 +53,7 @@ pub enum AuthError {
     Busy,
     /// Authentication storage failed or refused the change.
     #[error("authentication storage failed")]
-    Store(#[from] crate::store::StoreError),
+    Store(#[from] piqueld_store::StoreError),
     /// Stored data or challenge encoding failed.
     #[error("authentication encoding failed")]
     Encoding(#[from] serde_json::Error),
@@ -106,7 +106,7 @@ pub struct Auth(Arc<Inner>);
 /// Shared state behind [`Auth`]. Pending ceremonies and device logins live only
 /// in memory, so a restart cancels them.
 struct Inner {
-    store: crate::store::Store,
+    store: piqueld_store::Store,
     webauthn: WebauthnCore,
     /// Serialized public origin, e.g. `https://piqueld.example.com`.
     origin: String,
@@ -161,7 +161,7 @@ impl Auth {
     /// # Errors
     /// Returns configuration, database, or setup-file errors.
     pub async fn initialize(
-        store: &crate::store::Store,
+        store: &piqueld_store::Store,
         config: &piqueld_config::DaemonConfig,
     ) -> anyhow::Result<Self> {
         let tokens = TokenPolicy::new(config);
@@ -181,7 +181,7 @@ impl Auth {
     /// lifetime limit.
     /// # Errors
     /// Rejects origins that `WebAuthn` cannot safely use.
-    pub fn new(store: &crate::store::Store, public_url: &str) -> Result<Self> {
+    pub fn new(store: &piqueld_store::Store, public_url: &str) -> Result<Self> {
         Self::configured(store, public_url, TokenPolicy::default())
     }
 
@@ -190,7 +190,7 @@ impl Auth {
     /// # Errors
     /// Rejects origins that `WebAuthn` cannot safely use.
     pub fn configured(
-        store: &crate::store::Store,
+        store: &piqueld_store::Store,
         public_url: &str,
         tokens: TokenPolicy,
     ) -> Result<Self> {
@@ -395,7 +395,7 @@ impl Auth {
         Ok(())
     }
     /// Describes the live, unused setup secret or invitation matching `secret`.
-    async fn invitation(&self, secret: &str) -> Result<Option<crate::store::Invitation>> {
+    async fn invitation(&self, secret: &str) -> Result<Option<piqueld_store::Invitation>> {
         Ok(self.0.store.invitation(&Self::hash(secret)).await?)
     }
 }

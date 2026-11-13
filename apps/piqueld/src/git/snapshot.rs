@@ -27,10 +27,10 @@
 //! no preview's latest deployment uses are removed (see [`Snapshots::prune`]).
 use super::{Checkout, Checkouts, TreeTooLarge};
 use crate::command::LoggedCommand;
-use crate::store::StoreError;
 use axum::body::Bytes;
 use futures_util::{Stream, StreamExt};
 use piqueld_core::manifest::{GitRepository, valid_git_commit};
+use piqueld_store::StoreError;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

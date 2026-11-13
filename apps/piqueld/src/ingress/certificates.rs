@@ -25,7 +25,6 @@
 //! file holds both, so a renewal replaces the pair atomically.
 
 use super::{Ingress, wire::Journaled};
-use crate::store::ingress::AcmeChallenge;
 use anyhow::{Context, Result, bail};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
@@ -42,6 +41,7 @@ use piqueld_core::{
     manifest::{Hostname, RouteHostname},
     observability::DiagnosticCode,
 };
+use piqueld_store::ingress::AcmeChallenge;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,

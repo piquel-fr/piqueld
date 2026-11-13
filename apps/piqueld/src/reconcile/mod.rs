@@ -3,15 +3,15 @@
 use crate::{
     docker::{DockerApi, DockerError},
     operations::OperationError,
-    store::{
-        ApplicationState, Operation, OperationKind, OperationState, Store, StoreError,
-        StoredEnvironment,
-    },
 };
 use piqueld_core::{
     Plan, PlanRequest, codes,
     planner::ActionKind,
     resource::{APPLICATION_LABEL, Convergence},
+};
+use piqueld_store::{
+    ApplicationState, Operation, OperationKind, OperationState, Store, StoreError,
+    StoredEnvironment,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;

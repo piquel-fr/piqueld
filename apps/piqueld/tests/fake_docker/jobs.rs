@@ -596,7 +596,7 @@ async fn failed_job_keeps_an_unchanged_application_degraded() {
     // Services already match the target, but the deployment still failed.
     harness.scan_result(&redeploy).await;
     let status = harness.store.status(&first.environment_id).await.unwrap();
-    assert_eq!(status.state, piqueld::store::ApplicationState::Degraded);
+    assert_eq!(status.state, piqueld_store::ApplicationState::Degraded);
     assert_eq!(harness.started_jobs().await, ["migrate", "migrate"]);
 }
 

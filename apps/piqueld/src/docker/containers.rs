@@ -294,7 +294,7 @@ impl BollardDocker {
             .lines()
             .map(|line| {
                 let (timestamp, message) = line.split_once(' ').unwrap_or(("", line));
-                let timestamp = unix_nanos(timestamp).unwrap_or_else(crate::store::now_ns);
+                let timestamp = unix_nanos(timestamp).unwrap_or_else(piqueld_store::now_ns);
                 (timestamp, message.to_owned())
             })
             .collect();

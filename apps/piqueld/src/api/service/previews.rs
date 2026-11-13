@@ -5,7 +5,6 @@ use super::{
     Actor, ApplicationError, ApplicationService, Mutation, MutationResponse, PreviewMutation,
 };
 use crate::git::Heads;
-use crate::store::{PreviewOrigins, StoreError};
 use axum::body::Bytes;
 use futures_util::Stream;
 use piqueld_core::{
@@ -13,6 +12,7 @@ use piqueld_core::{
     api::{BranchState, DeletedPreview, EnvironmentView, LocalSnapshot, PreviewView},
     manifest::RepositoryManifest,
 };
+use piqueld_store::{PreviewOrigins, StoreError};
 use std::sync::Arc;
 
 impl ApplicationService {

@@ -4,10 +4,10 @@ use super::{
     Auth, AuthError, BROWSER_SESSION_LIFETIME, CEREMONY_LIFETIME, CredentialKind, Identity,
     MAX_PENDING, Result, now_secs,
 };
-use crate::store::{Invitation, NewPasskey, PasskeyOwner};
 use base64::Engine;
 use piqueld_core::access::Denied;
 use piqueld_core::auth::{Ceremony, CeremonyFinish, RegistrationStart, User};
+use piqueld_store::{Invitation, NewPasskey, PasskeyOwner};
 use webauthn_rs_core::proto::{
     AuthenticationState, Credential, PublicKeyCredential, RegistrationState, UserVerificationPolicy,
 };
@@ -111,7 +111,7 @@ impl Auth {
                 Some(Invitation::Account) => {
                     Self::validate_profile(&input.username, &input.display_name)?;
                     if self.0.store.username_taken(&input.username).await? {
-                        return Err(crate::store::StoreError::AlreadyExists.into());
+                        return Err(piqueld_store::StoreError::AlreadyExists.into());
                     }
                     User {
                         id: Self::id(),
@@ -221,7 +221,7 @@ impl Auth {
         Ok((user, token))
     }
     /// A week-long browser session, which also ends after a day without use.
-    pub(super) fn browser_session() -> Result<(String, crate::store::NewCredential<'static>)> {
+    pub(super) fn browser_session() -> Result<(String, piqueld_store::NewCredential<'static>)> {
         Self::new_credential(
             CredentialKind::Browser,
             "Browser",

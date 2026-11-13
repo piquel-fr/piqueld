@@ -1,24 +1,10 @@
 //! Shared application and environment projections and bounded runtime diagnostics.
-use crate::store::{EnvironmentStatus, StoredEnvironment};
 use piqueld_core::{
     ObservedApplication,
     api::{DiagnosticView, EnvironmentStatusView, ObservedApplicationView, ObservedServiceView},
     resource::{Convergence, ObservedService, TaskDiagnostic, TaskState},
 };
-
-impl From<EnvironmentStatus> for EnvironmentStatusView {
-    /// Projects persisted environment status into its API view.
-    fn from(status: EnvironmentStatus) -> Self {
-        Self {
-            environment_id: status.environment_id.to_string(),
-            state: status.state,
-            runtime_health: status.runtime_health,
-            health_observed_at_ms: status.health_observed_at_ms,
-            message: status.message,
-            updated_at_ms: status.updated_at_ms,
-        }
-    }
-}
+use piqueld_store::StoredEnvironment;
 
 /// Upper bound on diagnostics in one environment detail response.
 const MAX_DETAIL_DIAGNOSTICS: usize = 24;

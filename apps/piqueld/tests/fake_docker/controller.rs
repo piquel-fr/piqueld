@@ -57,7 +57,7 @@ async fn controller_converges_a_prebuilt_application_through_the_docker_seam() {
     harness.assert_deleted(&deletion).await;
     assert!(matches!(
         harness.store.operation(&deletion.id).await,
-        Err(piqueld::store::StoreError::NotFound)
+        Err(piqueld_store::StoreError::NotFound)
     ));
 }
 
@@ -74,7 +74,7 @@ async fn controller_executes_actions_introduced_by_fresh_planning() {
         .status(&harness.environment().await)
         .await
         .unwrap();
-    assert_eq!(status.state, piqueld::store::ApplicationState::Ready);
+    assert_eq!(status.state, piqueld_store::ApplicationState::Ready);
     assert_eq!(harness.docker.observed.lock().await.networks.len(), 1);
 }
 
@@ -284,7 +284,7 @@ async fn full_scan_records_one_docker_failure_for_overlapping_observers() {
                     error_code: Some("docker_unavailable".into()),
                     ..Default::default()
                 },
-                &piqueld::store::Visibility::ALL,
+                &piqueld_store::Visibility::ALL,
                 None,
                 10,
             )
