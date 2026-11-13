@@ -301,6 +301,21 @@ pub(crate) fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// The first `shown` of `items` joined with `, `, and how many more there
+/// are.
+///
+/// ```text
+/// ["a", "b", "c"], 2 → "a, b and 1 more"    ["a"], 2 → "a"
+/// ```
+pub(crate) fn join_first(items: &[String], shown: usize) -> String {
+    let listed = items.len().min(shown);
+    let joined = items[..listed].join(", ");
+    match items.len() - listed {
+        0 => joined,
+        more => format!("{joined} and {more} more"),
+    }
+}
+
 /// `items` joined with `, `, or `empty` when there are none.
 ///
 /// ```text

@@ -15,7 +15,7 @@ use crate::{
         reports::{CreatedPreviewReport, DeletionReport},
     },
     snapshot::{History, Worktree},
-    support::{join_or, retry_transport},
+    support::{join_first, join_or, retry_transport},
 };
 use clap::{Args, Subcommand};
 use piqueld_client::{
@@ -141,6 +141,20 @@ pub(crate) struct DeployArgs {
     /// need a longer `--timeout`.
     #[arg(long)]
     local: bool,
+    #[command(flatten)]
+    snapshot: SnapshotArgs,
+    /// Return once the daemon accepts the deployment, without waiting for it
+    /// to finish.
+    #[arg(long)]
+    no_wait: bool,
+}
+
+/// How many files `preview deploy --local` names in a message.
+const LISTED: usize = 20;
+
+// `preview deploy --local` options; `///` on fields is user-facing help.
+#[derive(Debug, Args)]
+pub(crate) struct SnapshotArgs {
     /// Upload every commit of `HEAD` with the snapshot.
     ///
     /// By default, the command sends only the commits since the nearest
@@ -153,10 +167,16 @@ pub(crate) struct DeployArgs {
     /// current one. Required when `HEAD` is detached.
     #[arg(long, requires = "local")]
     branch: Option<String>,
-    /// Return once the daemon accepts the deployment, without waiting for it
-    /// to finish.
-    #[arg(long)]
-    no_wait: bool,
+    /// Send files not in `HEAD` whose names usually hold credentials too.
+    ///
+    /// Without it, `--local` refuses to send an untracked or only staged
+    /// `.env*` file (but `.example`, `.sample` and `.template` ones), SSH key
+    /// `id_*`, `*.pem`, `*.key`, `*.p12` or `*.pfx` file, `credentials` or
+    /// `*credentials.json`, `.npmrc`, `.pypirc`, `.netrc` or
+    /// `.git-credentials`, in any case. Ignore such files in `.gitignore`
+    /// instead when the preview doesn't need them.
+    #[arg(long, requires = "local")]
+    allow_secret_files: bool,
 }
 
 // An application and one of its previews.
@@ -266,15 +286,16 @@ impl DeployArgs {
         wait_for_accepted(console, client, &preview, self.no_wait, &accepted).await
     }
 
-    /// Snapshots the current worktree (see `snapshot`) within the
-    /// daemon's limits, lists the uncommitted files it sends, and uploads
-    /// it thin against a base the repository likely has, or with the whole
-    /// history with `--full-history`, then waits for its deployment unless
-    /// `--no-wait`. The upload is not retried: the daemon may already have
-    /// received it.
+    /// Snapshots the current worktree (see `snapshot`) within the daemon's
+    /// limits, lists the uncommitted files it sends, and uploads it thin
+    /// against a base the repository likely has, or with the whole history
+    /// with `--full-history`, then waits for its deployment unless
+    /// `--no-wait`. Unless `--allow-secret-files`, it first refuses files
+    /// not in `HEAD` that likely hold credentials. The upload is not
+    /// retried: the daemon may already have received it.
     async fn deploy_local(&self, client: &Client, console: &mut Console) -> Result<()> {
         let worktree = Worktree::current().await?;
-        let branch = match &self.branch {
+        let branch = match &self.snapshot.branch {
             Some(branch) => branch.clone(),
             None => worktree.branch().await?.ok_or_else(|| {
                 CliError::new(
@@ -283,11 +304,25 @@ impl DeployArgs {
                 )
             })?,
         };
+        if !self.snapshot.allow_secret_files {
+            let secrets = worktree.secret_files().await?;
+            if !secrets.is_empty() {
+                return Err(CliError::new(
+                    ErrorKind::Input,
+                    format!(
+                        "refusing to send files not in HEAD that likely hold credentials: {}; \
+                         add them to .gitignore, or pass --allow-secret-files to send them",
+                        join_first(&secrets, LISTED)
+                    ),
+                )
+                .with_details(serde_json::json!({"files": secrets})));
+            }
+        }
         let application = resolve_application(client, &self.application).await?;
         let id = application.application.id().as_str();
         // Older daemons report no limits; they still refuse what exceeds them.
         let limits = retry_transport(|| client.system_status()).await?.snapshots;
-        let history = if self.full_history {
+        let history = if self.snapshot.full_history {
             History::Full
         } else {
             History::Thin
@@ -303,14 +338,10 @@ impl DeployArgs {
         .await;
         let (snapshot, bundle) = progress.settle(packed, |(_, bundle)| bundle.describe())?;
         if !snapshot.uncommitted.is_empty() {
-            const LISTED: usize = 20;
-            let listed = snapshot.uncommitted.len().min(LISTED);
-            let files = snapshot.uncommitted[..listed].join(", ");
-            let more = match snapshot.uncommitted.len() - listed {
-                0 => String::new(),
-                more => format!(" and {more} more"),
-            };
-            console.info(format_args!("sending uncommitted files: {files}{more}"))?;
+            console.info(format_args!(
+                "sending uncommitted files: {}",
+                join_first(&snapshot.uncommitted, LISTED)
+            ))?;
         }
         let progress = console.start_task("upload");
         progress.update("uploading");

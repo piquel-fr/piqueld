@@ -310,7 +310,12 @@ as for environments; deleting and pruning need `apps:delete`.
 directory without pushing it: its committed, uncommitted and untracked files,
 except ignored ones. A tracked file that is ignored, such as a committed
 `.env` template, is sent as committed, never with its local edits, even when
-deleted. Before
+deleted. A file not in `HEAD`, untracked or only staged, whose name usually
+holds credentials stops the command with `invalid_input`, listing the files in
+`details.files`, unless `--allow-secret-files` is given: `.env*` (but
+`.example`, `.sample` and `.template` ones), `id_*`, `*.pem`, `*.key`, `*.p12`,
+`*.pfx`, `credentials`, `*credentials.json`, `.npmrc`, `.pypirc`, `.netrc` or
+`.git-credentials`, in any case. Before
 uploading, it lists the uncommitted files it sends (`Info`, hidden with
 `--quiet`), and the snapshot's size and the commits it carries. It deploys to the preview of the current branch and
 `--slot`, creating it first if needed exactly as `preview create` does, within

@@ -152,13 +152,13 @@ impl Worktree {
             )
         })?;
         let files = self
-            .tracked(&["--others"], "list the worktree's files")
+            .ls_files(&["--cached", "--others"], "list the worktree's files")
             .await?;
         // Tracked files ignored since, including deleted ones: they are sent
         // as committed.
         let ignored = self
-            .tracked(
-                &["--ignored", "--with-tree=HEAD"],
+            .ls_files(
+                &["--cached", "--ignored", "--with-tree=HEAD"],
                 "list tracked ignored files",
             )
             .await?;
@@ -233,12 +233,67 @@ impl Worktree {
         })
     }
 
-    /// The worktree's tracked files, NUL-separated, with `options` of
-    /// `git ls-files` such as `--others`, honoring ignore rules.
-    async fn tracked(&self, options: &[&str], action: &str) -> Result<String> {
+    /// The files a snapshot would send that aren't in `HEAD`, untracked or
+    /// only staged, and whose names usually hold credentials (see
+    /// [`Self::secret_name`]), such as `.env.local`, in path order.
+    pub(crate) async fn secret_files(&self) -> Result<Vec<String>> {
+        let untracked = self.ls_files(&["--others"], "list untracked files").await?;
+        let staged = Git::run(
+            Git::command(&self.root).args([
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--diff-filter=A",
+                "HEAD",
+            ]),
+            "list staged files",
+        )
+        .await?;
+        Ok(untracked
+            .split('\0')
+            .chain(staged.split('\0'))
+            .filter(|path| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(Self::secret_name)
+            })
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect())
+    }
+
+    /// Whether a file named `name` usually holds credentials, ignoring case:
+    /// `.env*` but templates ending in `.example`, `.sample` or `.template`;
+    /// SSH keys `id_*`; `*.pem`, `*.key`, `*.p12` and `*.pfx` keys and
+    /// certificates; `credentials` and `*credentials.json`, such as gcloud's;
+    /// `.npmrc`, `.pypirc`, `.netrc` and `.git-credentials`.
+    fn secret_name(name: &str) -> bool {
+        let name = name.to_ascii_lowercase();
+        if name.starts_with(".env") {
+            return ![".example", ".sample", ".template"]
+                .iter()
+                .any(|template| name.ends_with(template));
+        }
+        name.starts_with("id_")
+            || [".pem", ".key", ".p12", ".pfx", "credentials.json"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+            || matches!(
+                name.as_str(),
+                "credentials" | ".npmrc" | ".pypirc" | ".netrc" | ".git-credentials"
+            )
+    }
+
+    /// The worktree's files `git ls-files` lists with `options`, such as
+    /// `--cached` for tracked ones or `--others` for untracked ones,
+    /// NUL-separated, honoring ignore rules.
+    async fn ls_files(&self, options: &[&str], action: &str) -> Result<String> {
         Git::run(
             Git::command(&self.root)
-                .args(["ls-files", "-z", "--cached", "--exclude-standard"])
+                .args(["ls-files", "-z", "--exclude-standard"])
                 .args(options),
             action,
         )
@@ -757,6 +812,35 @@ mod tests {
              echo untracked > untracked.txt && echo secret > ignored && rm hook-ran",
         );
         root.join("work")
+    }
+
+    #[tokio::test]
+    async fn files_not_in_head_that_likely_hold_credentials_are_found() {
+        let root = tempfile::tempdir().unwrap();
+        let work = fixture(root.path());
+        // The fixture's `.env` is in `HEAD`, and `ignored` is ignored.
+        let worktree = Worktree::at(&work).await.unwrap();
+        assert_eq!(worktree.secret_files().await.unwrap(), Vec::<String>::new());
+        // Staged but not committed counts, like untracked; source files,
+        // templates and other names don't.
+        sh(
+            &work,
+            "mkdir -p deploy && echo x > .env.local && git add .env.local \
+             && echo key > deploy/server.PEM && echo key > id_ecdsa \
+             && echo token > .git-credentials \
+             && echo '{}' > application_default_credentials.json \
+             && echo y > keys.txt && echo y > credentials.go && echo y > .env.example",
+        );
+        assert_eq!(
+            worktree.secret_files().await.unwrap(),
+            [
+                ".env.local",
+                ".git-credentials",
+                "application_default_credentials.json",
+                "deploy/server.PEM",
+                "id_ecdsa",
+            ]
+        );
     }
 
     #[tokio::test]
