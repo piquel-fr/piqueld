@@ -18,16 +18,16 @@ are never part of them.
 
   ```console
   $ piquelctl events --application app-01a16b1282cf755287920502b5793cd1 --limit 3
-  11  1792797737680  environment_created  -  attempt -     created environment production  by host operator (uid 1000)
-  12  1792797737682  refresh_requested  operation-01a16b1282d27232a446f3dbc4a19808  attempt 0       by host operator (uid 1000)
-  13  1792797737713  operation_started  operation-01a16b1282d27232a446f3dbc4a19808  attempt 1       by host operator (uid 1000)
+  11  2026-10-23 23:22:17Z  environment_created  -  attempt -     created environment production  by host operator (uid 1000)
+  12  2026-10-23 23:22:17Z  refresh_requested  operation-01a16b1282d27232a446f3dbc4a19808  attempt 0       by host operator (uid 1000)
+  13  2026-10-23 23:22:17Z  operation_started  operation-01a16b1282d27232a446f3dbc4a19808  attempt 1       by host operator (uid 1000)
   Next cursor: v1:13
   ```
 
   Events come oldest first, 50 at a time unless you pass `--limit`, up to
   100. Pass the printed cursor with `--cursor` to read the next page.
 
-Each line has the event's number, its time in Unix milliseconds, its kind, and
+Each line has the event's number, its time in UTC, its kind, and
 then, where they apply, its operation, attempt, phase, resource, error code,
 message, and who caused it.
 

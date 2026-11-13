@@ -238,10 +238,10 @@ With `piquelctl`, list your sessions and tokens, then revoke one by its ID:
 ```console
 $ piquelctl token list
 …
-01a16b4c-3504-7053-b78f-e68736555bdf cli piquelctl (expires at Unix 1795393518)
+01a16b4c-3504-7053-b78f-e68736555bdf cli piquelctl (expires at 2026-11-23 00:25:18Z)
   the account's full access
 …
-01a16b4e-6995-79b2-bfb1-0f72630a4d96 token ci (expires at Unix 1795393663)
+01a16b4e-6995-79b2-bfb1-0f72630a4d96 token ci (expires at 2026-11-23 00:27:43Z)
   apps:read on blog
   apps:deploy on blog
 $ piquelctl token revoke 01a16b4e-6995-79b2-bfb1-0f72630a4d96

@@ -20,6 +20,7 @@ use piqueld_client::{
         Account, CredentialView, Directory, InvitationView, Manage, OperatorSessionView,
         PasskeyView, Principal, Session, User,
     },
+    observability::Timestamp,
     tailnet::TailnetBinding,
 };
 use serde::Serialize;
@@ -742,7 +743,9 @@ impl<'a> Report for AccountsReport<'a> {
         for session in self.list.operator_sessions {
             out.line(format_args!(
                 "{} browser session {} (admin, expires {})",
-                session.operator, session.id, session.expires_at
+                session.operator,
+                session.id,
+                Timestamp::from_secs(session.expires_at)
             ))?;
         }
         Ok(())
@@ -889,7 +892,7 @@ report!(Page<AuditEvent>, self, out, {
             .map_or_else(String::new, |who| format!(" ({who})"));
         out.line(format_args!(
             "{}  {}  {} {}{target}  {who}{credential}  {}{tailnet}{missing}",
-            event.created_at_ms,
+            Timestamp(event.created_at_ms),
             event.outcome.as_str(),
             event.status,
             event.action,
@@ -904,7 +907,7 @@ report!(Page<AuditEvent>, self, out, {
 struct TokenReport {
     token: String,
 }
-report!(TokenReport, self, out, { out.line(&self.token) });
+report!(once TokenReport, self, out, { out.line(&self.token) });
 
 /// The caller's sessions and tokens with their limits.
 struct CredentialsReport {
@@ -919,7 +922,7 @@ report!(
         for credential in &self.credentials {
             let expires = credential.expires_at.map_or_else(
                 || "never expires".into(),
-                |at| format!("expires at Unix {at}"),
+                |at| format!("expires at {}", Timestamp::from_secs(at)),
             );
             out.line(format_args!(
                 "{} {} {} ({expires})",
@@ -967,16 +970,16 @@ report!(
     {
         for invitation in &self.invitations {
             let by = username(&self.users, &invitation.issuer_id);
-            let expires = invitation.expires_at;
+            let expires = Timestamp::from_secs(invitation.expires_at);
             if let Some(user) = &invitation.user_id {
                 out.line(format_args!(
-                    "{} enrollment for {} by {by} (expires at Unix {expires})",
+                    "{} enrollment for {} by {by} (expires at {expires})",
                     invitation.id,
                     username(&self.users, user)
                 ))?;
             } else {
                 out.line(format_args!(
-                    "{} invitation by {by} (expires at Unix {expires})",
+                    "{} invitation by {by} (expires at {expires})",
                     invitation.id
                 ))?;
                 self.names.render(&invitation.grants, out)?;
@@ -999,7 +1002,7 @@ impl LinkReport {
         Ok(Self { url })
     }
 }
-report!(LinkReport, self, out, { out.line(&self.url) });
+report!(once LinkReport, self, out, { out.line(&self.url) });
 
 #[cfg(test)]
 mod tests {

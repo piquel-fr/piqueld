@@ -4,11 +4,12 @@ use super::super::HumanWriter;
 use super::{Names, snapshot_origin, sync};
 use crate::deployments::Deployed;
 use piqueld_client::{
-    AcceptedPromotion, ApplicationId, ApplicationView, BranchState, CreatedPreview, DeletedPreview,
-    DeploymentOrigin, DeploymentView, EnvironmentDetailView, EnvironmentSource,
-    EnvironmentStatusView, EnvironmentView, LocalSnapshot, MountedSecret, Operation,
-    OperationState, Page, PreviewView, ReleaseId, ReleaseView, StoredSecret,
-    TelemetryDestinationStatus, links::ImportState, sync::short_commit,
+    AcceptedPromotion, ApplicationId, ApplicationTemplate, ApplicationView, BranchState,
+    CreatedPreview, DeletedPreview, DeploymentOrigin, DeploymentView, EnvironmentDetailView,
+    EnvironmentSource, EnvironmentStatusView, EnvironmentView, LocalSnapshot, MountedSecret,
+    Operation, OperationState, Page, PreviewView, ReleaseId, ReleaseView, StoredSecret,
+    TelemetryDestinationStatus, TelemetryReport, Visibility, links::ImportState,
+    observability::Timestamp, sync::short_commit,
 };
 use serde::Serialize;
 use std::io;
@@ -89,6 +90,33 @@ fn runtime_health(status: &EnvironmentStatusView) -> String {
         _ => format!("{} h", seconds / 3_600),
     };
     format!("{health} (observed {age} ago)")
+}
+
+/// The visibility ceiling `manifest` gives `environment`'s routes.
+fn visibility(manifest: &ApplicationTemplate, environment: &EnvironmentView) -> &'static str {
+    match manifest.spec().visibility(&environment.target()) {
+        Visibility::Public => "public; each route keeps its own visibility",
+        Visibility::Private => "private; every route stays on the tailnet",
+    }
+}
+
+/// Whether the environment may send telemetry and which service receives
+/// it, or `None` when it neither may nor runs a receiver.
+fn telemetry(telemetry: &TelemetryReport) -> Option<String> {
+    match (&telemetry.receiver, telemetry.granted) {
+        (Some(service), true) => Some(format!(
+            "granted; {service} receives it: {}",
+            telemetry
+                .destination
+                .as_ref()
+                .map_or("not connected yet", TelemetryDestinationStatus::state)
+        )),
+        (Some(service), false) => Some(format!(
+            "not granted; {service} runs without the telemetry socket"
+        )),
+        (None, true) => Some("granted; no deployed service receives it".into()),
+        (None, false) => None,
+    }
 }
 
 /// A branch state in words, with the commits involved.
@@ -298,6 +326,9 @@ report!(EnvironmentShowReport<'_>, self, out, {
             .as_ref()
             .map_or("none", ReleaseId::as_str),
     )?;
+    if let Some(manifest) = manifest {
+        out.label("Visibility", visibility(manifest, environment))?;
+    }
     out.label("Configuration revision", application.generation)?;
     out.label("Resolved revision", resolved_generation(environment))?;
     let values = manifest
@@ -315,25 +346,8 @@ report!(EnvironmentShowReport<'_>, self, out, {
     for (name, mounted) in secrets {
         out.label("Secret", format_args!("{name}: {mounted}"))?;
     }
-    if let Some(telemetry) = &self.detail.telemetry {
-        match (&telemetry.receiver, telemetry.granted) {
-            (Some(service), true) => out.label(
-                "Telemetry",
-                format_args!(
-                    "granted; {service} receives it: {}",
-                    telemetry
-                        .destination
-                        .as_ref()
-                        .map_or("not connected yet", TelemetryDestinationStatus::state)
-                ),
-            )?,
-            (Some(service), false) => out.label(
-                "Telemetry",
-                format_args!("not granted; {service} runs without the telemetry socket"),
-            )?,
-            (None, true) => out.label("Telemetry", "granted; no deployed service receives it")?,
-            (None, false) => {}
-        }
+    if let Some(telemetry) = self.detail.telemetry.as_ref().and_then(telemetry) {
+        out.label("Telemetry", telemetry)?;
     }
     for import in self.detail.links.iter().flat_map(|links| &links.imports) {
         let state = match import.state {
@@ -414,7 +428,7 @@ named!(Page<DeploymentView>, page, names, out, {
             "{}  {}  created {}{}",
             operation.id,
             operation.state,
-            operation.created_at_ms,
+            Timestamp(operation.created_at_ms),
             if marks.is_empty() {
                 String::new()
             } else {

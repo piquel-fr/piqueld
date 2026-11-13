@@ -6,6 +6,7 @@ use piqueld_client::{
     EnvironmentSource, EnvironmentView, LocalSnapshot, ManifestChange, PlanView,
     ReleaseAvailability, ReleasePlan, ReleaseView, ResolvedSource, RouteUrl, SecretProblem,
     ServiceImage, UrlState, VariableValue,
+    observability::Timestamp,
     sync::{SyncState, short_commit},
 };
 use std::{collections::BTreeMap, io};
@@ -17,12 +18,14 @@ use unicode_width::UnicodeWidthStr;
 // report!(Type, self, out, { ... })                    // Json = Type
 // report!(Vec<Row> as [Row], self, out, { ... })       // Json = [Row]
 // report!(Wrapper as Inner = field, self, out, { ... }) // Json = Inner, from `self.field`
+// report!(once Type, self, out, { ... })               // a one-time secret `--quiet` shows
 //
 // rustfmt skips the `as` forms, so their bodies are formatted by hand.
 macro_rules! report {
-    (@impl $ty:ty, $json:ty, |$this:ident| $value:expr, $out:ident, $body:block) => {
+    (@impl $ty:ty, $json:ty, |$this:ident| $value:expr, $out:ident, $body:block $(, $once:literal)?) => {
         impl $crate::output::Report for $ty {
             type Json = $json;
+            $(const ONE_TIME: bool = $once;)?
             fn json(&$this) -> &$json {
                 $value
             }
@@ -40,6 +43,9 @@ macro_rules! report {
     };
     ($ty:ty, $this:ident, $out:ident, $body:block) => {
         $crate::output::reports::report!(@impl $ty, Self, |$this| $this, $out, $body);
+    };
+    (once $ty:ty, $this:ident, $out:ident, $body:block) => {
+        $crate::output::reports::report!(@impl $ty, Self, |$this| $this, $out, $body, true);
     };
 }
 pub(crate) use report;
@@ -124,7 +130,7 @@ impl Names<'_> {
                 || "saved manifest".to_owned(),
                 |commit| format!("commit {commit}")
             ),
-            release.created_at_ms
+            Timestamp(release.created_at_ms)
         ))?;
         if let Some(availability) = &release.availability {
             let services =

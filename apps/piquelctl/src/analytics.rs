@@ -9,7 +9,7 @@ use crate::{
 use clap::Args;
 use piqueld_client::{
     Client,
-    observability::{DeploymentAnalytics, Elapsed},
+    observability::{DeploymentAnalytics, Elapsed, Timestamp},
 };
 use std::time::Duration;
 
@@ -64,10 +64,10 @@ impl AnalyticsArgs {
         if analytics.incomplete {
             let pruned = analytics
                 .pruned_through_ms
-                .map_or_default(|at| format!(", pruned through Unix ms {at}"));
+                .map_or_default(|at| format!(", pruned through {}", Timestamp(at)));
             console.warning(format_args!(
-                "The window reaches before retained history (recorded from Unix ms {}{pruned}); counts cover retained applications and records only.",
-                analytics.history_started_at_ms
+                "The window reaches before retained history (recorded from {}{pruned}); counts cover retained applications and records only.",
+                Timestamp(analytics.history_started_at_ms)
             ))?;
         }
         Ok(())
@@ -104,7 +104,10 @@ report!(AnalyticsReport<'_> as DeploymentAnalytics = analytics, self, out, {
     if let Some(environment) = &self.environment {
         out.label("Environment", environment)?;
     }
-    out.label("Window", format_args!("Unix ms {} to {}", a.since_ms, a.until_ms))?;
+    out.label(
+        "Window",
+        format_args!("{} to {}", Timestamp(a.since_ms), Timestamp(a.until_ms)),
+    )?;
     out.label(
         "Deployments",
         format_args!(

@@ -1,7 +1,8 @@
 //! Streaming CLI presentation. Configuration is resolved once at construction.
 //!
 //! Results use stdout; every other role uses stderr. Quiet suppresses human
-//! results, info and progress, but preserves JSON, warnings, prompts and errors.
+//! results, info and progress, but preserves JSON, one-time secrets, warnings,
+//! prompts and errors.
 //! With `--json`, every stderr event is one [`Event`] line. Each event is rendered and flushed before returning,
 //! coordinated with active progress. `main` reports clap's usage errors itself.
 
@@ -32,6 +33,9 @@ type SharedWriter = Arc<Mutex<Writer>>;
 pub(crate) trait Report {
     /// Machine schema written by `--json`.
     type Json: Serialize + ?Sized;
+    /// Whether it carries a secret the daemon shows only once, such as a new
+    /// token, which `--quiet` must not hide.
+    const ONE_TIME: bool = false;
     fn json(&self) -> &Self::Json;
     /// Human rendering on stdout; values must go through the escaping writer.
     fn render_human(&self, output: &mut HumanWriter<'_>) -> io::Result<()>;
@@ -78,7 +82,8 @@ impl Event<'_> {
 enum ResultChannel {
     Human(Writer),
     Json(Writer),
-    Hidden,
+    /// `--quiet`: only one-time secrets are rendered, as human results.
+    Quiet(Writer),
 }
 
 /// Owns output policy. Only progress handles may be cloned across tasks.
@@ -130,7 +135,7 @@ impl Console {
             result: if json {
                 ResultChannel::Json(stdout)
             } else if quiet {
-                ResultChannel::Hidden
+                ResultChannel::Quiet(stdout)
             } else {
                 ResultChannel::Human(stdout)
             },
@@ -142,11 +147,13 @@ impl Console {
         }
     }
 
-    /// Command data on stdout. Quiet hides human results, never explicit JSON.
-    pub(crate) fn emit(&mut self, report: &impl Report) -> Result<()> {
+    /// Command data on stdout. Quiet hides human results, except one-time
+    /// secrets, and never explicit JSON.
+    pub(crate) fn emit<R: Report>(&mut self, report: &R) -> Result<()> {
         self.progress.suspend(|| {
             match &mut self.result {
-                ResultChannel::Human(writer) => {
+                ResultChannel::Quiet(_) if !R::ONE_TIME => {}
+                ResultChannel::Human(writer) | ResultChannel::Quiet(writer) => {
                     report.render_human(&mut HumanWriter::new(writer.as_mut()))?;
                     writer.flush()?;
                 }
@@ -156,7 +163,6 @@ impl Console {
                     writeln!(writer)?;
                     writer.flush()?;
                 }
-                ResultChannel::Hidden => {}
             }
             Ok(())
         })

@@ -271,7 +271,7 @@ report!(WebhookView, self, out, {
 });
 
 // `app repository webhook rotate` result: the only time the secret is shown.
-report!(WebhookSecret, self, out, {
+report!(once WebhookSecret, self, out, {
     if let Some(url) = &self.url {
         out.label("Payload URL", url)?;
     }
@@ -293,8 +293,11 @@ report!(ValidManifestReport, self, out, {
 
 /// Saved TOML in human mode; a JSON string in machine mode.
 pub(crate) struct ManifestReport(pub(crate) String);
+// TOML escapes control characters in strings itself, so only its newlines
+// and tabs reach the terminal.
 report!(ManifestReport as str = 0, self, out, {
-    out.line(self.0.trim_end())
+    out.log_text(self.0.trim_end())?;
+    out.blank()
 });
 
 report!(PlanView, self, out, { Names(&[]).plan(out, self) });

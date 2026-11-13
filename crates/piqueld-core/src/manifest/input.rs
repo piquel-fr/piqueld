@@ -219,17 +219,24 @@ impl ApplicationSpec {
         )
     }
 
-    /// Caps every route at `target`'s visibility ceiling, as rendering for it
-    /// does. Unconfigured environments restrict nothing; previews are private
-    /// unless `[spec.previews] visibility` says otherwise.
-    pub(super) fn cap_visibility(&mut self, target: &RenderTarget) {
-        let ceiling = match target {
+    /// `target`'s visibility ceiling. Unconfigured environments restrict
+    /// nothing; previews are private unless `[spec.previews] visibility` says
+    /// otherwise.
+    #[must_use]
+    pub fn visibility(&self, target: &RenderTarget) -> Visibility {
+        match target {
             RenderTarget::Environment(name) => self
                 .environments
                 .get(name.as_str())
                 .map_or(Visibility::Public, |config| config.visibility),
             RenderTarget::Preview(_) => self.previews.visibility,
-        };
+        }
+    }
+
+    /// Caps every route at `target`'s visibility ceiling, as rendering for it
+    /// does.
+    pub(super) fn cap_visibility(&mut self, target: &RenderTarget) {
+        let ceiling = self.visibility(target);
         for route in &mut self.routes {
             route.visibility = route.visibility.capped(ceiling);
         }

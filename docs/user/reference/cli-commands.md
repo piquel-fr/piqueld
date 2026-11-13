@@ -52,7 +52,7 @@ Global options:
   Information, warnings and errors on standard error become one JSON object per line.
 - `-q, --quiet`: Hide human-readable results, information and progress.
 
-  JSON results, warnings, errors and prompts still appear.
+  JSON results, warnings, errors and prompts still appear, and so do secrets shown only once, such as a new token or invitation link.
 - `--noninteractive`: Never prompt, even on a terminal.
 
   Commands that ask for confirmation then fail unless you pass `--yes`.

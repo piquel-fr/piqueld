@@ -17,7 +17,7 @@ use piqueld_client::{
     observability::{
         ApplicationSelection, CategoryRule, DeliveryState, DestinationKind, DestinationRequest,
         DestinationSettings, DestinationTest, NotificationCategory, NotificationDelivery,
-        NotificationDestination, NotificationMessage,
+        NotificationDestination, NotificationMessage, Timestamp,
     },
 };
 use std::{
@@ -394,9 +394,9 @@ report!(Page<NotificationDelivery>, self, out, {
     }
     for delivery in &self.items {
         let when = if delivery.state == DeliveryState::Pending {
-            format!("next attempt {}", delivery.next_attempt_ms)
+            format!("next attempt {}", Timestamp(delivery.next_attempt_ms))
         } else {
-            format!("updated {}", delivery.updated_at_ms)
+            format!("updated {}", Timestamp(delivery.updated_at_ms))
         };
         out.line(format_args!(
             "{}  {}  {}  {}  {}  {} attempt{}  {when}{}",

@@ -1613,18 +1613,19 @@ pub struct BuildRecord {
     pub log_expired: bool,
 }
 
-/// Outcome of a source-preparation attempt or job run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BuildState {
-    /// Source preparation is running.
-    Running,
-    /// An image was produced successfully, or the job exited with status zero.
-    Succeeded,
-    /// Checkout or build execution failed, or the job failed or timed out.
-    Failed,
-    /// Execution was cancelled or interrupted by daemon shutdown.
-    Interrupted,
+string_enum! {
+    #[serde]
+    /// Outcome of a source-preparation attempt or job run.
+    pub enum BuildState {
+        /// Source preparation is running.
+        Running => "running",
+        /// An image was produced successfully, or the job exited with status zero.
+        Succeeded => "succeeded",
+        /// Checkout or build execution failed, or the job failed or timed out.
+        Failed => "failed",
+        /// Execution was cancelled or interrupted by daemon shutdown.
+        Interrupted => "interrupted",
+    }
 }
 
 /// Bounded byte-offset page of build output.

@@ -4,7 +4,7 @@ use super::health;
 use crate::{profiles::ProfileSummary, support::join_or};
 use piqueld_client::{
     DnsStatus, ImageStatus, PreviewUsage, SystemStatus, TelemetryStatus,
-    observability::{Bytes, DaemonStats, Uptime},
+    observability::{Bytes, DaemonStats, Timestamp, Uptime},
     system::{HostConfiguration, IngressStatus, PublicIngressStatus, SystemCheck},
 };
 use serde::Serialize;
@@ -30,12 +30,12 @@ report!(StatusReport<'_> as SystemStatus = status, self, out, {
         out.label(
             "Tailnet node",
             format_args!(
-                "{} ({}, certificate expires at Unix ms {})",
+                "{} ({}, certificate expires at {})",
                 tailnet.dns_name.as_deref().unwrap_or("unknown"),
                 tailnet.state,
                 tailnet
                     .certificate_expires_at_ms
-                    .map_or_else(|| "unknown".into(), |at| at.to_string()),
+                    .map_or_else(|| "unknown".into(), |at| Timestamp(at).to_string()),
             ),
         )?;
         if !tailnet.healthy || !tailnet.public_url_matches {
@@ -120,7 +120,7 @@ report!(TelemetryStatus, self, out, {
         });
         let last = destination
             .last_success_ms
-            .map_or_default(|at| format!(", last export at Unix ms {at}"));
+            .map_or_default(|at| format!(", last export at {}", Timestamp(at)));
         let headers = destination
             .headers
             .as_ref()
@@ -142,8 +142,10 @@ report!(ImageStatus, self, out, {
         Some(at) => out.label(
             "Built images",
             format_args!(
-                "{} kept; cleanup removed {} bytes of images since the daemon started (last run at Unix ms {at})",
-                self.images, self.reclaimed_bytes
+                "{} kept; cleanup removed {} bytes of images since the daemon started (last run at {})",
+                self.images,
+                self.reclaimed_bytes,
+                Timestamp(at)
             ),
         ),
         None => out.label("Built images", "not cleaned up yet"),
@@ -221,12 +223,12 @@ report!(DnsStatus, self, out, {
         out.label(
             "Certificate",
             format_args!(
-                "{} for {} (expires at Unix ms {})",
+                "{} for {} (expires at {})",
                 certificate.name,
                 join_or(&certificate.hostnames, "no routes"),
                 certificate
                     .expires_at_ms
-                    .map_or_else(|| "never issued".into(), |at| at.to_string()),
+                    .map_or_else(|| "never issued".into(), |at| Timestamp(at).to_string()),
             ),
         )?;
         if let Some(error) = &certificate.error {
@@ -240,7 +242,7 @@ report!(DnsStatus, self, out, {
 // Measurements the host cannot provide are unavailable rather than zero.
 report!(DaemonStats, self, out, {
     let unavailable = || "unavailable on this host".to_owned();
-    out.label("Measured", format_args!("Unix ms {}", self.sampled_at_ms))?;
+    out.label("Measured", Timestamp(self.sampled_at_ms))?;
     out.label("Uptime", Uptime(Duration::from_secs(self.uptime_seconds)))?;
     out.label(
         "Memory",

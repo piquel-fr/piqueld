@@ -144,7 +144,8 @@ pub(crate) struct Cli {
 
     /// Hide human-readable results, information and progress.
     ///
-    /// JSON results, warnings, errors and prompts still appear.
+    /// JSON results, warnings, errors and prompts still appear, and so do
+    /// secrets shown only once, such as a new token or invitation link.
     #[arg(long, short, global = true, help_heading = GLOBAL)]
     pub(crate) quiet: bool,
     /// Never prompt, even on a terminal.

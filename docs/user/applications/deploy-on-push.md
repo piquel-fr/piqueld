@@ -345,6 +345,7 @@ Runtime: ready (observed 2 s ago)
 Source: main
 Sync: following, last synced 44928efc5d3229a7b6a918182df49a32afc18a3e
 Release: rel-01a16d9438b27093811074404283fef8
+Visibility: public; each route keeps its own visibility
 Configuration revision: 6
 Resolved revision: 6
 ```

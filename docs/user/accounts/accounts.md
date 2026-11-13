@@ -102,10 +102,10 @@ its ID:
 
 ```console
 $ piquelctl account invitation list
-01a16b52-3f0e-7c41-9d2a-6b8e0f4c7d15 invitation by alice (expires at Unix 1793262000)
+01a16b52-3f0e-7c41-9d2a-6b8e0f4c7d15 invitation by alice (expires at 2026-10-29 08:20:00Z)
   apps:read on blog
   apps:deploy on blog
-01a16b53-7a21-7e93-8c4f-2d9b1e6a0c38 enrollment for carol by alice (expires at Unix 1793262600)
+01a16b53-7a21-7e93-8c4f-2d9b1e6a0c38 enrollment for carol by alice (expires at 2026-10-29 08:30:00Z)
 $ piquelctl account invitation revoke 01a16b52-3f0e-7c41-9d2a-6b8e0f4c7d15
 ```
 

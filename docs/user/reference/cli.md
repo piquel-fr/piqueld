@@ -1054,7 +1054,8 @@ deployment snapshot and prepared target without refreshing sources.
 Human output uses bold labels and color on terminals, application lists,
 and elapsed operation progress. Redirected output stays plain and `NO_COLOR`
 disables color. `--quiet` suppresses human results, information, and progress while
-preserving warnings, errors, and explicit JSON results. `--noninteractive` refuses prompts
+preserving warnings, errors, explicit JSON results, and secrets shown only once,
+such as a new token or invitation link. `--noninteractive` refuses prompts
 even on a terminal; destructive commands still need `--yes`.
 
 Output is routed through channels configured once at startup:
@@ -1158,7 +1159,7 @@ prod  http://127.0.0.1:7845  (default)
 An empty list prints `No profiles configured.` in human mode, or
 `{"profiles":[]}` in JSON.
 `--quiet` suppresses human results, information, and progress, but preserves JSON,
-warnings, errors, and authorized prompts.
+secrets shown only once, warnings, errors, and authorized prompts.
 
 `piquelctl builds list [--application ID] [--environment ID] [--cursor CURSOR]` lists one
 page of build attempts and job runs, optionally of one application's environments or
