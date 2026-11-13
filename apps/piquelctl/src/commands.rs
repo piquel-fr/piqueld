@@ -929,7 +929,7 @@ impl OperationProgress {
     /// One-line progress text: its state, and what it is doing.
     ///
     /// ```text
-    /// running, phase "remove_service", resource "web"  →  running · Remove web
+    /// running, phase "remove_service", resource "web"  →  running · Remove service web
     /// ```
     fn message(operation: &Operation) -> String {
         let mut message = operation.state.to_string();

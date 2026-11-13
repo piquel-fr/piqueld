@@ -864,6 +864,15 @@ string_enum! {
 }
 
 impl PlanCoverage {
+    /// The phase an operation is in while recording a plan of this coverage.
+    #[must_use]
+    pub const fn phase(self) -> Phase {
+        match self {
+            Self::Preparation => Phase::Preparing,
+            Self::Runtime => Phase::Planning,
+        }
+    }
+
     /// Whether a plan of this coverage replaces the steps left of `stage`.
     const fn covers(self, stage: Stage) -> bool {
         match self {

@@ -4,7 +4,6 @@ use super::{BoundaryError, RuntimeBoundary};
 use crate::reconcile::ImagesInUse;
 use async_trait::async_trait;
 use futures_util::{StreamExt, TryStreamExt, stream};
-use piqueld_core::Phase;
 use piqueld_core::timeline::{PlanCoverage, StepKey};
 use piqueld_core::{
     EnvironmentId, EnvironmentKind, InstanceId, NormalizedApplication, ResolutionSet,
@@ -190,9 +189,9 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
     /// compiles the application for `environment` against the merged resolutions.
     ///
     /// 1. Collects services lacking a reusable resolution and, during execution,
-    ///    records the `preparing_sources` progress phase with their names.
-    /// 2. Resolves up to four sources concurrently; on failure, records the failing
-    ///    service's phase (`building_git` or `resolving_image`) before returning.
+    ///    records them as the operation's preparation plan.
+    /// 2. Resolves up to four sources concurrently, each a journaled action, so
+    ///    a failure's action names the failing service and its phase.
     /// 3. Compiles the application with the combined resolution set.
     ///
     /// The whole sequence is bounded by `prepare_timeout`.
@@ -219,16 +218,8 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
                     })
                     .collect();
                 store
-                    .record_plan(id, steps, PlanCoverage::Preparation)
+                    .record_plan(id, steps, PlanCoverage::Preparation, None)
                     .await?;
-                if !pending.is_empty() {
-                    let names = pending
-                        .iter()
-                        .map(|(name, _)| name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    store.progress(id, Phase::Preparing, Some(&names)).await?;
-                }
             }
             let sources = stream::iter(
                 pending
@@ -238,15 +229,7 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
             .buffer_unordered(4)
             .try_collect::<Vec<_>>()
             .await;
-            let sources = match sources {
-                Ok(sources) => sources,
-                Err((service, phase, error)) => {
-                    if let Some((store, id)) = &self.progress {
-                        store.progress(id, phase, Some(service.as_str())).await?;
-                    }
-                    return Err(error);
-                }
-            };
+            let sources = sources?;
             let mut resolutions = reusable.clone();
             resolutions.sources.extend(sources);
             let resolved = compile_application(
@@ -328,29 +311,21 @@ impl<D: DockerApi> RuntimeBoundary for ApplicationRuntime<D> {
 
 impl<D: DockerApi> ApplicationRuntime<D> {
     /// Resolves one service source, journaling it as an action when progress is
-    /// attached.
-    ///
-    /// Errors carry the service name and phase so `prepare` can report which service
-    /// failed. Journal failures are reported the same way as resolution failures.
+    /// attached; a failure's action names the service and phase. Journal
+    /// failures are reported the same way as resolution failures.
     async fn prepare_source(
         &self,
         environment: &EnvironmentId,
         name: piqueld_core::ServiceName,
         source: Source,
-    ) -> Result<
-        (piqueld_core::ServiceName, ResolvedSource),
-        (piqueld_core::ServiceName, Phase, BoundaryError),
-    > {
-        let phase = source.phase();
-        let journal = if let Some((store, id)) = &self.progress {
-            Some(
+    ) -> Result<(piqueld_core::ServiceName, ResolvedSource), BoundaryError> {
+        let journal = match &self.progress {
+            Some((store, id)) => Some(
                 store
-                    .begin_action(Some(id), phase, Some(name.as_str()))
-                    .await
-                    .map_err(|error| (name.clone(), phase, BoundaryError::Store(error)))?,
-            )
-        } else {
-            None
+                    .begin_action(Some(id), source.phase(), Some(name.as_str()))
+                    .await?,
+            ),
+            None => None,
         };
         let result = self
             .resolve_source(environment, name.as_str(), source)
@@ -361,12 +336,9 @@ impl<D: DockerApi> ApplicationRuntime<D> {
                     journal,
                     result.as_ref().err().map(BoundaryError::diagnostic),
                 )
-                .await
-                .map_err(|error| (name.clone(), phase, BoundaryError::Store(error)))?;
+                .await?;
         }
-        result
-            .map(|source| (name.clone(), source))
-            .map_err(|error| (name, phase, error))
+        result.map(|source| (name, source))
     }
 
     /// Pins an image reference to its registry digest, or checks out and builds a

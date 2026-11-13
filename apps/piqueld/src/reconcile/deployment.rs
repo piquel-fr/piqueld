@@ -74,23 +74,10 @@ impl<D: DockerApi> Controller<D> {
                 .await?;
             return Ok((rendering.application, None));
         };
-        self.store
-            .progress(&operation.id, Phase::FetchManifest, None)
-            .await?;
-        let checkout = self
-            .sources
-            .checkouts()
-            .checkout(
-                source
-                    .as_ref()
-                    .map_or(&backing.repository, |source| &source.repository),
-                None,
-            )
-            .await
-            .map_err(|error| {
-                tracing::error!(?error, "manifest repository fetch failed");
-                OperationError::ManifestFetchFailed(error)
-            })?;
+        let repository = source
+            .as_ref()
+            .map_or(&backing.repository, |source| &source.repository);
+        let checkout = self.fetch_manifest(operation, repository).await?;
         let (template, fetched, mut warnings) = Box::pin(self.fetched_template(
             operation,
             &environment.environment().kind,
@@ -138,6 +125,27 @@ impl<D: DockerApi> Controller<D> {
             rendering.application.pin_manifest_sources(&checkout.commit),
             source,
         ))
+    }
+
+    /// Checks out `repository` for its manifest, as a journaled step of
+    /// `operation`.
+    async fn fetch_manifest(
+        &self,
+        operation: &Operation,
+        repository: &piqueld_core::manifest::GitRepository,
+    ) -> Result<crate::git::Checkout, OperationError> {
+        let fetch = async {
+            self.sources
+                .checkouts()
+                .checkout(repository, None)
+                .await
+                .map_err(|error| {
+                    tracing::error!(?error, "manifest repository fetch failed");
+                    OperationError::ManifestFetchFailed(error)
+                })
+        };
+        self.journaled(&operation.id, Phase::FetchManifest, None, Box::pin(fetch))
+            .await
     }
 
     /// Reads the manifest at `backing`'s path in `checkout` and validates

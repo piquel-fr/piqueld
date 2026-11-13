@@ -4,7 +4,6 @@ use super::{
     ApplicationState, EnvironmentId, Operation, OperationKind, OperationState, Store, StoreError,
     decode_name, new_id, now_ms,
 };
-use piqueld_core::Phase;
 use piqueld_core::observability::{DeploymentFailure, DiagnosticCode};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -69,7 +68,7 @@ impl Store {
         id: &str,
     ) -> Result<Operation, StoreError> {
         sqlx::query_as!(OperationRow,
-            r#"SELECT id AS "id!",environment_id,kind,state,generation,attempt,consecutive_failures,phase,resource,error_code,error_message,created_at_ms,updated_at_ms,started_at_ms,finished_at_ms FROM operations WHERE id=?1"#, id)
+            r#"SELECT o.id AS "id!",o.environment_id,o.kind,o.state,o.generation,o.attempt,o.consecutive_failures,p.phase AS "phase?: String",p.resource AS "resource?: String",o.error_code,o.error_message,o.created_at_ms,o.updated_at_ms,o.started_at_ms,o.finished_at_ms FROM operations o JOIN operation_progress p ON p.operation_id=o.id WHERE o.id=?1"#, id)
             .fetch_optional(connection).await.map_err(StoreError::database)?
             .ok_or(StoreError::NotFound)?.decode()
     }
@@ -84,7 +83,7 @@ impl Store {
     ) -> Result<Option<Operation>, StoreError> {
         let id = id.as_str();
         sqlx::query_as!(OperationRow,
-            r#"SELECT id AS "id!",environment_id,kind,state,generation,attempt,consecutive_failures,phase,resource,error_code,error_message,created_at_ms,updated_at_ms,started_at_ms,finished_at_ms FROM operations WHERE environment_id=?1 ORDER BY created_at_ms DESC,id DESC LIMIT 1"#, id)
+            r#"SELECT o.id AS "id!",o.environment_id,o.kind,o.state,o.generation,o.attempt,o.consecutive_failures,p.phase AS "phase?: String",p.resource AS "resource?: String",o.error_code,o.error_message,o.created_at_ms,o.updated_at_ms,o.started_at_ms,o.finished_at_ms FROM operations o JOIN operation_progress p ON p.operation_id=o.id WHERE o.environment_id=?1 ORDER BY o.created_at_ms DESC,o.id DESC LIMIT 1"#, id)
             .fetch_optional(&self.pool).await.map_err(StoreError::database)?
             .map(OperationRow::decode).transpose()
     }
@@ -98,7 +97,7 @@ impl Store {
         &self,
     ) -> Result<std::collections::HashMap<EnvironmentId, Operation>, StoreError> {
         sqlx::query_as!(OperationRow,
-            r#"SELECT o.id AS "id!",o.environment_id,o.kind,o.state,o.generation,o.attempt,o.consecutive_failures,o.phase,o.resource,o.error_code,o.error_message,o.created_at_ms,o.updated_at_ms,o.started_at_ms,o.finished_at_ms FROM environments e JOIN operations o ON o.id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=e.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)"#)
+            r#"SELECT o.id AS "id!",o.environment_id,o.kind,o.state,o.generation,o.attempt,o.consecutive_failures,p.phase AS "phase?: String",p.resource AS "resource?: String",o.error_code,o.error_message,o.created_at_ms,o.updated_at_ms,o.started_at_ms,o.finished_at_ms FROM environments e JOIN operations o ON o.id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=e.id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1) JOIN operation_progress p ON p.operation_id=o.id"#)
             .fetch_all(&self.pool).await.map_err(StoreError::database)?
             .into_iter()
             .map(|row| {
@@ -333,7 +332,7 @@ impl Store {
         operation: &Operation,
     ) -> Result<Operation, StoreError> {
         let now = now_ms();
-        let changed = sqlx::query!("UPDATE operations SET phase=NULL,resource=NULL,state='requested',error_code=NULL,error_message=NULL,started_at_ms=NULL,finished_at_ms=NULL,updated_at_ms=?1 WHERE id=?2 AND (state IN ('succeeded','failed','cancelled') OR (state='running' AND error_code IS NOT NULL)) AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",now,operation.id)
+        let changed = sqlx::query!("UPDATE operations SET state='requested',error_code=NULL,error_message=NULL,started_at_ms=NULL,finished_at_ms=NULL,updated_at_ms=?1 WHERE id=?2 AND (state IN ('succeeded','failed','cancelled') OR (state='running' AND error_code IS NOT NULL)) AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",now,operation.id)
             .execute(&mut **tx).await.map_err(StoreError::database)?.rows_affected();
         if changed != 1 {
             let current = Self::operation_on(tx, &operation.id).await?;
@@ -356,23 +355,6 @@ impl Store {
         Self::operation_event(tx, &operation.id, "reconciliation_requested", None, now).await?;
         let operation = Self::operation_on(tx, &operation.id).await?;
         Ok(operation)
-    }
-
-    /// Updates the currently executing phase/resource without emitting polling events.
-    /// # Errors
-    /// Returns storage errors or a stale-operation conflict.
-    pub async fn progress(
-        &self,
-        id: &str,
-        phase: Phase,
-        resource: Option<&str>,
-    ) -> Result<(), StoreError> {
-        let phase = phase.as_str();
-        let changed = self.write(sqlx::query!("UPDATE operations SET phase=?1,resource=?2 WHERE id=?3 AND state='running' AND id=(SELECT latest.id FROM operations latest WHERE latest.environment_id=operations.environment_id ORDER BY latest.created_at_ms DESC,latest.id DESC LIMIT 1)",phase,resource,id)).await.map_err(StoreError::database)?.rows_affected();
-        if changed != 1 {
-            return Err(StoreError::IllegalTransition);
-        }
-        Ok(())
     }
 
     /// Records a `resource_mutated` event after an action changed runtime state.
@@ -410,7 +392,7 @@ impl Store {
     pub async fn recover_interrupted(&self) -> Result<u64, StoreError> {
         let now = now_ms();
         let (_writer, mut tx) = self.begin_immediate().await?;
-        sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=operations.environment_id),environment_id,id,generation,attempt,'operation_interrupted','daemon restarted during execution',error_code,phase,resource,?1 FROM operations WHERE state='running'",now).execute(&mut *tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=o.environment_id),o.environment_id,o.id,o.generation,o.attempt,'operation_interrupted','daemon restarted during execution',o.error_code,p.phase,p.resource,?1 FROM operations o JOIN operation_progress p ON p.operation_id=o.id WHERE o.state='running'",now).execute(&mut *tx).await.map_err(StoreError::database)?;
         let interrupted =
             sqlx::query_scalar!(r#"SELECT id AS "id!" FROM operations WHERE state='running'"#)
                 .fetch_all(&mut *tx)
@@ -502,7 +484,7 @@ impl Store {
         now: i64,
     ) -> Result<Operation, StoreError> {
         let app_id = app.as_str();
-        sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=?2),environment_id,id,generation,attempt,'operation_superseded','superseded by newer intent',error_code,phase,resource,?1 FROM operations WHERE environment_id=?2 AND state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
+        sqlx::query!("INSERT INTO events(application_id,environment_id,operation_id,generation,attempt,kind,message,error_code,phase,resource,created_at_ms) SELECT (SELECT application_id FROM environments WHERE id=?2),o.environment_id,o.id,o.generation,o.attempt,'operation_superseded','superseded by newer intent',o.error_code,p.phase,p.resource,?1 FROM operations o JOIN operation_progress p ON p.operation_id=o.id WHERE o.environment_id=?2 AND o.state IN ('requested','running')",now,app_id).execute(&mut **tx).await.map_err(StoreError::database)?;
         let superseded=sqlx::query_scalar!(r#"UPDATE operations SET state='superseded',error_code=NULL,error_message=NULL,finished_at_ms=?1,updated_at_ms=?1 WHERE environment_id=?2 AND state IN ('requested','running') RETURNING id AS "id!""#,now,app_id)
             .fetch_all(&mut **tx).await.map_err(StoreError::database)?;
         for previous in superseded {

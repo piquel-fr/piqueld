@@ -20,6 +20,14 @@ vocabulary.
 
 ### Timelines
 
+Operations store no phase of their own: `Operation.phase` and `resource` are
+read through the `operation_progress` view, from the latest event of the
+operation's current attempt that has a phase, found through a partial index.
+Plans are recorded with the phase of their coverage (`preparing` or
+`planning`) and, when blocked, the resource that blocks them; the manifest
+fetch and putting new routes in service are journaled actions, so every
+step an operation goes through is in the journal.
+
 An operation's [timeline](../../user/reference/api.md#operation-timelines) is
 a projection of the journal, never stored: `piqueld_core::timeline::Timeline`
 folds an operation's events with `Timeline::apply`. Action events fill in
