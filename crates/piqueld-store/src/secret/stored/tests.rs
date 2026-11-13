@@ -268,6 +268,44 @@ async fn access_changes_from_an_outdated_read_are_refused() {
     assert_eq!(current.access, mine);
 }
 
+/// A value upload that replaces the access, made from the access it read,
+/// fails once someone else changed it, keeping theirs.
+#[tokio::test]
+async fn uploads_from_an_outdated_access_read_are_refused() {
+    let (_temp, store, production, staging) = fixture().await;
+    let application = template().id().clone();
+    let secret = "stripe-dev";
+    let read = store
+        .put_stored_secret(Daemon, &application, secret, 0, b"one".to_vec(), None)
+        .await
+        .unwrap()
+        .access;
+    let theirs = only([&production]);
+    store
+        .set_secret_access(Daemon, &application, secret, &theirs, Some(&read))
+        .await
+        .unwrap();
+    let mine = only([&staging]);
+    let upload = |expected| {
+        store.put_stored_secret_guarded(
+            Daemon,
+            &application,
+            secret,
+            SecretPrecondition {
+                generation: 1,
+                access: expected,
+            },
+            b"two".to_vec(),
+            Some(&mine),
+        )
+    };
+    assert!(matches!(
+        upload(Some(&read)).await,
+        Err(StoreError::SecretAccessConflict)
+    ));
+    assert_eq!(upload(Some(&theirs)).await.unwrap().access, mine);
+}
+
 #[tokio::test]
 async fn a_name_is_either_declared_and_generated_or_stored() {
     let (_temp, store, _, _) = fixture().await;

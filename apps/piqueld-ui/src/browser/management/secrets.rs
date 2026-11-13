@@ -344,14 +344,23 @@ pub(super) fn StoredSecrets(
         let bytes = value.get_untracked().into_bytes();
         value.set(String::new());
         // Replacing a value sends access only when the form changed it, so the
-        // server keeps a list changed elsewhere.
+        // server keeps a list changed elsewhere, guarded by the list the form
+        // was loaded from, so one changed meanwhile isn't overwritten.
         let access = Some(form.access()).filter(|access| current.as_ref() != Some(access));
+        let expected = current.filter(|_| access.is_some());
         let id = id.get_value();
         feedback.send(
             context,
             async move {
                 Client::browser()
-                    .put_stored_secret(&id, &name, generation, bytes, access.as_ref())
+                    .put_stored_secret(
+                        &id,
+                        &name,
+                        generation,
+                        bytes,
+                        access.as_ref(),
+                        expected.as_ref(),
+                    )
                     .await
             },
             move |secret| saved(secret, "Secret saved. Deploy to use its new version."),

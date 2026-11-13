@@ -1652,6 +1652,49 @@ fn ctrl_c_ends_a_pending_secret_read_from_stdin() {
     assert_eq!(server.finish().len(), 2, "no secret value was sent");
 }
 
+/// `secret set` that changes the access sends the access it read, so the
+/// daemon refuses the upload if someone changed it meanwhile.
+#[test]
+fn secret_set_guards_the_access_it_replaces() {
+    let secret = json!({
+        "name": "database-password", "generation": 1, "updated_at_ms": 1,
+        "access": {"environments": "all", "previews": false}
+    });
+    let stored = secret.clone();
+    let server = start_server(false, 3, move |request| {
+        match request.path.split('?').next().unwrap() {
+            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+            "/api/v1/applications/app-notes-01/secrets" => Reply::json(json!([secret.clone()])),
+            "/api/v1/applications/app-notes-01/secrets/database-password" => {
+                Reply::json(stored.clone())
+            }
+            path => panic!("unexpected path {path}"),
+        }
+    });
+    let mut child = server
+        .command()
+        .args(["--json", "app", "secret", "app-notes-01"])
+        .args(["set", "database-password", "--previews", "--stdin", "--yes"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piquelctl child");
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(b"value")
+        .expect("value is written");
+    assert_json_success(&child.wait_with_output().expect("piquelctl output"));
+    let requests = server.finish();
+    assert_eq!(
+        requests[2].path,
+        "/api/v1/applications/app-notes-01/secrets/database-password\
+         ?environments=all&expected_environments=all&expected_previews=false&previews=true"
+    );
+}
+
 /// A value piped to `--stdin` loses one trailing newline, like `echo` adds,
 /// and what remains must still fit: input is never cut short to fit.
 #[test]

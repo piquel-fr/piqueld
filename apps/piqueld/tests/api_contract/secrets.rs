@@ -54,6 +54,7 @@ async fn stored_secret_access_queries_never_widen_environments_implicitly() {
             0,
             b"one".to_vec(),
             Some(&none),
+            None,
         )
         .await
         .unwrap();
@@ -127,8 +128,9 @@ async fn stored_secret_uploads_check_their_headers_first() {
     response.assert_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "secret_content_type");
 }
 
-/// Over HTTP, an access change made from an access read that is no longer
-/// current fails with 409 `secret_access_conflict`, keeping the current one.
+/// Over HTTP, an access change, or an upload that replaces the access, made
+/// from an access read that is no longer current fails with 409
+/// `secret_access_conflict`, keeping the current one.
 #[tokio::test]
 async fn access_changes_from_an_outdated_read_conflict() {
     let temp = tempfile::tempdir().unwrap();
@@ -136,7 +138,7 @@ async fn access_changes_from_an_outdated_read_conflict() {
     let client = server.client();
     let app = client.apply_and_deploy(&new_application()).await.unwrap();
     client
-        .put_stored_secret(&app.application_id, "token", 0, b"one".to_vec(), None)
+        .put_stored_secret(&app.application_id, "token", 0, b"one".to_vec(), None, None)
         .await
         .unwrap();
     let outdated = piqueld_client::SecretAccess {
@@ -148,6 +150,21 @@ async fn access_changes_from_an_outdated_read_conflict() {
             &app.application_id,
             "token",
             &piqueld_client::SecretAccess::default(),
+            Some(&outdated),
+        )
+        .await;
+    let error = api_error(refused.unwrap_err());
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (409, "secret_access_conflict")
+    );
+    let refused = client
+        .put_stored_secret(
+            &app.application_id,
+            "token",
+            1,
+            b"two".to_vec(),
+            Some(&piqueld_client::SecretAccess::default()),
             Some(&outdated),
         )
         .await;
@@ -223,7 +240,14 @@ async fn stored_secret_api_is_write_only_versioned_and_access_listed() {
     let referenced = client.delete_stored_secret(&app.application_id, "token", 1);
     assert_eq!(api_error(referenced.await.unwrap_err()).status, 409);
     reference(Vec::new(), saved.generation).await;
-    let stale = client.put_stored_secret(&app.application_id, "token", 0, b"stale".to_vec(), None);
+    let stale = client.put_stored_secret(
+        &app.application_id,
+        "token",
+        0,
+        b"stale".to_vec(),
+        None,
+        None,
+    );
     assert_eq!(api_error(stale.await.unwrap_err()).status, 409);
     let absent = client.stored_secrets("app-absent").await;
     assert_eq!(api_error(absent.unwrap_err()).status, 404);
@@ -248,7 +272,14 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
     let client = server.client();
     let app = client.apply_and_deploy(&new_application()).await.unwrap();
     client
-        .put_stored_secret(&app.application_id, "token", 0, b"value".to_vec(), None)
+        .put_stored_secret(
+            &app.application_id,
+            "token",
+            0,
+            b"value".to_vec(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     std::fs::remove_file(temp.path().join("secrets.key")).unwrap();
@@ -258,6 +289,7 @@ async fn missing_secret_key_is_a_persisted_daemon_diagnostic() {
             "token",
             1,
             b"replacement".to_vec(),
+            None,
             None,
         )
         .await
@@ -440,6 +472,7 @@ async fn secret_key_recovery_api_discards_values_only_for_an_unusable_key() {
             1,
             b"new-value".to_vec(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -466,6 +499,7 @@ async fn deploys_and_previews_fail_when_an_environment_may_not_mount_a_stored_se
             0,
             b"live".to_vec(),
             Some(&production_only),
+            None,
         )
         .await
         .unwrap();

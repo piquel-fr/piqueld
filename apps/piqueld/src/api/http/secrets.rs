@@ -132,31 +132,57 @@ pub(super) struct AccessQuery {
     /// Whether previews may mount the secret; only with `environments`, and
     /// `false` when omitted.
     previews: Option<bool>,
+    /// The access list the caller read, in the form of `environments`: the
+    /// upload fails with 409 `secret_access_conflict` once the secret's
+    /// access is no longer this, so a concurrent access change isn't lost.
+    expected_environments: Option<String>,
+    /// Whether previews could mount the secret when the caller read it; only
+    /// with `expected_environments`, and `false` when omitted.
+    expected_previews: Option<bool>,
 }
 
 impl QueryParams for AccessQuery {
     const INVALID_CODE: &'static str = "query_invalid";
-    const INVALID_MESSAGE: &'static str =
-        "environments must be all or environment IDs; previews must be true or false";
+    const INVALID_MESSAGE: &'static str = "environments and expected_environments must be all or environment IDs; previews and expected_previews must be true or false";
 }
 
 impl AccessQuery {
-    /// The access list, when the query sets one. `previews` alone is refused,
-    /// so it cannot silently reset the environments to every environment.
-    fn access(self) -> Result<Option<SecretAccess>, ApiError> {
-        let Some(environments) = self.environments else {
-            return match self.previews {
+    /// The access list the query sets, if any, and the one it expects the
+    /// secret to have, if any.
+    fn into_parts(self) -> Result<(Option<SecretAccess>, Option<SecretAccess>), ApiError> {
+        let access = Self::access(
+            self.environments,
+            self.previews,
+            "previews requires environments; use the access endpoint to change previews alone",
+        )?;
+        let expected = Self::access(
+            self.expected_environments,
+            self.expected_previews,
+            "expected_previews requires expected_environments",
+        )?;
+        Ok((access, expected))
+    }
+
+    /// One access list from its two parameters. `previews` alone is refused
+    /// with `alone`, so it cannot silently stand for every environment.
+    fn access(
+        environments: Option<String>,
+        previews: Option<bool>,
+        alone: &'static str,
+    ) -> Result<Option<SecretAccess>, ApiError> {
+        let Some(environments) = environments else {
+            return match previews {
                 None => Ok(None),
                 Some(_) => Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "query_invalid",
-                    "previews requires environments; use the access endpoint to change previews alone",
+                    alone,
                 )),
             };
         };
         Ok(Some(SecretAccess {
             environments: EnvironmentAccess::from_query(&environments)?,
-            previews: self.previews.unwrap_or_default(),
+            previews: previews.unwrap_or_default(),
         }))
     }
 }
@@ -171,7 +197,9 @@ impl AccessQuery {
 /// environment IDs) replaces the access list, with `previews` (default
 /// `false`); `previews` alone fails with 400. Without them, a new secret
 /// allows every environment and no previews, and an existing one keeps its
-/// list. Names the
+/// list. `expected_environments` and `expected_previews`, the access the
+/// caller read, fail the upload with 409 `secret_access_conflict` once
+/// someone changed it. Names the
 /// saved manifest or an environment's last fetched one declares as generated
 /// secrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`
 /// in `details.errors`. The response carries metadata only.
@@ -184,7 +212,7 @@ pub(super) async fn put_stored(
     request: Request,
 ) -> Result<impl IntoResponse, ApiError> {
     let generation = expected(request.headers())?;
-    let access = query.access()?;
+    let (access, expected_access) = query.into_parts()?;
     // Checked before the body is read, which then need not be.
     if request
         .headers()
@@ -219,7 +247,10 @@ pub(super) async fn put_stored(
             identity.actor(),
             &ApplicationId::parse(id)?,
             &name,
-            generation,
+            piqueld_store::SecretPrecondition {
+                generation,
+                access: expected_access.as_ref(),
+            },
             body.to_vec(),
             access.as_ref(),
         )

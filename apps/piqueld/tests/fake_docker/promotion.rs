@@ -376,7 +376,7 @@ async fn preconditions_are_checked_before_anything_is_captured() {
             Daemon,
             &shop.application,
             "staging-api",
-            0,
+            piqueld_store::SecretPrecondition::generation(0),
             b"api".to_vec(),
             None,
         )
@@ -391,7 +391,7 @@ async fn preconditions_are_checked_before_anything_is_captured() {
             Daemon,
             &shop.application,
             "shared-db",
-            0,
+            piqueld_store::SecretPrecondition::generation(0),
             b"db".to_vec(),
             Some(&staging_only),
         )

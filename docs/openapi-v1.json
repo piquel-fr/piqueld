@@ -17703,7 +17703,7 @@
         "x-piqueld-access": "secrets:write"
       },
       "put": {
-        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes);\nanother content type fails with 415 and a body over the 2 MiB request\nlimit with 413. `X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` (`all`, or\nenvironment IDs) replaces the access list, with `previews` (default\n`false`); `previews` alone fails with 400. Without them, a new secret\nallows every environment and no previews, and an existing one keeps its\nlist. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
+        "description": "The body is the raw value (`application/octet-stream`, 1–512000 bytes);\nanother content type fails with 415 and a body over the 2 MiB request\nlimit with 413. `X-Expected-Generation` must be 0 to create a secret, or its current\ngeneration to replace it; a mismatch fails with 409. Running services keep\ntheir value until the next deployment. Supplying `environments` (`all`, or\nenvironment IDs) replaces the access list, with `previews` (default\n`false`); `previews` alone fails with 400. Without them, a new secret\nallows every environment and no previews, and an existing one keeps its\nlist. `expected_environments` and `expected_previews`, the access the\ncaller read, fail the upload with 409 `secret_access_conflict` once\nsomeone changed it. Names the\nsaved manifest or an environment's last fetched one declares as generated\nsecrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`\nin `details.errors`. The response carries metadata only.",
         "operationId": "putApplicationSecret",
         "parameters": [
           {
@@ -17744,6 +17744,24 @@
             "description": "Whether previews may mount the secret; only with `environments`, and\n`false` when omitted.",
             "in": "query",
             "name": "previews",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "The access list the caller read, in the form of `environments`: the\nupload fails with 409 `secret_access_conflict` once the secret's\naccess is no longer this, so a concurrent access change isn't lost.",
+            "in": "query",
+            "name": "expected_environments",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Whether previews could mount the secret when the caller read it; only\nwith `expected_environments`, and `false` when omitted.",
+            "in": "query",
+            "name": "expected_previews",
             "required": false,
             "schema": {
               "type": "boolean"

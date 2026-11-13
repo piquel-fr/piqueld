@@ -2625,7 +2625,9 @@ impl Client {
     environment IDs) replaces the access list, with `previews` (default
     `false`); `previews` alone fails with 400. Without them, a new secret
     allows every environment and no previews, and an existing one keeps its
-    list. Names the
+    list. `expected_environments` and `expected_previews`, the access the
+    caller read, fail the upload with 409 `secret_access_conflict` once
+    someone changed it. Names the
     saved manifest or an environment's last fetched one declares as generated
     secrets fail with 422 `manifest_validation_failed` and `secret_name_conflict`
     in `details.errors`. The response carries metadata only.
@@ -2637,6 +2639,11 @@ impl Client {
     - `name`
     - `environments`: The environments that may mount the secret: `all`, or comma-separated
     environment IDs (empty for none). Supplying it replaces the access list.
+    - `expected_environments`: The access list the caller read, in the form of `environments`: the
+    upload fails with 409 `secret_access_conflict` once the secret's
+    access is no longer this, so a concurrent access change isn't lost.
+    - `expected_previews`: Whether previews could mount the secret when the caller read it; only
+    with `expected_environments`, and `false` when omitted.
     - `previews`: Whether previews may mount the secret; only with `environments`, and
     `false` when omitted.
     - `x_expected_generation`
@@ -2647,6 +2654,8 @@ impl Client {
         id: &'a str,
         name: &'a str,
         environments: Option<&'a str>,
+        expected_environments: Option<&'a str>,
+        expected_previews: Option<bool>,
         previews: Option<bool>,
         x_expected_generation: i64,
         body: B,
@@ -2685,6 +2694,14 @@ impl Client {
             .query(&progenitor_client::QueryParam::new(
                 "environments",
                 &environments,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_environments",
+                &expected_environments,
+            ))
+            .query(&progenitor_client::QueryParam::new(
+                "expected_previews",
+                &expected_previews,
             ))
             .query(&progenitor_client::QueryParam::new("previews", &previews))
             .headers(header_map)
