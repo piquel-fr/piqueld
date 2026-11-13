@@ -414,15 +414,19 @@ Then check that the gateway stopped, as [above](#turn-the-gateway-off).
   public address back to it keeps the route `pending`, even when it works from
   elsewhere.
 - **`Waiting for the gateway configuration to be applied`.** Check **HTTPS
-  ingress** in **System status**. `Ingress unavailable: could not prepare the
-  Caddy gateway (requires free ports 80/443 and Docker 28+)` means another
-  program uses port 80 or 443, or Docker is too old. To see which, select
-  **Run checks** under **Installation checks** on the **Daemon status** page,
-  or run [`piquelctl doctor`](../reference/cli.md#installation-checks): the
+  ingress** in **System status**. The gateway needs Docker Engine 28+ and,
+  unless public routes use a
+  [Cloudflare Tunnel](cloudflare.md#serve-public-routes-through-a-cloudflare-tunnel),
+  free ports 80 and 443. When one of these is missing, the message names it,
+  such as `Ingress unavailable: could not prepare the Caddy gateway: another
+  program uses port 80 or 443, which the gateway publishes`. If you run your
+  own reverse proxy for the dashboard, move it to other ports or another
+  server. For any other failure, such as a Docker network error, the daemon
+  logs have the details. To check both requirements, select **Run checks**
+  under **Installation checks** on the **Daemon status** page, or run
+  [`piquelctl doctor`](../reference/cli.md#installation-checks): the
   **Ports 80/443** and **Docker Engine** checks say what's wrong. Running them
-  needs the `system:read` permission. If you run
-  your own reverse proxy for the dashboard, move it to other ports or another
-  server.
+  needs the `system:read` permission.
 - **A route stays `pending` after its environment was stopped.** A
   [stopped](../reference/api.md#stopped-environments) environment's routes
   aren't served. It keeps its hostnames, certificates and DNS records, so

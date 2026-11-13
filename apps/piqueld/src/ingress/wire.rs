@@ -35,6 +35,19 @@ pub struct ResponseError {
 }
 
 impl ResponseError {
+    /// Whether Docker could not publish a host port because another listener
+    /// holds it, as its start response body says:
+    ///
+    /// ```text
+    /// ... Bind for 0.0.0.0:80 failed: port is already allocated
+    /// ... listen tcp4 0.0.0.0:443: bind: address already in use
+    /// ```
+    pub(super) fn port_in_use(&self) -> bool {
+        ["port is already allocated", "address already in use"]
+            .iter()
+            .any(|message| self.body.contains(message))
+    }
+
     /// Passes successful statuses and wraps any other status with its bounded body.
     fn check(path: &str, status: StatusCode, body: &[u8]) -> Result<(), Self> {
         if status.is_success() {

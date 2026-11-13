@@ -1,7 +1,7 @@
 //! Installation checks owned by ingress: Docker compatibility and the host
 //! ports the gateway publishes.
 
-use super::Ingress;
+use super::{Ingress, gateway::UnmetRequirement};
 use piqueld_core::api::{CheckStatus, SystemCheck, SystemCheckId};
 use std::collections::BTreeSet;
 
@@ -23,7 +23,7 @@ impl Ingress {
                 );
             }
         };
-        let found = format!("Docker Engine {} with API {}", version.engine, version.api);
+        let found = version.to_string();
         match (self.enabled, version.supports_ingress()) {
             (false, _) => check(
                 CheckStatus::Pass,
@@ -32,7 +32,7 @@ impl Ingress {
             (true, true) => check(CheckStatus::Pass, format!("{found} supports ingress")),
             (true, false) => check(
                 CheckStatus::Fail,
-                format!("{found} is too old for ingress, which needs Engine 28+ with API 1.48+"),
+                UnmetRequirement::Docker(version).to_string(),
             )
             .next_step("Upgrade Docker Engine, or disable [ingress]."),
         }

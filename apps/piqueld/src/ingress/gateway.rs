@@ -12,7 +12,7 @@
 use super::{
     CADDY_IMAGE, Ingress,
     node::{PRIVATE_HTTPS_PORT, Subnet, TailnetOverlap},
-    wire::Journaled,
+    wire::{Journaled, ResponseError},
 };
 use anyhow::{Context, Result, ensure};
 use futures_util::TryStreamExt;
@@ -32,6 +32,7 @@ use std::{
 };
 
 /// Docker Engine and API versions, e.g. `28.1.1` and `1.49`.
+#[derive(Debug)]
 pub(super) struct DockerVersion {
     pub(super) engine: String,
     pub(super) api: String,
@@ -58,6 +59,25 @@ impl DockerVersion {
         });
         major >= 28 && api.is_some_and(|v| v >= (1, 48))
     }
+}
+
+impl std::fmt::Display for DockerVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Docker Engine {} with API {}", self.engine, self.api)
+    }
+}
+
+/// A host requirement of the gateway that is not met. Unlike other gateway
+/// failures, its message carries no Docker response body, so the ingress
+/// health message shows it.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum UnmetRequirement {
+    /// The engine does not [support ingress](DockerVersion::supports_ingress).
+    #[error("{0} is too old for ingress, which needs Engine 28+ with API 1.48+")]
+    Docker(DockerVersion),
+    /// Docker could not publish port 80 or 443 because another listener holds it.
+    #[error("another program uses port 80 or 443, which the gateway publishes")]
+    Ports,
 }
 
 /// SHA-256 of the managed container spec; a mismatch triggers replacement.
@@ -202,9 +222,10 @@ impl Ingress {
 
     /// Requires a Docker Engine that [supports ingress](DockerVersion::supports_ingress).
     async fn check_version(&self) -> Result<()> {
+        let version = self.docker_version().await?;
         ensure!(
-            self.docker_version().await?.supports_ingress(),
-            "Docker Engine 28+ with API 1.48+ is required for ingress network gateway priority"
+            version.supports_ingress(),
+            UnmetRequirement::Docker(version)
         );
         Ok(())
     }
@@ -897,7 +918,18 @@ impl Ingress {
 
     /// Starts the serving container and waits up to 10s for Caddy's admin API.
     async fn start_container(&self, journal: &Journaled<'_>) -> Result<()> {
-        self.start_named(journal, &self.name).await?;
+        self.start_named(journal, &self.name)
+            .await
+            .map_err(|error| {
+                let taken = error
+                    .downcast_ref::<ResponseError>()
+                    .is_some_and(ResponseError::port_in_use);
+                if taken {
+                    error.context(UnmetRequirement::Ports)
+                } else {
+                    error
+                }
+            })?;
         // Docker reports a running process before Caddy opens its admin socket.
         // Wait for startup here instead of failing an otherwise healthy deployment.
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -1195,7 +1227,40 @@ impl Ingress {
 
 #[cfg(test)]
 mod tests {
-    use super::DockerVersion;
+    use super::{DockerVersion, UnmetRequirement};
+    use crate::ingress::tests::Engine;
+    use anyhow::Context;
+
+    /// Docker refusing the gateway start over a taken host port is named as
+    /// the cause, through the contexts the failure gains on its way to the
+    /// health message.
+    #[tokio::test]
+    async fn a_taken_host_port_is_an_unmet_requirement() {
+        let engine = Engine::serving(|_| {
+            axum::Router::new().fallback(|| async {
+                (
+                    hyper::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"message": "driver failed programming external connectivity on endpoint piqueld-ingress: Bind for 0.0.0.0:80 failed: port is already allocated"})),
+                )
+            })
+        })
+        .await;
+        let ingress = engine.ingress(true);
+        let journal = ingress
+            .journal("ingress_start_gateway", "gateway")
+            .await
+            .unwrap();
+        let result = ingress.start_container(&journal).await;
+        let error = journal
+            .finish(result)
+            .await
+            .context("prepare the Caddy gateway")
+            .unwrap_err();
+        assert!(
+            matches!(error.downcast_ref(), Some(UnmetRequirement::Ports)),
+            "{error:?}"
+        );
+    }
 
     #[test]
     fn ingress_needs_engine_28_with_api_1_48() {
