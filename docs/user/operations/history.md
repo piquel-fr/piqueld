@@ -132,10 +132,27 @@ with `--env` when the application has several.
 | [`retention.event_days`](../reference/configuration-settings.md#retentionevent_days) | `90` | Application and environment events |
 | [`retention.daemon_event_days`](../reference/configuration-settings.md#retentiondaemon_event_days) | `90` | Daemon events |
 | [`retention.audit_days`](../reference/configuration-settings.md#retentionaudit_days) | `365` | The [audit trail](audit.md) |
+| [`retention.deployment_days`](../reference/configuration-settings.md#retentiondeployment_days) | `90` | Deployments, with [`retention.deployments_per_environment`](../reference/configuration-settings.md#retentiondeployments_per_environment) |
 | [`retention.finished_operation_days`](../reference/configuration-settings.md#retentionfinished_operation_days) | `10` | Finished operations other than deployments |
 
-`0` keeps everything. Deployment history is kept until its environment is
-deleted. Build output has its own limits, of
+`0` keeps everything.
+
+By default, each environment keeps its newest 50 deployments, and every
+deployment from the last 90 days. An older deployment goes only when it is
+past both limits. An environment always keeps its current deployment, its
+latest one, and the deployments
+[image cleanup](../reference/configuration-settings.md#imageskeep_deployments)
+keeps images for, so you can restore them: at least its newest successful one,
+even when `images.keep_deployments` is `0`. A preview keeps only its current,
+latest and newest successful deployments, and those that finished in the last
+hour, however few it has. A deployment a remaining one restored stays too,
+and so does one whose [jobs](../applications/jobs.md) piqueld still has to
+clean up. A removed deployment takes its build and job records with it once
+their output has expired. A release no remaining deployment uses goes
+once it isn't among its application's newest 50. Setting either setting to
+`0` keeps every deployment, release and build record, of previews too.
+
+Build output has its own limits, of
 [size](../reference/configuration-settings.md#build_historylog_max_bytes) and
 [age](../reference/configuration-settings.md#build_historylog_retention_days).
 

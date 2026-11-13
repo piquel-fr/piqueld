@@ -280,7 +280,9 @@ Releases tab, and its origin: built from the environment's source, promoted
 from another environment's deployment, a release deployed again, or, for a
 preview, a local snapshot with its commit and base. The
 environment's Overview links to the release its current target runs. Current target, last successful deployment, and observed runtime health
-are distinct. History remains until the environment is deleted. Deploying an
+are distinct. Old history is pruned as
+[history and diagnostics](operations/history.md#how-long-history-is-kept)
+describes. Deploying an
 empty application removes its runtime services and network. Removing volumes or
 deleting an application retains environments' Docker volume data; deleting an
 application deletes every environment and preview, with the previews' volumes,
@@ -368,6 +370,8 @@ older browsers without those primitives are outside the support target.
 Streaming logs, running commands in containers (`piquelctl app exec`), and
 state transfer remain outside the current dashboard scope.
 Deployment history polls every two seconds while its tab and the page are visible.
+It ends at the oldest deployment the daemon
+[still keeps](operations/history.md#how-long-history-is-kept).
 
 Service source settings explicitly select a container image or Git with a
 Dockerfile build. Git settings include repository, branch, optional commit,

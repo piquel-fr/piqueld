@@ -10,6 +10,7 @@ mod auth;
 mod build;
 mod deployment;
 mod environment;
+mod history;
 mod images;
 pub mod ingress;
 mod jobs;
@@ -601,6 +602,8 @@ pub struct Store {
     daemon_event_days: u64,
     /// Audit trail retention in days; zero keeps it forever.
     audit_days: u64,
+    /// How much deployment history each environment keeps.
+    deployment_retention: history::DeploymentRetention,
     /// How many previews may exist and what their services may use.
     previews: piqueld_core::manifest::PreviewLimits,
     /// Signalled after each committed change to accounts, credentials, or
@@ -756,6 +759,7 @@ impl Store {
             stats_cache: std::sync::Arc::default(),
             daemon_event_days: 0,
             audit_days: 0,
+            deployment_retention: history::DeploymentRetention::default(),
             previews: piqueld_core::manifest::PreviewLimits::default(),
             access_changes: tokio::sync::watch::Sender::new(()),
         };

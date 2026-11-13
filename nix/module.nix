@@ -309,6 +309,16 @@ in
             default = 10;
             description = "Days to retain finished operations; zero disables pruning.";
           };
+          retention.deployment_days = lib.mkOption {
+            type = lib.types.ints.unsigned;
+            default = 90;
+            description = "Days to retain deployment history beyond each environment's newest deployments; zero disables all deployment, preview, release and build-record pruning.";
+          };
+          retention.deployments_per_environment = lib.mkOption {
+            type = lib.types.ints.u32;
+            default = 50;
+            description = "Deployments each environment retains however old they are; previews instead keep their current, latest and newest successful deployments and those finished in the last hour, besides the other kept deployments the history docs list. Zero disables all deployment, preview, release and build-record pruning.";
+          };
           build_history.log_max_bytes = lib.mkOption {
             type = lib.types.ints.between 1 67108864;
             default = 4194304;

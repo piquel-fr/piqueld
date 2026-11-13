@@ -1046,6 +1046,15 @@ pub(super) fn DeploymentHistory() -> impl IntoView {
                 history.loading,
                 move || history.load_older(id.clone()),
             )}
+            // The end of the list may not be the first deployment: the daemon
+            // prunes old history.
+            <Show when={move || {
+                history.cursor.get().is_none() && history.items.with(|items| !items.is_empty())
+            }}>
+                <p class="hint">
+                    "Older deployments are removed once past the daemon's history retention."
+                </p>
+            </Show>
         </section>
     }
 }

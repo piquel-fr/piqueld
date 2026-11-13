@@ -124,7 +124,7 @@ The website's canonical origin, such as `https://piqueld.example.com`. Passkeys 
 
 ## `[build_history]` table
 
-How much output of each build is kept, and for how long. Builds themselves are listed until their environment is deleted.
+How much output of each build is kept, and for how long. Builds themselves are listed until deployment history pruning removes their operation.
 
 ### `build_history.log_max_bytes`
 
@@ -410,6 +410,18 @@ Days the audit trail of API requests is kept; `0` keeps it forever.
 Type: integer. Default: `90`.
 
 Days events not tied to an application, such as those about shared infrastructure, are kept; `0` keeps them forever.
+
+### `retention.deployment_days`
+
+Type: integer. Default: `90`.
+
+Days each environment's deployment history is kept; `0` keeps it forever. A deployment is removed only once it is older than this and beyond the newest `deployments_per_environment`, never while it is its environment's current or latest deployment, one of its newest `images.keep_deployments` successful ones (at least one, even when that is `0`, so automatic rollback has a target), one a remaining deployment restored, or one whose jobs still need cleaning up. A preview keeps only its current and latest deployments, its newest successful one, and those a remaining deployment restored, of the deployments that finished over an hour ago, however recent or few. Releases no remaining deployment uses are removed beyond each application's newest 50, and build and job records once their deployment is gone and their output expired. `0` here or in `deployments_per_environment` stops all of this pruning, of previews, releases and build records too.
+
+### `retention.deployments_per_environment`
+
+Type: integer. Default: `50`.
+
+Deployments each environment keeps however old they are; `0` keeps every deployment, release and build record, as for `deployment_days`.
 
 ### `retention.event_days`
 
