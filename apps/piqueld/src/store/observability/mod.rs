@@ -20,7 +20,7 @@ use piqueld_core::observability::{ActionDuration, DaemonStats, DeploymentAnalyti
 impl Store {
     /// Configures startup-loaded history retention.
     #[must_use]
-    pub fn with_observability(mut self, config: &crate::config::DaemonConfig) -> Self {
+    pub fn with_observability(mut self, config: &piqueld_config::DaemonConfig) -> Self {
         self.daemon_event_days = config.retention.daemon_event_days;
         self.audit_days = config.retention.audit_days;
         self

@@ -1,8 +1,8 @@
 //! Behavioral tests for durable diagnostics, deletion, crash recovery and delivery policies.
 use crate::api::{Mutation, MutationResponse};
-use crate::config::DaemonConfig;
 use crate::store::testing::template;
 use crate::store::*;
+use piqueld_config::DaemonConfig;
 use piqueld_core::observability::{
     ApplicationSelection, DeliveryState, DestinationKind, DestinationName, DestinationRequest,
     DestinationSettings, Diagnostic, EventFilter, EventScope, NotificationCategory,

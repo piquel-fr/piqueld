@@ -38,8 +38,8 @@
 //! daemon-scoped journal actions
 //! with `ingress_dns_*` phases; a pass that changes nothing records nothing.
 use super::{Ingress, Ticks, wire::Journaled};
-use crate::dns::provider::{DnsProvider, Found, Record, RecordId, Zone};
 use anyhow::{Context, Result};
+use piqueld_config::dns::provider::{DnsProvider, Found, Record, RecordId, Zone};
 use piqueld_core::{
     api::DnsRecordState,
     manifest::{Hostname, RouteHostname, Visibility},

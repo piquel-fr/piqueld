@@ -5,7 +5,7 @@
 mod daemon;
 
 use parking_lot::Mutex;
-use piqueld::DirectoryLock;
+use piqueld_config::directories::DirectoryLock;
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::fs::{MetadataExt, PermissionsExt},

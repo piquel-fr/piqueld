@@ -1,7 +1,7 @@
 # Ingress
 
 This page describes how piqueld's managed ingress works, for people changing
-`apps/piqueld/src/ingress`, `apps/piqueld/src/dns` or the route handling around
+`apps/piqueld/src/ingress`, `crates/piqueld-config/src/dns` or the route handling around
 them. The user guide's [networking pages](../../user/networking/routes.md)
 describe what users see and do.
 
@@ -243,7 +243,7 @@ rather than `disabled`. Its logs are relayed at debug level.
 
 ## Cloudflare Tunnel
 
-The tunnel (`ingress/tunnel.rs`, `config/tunnel.rs`) is locally managed:
+The tunnel (`ingress/tunnel.rs`, `crates/piqueld-config/src/tunnel.rs`) is locally managed:
 piqueld generates `cloudflared`'s configuration with a single catch-all rule
 to `http://<gateway>:8080`, so adding or removing routes never touches
 Cloudflare, and hostnames the gateway doesn't know get Caddy's 404.
@@ -406,7 +406,7 @@ the daemon, so a compromised gateway can't take over a domain.
   A wildcard route is covered by its own wildcard
   (`CertificateName::covering`).
 - A hostname belongs to the provider with the longest matching zone. Two
-  providers listing the same zone is a conflict (`dns/zones.rs`).
+  providers listing the same zone is a conflict (`crates/piqueld-config/src/dns/zones.rs`).
 - Issuing creates the `_acme-challenge` TXT record (TTL 60 s), publishes the
   zone, and polls each authoritative nameserver from the zone's NS records,
   over TCP without recursion or caching, every 5 seconds for up to 10 minutes,

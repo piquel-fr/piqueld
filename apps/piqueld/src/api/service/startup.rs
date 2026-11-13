@@ -2,13 +2,13 @@
 
 use super::ApplicationService;
 use crate::{
-    config::DaemonConfig,
     docker::{BollardDocker, DockerApi},
     operations::OperationError,
     reconcile::Controller,
     store::{Store, StoreError},
 };
 use anyhow::Context;
+use piqueld_config::DaemonConfig;
 use piqueld_core::manifest::Hostname;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -240,7 +240,7 @@ impl ApplicationService {
     /// otherwise act on its passkeys or cookies, the dashboard's, and the
     /// webhooks'.
     fn installation_hostnames(config: &DaemonConfig) -> anyhow::Result<Vec<Hostname>> {
-        let website = crate::auth::Auth::validate_origin(config.public_url())?
+        let website = piqueld_config::AuthConfig::validate_origin(config.public_url())?
             .domain()
             .and_then(|host| Hostname::parse(host.trim_end_matches('.')).ok());
         let dashboard = config.ingress.private.dashboard_hostname.clone();

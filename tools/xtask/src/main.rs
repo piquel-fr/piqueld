@@ -1,7 +1,7 @@
 //! Development tasks for the piqueld workspace, run with `cargo xtask`: this
 //! worktree's development instance (`just dev`, see docs/dev/development.md), the
 //! isolated Docker integration tests, the Playwright browser suite, the
-//! `piqueld-core` dependency boundary, test coverage, the release binaries,
+//! crates' dependency boundaries, test coverage, the release binaries,
 //! and releases.
 
 mod boundary;
@@ -56,8 +56,9 @@ enum Task {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Check that `piqueld-core` depends on no server, Docker, or browser
-    /// framework.
+    /// Check the crates' dependency boundaries: `piqueld-core` depends on no
+    /// server, Docker, or browser framework, and the daemon's crates don't
+    /// depend on the ones they build alongside.
     Boundary,
     /// Measure which code the native workspace tests run, as an HTML report
     /// and a summary per crate.

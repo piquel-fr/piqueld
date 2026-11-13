@@ -1,8 +1,8 @@
 # Releasing piqueld
 
 A release publishes the daemon, `piquelctl` and `piqueld-client` to
-[crates.io](https://crates.io/crates/piqueld), with the two crates they depend
-on, then tags the commit. CI then creates the GitHub release, with the static
+[crates.io](https://crates.io/crates/piqueld), with the workspace crates they
+depend on, then tags the commit. CI then creates the GitHub release, with the static
 binaries the [install script](../user/getting-started/install.md#install-with-the-script)
 installs. A maintainer runs it with `just release`.
 
@@ -35,6 +35,7 @@ never edited, since databases that applied it won't run it again.
 | `piqueld` | The daemon, with its dashboard and health probe embedded |
 | `piquelctl` | The CLI |
 | `piqueld-client` | The typed Rust client, with its documentation on [docs.rs](https://docs.rs/piqueld-client) |
+| `piqueld-config` | The daemon's configuration |
 | `piqueld-core` | The contracts the others share |
 | `piqueld-probe` | The static health probe the daemon embeds |
 
@@ -149,7 +150,7 @@ and the [GitHub CLI](https://cli.github.com) signed in to the repository.
    ```
 
    It checks that you are on the latest `main` with a clean working tree, and
-   that the version isn't released yet. It then publishes the five crates in
+   that the version isn't released yet. It then publishes the crates in
    dependency order, which takes several minutes, tags the commit
    `v<version>`, and pushes the tag. Last, it closes the GitHub milestone of
    the minor version, such as `v0.2` for 0.2.0. A patch release finds it

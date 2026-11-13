@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 async fn prepare_data_dir(path: &Path) -> std::io::Result<()> {
-    piqueld::prepare_data_dir(fixture_dir::relative(path)).await
+    piqueld_config::directories::prepare_data_dir(fixture_dir::relative(path)).await
 }
 
 /// A temporary directory below the working directory, see

@@ -22,7 +22,7 @@ struct State {
 
 /// The real provider a [`TestProvider`] behaves like.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum Mimics {
+pub enum Mimics {
     /// Changes apply at once, and CNAME records can be proxied.
     #[default]
     Cloudflare,
@@ -32,7 +32,7 @@ pub(crate) enum Mimics {
 
 /// Calls that fail, as during a provider outage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Outage {
+pub enum Outage {
     /// Every call.
     All,
     /// Only publishing.
@@ -64,7 +64,12 @@ impl PartialEq for TestProvider {
 impl Eq for TestProvider {}
 
 impl TestProvider {
-    pub(crate) fn new(zones: &[&str]) -> Self {
+    /// A provider with no records, managing `zones`.
+    ///
+    /// # Panics
+    /// If a zone is not a hostname.
+    #[must_use]
+    pub fn new(zones: &[&str]) -> Self {
         Self {
             zones: zones.iter().map(|z| Hostname::parse(*z).unwrap()).collect(),
             state: Arc::default(),
@@ -80,7 +85,7 @@ impl TestProvider {
     }
 
     /// Adds a record as an operator would, outside piqueld.
-    pub(crate) fn insert(&self, name: &str, record: Record) {
+    pub fn insert(&self, name: &str, record: Record) {
         let mut state = self.state.lock();
         state.next += 1;
         let id = state.next;
@@ -89,12 +94,13 @@ impl TestProvider {
 
     /// Has another client write `record` at `name` right after this
     /// provider's next write there, as in a race.
-    pub(crate) fn rival(&self, name: &str, record: Record) {
+    pub fn rival(&self, name: &str, record: Record) {
         self.state.lock().rival = Some((name.into(), record));
     }
 
     /// Every record, as `name kind content` lines in ID order.
-    pub(crate) fn dump(&self) -> Vec<String> {
+    #[must_use]
+    pub fn dump(&self) -> Vec<String> {
         let state = self.state.lock();
         state
             .records
@@ -104,22 +110,26 @@ impl TestProvider {
     }
 
     /// Changes made since the last call, in order.
-    pub(crate) fn changes(&self) -> Vec<String> {
+    #[must_use]
+    pub fn changes(&self) -> Vec<String> {
         std::mem::take(&mut self.state.lock().changes)
     }
 
     /// Makes `outage` calls fail, or none.
-    pub(crate) fn fail(&self, outage: Option<Outage>) {
+    pub fn fail(&self, outage: Option<Outage>) {
         self.state.lock().outage = outage;
     }
 
     /// Behaves like `mimics`.
-    pub(crate) fn mimic(&self, mimics: Mimics) {
+    pub fn mimic(&self, mimics: Mimics) {
         self.state.lock().mimics = mimics;
     }
 
     /// The records named `name`, as the provider lists them.
-    pub(crate) fn found(&self, name: &str) -> Result<Vec<Found>, ApiError> {
+    ///
+    /// # Errors
+    /// While every call fails (see [`Self::fail`]).
+    pub fn found(&self, name: &str) -> Result<Vec<Found>, ApiError> {
         Ok(self
             .state()?
             .records
@@ -134,7 +144,13 @@ impl TestProvider {
     }
 
     /// Creates a record, or replaces record `id`, as an API call does.
-    pub(crate) fn set(
+    ///
+    /// # Errors
+    /// While every call fails (see [`Self::fail`]).
+    ///
+    /// # Panics
+    /// If `id` is not one this provider made.
+    pub fn set(
         &self,
         name: &str,
         id: Option<&RecordId>,

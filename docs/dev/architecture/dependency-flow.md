@@ -24,6 +24,19 @@ daemon example that only development builds compile; the client uses Progenitor'
 small runtime support crate. See
 [client generation](https://github.com/sourceorigin-dev/piqueld/blob/main/tools/client-codegen/README.md).
 
+The daemon is split into crates that build in parallel, so a change
+recompiles only the crates it touches and those above them:
+
+| Crate | Modules | Depends on |
+| --- | --- | --- |
+| `piqueld-config` (`crates/piqueld-config`) | `config` (the crate root), `dns`, `directories`, `runtime_dir` | `piqueld-core` |
+| `piqueld` (`apps/piqueld`) | every other module, the binary, and the embedded health probe and dashboard | all of the above |
+
+`piqueld-config` holds the configuration file, the DNS provider accounts it
+configures, which are also their API clients, and the private state and
+runtime directories. Its `testing` feature adds the in-memory and
+`challtestsrv` DNS providers the daemon's ingress tests use.
+
 Inside the daemon:
 
 | Module | Responsibility |
@@ -37,9 +50,7 @@ Inside the daemon:
 | `git` | Isolated, bounded checkouts and local worktree snapshots |
 | `secrets` | Authenticated encryption and generation of application secrets |
 | `ingress` | The installation-owned Caddy gateway, certificates, and tunnel and tailnet listeners |
-| `dns` | DNS provider APIs for DNS-01 challenges and managed route records |
 | `tailnet` | The daemon's own tailnet node serving the website |
-| `config` | Local configuration and private state-directory preparation |
 
 The API service validates commands. One store transaction compares current
 intent and revision, accepts a change or no-op, and writes its request receipt.
@@ -51,4 +62,7 @@ between separate store, API, and client operation models.
 
 `just boundary` (`cargo xtask boundary`) checks that `piqueld-core` depends on no
 server, Docker, database, or browser framework (`axum`, `bollard`, `sqlx`,
-`leptos`), including through build and development dependencies.
+`leptos`), including through build and development dependencies. It also
+checks that the daemon's crates don't depend on those they build alongside:
+`piqueld-config` depends on no Docker, database, or browser framework, nor on
+the daemon.

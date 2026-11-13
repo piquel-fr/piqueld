@@ -6,11 +6,11 @@ use clap::Parser;
 use piqueld::api::ApplicationService;
 use piqueld::api::http::{self, ApiState, UiAssets, UnixPeer};
 use piqueld::auth::Auth;
-use piqueld::config::{ConfigError, DaemonConfig};
 use piqueld::ingress::{DashboardSocket, Ingress};
 use piqueld::tailnet::Node;
 use piqueld::tailnet::TailnetLookup;
 use piqueld::telemetry::{Sockets, Telemetry};
+use piqueld_config::{ConfigError, DaemonConfig};
 use std::{net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf, sync::Arc};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_util::sync::CancellationToken;
@@ -104,7 +104,8 @@ async fn main() -> Result<()> {
             let telemetry =
                 Telemetry::new(&config.telemetry, Sockets::new(&config.server.data_dir))
                     .context("failed to prepare telemetry export")?;
-            piqueld::config::init_tracing(args.open_log_file()?, &telemetry)
+            telemetry
+                .init_tracing(args.open_log_file()?)
                 .context("failed to initialize tracing")?;
             let result = serve(config, telemetry.clone()).await;
             // Send what the daemon recorded last, including a startup failure.
@@ -127,7 +128,7 @@ async fn main() -> Result<()> {
 ///    deadline, it exits the process instead, while it still holds the
 ///    directory locks. A second shutdown signal exits at once.
 async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
-    piqueld::prepare_data_dir(&config.server.data_dir)
+    piqueld_config::directories::prepare_data_dir(&config.server.data_dir)
         .await
         .with_context(|| {
             format!(
@@ -136,14 +137,16 @@ async fn serve(mut config: DaemonConfig, telemetry: Telemetry) -> Result<()> {
             )
         })?;
 
-    let _lock = piqueld::DirectoryLock::acquire(&config.server.data_dir).with_context(|| {
-        format!(
-            "failed to lock data directory {}",
-            config.server.data_dir.display()
-        )
-    })?;
+    let _lock = piqueld_config::directories::DirectoryLock::acquire(&config.server.data_dir)
+        .with_context(|| {
+            format!(
+                "failed to lock data directory {}",
+                config.server.data_dir.display()
+            )
+        })?;
     // Bind all endpoints before opening state or starting background work.
-    let runtime_dir = piqueld::RuntimeDir::acquire(&config.server.runtime_dir).await?;
+    let runtime_dir =
+        piqueld_config::runtime_dir::RuntimeDir::acquire(&config.server.runtime_dir).await?;
     let listeners = Listeners::bind(&config, &runtime_dir).await?;
     // The node may fill auth.public_url, so it joins before authentication starts.
     let tailnet = Node::join(&mut config).await?;
@@ -240,7 +243,10 @@ struct Listeners {
 }
 
 impl Listeners {
-    async fn bind(config: &DaemonConfig, runtime_dir: &piqueld::RuntimeDir) -> Result<Self> {
+    async fn bind(
+        config: &DaemonConfig,
+        runtime_dir: &piqueld_config::runtime_dir::RuntimeDir,
+    ) -> Result<Self> {
         Ok(Self {
             tcp: config.server.bind_tcp().await?,
             unix: runtime_dir.bind_api().await?,

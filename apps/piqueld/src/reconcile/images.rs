@@ -30,12 +30,12 @@ pub(super) struct ImageRetention {
 
 impl Default for ImageRetention {
     fn default() -> Self {
-        Self::new(&crate::config::ImagesConfig::default())
+        Self::new(&piqueld_config::ImagesConfig::default())
     }
 }
 
 impl ImageRetention {
-    pub(super) fn new(config: &crate::config::ImagesConfig) -> Self {
+    pub(super) fn new(config: &piqueld_config::ImagesConfig) -> Self {
         Self {
             in_use: Arc::default(),
             keep_deployments: config.keep_deployments,

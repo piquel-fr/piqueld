@@ -35,7 +35,6 @@ zeroize.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 getrandom.workspace = true
-hickory-resolver.workspace = true
 instant-acme.workspace = true
 openssl.workspace = true
 parking_lot.workspace = true
@@ -56,6 +55,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 http.workspace = true
 http-body-util.workspace = true
+piqueld-config.workspace = true
 piqueld-core.workspace = true
 piqueld-probe.workspace = true
 rustix = { workspace = true, features = ["param"] }
@@ -91,6 +91,9 @@ piqueld = { path = ".", features = ["fake-docker"] }
 reqwest = { workspace = true, features = ["http2"] }
 tokio = { workspace = true, features = ["test-util"] }
 piqueld-client.workspace = true
+# The ingress tests' DNS providers, and the resolver checking their records.
+piqueld-config = { workspace = true, features = ["testing"] }
+hickory-resolver.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true

@@ -4,11 +4,6 @@
 //! test reaches through a relay adding a PROXY header, as the apps node does.
 use super::Scenario;
 use crate::{
-    config::AcmeConfig,
-    dns::{
-        Dns,
-        provider::{DnsProvider, Record, challtestsrv::Challtestsrv},
-    },
     ingress::{Ingress, certificates::Certificates, node::proxy_relay},
     store::ingress::AcmeChallenge,
 };
@@ -18,6 +13,11 @@ use hickory_resolver::{
     net::runtime::TokioRuntimeProvider,
 };
 use hyper::Method;
+use piqueld_config::AcmeConfig;
+use piqueld_config::dns::{
+    Dns,
+    provider::{DnsProvider, Record, challtestsrv::Challtestsrv},
+};
 use piqueld_core::{
     event::Event,
     manifest::{Hostname, RouteHostname},
@@ -185,7 +185,7 @@ impl Scenario {
             Arc::clone(&self.store),
         )
         .unwrap()
-        .with_private(&crate::config::PrivateIngressConfig {
+        .with_private(&piqueld_config::PrivateIngressConfig {
             enabled: true,
             ..Default::default()
         });

@@ -31,12 +31,10 @@ mod sockets;
 
 pub(crate) use containers::{ContainerCursors, ContainerExport, ContainerSample};
 use destination::{Destination, LogItem};
-pub use destination::{Headers, HeadersError};
 pub(crate) use journal::{EventContext, Journal};
 pub use metrics::{ServiceSample, Snapshot};
 pub use sockets::Sockets;
 
-use crate::config::{OtlpEndpoint, TelemetryConfig};
 use opentelemetry::KeyValue;
 use opentelemetry::logs::LoggerProvider as _;
 use opentelemetry::metrics::MeterProvider as _;
@@ -51,6 +49,7 @@ use opentelemetry_sdk::metrics::{
 };
 use opentelemetry_sdk::trace::{SdkTracerProvider, Span, SpanData, SpanProcessor};
 use parking_lot::RwLock;
+use piqueld_config::{OtlpEndpoint, TelemetryConfig};
 use piqueld_core::api::TelemetryDestinationStatus;
 use piqueld_core::{EnvironmentId, ServiceName};
 use std::sync::{Arc, OnceLock};
@@ -219,6 +218,51 @@ impl Telemetry {
             sockets,
             receiving: tokio::sync::Mutex::default(),
         }))))
+    }
+
+    /// Installs tracing filtered by `RUST_LOG` when present.
+    ///
+    /// With telemetry enabled, API request spans and log events are also
+    /// exported over OTLP.
+    ///
+    /// Interactive terminals and the systemd journal receive plain text. The
+    /// journal gets it without colors or timestamps, which it records itself.
+    /// Other pipes (containers, log collectors) receive structured JSON. A
+    /// `log_file` additionally receives JSON, so tools can query the logs while a
+    /// person watches the terminal.
+    ///
+    /// # Errors
+    ///
+    /// Invalid or absent `RUST_LOG` values fall back to the `info` filter. The
+    /// returned error is only from subscriber initialization, such as when another
+    /// global subscriber is already installed.
+    pub fn init_tracing(
+        &self,
+        log_file: Option<std::fs::File>,
+    ) -> Result<(), tracing_subscriber::util::TryInitError> {
+        use std::io::IsTerminal as _;
+        use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+        let layer = if std::io::stdout().is_terminal() {
+            tracing_subscriber::fmt::layer().compact().boxed()
+        } else if std::env::var_os("JOURNAL_STREAM").is_some() {
+            tracing_subscriber::fmt::layer()
+                .compact()
+                .with_ansi(false)
+                .without_time()
+                .boxed()
+        } else {
+            tracing_subscriber::fmt::layer().json().boxed()
+        };
+        tracing_subscriber::registry()
+            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+            .with(layer)
+            .with(log_file.map(|file| {
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_writer(std::sync::Arc::new(file))
+            }))
+            .with(self.layer())
+            .try_init()
     }
 
     /// The `tracing` layers exporting API request spans and the daemon's own

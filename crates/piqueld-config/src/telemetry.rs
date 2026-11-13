@@ -2,6 +2,8 @@
 use super::{ConfigError, Credential, CredentialError, CredentialFile, schema_from_raw};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use thiserror::Error;
+use tonic::metadata::{AsciiMetadataKey, AsciiMetadataValue, MetadataMap};
 
 /// The `[telemetry]` table. Telemetry is off without an endpoint. Its schema
 /// is that of its TOML form, `RawTelemetryConfig`.
@@ -94,8 +96,7 @@ impl TelemetryConfig {
             ));
         }
         if let Some(value) = headers.value() {
-            crate::telemetry::Headers::parse(value)
-                .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+            Headers::parse(value).map_err(|error| ConfigError::Invalid(error.to_string()))?;
         }
         Ok(())
     }
@@ -157,6 +158,64 @@ impl std::fmt::Display for OtlpEndpoint {
     }
 }
 
+/// gRPC metadata sent with every export, parsed from `headers_file`: one
+/// `name: value` per line, ignoring blank lines.
+///
+/// ```text
+/// authorization: Bearer 0123456789
+/// x-scope-orgid: piqueld
+/// ```
+#[derive(Clone, Default)]
+pub struct Headers(MetadataMap);
+
+/// Shows how many headers there are, never their values.
+impl std::fmt::Debug for Headers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Headers({} redacted)", self.0.len())
+    }
+}
+
+/// A line of a headers file is not valid ASCII gRPC metadata. Never contains
+/// the value.
+#[derive(Debug, Error)]
+#[error("telemetry headers line {line} must be `name: value` with an ASCII name and value")]
+pub struct HeadersError {
+    /// One-based line number.
+    line: usize,
+}
+
+impl Headers {
+    /// Parses a headers file's contents.
+    ///
+    /// # Errors
+    /// Every non-blank line must be an ASCII `name: value` pair; binary
+    /// (`-bin`) metadata is not supported.
+    pub fn parse(source: &str) -> Result<Self, HeadersError> {
+        let mut map = MetadataMap::new();
+        for (index, line) in source.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let error = || HeadersError { line: index + 1 };
+            let (name, value) = line.split_once(':').ok_or_else(error)?;
+            let name = AsciiMetadataKey::from_bytes(name.trim().as_bytes()).map_err(|_| error())?;
+            let mut value = Some(value.trim())
+                .filter(|value| value.is_ascii())
+                .and_then(|value| AsciiMetadataValue::try_from(value).ok())
+                .ok_or_else(error)?;
+            value.set_sensitive(true);
+            map.append(name, value);
+        }
+        Ok(Self(map))
+    }
+
+    /// The metadata to send with each export.
+    #[must_use]
+    pub fn metadata(&self) -> &MetadataMap {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,14 +255,30 @@ mod tests {
             "authorization: Bearer secret\n\nx-scope-orgid: piqueld\n",
         )
         .unwrap();
-        let config = crate::config::DaemonConfig::from_toml(&source(endpoint)).unwrap();
+        let config = crate::DaemonConfig::from_toml(&source(endpoint)).unwrap();
         assert_eq!(
             config.telemetry.headers.unwrap().to_string(),
             format!("from {path}")
         );
-        assert!(crate::config::DaemonConfig::from_toml(&source("")).is_err());
+        assert!(crate::DaemonConfig::from_toml(&source("")).is_err());
         std::fs::write(file.path(), "authorization Bearer secret\n").unwrap();
-        let error = crate::config::DaemonConfig::from_toml(&source(endpoint)).unwrap_err();
+        let error = crate::DaemonConfig::from_toml(&source(endpoint)).unwrap_err();
         assert!(!error.to_string().contains("secret"), "{error}");
+    }
+
+    #[test]
+    fn headers_are_ascii_name_value_lines() {
+        let headers =
+            Headers::parse("Authorization: Bearer token\n\nx-scope-orgid:piqueld\n").unwrap();
+        assert_eq!(headers.0.get("authorization").unwrap(), "Bearer token");
+        assert_eq!(headers.0.get("x-scope-orgid").unwrap(), "piqueld");
+        for invalid in [
+            "no separator",
+            "bad name: x",
+            "key-bin: x",
+            "key: caf\u{e9}",
+        ] {
+            assert!(Headers::parse(invalid).is_err(), "{invalid}");
+        }
     }
 }

@@ -18,8 +18,8 @@ pub(super) struct CheckSettings {
     runtime_dir: PathBuf,
 }
 
-impl From<&crate::config::DaemonConfig> for CheckSettings {
-    fn from(config: &crate::config::DaemonConfig) -> Self {
+impl From<&piqueld_config::DaemonConfig> for CheckSettings {
+    fn from(config: &piqueld_config::DaemonConfig) -> Self {
         Self {
             public_url: config.public_url().to_owned(),
             runtime_dir: config.server.runtime_dir.clone(),
@@ -34,7 +34,7 @@ impl CheckSettings {
     async fn public_url_check(&self) -> SystemCheck {
         let check =
             |status, message: String| SystemCheck::new(SystemCheckId::PublicUrl, status, message);
-        let mut health = match crate::auth::Auth::validate_origin(&self.public_url) {
+        let mut health = match piqueld_config::AuthConfig::validate_origin(&self.public_url) {
             Ok(url) => url,
             Err(error) => {
                 return check(
@@ -134,12 +134,16 @@ impl CheckSettings {
             SystemCheck::new(SystemCheckId::RuntimeDirectory, status, message)
         };
         let directory = self.runtime_dir.display();
-        if let Err(error) = crate::directories::validate_runtime_dir(&self.runtime_dir).await {
+        if let Err(error) =
+            piqueld_config::directories::validate_runtime_dir(&self.runtime_dir).await
+        {
             return check(CheckStatus::Fail, format!("{directory}: {error}")).next_step(
                 "Give the runtime directory the daemon's owner and group with mode 0750, as systemd's RuntimeDirectory= does.",
             );
         }
-        let socket = self.runtime_dir.join(crate::runtime_dir::SOCKET_NAME);
+        let socket = self
+            .runtime_dir
+            .join(piqueld_config::runtime_dir::SOCKET_NAME);
         let group = rustix::process::getegid().as_raw();
         match tokio::fs::symlink_metadata(&socket).await {
             Ok(metadata) if metadata.mode() & 0o7777 == 0o660 && metadata.gid() == group => check(

@@ -28,8 +28,9 @@
 //! and the metrics server listens only on the container's loopback.
 
 use super::{CLOUDFLARED_IMAGE, Ingress};
-use crate::{config::TunnelCredentials, directories::PrivateFile};
 use anyhow::{Context, Result};
+use piqueld_config::TunnelCredentials;
+use piqueld_config::directories::PrivateFile;
 use piqueld_core::api::PublicIngressStatus;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -128,7 +129,7 @@ impl Ingress {
     /// Writes the tunnel's configuration and credentials, and pulls its image.
     async fn prepare_tunnel(&self, credentials: &TunnelCredentials) -> Result<()> {
         let directory = self.tunnel_directory();
-        crate::prepare_data_dir(&directory).await?;
+        piqueld_config::directories::prepare_data_dir(&directory).await?;
         PrivateFile::at(directory.join("config.json"))
             .write(serde_json::to_vec(&self.tunnel_configuration(credentials))?)
             .await?;

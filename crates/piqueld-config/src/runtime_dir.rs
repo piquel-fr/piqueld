@@ -12,7 +12,7 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::directories::{DirectoryLock, validate_runtime_dir};
 
 /// File name of the Unix API socket inside the runtime directory.
-pub(crate) const SOCKET_NAME: &str = "piqueld.sock";
+pub const SOCKET_NAME: &str = "piqueld.sock";
 
 /// A validated runtime directory exclusively held for a daemon's lifetime.
 /// Keep this guard alive while serving the Unix API.

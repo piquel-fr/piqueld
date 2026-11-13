@@ -247,7 +247,7 @@ impl Checkouts {
         Self::recreate(&root).await?;
         Ok(Self::new(
             root,
-            crate::config::CheckoutsConfig::default().max_bytes,
+            piqueld_config::CheckoutsConfig::default().max_bytes,
         ))
     }
 

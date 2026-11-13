@@ -95,7 +95,7 @@ impl Dns {
     /// Addresses of each authoritative nameserver of `zone`, from its NS
     /// records.
     async fn nameservers(&self, zone: &Hostname) -> Result<Vec<Vec<SocketAddr>>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testing"))]
         if let Some(nameservers) = &self.nameservers {
             return Ok(nameservers.clone());
         }

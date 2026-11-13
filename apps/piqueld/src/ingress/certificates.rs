@@ -25,19 +25,17 @@
 //! file holds both, so a renewal replaces the pair atomically.
 
 use super::{Ingress, wire::Journaled};
-use crate::{
-    config::AcmeConfig,
-    directories::PrivateFile,
-    dns::{
-        Dns, ZoneError,
-        provider::{Record, RecordId, Zone},
-    },
-    store::ingress::AcmeChallenge,
-};
+use crate::store::ingress::AcmeChallenge;
 use anyhow::{Context, Result, bail};
 use instant_acme::{
     Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
     RetryPolicy,
+};
+use piqueld_config::AcmeConfig;
+use piqueld_config::directories::PrivateFile;
+use piqueld_config::dns::{
+    Dns, ZoneError,
+    provider::{Record, RecordId, Zone},
 };
 use piqueld_core::{
     api::{CertificateStatus, DnsStatus},
@@ -622,7 +620,10 @@ impl Ingress {
             .await?;
         let result = async {
             let stored = self.order_certificate(&journal, due, cancellation).await?;
-            crate::prepare_data_dir(&self.certificates.directory.join("certificates")).await?;
+            piqueld_config::directories::prepare_data_dir(
+                &self.certificates.directory.join("certificates"),
+            )
+            .await?;
             PrivateFile::at(self.certificates.path(name))
                 .write(stored.bundle())
                 .await?;
@@ -935,7 +936,8 @@ impl Ingress {
                 ),
             )
             .await?;
-            crate::prepare_data_dir(&certificates.directory.join("acme")).await?;
+            piqueld_config::directories::prepare_data_dir(&certificates.directory.join("acme"))
+                .await?;
             PrivateFile::at(path)
                 .write(serde_json::to_vec(&credentials)?)
                 .await?;

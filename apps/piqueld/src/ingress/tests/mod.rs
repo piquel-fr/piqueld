@@ -105,8 +105,8 @@ impl Drop for Engine {
 }
 
 /// `[ingress.private]`, enabled.
-pub(super) fn private_config() -> crate::config::PrivateIngressConfig {
-    crate::config::PrivateIngressConfig {
+pub(super) fn private_config() -> piqueld_config::PrivateIngressConfig {
+    piqueld_config::PrivateIngressConfig {
         enabled: true,
         ..Default::default()
     }
@@ -1477,8 +1477,8 @@ async fn exact_hostnames_win_over_wildcards_covering_them() {
     assert!(ingress.dns01_hostnames(&table).contains(&wildcard));
     // Through a tunnel, Cloudflare terminates its TLS.
     let (_engine, tunneled) = private_ingress().await;
-    let tunneled = tunneled.with_tunnel(&crate::config::TunnelConfig {
-        credentials: Some(crate::config::TunnelCredentials {
+    let tunneled = tunneled.with_tunnel(&piqueld_config::TunnelConfig {
+        credentials: Some(piqueld_config::TunnelCredentials {
             id: "6ff42ae2-765d-4adf-8112-31c55c1551ef".parse().unwrap(),
             file: "{}".into(),
         }),
@@ -1513,7 +1513,7 @@ async fn the_apps_node_forwards_to_the_private_listener_without_privileges() {
     );
     // A replaced auth key replaces the container, which reads it again.
     let hash = |key: &str| {
-        let config = crate::config::PrivateIngressConfig {
+        let config = piqueld_config::PrivateIngressConfig {
             enabled: true,
             auth_key: Some(key.into()),
             ..Default::default()
@@ -1762,7 +1762,7 @@ async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
     use std::os::unix::fs::PermissionsExt;
     let dashboard = Hostname::parse("dashboard.example.com").unwrap();
     let (engine, ingress) = private_ingress().await;
-    let ingress = ingress.with_private(&crate::config::PrivateIngressConfig {
+    let ingress = ingress.with_private(&piqueld_config::PrivateIngressConfig {
         dashboard_hostname: Some(dashboard.clone()),
         ..private_config()
     });
@@ -1798,7 +1798,7 @@ async fn the_dashboard_hostname_is_a_private_host_forwarded_to_the_daemon() {
     let configuration = ingress.build_configuration(&RoutingTable::new(), &[], None, None);
     assert!(configuration["apps"]["http"]["servers"]["private"].is_null());
 
-    let mut config = crate::config::DaemonConfig::default();
+    let mut config = piqueld_config::DaemonConfig::default();
     config.server.data_dir = engine.directory.path().into();
     config.ingress.private.dashboard_hostname = Some(dashboard.clone());
     let socket = Ingress::bind_dashboard(&config).await.unwrap().unwrap();

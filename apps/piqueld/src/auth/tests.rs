@@ -1347,27 +1347,6 @@ async fn signed_in(identity: Option<axum::Extension<Identity>>) -> axum::http::S
     }
 }
 
-#[test]
-fn webauthn_origins_and_cookie_flags_are_explicit() {
-    for origin in [
-        "https://piqueld.example",
-        "http://localhost:7845",
-        "http://worktree-1a2b3c4d.localhost:7846",
-    ] {
-        assert!(Auth::validate_origin(origin).is_ok());
-    }
-    for origin in [
-        "http://piqueld.example",
-        "http://localhost.example",
-        "https://127.0.0.1",
-        "https://user:secret@example.com",
-        "https://example.com/path",
-        "https://example.com?query",
-    ] {
-        assert!(Auth::validate_origin(origin).is_err());
-    }
-}
-
 #[tokio::test]
 async fn login_start_limits_share_listeners_ignore_forwarded_ips_and_leave_sessions_usable() {
     use axum::{
@@ -1780,7 +1759,7 @@ async fn privileged_grants_and_tokens_raise_security_events() {
 /// a tailnet identity could never be used, so creating one is refused.
 #[tokio::test]
 async fn tailnet_bindings_need_the_tailnet_node_or_dashboard_hostname() {
-    use crate::config::DaemonConfig;
+    use piqueld_config::DaemonConfig;
     assert!(!TokenPolicy::new(&DaemonConfig::default()).tailnet);
     let dashboard = DaemonConfig::from_toml(
         "[ingress]\nenabled = true\n\

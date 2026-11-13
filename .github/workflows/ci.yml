@@ -96,11 +96,20 @@ jobs:
               - .cargo/**
               - .config/**
               - justfile
+            # The crates the CLI and dashboard build too. The daemon's own
+            # crates are in `daemon`.
             crates: &crates
               - *workspace
-              - crates/**
-            rust:
+              - crates/piqueld-client/**
+              - crates/piqueld-core/**
+              - crates/piqueld-generated/**
+              - crates/piqueld-probe/**
+            daemon: &daemon
               - *crates
+              - apps/piqueld/**
+              - crates/piqueld-config/**
+            rust:
+              - *daemon
               - apps/**
               - tools/**
               - examples/**
@@ -125,13 +134,12 @@ jobs:
               - *crates
               - apps/piquelctl/**
             docker:
-              - *crates
-              - apps/piqueld/**
+              - *daemon
               - tools/**
               - examples/**
               - scripts/**
             playwright:
-              - *crates
+              - *daemon
               - apps/**
               - tools/**
               - examples/**
