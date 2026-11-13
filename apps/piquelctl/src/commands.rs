@@ -22,9 +22,8 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use piqueld_client::{
     ApplicationSummary, ApplicationView, ApplyOptions, Client, ClientError,
-    ListApplicationsOptions, Operation, OperationState, Page,
-    observability::DiagnosticCode,
-    operations::{Timeline, TimelineStream},
+    ListApplicationsOptions, Operation, OperationState, Page, observability::DiagnosticCode,
+    operations::TimelineStream, timeline::Timeline,
 };
 use serde_json::json;
 use std::{cell::Cell, collections::BTreeSet, path::Path, time::Duration};

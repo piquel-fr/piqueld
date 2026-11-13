@@ -1,5 +1,5 @@
 import {
-  test, expect, apply, auth, call, card, confirmNext, deploymentCards, head, proof, toggleDeployment, webManifest,
+  test, expect, apply, auth, call, card, confirmNext, deploymentRows, deploymentTab, head, openDeployment, proof, webManifest,
   applicationTab, environmentTab, serviceTab, title, type Ceremony, type Managed,
 } from '../fixtures.js';
 import type { Page } from '@playwright/test';
@@ -178,18 +178,17 @@ test('saves volumes and routes, previews the plan, and records a deployment', as
   await expect(preview).toBeVisible();
   await expect(preview).toContainText('volumes.data');
   await expect(preview).toContainText('services.web.source');
-  await expect(preview).toContainText('resolve image');
+  await expect(preview).toContainText('Resolve image web');
   await page.keyboard.press('Escape');
   await expect(preview).toBeHidden();
 
   await head(page).getByRole('button', { name: 'Deploy to production', exact: true }).click();
   await expect(environmentTab(page, 'Deployments')).toHaveAttribute('aria-selected', 'true');
-  const deployment = deploymentCards(page);
-  await expect(deployment).toBeVisible();
-  await toggleDeployment(deployment);
-  await expect(deployment.getByText('Operation ID', { exact: true })).toBeVisible();
-  await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
-  await expect(deployment).toContainText('nginx:1.27');
+  await openDeployment(page, deploymentRows(page));
+  await deploymentTab(page, 'Details').click();
+  await expect(page.getByText('Operation ID', { exact: true })).toBeVisible();
+  await deploymentTab(page, 'Snapshot').click();
+  await expect(page.getByRole('tabpanel', { name: 'Snapshot' })).toContainText('nginx:1.27');
   await page.goto('/dashboard/');
   await expect(page.getByRole('heading', { name: 'Recent deployments' })).toBeVisible();
   await expect(page.locator('.table', { hasText: 'browser-test' })).toContainText('requested');
@@ -244,10 +243,9 @@ test('adds, reorders, and removes jobs', async ({ page, account }) => {
   await expect(job(1)).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Deploy to production', exact: true }).click();
-  const deployment = deploymentCards(page);
-  await toggleDeployment(deployment);
-  await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
-  await expect(deployment).toContainText('migrate on web, up to 60s: migrate --all');
+  await openDeployment(page, deploymentRows(page));
+  await deploymentTab(page, 'Snapshot').click();
+  await expect(page.getByRole('tabpanel', { name: 'Snapshot' })).toContainText('migrate on web, up to 60s: migrate --all');
 });
 
 test('declares, changes, and removes generated secrets', async ({ page, account }) => {

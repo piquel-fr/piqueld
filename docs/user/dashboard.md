@@ -7,7 +7,7 @@ dependencies, rollout order and monitor window, and resource limits. Each settin
 the database without changing running containers.
 
 **Preview** opens a dialog with the planned changes, the variable values it
-renders, the planned actions (saying so when network, volume and service changes
+renders, the steps deploying it runs, by stage (saying so when network, volume and service changes
 wait for image resolution and builds, which the deployment plans), each service's
 effective rollout order (derived or explicit) and monitor window, and plan warnings. **Deploy** captures the saved configuration
 in a persisted deployment and applies it. Both buttons require all local edits
@@ -159,20 +159,27 @@ meanwhile, the daemon refuses it (`promotion_source_changed`) and the dialog
 shows why.
 
 An environment's or preview's **Deployments** tab lists its deployments, newest
-first, twenty at a time, with **Load older deployments** for the rest. Each is
-titled by what brought it: "Deployment" for one built from the environment's
+first, twenty at a time, with **Load older deployments** for the rest. Each row
+is titled by what brought it: "Deployment" for one built from the environment's
 source, "Promotion from \<environment>", "Restore", "Automatic rollback" or
-"Release redeployed", tagged with the configuration revision it deploys, and
-marked **Current target** or **Last successful**. Expanding one shows its
-details, the configuration it captured (**Snapshot**), each time piqueld tried
-it (**Attempts**) and its events (**Events**), without leaving the page.
-Expanding a deployment that succeeded offers **Restore**, unless it is the
-newest and already current, so you can also return to it after a newer
-deployment failed. Once confirmed, it deploys the deployment again exactly as it
+"Release redeployed". It shows the branch and commit it deploys, tagged with the
+configuration revision, marked **Current target** or **Last successful**, and
+how long it ran. A running deployment shows its progress instead: the steps
+done, about how long is left, and a segment per step.
+
+Select a row to open the deployment's own page, whose address you can share or
+bookmark. Its header has its state, where it came from, its commit, revision
+and release, and its progress (see [deployment
+timelines](#deployment-timelines)). Its tabs show its steps (**Timeline**), its
+operation's fields and why it failed (**Details**), the configuration it
+captured (**Snapshot**), and each time piqueld tried it (**Attempts**).
+A deployment that succeeded offers **Restore** at the top of its page, unless
+it is the newest and already current, so you can also return to it after a
+newer deployment failed. Once confirmed, it deploys the deployment again exactly as it
 ran, like `piquelctl env restore`: its manifest, images and secret versions, without running its jobs
 and without reverting volume contents or migrations. The restore is a new
 deployment whose origin reads "Restored from deployment \<id>", and becomes the
-current target. A deployment whose images or secret versions are gone is
+current target; the dashboard opens its page. A deployment whose images or secret versions are gone is
 refused with the reason. An [automatic rollback](reference/manifest.md#rollback)
 is listed the same way, its origin reading "Rolled back from deployment
 \<failed> to deployment \<restored>".
@@ -272,9 +279,9 @@ The pencil beside a service's name, on its page, renames the service. Routes,
 jobs, exports and startup dependencies that name the service follow the new
 name, and the dashboard opens the renamed service's page. Save or discard edits
 to the service's other settings first.
-An environment's Deployments tab lists expandable deployment rows with Details, Snapshot,
-and Attempts sections. Attempts load when first opened; refresh and older-attempt
-controls appear below the list. Operation IDs appear only in deployment Details,
+A deployment's page has Timeline, Details, Snapshot, and Attempts tabs.
+Attempts load when first opened; refresh and older-attempt controls appear
+below the list. Operation IDs appear in the page's header and its Details,
 next to the deployment's release, which links to it in the application's
 Releases tab, and its origin: built from the environment's source, promoted
 from another environment's deployment, a release deployed again, or, for a
@@ -482,6 +489,45 @@ final completed output loads. Opening shows the newest output; Load older output
 prepends preceding pages. Refresh replaces the output with the latest page.
 New captures retain timestamps and stdout/stderr identity, allowing daemon-side
 stream filtering. Expiration and truncation remain explicit.
+
+## Deployment timelines
+
+A deployment's timeline shows each of its steps on one time axis, so you can
+see what it is doing, what is left, and which step took longer than usual.
+
+A deployment's page follows it live while it runs. Its header has its state,
+one segment per step, the steps done and running, how long it has run, about
+how long is left, and how long it usually takes. The browser tab's title
+shows the share of steps done, then ✓ once it is deployed.
+
+While a deployment runs, its environment's or preview's **Overview** tab shows
+it in brief at the top: its state, the steps running, the steps done, about
+how long is left, and a segment per step. Its row on the **Deployments** tab
+shows the same progress. Select either to open the deployment's page.
+
+Steps are grouped by stage: **Prepare** (fetching the manifest, building and
+resolving sources, planning), **Jobs**, and **Roll out**. Each step that
+started has a bar from its start to its end, growing while it runs, and a
+dashed outline of how long it usually takes: the median of the same step in
+the environment's last five successful deployments. A step taking notably
+longer than usual is outlined in amber, and so is its duration. Steps left
+are placed where they should run. Until a deployment has built its sources,
+the steps of its environment's previous successful deployment stand in for
+its rollout, marked as a forecast; steps that appear once it plans them flash
+briefly.
+
+The step running is shown below the steps: how long it usually takes and has
+taken, its attempt, how many requests it retried, and why it failed. A build
+or a job also shows the end of its output, read again every 2 seconds while
+it runs, with `logs:read`. Select another step to show it instead, and
+**Follow live** to return to the running one. With `events:read`, **Live
+events** lists the deployment's events as they are recorded, newest first, and
+**All events** opens them on the Events page.
+
+The page's **Timeline** tab shows the same steps once the deployment ended.
+**Preview** lists the steps deploying would run the same way, without times.
+
+![The page of a deployment of hello/production: its progress, then on its Timeline tab its steps by stage on a time axis, each bar beside the dashed outline of its usual duration, the detail of its last step, and its live events](../images/operations/deployment-timeline.png)
 
 See [history and diagnostics](operations/history.md) for history, daemon
 statistics and analytics, [telemetry](operations/telemetry.md) for telemetry

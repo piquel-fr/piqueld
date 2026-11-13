@@ -1,4 +1,5 @@
 //! Shared log viewer, stream filter, and persisted display preferences.
+use super::format::Clock;
 use super::ui::checkbox;
 use crate::log_output::LogLine;
 use leptos::prelude::*;
@@ -95,15 +96,7 @@ impl LogLine {
         } else {
             self.timestamp.clone()
         };
-        (
-            format!(
-                "{:02}:{:02}:{:02}",
-                date.get_hours(),
-                date.get_minutes(),
-                date.get_seconds()
-            ),
-            full,
-        )
+        (date.clock(), full)
     }
 }
 

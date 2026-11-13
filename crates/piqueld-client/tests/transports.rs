@@ -223,7 +223,7 @@ async fn timeline_streams_outlive_the_request_timeout() {
         "started_at_ms": 1, "finished_at_ms": null
     }))
     .unwrap();
-    let timeline = serde_json::to_string(&piqueld_client::operations::Timeline::new(
+    let timeline = serde_json::to_string(&piqueld_client::timeline::Timeline::new(
         operation,
         Vec::new(),
         Vec::new(),

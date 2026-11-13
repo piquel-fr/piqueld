@@ -65,6 +65,8 @@ pub use piqueld_core::edit;
 pub use piqueld_core::links;
 /// Tailnet identities and the token bindings they satisfy.
 pub use piqueld_core::tailnet;
+/// Operation timelines: each operation's steps, done and left.
+pub use piqueld_core::timeline;
 
 pub use applications::{
     AcceptedOperation, ApplicationSummary, ApplicationView, ApplyApplicationRequest, ApplyOptions,

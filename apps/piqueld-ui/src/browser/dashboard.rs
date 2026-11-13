@@ -4,7 +4,9 @@ use super::ui::{
     Icon, PageHeader, Tone, badge, empty, health_badge, icon, key_values, loading, logo, metric,
     notice, operation_badge, when,
 };
-use super::{ApplicationRow, ClientErrorExt, access::can, dashboard_context, management};
+use super::{
+    ApplicationRow, ClientErrorExt, access::can, dashboard_context, deployment_href, management,
+};
 use crate::overview::PreviewLoad;
 use crate::state::{ApplicationHealth, ConnectionState, DataState};
 use leptos::prelude::*;
@@ -882,11 +884,10 @@ fn RecentDeployments() -> impl IntoView {
                                                 .into_iter()
                                                 .map(|(application, deployment)| {
                                                     let op = &deployment.operation;
-                                                    let href = format!(
-                                                        "/dashboard/applications/{}/environments/{}?deployment={}",
-                                                        application.id,
-                                                        op.environment_id,
-                                                        op.id,
+                                                    let href = deployment_href(
+                                                        application.id.as_str(),
+                                                        op.environment_id.as_str(),
+                                                        &op.id,
                                                     );
                                                     let name = application.name.clone();
                                                     view! {

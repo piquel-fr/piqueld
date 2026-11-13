@@ -32,7 +32,7 @@ test('the overview sums up applications by their least healthy environment', asy
   await expect(recent.getByRole('alert')).toHaveText('blog: deployment history unavailable');
   await expect(recent.getByRole('row')).toHaveCount(3);
   await expect(recent.getByRole('link', { name: 'shop', exact: true }))
-    .toHaveAttribute('href', `/dashboard/applications/${shop.app}/environments/${shop.env}?deployment=${deployed.operation_id}`);
+    .toHaveAttribute('href', `/dashboard/applications/${shop.app}/environments/${shop.env}/deployments/${deployed.operation_id}`);
 
   await page.getByRole('complementary').getByRole('link', { name: 'Applications', exact: true }).click();
   const row = (name: string) => page.locator('a.list-row', { hasText: name });

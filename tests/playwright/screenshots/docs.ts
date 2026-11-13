@@ -1,6 +1,6 @@
 // Helpers for the documentation screenshots: each one brings the dashboard to
 // a page, or state, a guide shows; `shoot` then saves it into docs/images.
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page, Route } from '@playwright/test';
 import { test as base, expect, accountRows, adminToken, fillRegistration, applicationTab, card, rewrite, title, chooseGrants, done, Process, type Cli } from '../fixtures.js';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -147,6 +147,41 @@ export async function shoot(page: Page, name: string, through?: Locator, from?: 
   // new timestamps as just now.
   await page.clock.setSystemTime(Date.now());
   await page.clock.resume();
+}
+
+/** Steadies the deployment pages the specs show, whose steps the fake engine
+ * runs in a few milliseconds, never the same number: each step lasts as long
+ * as `durations` gives for its phase, `[took, usually]`, else 500 ms, and
+ * the live events are recorded a second apart from a fixed time. Docker
+ * names keep a fixed hash. */
+export async function steadyDeployment(page: Page, durations: Record<string, [number, number]> = {}) {
+  const named = (name?: string | null) => name?.replace(/-[0-9a-f]{12}$/, '-0123456789ab');
+  // A stream the browser only connects to again long after its one message.
+  const stream = (kind: string, items: unknown[]) =>
+    ({ contentType: 'text/event-stream', body: `retry: 600000\n\n${items.map(item => `event: ${kind}\ndata: ${JSON.stringify(item)}\n\n`).join('')}` });
+  await page.route(url => url.pathname.endsWith('/timeline/stream'), async (route: Route) => {
+    const url = route.request().url().replace(/\/stream$/, '');
+    const timeline = (await (await route.fetch({ url })).json()).data;
+    let at = timeline.operation.started_at_ms;
+    for (const step of timeline.steps) {
+      const [took, usual] = durations[step.phase] ?? [500, 500];
+      Object.assign(step, { resource: named(step.resource), started_at_ms: at, finished_at_ms: at + took, expected_ms: usual });
+      at += took;
+    }
+    timeline.operation.finished_at_ms = at;
+    await route.fulfill(stream('timeline', [timeline]));
+  });
+  await page.route(url => url.pathname === '/api/v1/events/stream', async (route: Route) => {
+    const operation = new URL(route.request().url()).searchParams.get('operation_id');
+    const url = new URL(`/api/v1/events?operation_id=${operation}&limit=100`, route.request().url()).toString();
+    const events = (await (await route.fetch({ url })).json()).data.items;
+    // An instant, not the runner's local time, so every machine draws the
+    // same clock in the browser.
+    const start = Date.parse('2026-10-24T09:41:07Z');
+    events.forEach((event: Record<string, any>, index: number) =>
+      Object.assign(event, { created_at_ms: start + index * 1_000, resource: named(event.resource), message: named(event.message) }));
+    await route.fulfill(stream('event', events));
+  });
 }
 
 // The text that differs on every run: random IDs, UUIDs and digests, and

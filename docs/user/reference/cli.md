@@ -377,13 +377,13 @@ they run: those done, the one running, and those left.
 
 ```text
 ⠹ Deploying 019a6f3e-…  ▕████████░░░░▏ 6/9  48.2 s  ~30.0 s left
-  ✓ Fetch manifest  412 ms
-  ✓ Build api       38.2 s  (usual 25.0 s)
-  ✓ Resolve redis   900 ms
-  ✓ Job migrate     4.1 s
-  ⠹ Update api      3.2 s
-  ○ Wait for api    ~30.0 s
-  ○ Update web
+  ✓ Fetch manifest          412 ms
+  ✓ Build api               38.2 s  (usual 25.0 s)
+  ✓ Resolve image redis     900 ms
+  ✓ Run job migrate         4.1 s
+  ⠹ Update service api      3.2 s
+  ○ Wait for service api    ~30.0 s
+  ○ Update service web
 ```
 
 A step that ran much longer or shorter than usual shows how long it usually

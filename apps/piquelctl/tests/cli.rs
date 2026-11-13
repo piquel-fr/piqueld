@@ -1257,8 +1257,8 @@ fn non_terminal_progress_prints_a_line_per_step_change() {
         "operation-01: running\n\
          operation-01: Build api · running\n\
          operation-01: Build api · succeeded · 38.2 s  (usual 25.0 s)\n\
-         operation-01: Update api · retrying · retry 1: Docker is unavailable\n\
-         operation-01: Update api · succeeded · 2.0 s  after 1 retry\n\
+         operation-01: Update service api · retrying · retry 1: Docker is unavailable\n\
+         operation-01: Update service api · succeeded · 2.0 s  after 1 retry\n\
          operation-01: succeeded · 41.0 s (usual 27.0 s)\n"
     );
 }

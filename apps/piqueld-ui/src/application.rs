@@ -36,6 +36,9 @@ pub const ENVIRONMENT_TABS: [&str; 6] = [
     "Events",
 ];
 
+/// Tabs of a deployment's page.
+pub const DEPLOYMENT_TABS: [&str; 4] = ["Timeline", "Details", "Snapshot", "Attempts"];
+
 /// Which page of an application the route shows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
@@ -47,6 +50,14 @@ pub enum Page {
     Environment(String),
     /// One preview's branch, runtime, deployments, secrets, logs, terminal, and history.
     Preview(String),
+    /// One deployment of an environment or preview: its progress, steps,
+    /// details, snapshot, and attempts.
+    Deployment {
+        /// The environment or preview it deploys.
+        environment: String,
+        /// Its operation's ID.
+        operation: String,
+    },
 }
 
 impl Page {
@@ -56,6 +67,7 @@ impl Page {
         match self {
             Self::Environment(_) | Self::Preview(_) => &ENVIRONMENT_TABS,
             Self::Application | Self::Service(_) => &APPLICATION_TABS,
+            Self::Deployment { .. } => &DEPLOYMENT_TABS,
         }
     }
 
@@ -65,25 +77,24 @@ impl Page {
         match self {
             Self::Environment(_) | Self::Preview(_) => "Environment sections",
             Self::Application | Self::Service(_) => "Application sections",
+            Self::Deployment { .. } => "Deployment sections",
         }
     }
 
-    /// The initial tab, reading query parameters with `query`: `?deployment=`
-    /// opens deployments, `?release=` releases, and `?tab=` names a tab by
-    /// its `slug`. Tabs the page lacks open the overview.
+    /// The initial tab, reading query parameters with `query`: `?release=`
+    /// opens releases, and `?tab=` names a tab by its `slug`. Tabs the page
+    /// lacks open its first.
     #[must_use]
     pub fn initial_tab(&self, query: impl Fn(&str) -> Option<String>) -> &'static str {
-        let requested = if query("deployment").is_some() {
-            Some("deployments".to_owned())
-        } else if query("release").is_some() {
+        let tabs = self.tabs();
+        let requested = if query("release").is_some() {
             Some("releases".to_owned())
         } else {
             query("tab")
         };
-        self.tabs()
-            .iter()
+        tabs.iter()
             .find(|tab| requested.as_deref() == Some(slug(tab).as_str()))
-            .unwrap_or(&"Overview")
+            .unwrap_or(&tabs[0])
     }
 }
 
@@ -578,20 +589,11 @@ mod tests {
             move |key: &str| pairs.get(key).map(|value| (*value).to_owned())
         };
         let environment = Page::Environment("env".into());
-        // A deployment link wins over the tab it was opened from.
-        assert_eq!(
-            environment.initial_tab(query(&[("deployment", "d1"), ("tab", "logs")])),
-            "Deployments"
-        );
         assert_eq!(environment.initial_tab(query(&[("tab", "logs")])), "Logs");
         assert_eq!(slug("Command & arguments"), "command-arguments");
         // Environment pages have no releases; application pages no deployments or logs.
         assert_eq!(
             environment.initial_tab(query(&[("release", "r1")])),
-            "Overview"
-        );
-        assert_eq!(
-            Page::Application.initial_tab(query(&[("deployment", "d1")])),
             "Overview"
         );
         assert_eq!(
@@ -601,6 +603,16 @@ mod tests {
         assert_eq!(
             Page::Application.initial_tab(query(&[("release", "r1"), ("tab", "jobs")])),
             "Releases"
+        );
+        // A deployment's page opens on its timeline.
+        let deployment = Page::Deployment {
+            environment: "env".into(),
+            operation: "op".into(),
+        };
+        assert_eq!(deployment.initial_tab(query(&[])), "Timeline");
+        assert_eq!(
+            deployment.initial_tab(query(&[("tab", "snapshot")])),
+            "Snapshot"
         );
     }
 

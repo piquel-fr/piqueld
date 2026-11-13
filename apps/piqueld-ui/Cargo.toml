@@ -25,7 +25,7 @@ leptos = { workspace = true, features = ["csr"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 leptos_router.workspace = true
-web-sys = { workspace = true, features = ["Document", "Window", "Crypto", "BeforeUnloadEvent", "Storage", "Location", "History", "Navigator", "Clipboard", "ClipboardEvent", "DataTransfer", "DomRect", "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "ResizeObserver", "Selection", "WheelEvent"] }
+web-sys = { workspace = true, features = ["Document", "Window", "Crypto", "BeforeUnloadEvent", "Storage", "Location", "History", "Navigator", "Clipboard", "ClipboardEvent", "DataTransfer", "DomRect", "EventSource", "HtmlTextAreaElement", "InputEvent", "KeyboardEvent", "MessageEvent", "ResizeObserver", "Selection", "WheelEvent"] }
 
 [lints]
 workspace = true

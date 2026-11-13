@@ -1,5 +1,6 @@
 import {
-  test, expect, auth, confirmNext, deployed, deploymentCards, environmentTab, register, serveDeployments, toggleDeployment, type Managed,
+  test, expect, auth, confirmNext, deployed, deploymentRows, deploymentTab, environmentTab, openDeployment, register, serveDeployments,
+  type Managed,
 } from '../fixtures.js';
 import type { Route } from '@playwright/test';
 
@@ -29,17 +30,20 @@ test('an earlier deployment is restored from the deployment history', async ({ p
 
   await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   await environmentTab(page, 'Deployments').click();
-  const cards = deploymentCards(page);
-  await expect(cards).toHaveCount(2);
+  const rows = deploymentRows(page);
+  await expect(rows).toHaveCount(2);
+  const restoreButton = page.getByRole('button', { name: 'Restore', exact: true });
   // The current target has nothing to restore.
-  await toggleDeployment(cards.nth(0));
-  await expect(cards.nth(0)).toContainText(`Restored from deployment ${earlier}`);
-  await expect(cards.nth(0).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
+  await openDeployment(page, rows.nth(0));
+  await expect(page.getByRole('region', { name: 'Deployment progress' })).toContainText(`Restored from deployment ${earlier}`);
+  await expect(restoreButton).toHaveCount(0);
 
-  await toggleDeployment(cards.nth(1));
+  // Restoring the earlier one opens the restoring deployment's page.
+  await page.goBack();
+  await openDeployment(page, rows.nth(1));
   confirmNext(page);
-  await cards.nth(1).getByRole('button', { name: 'Restore', exact: true }).click();
-  await expect(page.getByText('Restore accepted. Follow its progress below.', { exact: true })).toBeVisible();
+  await restoreButton.click();
+  await expect(page).toHaveURL(`/dashboard/applications/${app}/environments/${env}/deployments/operation-0123456789abcdf1`);
   expect(restored).toEqual({ deployment: earlier });
 
   // Restoring needs apps:deploy: an account that only reads isn't offered it.
@@ -47,13 +51,12 @@ test('an earlier deployment is restored from the deployment history', async ({ p
     { permission: 'apps:read', applications: [app] },
   ] })).invitation_url;
   await register(page, link, 'bob');
-  await page.goto(`/dashboard/applications/${app}/environments/${env}`);
-  await environmentTab(page, 'Deployments').click();
-  await toggleDeployment(cards.nth(1));
-  await expect(cards.nth(1)).toContainText('Origin');
-  await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
-  // Nor the Events tab, which needs events:read.
-  await expect(cards.nth(1).getByRole('tab', { name: 'Events', exact: true })).toHaveCount(0);
+  await page.goto(`/dashboard/applications/${app}/environments/${env}/deployments/${earlier}`);
+  await deploymentTab(page, 'Details').click();
+  await expect(page.getByText('Origin', { exact: true })).toBeVisible();
+  await expect(restoreButton).toHaveCount(0);
+  // Nor its live events, which need events:read.
+  await expect(page.getByRole('complementary', { name: 'Live events' })).toHaveCount(0);
 });
 
 test('the current deployment is offered for restore after a newer one failed', async ({ page, account }) => {
@@ -73,8 +76,8 @@ test('the current deployment is offered for restore after a newer one failed', a
 
   await page.goto(`/dashboard/applications/${app}/environments/${env}`);
   await environmentTab(page, 'Deployments').click();
-  const cards = deploymentCards(page);
-  await expect(cards).toHaveCount(2);
-  await toggleDeployment(cards.nth(1));
-  await expect(cards.nth(1).getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
+  const rows = deploymentRows(page);
+  await expect(rows).toHaveCount(2);
+  await openDeployment(page, rows.nth(1));
+  await expect(page.getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
 });

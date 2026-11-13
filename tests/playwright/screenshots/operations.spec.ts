@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { rewrite } from '../fixtures.js';
-import { test, audit, deliveries, destination, errors, manifest, notifications, Piquelctl, shoot, telemetryGrant } from './docs.js';
+import { deploymentRows, environmentTab, expect, openDeployment, rewrite } from '../fixtures.js';
+import { test, audit, deliveries, destination, environment, errors, manifest, notifications, Piquelctl, shoot, steadyDeployment, telemetryGrant } from './docs.js';
 
 // docs/user/operations: a deployment that fails, what it notifies, the
 // audit trail, and a telemetry receiver.
@@ -23,6 +23,25 @@ test('history', async ({ page, cli, account }) => {
   await (await Piquelctl.signIn(page, cli)).applyFailing(await broken());
   await errors(page, 2);
   await shoot(page, 'operations/errors', page.locator('article.event').last());
+});
+
+test('deployment timeline', async ({ page, cli, account }) => {
+  void account;
+  // The wait for the service takes longer than usual.
+  await steadyDeployment(page, {
+    resolving_image: [1_400, 1_600], planning: [200, 200], ensure_network: [300, 300],
+    ensure_service: [900, 1_000], wait_for_service: [9_400, 6_200], routing: [400, 400],
+  });
+  await (await Piquelctl.signIn(page, cli)).apply(await manifest(firstApp));
+  await environment(page, 'hello', 'production');
+  await environmentTab(page, 'Deployments').click();
+  await openDeployment(page, deploymentRows(page).first());
+  const timeline = page.getByRole('tabpanel', { name: 'Timeline' });
+  // The last step is shown once the timeline arrived.
+  await expect(timeline.getByRole('region', { name: 'Step detail' }).getByRole('heading')).toBeVisible();
+  await expect(timeline.getByRole('complementary', { name: 'Live events' }).getByRole('listitem').first()).toBeVisible();
+  await page.locator('main').evaluate(main => Promise.all(main.getAnimations({ subtree: true }).map(animation => animation.finished)));
+  await shoot(page, 'operations/deployment-timeline', timeline);
 });
 
 test('notifications', async ({ page, cli, account }) => {

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
-import { expect, applicationTab, card, deploymentCards, environmentTab, rewrite, submitRegistration, title, toggleDeployment } from '../fixtures.js';
-import { test, accountForm, application, createApplication, environment, manifest, saveChanges, service, shoot, Piquelctl } from './docs.js';
+import { expect, applicationTab, card, deploymentRows, environmentTab, openDeployment, rewrite, submitRegistration, title } from '../fixtures.js';
+import { test, accountForm, application, createApplication, environment, manifest, saveChanges, service, shoot, steadyDeployment, Piquelctl } from './docs.js';
 
 const guides = 'user/applications';
 
@@ -229,13 +229,14 @@ test('restoring a deployment', async ({ page, daemon, cli, passkeys }) => {
   await piquelctl.run(['app', 'service', 'replicas', 'hello', 'web', '2', '--deploy', '--yes']);
   await environment(page, 'hello', 'production');
   await environmentTab(page, 'Deployments').click();
-  const deployments = deploymentCards(page);
+  const deployments = deploymentRows(page);
   await expect(deployments).toHaveCount(2);
-  await toggleDeployment(deployments.nth(1));
-  // Let its chevron finish turning.
-  await deployments.nth(1).evaluate(card => Promise.all(card.getAnimations({ subtree: true }).map(animation => animation.finished)));
-  await shoot(page, 'applications/restore', deployments.nth(1));
-  await environmentTab(page, 'Overview').click();
+  await steadyDeployment(page);
+  await openDeployment(page, deployments.nth(1));
+  await expect(page.getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Live events' }).getByRole('listitem').first()).toBeVisible();
+  await shoot(page, 'applications/restore', page.getByRole('region', { name: 'Deployment progress' }));
+  await environment(page, 'hello', 'production');
   const rollback = page.locator('section.card', { has: page.getByRole('heading', { name: 'Rollback' }) });
   await rollback.getByLabel('When a rollout fails').selectOption('automatic');
   await shoot(page, 'applications/rollback', rollback, rollback);

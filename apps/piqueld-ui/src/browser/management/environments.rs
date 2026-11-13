@@ -66,8 +66,9 @@ impl EditorContext {
     }
 }
 
-/// The application's environments with their health and latest deployment.
-/// Each whole row opens the environment's page; its Deploy button deploys it,
+/// The application's environments with their health and latest deployment,
+/// which links to its page. Each whole row opens the environment's page; its
+/// Deploy button deploys it,
 /// or for a promoted environment its Promote button promotes into it. Also
 /// creates new environments.
 #[component]
@@ -125,10 +126,13 @@ pub(super) fn EnvironmentList() -> impl IntoView {
                                                     || "Never deployed".into_any(),
                                                     |operation| {
                                                         view! {
-                                                            <span class="btn-group">
+                                                            <A
+                                                                href={context.deployment_href(&id, &operation.id)}
+                                                                attr:class="btn-group latest-deployment"
+                                                            >
                                                                 {operation_badge(operation.state)}
                                                                 {when(operation.created_at_ms)}
-                                                            </span>
+                                                            </A>
                                                         }
                                                             .into_any()
                                                     },
@@ -931,7 +935,9 @@ fn EnvironmentRollback() -> impl IntoView {
                             <option value="automatic">
                                 "Automatic: restore the last successful deployment"
                             </option>
-                            <option value="manual">"Manual: stay degraded until someone acts"</option>
+                            <option value="manual">
+                                "Manual: stay degraded until someone acts"
+                            </option>
                         </select>
                     </label>
                 </fieldset>
@@ -1052,8 +1058,7 @@ pub(super) fn EnvironmentSettings() -> impl IntoView {
         <section
             class="card card-danger"
             hidden={move || {
-                !context
-                    .can(if deleting() { AppPermission::Deploy } else { AppPermission::Delete })
+                !context.can(if deleting() { AppPermission::Deploy } else { AppPermission::Delete })
             }}
         >
             <header>

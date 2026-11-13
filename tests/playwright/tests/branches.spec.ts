@@ -1,5 +1,5 @@
 import {
-  test, expect, apply, call, card, confirmNext, deploymentCards, head, repositoryManifest, rewrite, toggleDeployment, webManifest,
+  test, expect, apply, call, card, confirmNext, deploymentRows, deploymentTab, head, openDeployment, repositoryManifest, rewrite, webManifest,
   applicationTab, environmentTab, title,
 } from '../fixtures.js';
 import type { Page } from '@playwright/test';
@@ -107,10 +107,10 @@ test('Preview plans the saved manifest on the connection branch, and the one las
   await expect(service.locator('option')).toHaveText(['All services', 'worker']);
 
   await environmentTab(page, 'Deployments').click();
-  const deployment = deploymentCards(page);
-  await toggleDeployment(deployment);
-  await deployment.getByRole('tab', { name: 'Snapshot', exact: true }).click();
-  await expect(deployment).toContainText('manifest_connection_ignored: The fetched manifest names another repository.');
+  await openDeployment(page, deploymentRows(page));
+  await deploymentTab(page, 'Snapshot').click();
+  await expect(page.getByRole('tabpanel', { name: 'Snapshot' }))
+    .toContainText('manifest_connection_ignored: The fetched manifest names another repository.');
 });
 
 test('a repository-backed application is edited like any other, and resets to its repository manifest', async ({ page, account }) => {
