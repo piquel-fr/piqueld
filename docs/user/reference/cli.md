@@ -104,7 +104,8 @@ opting in while it is on, needs `apps:deploy` too.
 `notification set NAME` creates a destination, or changes one; options it
 omits keep the current settings, and a new destination receives every category
 but `deployment_succeeded` about every application, without previews. The URL is read from `--url-file`
-or `--url-stdin`, never an argument, and is required to create one. `--kind
+or `--url-stdin`, never an argument, and is required to create one. On a
+terminal, `--url-stdin` asks for it without echoing it. `--kind
 json|discord` picks the payload, `--enabled true|false` pauses it,
 `--categories a,b` replaces the categories it receives, and
 `--message CATEGORY=TEXT` (repeatable) sends text with a category's
@@ -229,7 +230,8 @@ deployment, after confirmation (`--yes`), and waits for it unless `--no-wait`.
 (`promotion_source_changed` once the source moved on); `--release ID` deploys an
 earlier release of the application with the environment's current secrets.
 `--expected-generation N` pins the application revision; by default the
-inspected one is sent. It fails, before deploying anything, with
+inspected one is sent. `--force` sends none, so the promotion goes ahead even if
+the application changed meanwhile; it still asks for confirmation. It fails, before deploying anything, with
 `promotion_source_not_ready` unless the source's current deployment succeeded
 and runs healthy now, `release_incompatible`, `image_unavailable`, or
 `secrets_unavailable` listing every unusable secret. `env source --promote-from`
@@ -1217,9 +1219,9 @@ deployment, to rotate a value or replace one discarded by key recovery; running
 deployments keep theirs. `delete` removes an unused one:
 
 ```sh
-piquelctl env secret notes --env staging list
-piquelctl env secret notes --env staging regenerate database-password --yes
-piquelctl env secret notes --env staging delete database-password --yes
+piquelctl env secret list notes staging
+piquelctl env secret regenerate notes staging database-password --yes
+piquelctl env secret delete notes staging database-password --yes
 ```
 
 `env show` lists each secret the environment mounts and where its value comes
@@ -1237,6 +1239,6 @@ piquelctl secrets recover-key --yes
 The command requires confirmation (`--yes` for automation), refuses while the
 current key still works, and reports affected environment, secret and version
 counts. Running Docker services are left alone. `app secret APP list` and
-`env secret APP list` mark discarded values as unavailable; set replacement
+`env secret list APP` mark discarded values as unavailable; set replacement
 stored values using the same names, then Deploy explicitly, which also generates
 new values for discarded generated secrets.

@@ -3470,11 +3470,7 @@ fn promotion_commands_name_environments_and_report_the_pinned_release() {
         "POST",
         "/api/v1/environments/app-notes-01/promote",
         json!({"deployment": "operation-01", "expected_generation": 1}),
-        Reply::accepted(json!({
-            "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1,
-            "release_id": "rel-0123456789abcdef",
-            "origin": {"type": "promotion", "environment": "env-staging-01", "deployment": "operation-01"}
-        })),
+        promotion_accepted(),
     );
     let output = run(
         &server,
@@ -3494,6 +3490,44 @@ fn promotion_commands_name_environments_and_report_the_pinned_release() {
     assert_eq!(report["operation_id"], "operation-02");
     assert_eq!(report["release_id"], "rel-0123456789abcdef");
     assert_eq!(report["origin"]["environment"], "env-staging-01");
+    let _ = server.finish();
+}
+
+/// The accepted promotion of staging's `operation-01` into production.
+fn promotion_accepted() -> Reply {
+    Reply::accepted(json!({
+        "operation_id": "operation-02", "environment_id": "app-notes-01", "generation": 1,
+        "release_id": "rel-0123456789abcdef",
+        "origin": {"type": "promotion", "environment": "env-staging-01", "deployment": "operation-01"}
+    }))
+}
+
+/// `env promote --force` sends no expected generation and asks the daemon
+/// to skip that precondition.
+#[test]
+fn promote_force_sends_no_expected_generation() {
+    let server = request_server(
+        promoted_view(),
+        "POST",
+        "/api/v1/environments/app-notes-01/promote?force=true",
+        json!({"deployment": "operation-01"}),
+        promotion_accepted(),
+    );
+    let output = run(
+        &server,
+        &[
+            "env",
+            "promote",
+            "app-notes-01",
+            "production",
+            "--deployment",
+            "operation-01",
+            "--force",
+            "--yes",
+            "--no-wait",
+        ],
+    );
+    assert_eq!(assert_json_success(&output)["operation_id"], "operation-02");
     let _ = server.finish();
 }
 
@@ -3881,6 +3915,48 @@ fn json_errors_are_one_envelope_on_stderr() {
     let error = support::json_error(&output);
     assert_eq!(error["code"], "usage");
     assert!(error["message"].as_str().unwrap().contains("required"));
+}
+
+/// `notification set --url-stdin` refuses a URL longer than any webhook's
+/// rather than cutting it.
+#[test]
+fn notification_urls_over_8_kib_are_refused() {
+    let server = start_server(false, 1, |request| match request.path.as_str() {
+        "/api/v1/notifications/destinations" => Reply::json(json!([])),
+        path => panic!("unexpected path {path}"),
+    });
+    let mut child = server
+        .command()
+        .args([
+            "--json",
+            "notification",
+            "set",
+            "ops",
+            "--kind",
+            "discord",
+            "--url-stdin",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("piquelctl process");
+    let url = format!("https://discord.com/api/webhooks/{}", "a".repeat(8192));
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(url.as_bytes())
+        .expect("URL is written");
+    let output = child.wait_with_output().expect("piquelctl exits");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        support::json_error(&output)["message"]
+            .as_str()
+            .unwrap()
+            .contains("at most 8192 bytes")
+    );
+    let _ = server.finish();
 }
 
 /// `notification deliveries` reads the requested page, showing when each

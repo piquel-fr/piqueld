@@ -1,13 +1,16 @@
 //! Shared helpers: blocking operator input, file reading, retries, and small
 //! formatting utilities.
-use crate::error::{CliError, ErrorKind, Result};
+use crate::{
+    error::{CliError, ErrorKind, Result},
+    output::Console,
+};
 use piqueld_client::ClientError;
-use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
+use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
 use serde_json::json;
 use std::{
     fmt,
     future::Future,
-    io::{self, Read},
+    io::{self, BufRead, IsTerminal, Read},
     num::NonZeroU64,
     path::{Path, PathBuf},
     sync::{
@@ -143,6 +146,62 @@ pub(crate) async fn read_input<T: Send + 'static>(
             format!("could not read {what}: {error}"),
         )
     })
+}
+
+/// Reads `what`, such as a secret value, from `file` verbatim, or from stdin
+/// without one trailing newline, so `echo value |` gives `value`. A terminal
+/// is asked for one line, without echoing it. Reads at most `limit` plus a
+/// CRLF and one byte, so input still too long once the newline is dropped is
+/// detected rather than cut short. Reads run off the runtime, since stdin can
+/// block indefinitely and Ctrl-C must stay responsive.
+pub(crate) async fn read_hidden(
+    console: &mut Console,
+    what: &'static str,
+    file: Option<PathBuf>,
+    limit: u64,
+) -> Result<Vec<u8>> {
+    let stdin = file.is_none();
+    let terminal = stdin && io::stdin().is_terminal();
+    // Dropped with this future, so echo also returns when Ctrl-C
+    // interrupts the read.
+    let _hidden = if terminal {
+        let mut prompt = what.to_owned();
+        if let Some(first) = prompt.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        console.prompt(&format!("{prompt} (hidden): "))?;
+        let hide = |mode: &mut Termios| {
+            mode.local_modes.remove(LocalModes::ECHO);
+            mode.local_modes.insert(LocalModes::ECHONL);
+        };
+        Some(TerminalMode::enable(hide).map_err(|error| {
+            CliError::new(
+                ErrorKind::General,
+                format!("could not hide terminal input: {error}"),
+            )
+        })?)
+    } else {
+        None
+    };
+    let mut value = read_input(what, move || {
+        let input: Box<dyn Read> = match file {
+            Some(path) => Box::new(std::fs::File::open(path)?),
+            None => Box::new(io::stdin()),
+        };
+        let mut input = io::BufReader::new(input.take(limit + 3));
+        let mut bytes = Vec::new();
+        if terminal {
+            input.read_until(b'\n', &mut bytes)?;
+        } else {
+            input.read_to_end(&mut bytes)?;
+        }
+        Ok(bytes)
+    })
+    .await?;
+    if stdin && value.pop_if(|byte| *byte == b'\n').is_some() {
+        value.pop_if(|byte| *byte == b'\r');
+    }
+    Ok(value)
 }
 
 /// Standard input's terminal in a changed mode, e.g. raw or without echo;

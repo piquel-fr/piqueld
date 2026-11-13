@@ -371,7 +371,7 @@ pub(crate) struct RestoreArgs<T: Args> {
     /// The deployment to restore, as `history` lists it; it must have succeeded.
     deployment: String,
     /// Skip the interactive confirmation prompt.
-    #[arg(long)]
+    #[arg(long, short)]
     yes: bool,
     /// Return after the daemon accepts the restore.
     #[arg(long)]

@@ -167,12 +167,6 @@ pub(crate) enum EnvCommand {
     },
     /// List, regenerate, or delete an environment's generated secrets.
     Secret {
-        /// Application name or stable ID.
-        application: String,
-        /// Environment name or stable ID. You can omit it when the
-        /// application has exactly one environment.
-        #[arg(long = "env", value_name = "ENV")]
-        environment: Option<String>,
         #[command(subcommand)]
         action: crate::secrets::GeneratedSecretAction,
     },
@@ -228,7 +222,7 @@ pub(crate) struct ChangeFlags {
     #[arg(long, value_name = "GENERATION")]
     expected_generation: Option<u64>,
     /// Skip the confirmation prompt. You need it when not on a terminal.
-    #[arg(long)]
+    #[arg(long, short)]
     yes: bool,
     /// Change the environment even if the application changed since the
     /// command read it. It still asks for confirmation.
@@ -262,15 +256,7 @@ impl EnvCommand {
             Self::Show(target) => show(client, console, target).await,
             Self::Visibility(args) => args.run(client, console).await,
             Self::Rollback(args) => args.run(client, console).await,
-            Self::Secret {
-                application,
-                environment,
-                action,
-            } => {
-                action
-                    .run(client, console, application, environment.as_deref())
-                    .await
-            }
+            Self::Secret { action } => action.run(client, console).await,
             Self::Rename(args) => args.run(client, console).await,
             Self::Delete(args) => args.run(client, console).await,
             Self::Deploy {
@@ -634,15 +620,19 @@ pub(crate) struct PromoteArgs {
     /// or not.
     #[arg(long)]
     plan: bool,
+    /// Promote even if the application changed since the command read it.
+    /// It still asks for confirmation.
+    #[arg(long, conflicts_with = "expected_generation")]
+    force: bool,
     #[command(flatten)]
     flags: OperationFlags,
 }
 
 impl PromoteArgs {
     /// Plans, or confirms and promotes, the selected release, guarded by the
-    /// expected generation, defaulting to the current one. Waits unless
-    /// `--no-wait`. A plan listing unusable secrets fails as a conflict,
-    /// since promoting would.
+    /// expected generation, defaulting to the current one, unless `--force`.
+    /// Waits unless `--no-wait`. A plan listing unusable secrets fails as a
+    /// conflict, since promoting would.
     async fn run(&self, client: &Client, console: &mut Console) -> Result<()> {
         let (application, environment) =
             select(client, &self.application, Some(&self.environment)).await?;
@@ -686,12 +676,13 @@ impl PromoteArgs {
                 ),
             )
             .await?;
-        request.expected_generation = Some(
+        request.expected_generation = (!self.force).then(|| {
             self.flags
                 .expected_generation
-                .unwrap_or(application.generation),
-        );
-        let accepted = retry_transport(|| client.promote_environment(id, &request, false)).await?;
+                .unwrap_or(application.generation)
+        });
+        let accepted =
+            retry_transport(|| client.promote_environment(id, &request, self.force)).await?;
         let report = PromotionReport::new(&application, &accepted);
         if self.flags.no_wait {
             return console.emit(&report);

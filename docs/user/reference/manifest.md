@@ -740,7 +740,7 @@ A value is generated when a deployment prepares its inputs, a service or job
 mounts the secret, and it has no stored value. Declarations that no service or
 job mounts are not generated, so they never count against secret quotas. A value is never
 changed afterwards: later applies, deploys, and edits to the declaration keep
-it, so rotation stays explicit: `piquelctl env secret APP --env ENV regenerate NAME`
+it, so rotation stays explicit: `piquelctl env secret regenerate APP ENV NAME`
 generates a new version for the next deployment. A value discarded by key
 recovery has nothing left to keep, so the next deployment that mounts it
 generates a new one. Removing a declaration retains the generated value.

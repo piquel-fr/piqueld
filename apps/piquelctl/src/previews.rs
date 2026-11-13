@@ -176,7 +176,7 @@ pub(crate) struct PreviewArgs {
 #[derive(Debug, Args)]
 pub(crate) struct PreviewDeletionFlags {
     /// Skip the confirmation prompt. You need it when not on a terminal.
-    #[arg(long)]
+    #[arg(long, short)]
     yes: bool,
     /// Return once the daemon accepts the deletion, without waiting for it
     /// to finish.

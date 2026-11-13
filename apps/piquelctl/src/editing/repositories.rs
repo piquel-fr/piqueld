@@ -110,7 +110,7 @@ pub(crate) enum WebhookCommand {
         /// Application name or stable ID.
         app: String,
         /// Skip the confirmation prompt. You need it when not on a terminal.
-        #[arg(long)]
+        #[arg(long, short)]
         yes: bool,
     },
 }

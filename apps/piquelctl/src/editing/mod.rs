@@ -100,7 +100,7 @@ pub(crate) struct EditFlags {
     #[arg(long, conflicts_with = "expected_generation")]
     force: bool,
     /// Skip the confirmation prompt. You need it when not on a terminal.
-    #[arg(long)]
+    #[arg(long, short)]
     yes: bool,
 }
 // Declares edit argument structs: a flattened target followed by one `value`,
