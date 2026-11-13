@@ -67,11 +67,7 @@ impl LiveTimeline {
             waterfall: Memo::new(move |_| {
                 // Only a running operation's waterfall follows the clock.
                 let now = live.get().then(|| now.get());
-                timeline.with(|t| {
-                    t.as_ref()
-                        .map(|t| Waterfall::new(&t.steps, now))
-                        .unwrap_or_default()
-                })
+                timeline.with(|t| t.as_ref().map_or_default(|t| Waterfall::new(&t.steps, now)))
             }),
             error: RwSignal::new(None),
             settled: StoredValue::new(false),
