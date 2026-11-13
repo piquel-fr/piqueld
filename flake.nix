@@ -188,7 +188,9 @@
                 meta.mainProgram = builtins.head binaries;
                 cargoBuildExtraArgs = lib.concatMapStringsSep " " (binary: "--bin ${binary}") binaries;
                 nativeBuildInputs =
-                  commonArgs.nativeBuildInputs ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper;
+                  commonArgs.nativeBuildInputs
+                  ++ lib.optional (builtins.elem "piqueld" binaries) pkgs.makeWrapper
+                  ++ lib.optional (builtins.elem "piquelctl" binaries) pkgs.installShellFiles;
                 installPhaseCommand = ''
                   ${lib.concatMapStringsSep "\n" (
                     binary:
@@ -199,14 +201,27 @@
                       "$out/share/piqueld/piqueld.example.toml"
                   ''}
                 '';
-                postInstall = lib.optionalString (builtins.elem "piqueld" binaries) ''
-                  wrapProgram "$out/bin/piqueld" --prefix PATH : ${
-                    lib.makeBinPath [
-                      pkgs.git
-                      pkgs.docker-client
-                    ]
-                  }
-                '';
+                postInstall =
+                  lib.optionalString (builtins.elem "piqueld" binaries) ''
+                    wrapProgram "$out/bin/piqueld" --prefix PATH : ${
+                      lib.makeBinPath [
+                        pkgs.git
+                        pkgs.docker-client
+                      ]
+                    }
+                  ''
+                  # The scripts come from running piquelctl, so only a native build makes them.
+                  +
+                    lib.optionalString
+                      (
+                        builtins.elem "piquelctl" binaries && pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform
+                      )
+                      ''
+                        installShellCompletion --cmd piquelctl \
+                          --bash <("$out/bin/piquelctl" completions bash) \
+                          --fish <("$out/bin/piquelctl" completions fish) \
+                          --zsh <("$out/bin/piquelctl" completions zsh)
+                      '';
               }
             );
         in

@@ -355,7 +355,7 @@ deployment found on `main`. `piquelctl app show blog` also prints
 
 Each deployment that follows a push records a `branch_synced` event, such as
 `branch main moved to 44928ef…`, requested by `sync:poll` or `sync:webhook`.
-They are on the application's **Events** tab, and in `piquelctl events`.
+They are on the application's **Events** tab, and in `piquelctl event`.
 
 With a webhook, GitHub's **Recent Deliveries**, on the webhook's settings,
 shows each delivery and piqueld's response: `204` when it was accepted.

@@ -1817,12 +1817,13 @@ fn runtime_commands_retry_transport() {
 }
 
 #[test]
-fn events_cli_reads_a_filtered_page() {
+fn events_cli_reads_a_filtered_page_newest_first() {
     let server = start_server(false, 1, |request| {
         assert_eq!(request.method, "GET");
+        // An environment ID alone is sent as is, so deleted ones still match.
         assert_eq!(
             request.path,
-            "/api/v1/events?application_id=app-notes&cursor=v1%3A7&environment_id=app-notes-01&limit=2"
+            "/api/v1/events?cursor=v1%3A7&descending=true&environment_id=app-notes-01&limit=2"
         );
         Reply::json(
             json!({"items":[{"id":8,"environment_id":"app-notes-01","operation_id":"operation-01","generation":1,"attempt":2,"kind":"operation_succeeded","message":null,"error_code":null,"phase":null,"resource":null,"created_at_ms":123}],"next_cursor":null}),
@@ -1831,10 +1832,8 @@ fn events_cli_reads_a_filtered_page() {
     let output = run(
         &server,
         &[
-            "events",
-            "--application",
-            "app-notes",
-            "--environment",
+            "event",
+            "--env",
             "app-notes-01",
             "--cursor",
             "v1:7",
@@ -1853,29 +1852,89 @@ fn events_cli_reads_a_filtered_page() {
 }
 
 #[test]
-fn builds_list_sends_its_filters() {
-    let server = start_server(false, 1, |request| {
+fn builds_list_resolves_names_and_sends_its_filters() {
+    for (arguments, filter) in [
+        // The plural noun and `--application` stay as hidden aliases.
+        (
+            &["builds", "list", "--application", "app-notes-01"][..],
+            "application_id=app-notes-01&cursor=v1%3A7&limit=50",
+        ),
+        (
+            &["build", "list", "--app", "notes", "--limit", "5"],
+            "application_id=app-notes-01&cursor=v1%3A7&limit=5",
+        ),
+        // A name of ID length is looked up as a name once no ID matches.
+        (
+            &["build", "list", "--app", "welcome-to-docker"],
+            "application_id=app-welcome-01&cursor=v1%3A7&limit=50",
+        ),
+        (
+            &["build", "list", "--app", "notes", "--env", "production"],
+            "application_id=app-notes-01&cursor=v1%3A7&environment_id=app-notes-01&limit=50",
+        ),
+        // Deleted applications and environments are found by their IDs.
+        (
+            &[
+                "build",
+                "list",
+                "--app",
+                "app-gone-01",
+                "--env",
+                "env-gone-01",
+            ],
+            "application_id=app-gone-01&cursor=v1%3A7&environment_id=env-gone-01&limit=50",
+        ),
+    ] {
+        let server = start_server(false, usize::MAX, |request| match request.path.as_str() {
+            // Names are looked up with one filtered request.
+            "/api/v1/applications?name=notes" => {
+                Reply::json(page(vec![app_summary("app-notes-01", "notes")], None))
+            }
+            "/api/v1/applications?name=welcome-to-docker" => Reply::json(page(
+                vec![app_summary("app-welcome-01", "welcome-to-docker")],
+                None,
+            )),
+            "/api/v1/applications?name=app-gone-01" => Reply::json(page(Vec::new(), None)),
+            "/api/v1/applications/app-notes-01" => Reply::json(app_view("app-notes-01", "notes")),
+            "/api/v1/applications/app-welcome-01" => {
+                Reply::json(app_view("app-welcome-01", "welcome-to-docker"))
+            }
+            "/api/v1/applications/welcome-to-docker" | "/api/v1/applications/app-gone-01" => {
+                Reply::status(
+                    "404 Not Found",
+                    &json!({"code": "not_found", "message": "not found"}),
+                )
+            }
+            path if path.starts_with("/api/v1/builds") => Reply::json(page(Vec::new(), None)),
+            path => panic!("unexpected path {path}"),
+        });
+        assert_json_success(&run(&server, &[arguments, &["--cursor", "v1:7"]].concat()));
+        let requests = server.stop();
+        let last = requests.last().expect("a builds request");
         assert_eq!(
-            request.path,
-            "/api/v1/builds?application_id=app-notes&cursor=v1%3A7&environment_id=app-notes-01"
+            last.path,
+            format!("/api/v1/builds?{filter}"),
+            "{arguments:?}"
         );
-        Reply::json(page(Vec::new(), None))
+    }
+    // A name that finds nothing, and isn't shaped like an ID, is an error.
+    let server = start_server(false, usize::MAX, |request| match request.path.as_str() {
+        "/api/v1/applications?name=blog" => Reply::json(page(Vec::new(), None)),
+        path => panic!("unexpected path {path}"),
     });
-    let output = run(
-        &server,
-        &[
-            "builds",
-            "list",
-            "--application",
-            "app-notes",
-            "--environment",
-            "app-notes-01",
-            "--cursor",
-            "v1:7",
-        ],
-    );
-    assert_json_success(&output);
-    assert_eq!(server.finish().len(), 1);
+    let output = run(&server, &["build", "list", "--app", "blog"]);
+    server.stop();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}
+
+#[test]
+fn completions_print_a_shell_script() {
+    let output = support::command()
+        .args(["completions", "bash"])
+        .output()
+        .expect("piquelctl process");
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("_piquelctl"));
 }
 
 #[test]

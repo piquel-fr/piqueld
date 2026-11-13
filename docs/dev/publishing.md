@@ -265,9 +265,8 @@ set `DOCKER_HOST` to that engine's socket first.
 
 - **The deployment fails with `git_build_failed`.** The build's output ends
   with the error. List the builds with
-  `piquelctl builds list --application <id>`, where `<id>` is the ID
-  `piquelctl app show piqueld-dev` prints, then read one with
-  `piquelctl builds logs <number>`.
+  `piquelctl build list --app piqueld-dev`, then read one with
+  `piquelctl build logs <number>`.
 - **The first deployment fails with `preparation_timeout`.** The build took
   longer than
   [`reconciliation.prepare_timeout_seconds`](../user/reference/configuration-settings.md#reconciliationprepare_timeout_seconds),

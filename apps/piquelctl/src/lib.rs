@@ -50,7 +50,15 @@ pub async fn run() -> ExitCode {
         .expect("matches were validated by the same Cli command definition");
     let mut console = Console::new(&cli);
     let result = async {
-        // Validation is purely local, so it needs neither profiles nor a daemon.
+        // Completions and validation are purely local, so they need neither
+        // profiles nor a daemon.
+        if let cli::Command::Completions { shell } = &cli.command {
+            // `generate` panics on a write failure, such as a closed pipe.
+            let mut script = Vec::new();
+            clap_complete::generate(*shell, &mut command(), "piquelctl", &mut script);
+            std::io::Write::write_all(&mut std::io::stdout(), &script)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         if let cli::Command::App {
             command: cli::AppCommand::Validate { file },
         } = &cli.command

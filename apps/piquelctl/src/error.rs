@@ -218,6 +218,14 @@ impl CliError {
         }
     }
 
+    /// An application that neither its ID nor its name finds.
+    pub(crate) fn application_not_found(name_or_id: &str) -> Self {
+        Self::new(
+            ErrorKind::Input,
+            format!("application {name_or_id:?} was not found"),
+        )
+    }
+
     /// Arguments the command line parser rejected.
     pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Input, message).code(CliCode::Usage)

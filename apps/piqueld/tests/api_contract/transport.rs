@@ -19,7 +19,7 @@ async fn typed_client_exercises_the_lifecycle_over_tcp_and_a_unix_socket() {
         assert_eq!(status.api_version, "v1");
         assert!(
             client
-                .builds(None, None, None)
+                .builds(None, None, None, None)
                 .await
                 .unwrap()
                 .items

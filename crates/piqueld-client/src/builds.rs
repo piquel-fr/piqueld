@@ -2,7 +2,8 @@
 use crate::{BuildLogPage, BuildRecord, Client, ClientError, Page, client::EnvelopedCall};
 impl Client {
     /// Reads one page of build attempts, newest first, optionally of one
-    /// application's environments or of one environment.
+    /// application's environments or of one environment, of at most `limit`
+    /// builds, or the daemon's default.
     /// # Errors
     /// Returns transport, decoding, or API errors.
     pub async fn builds(
@@ -10,9 +11,13 @@ impl Client {
         application: Option<&str>,
         environment: Option<&str>,
         cursor: Option<&str>,
+        limit: Option<u16>,
     ) -> Result<Page<BuildRecord>, ClientError> {
+        if let Some(limit) = limit {
+            crate::client::check_page_limit("build", limit)?;
+        }
         self.generated
-            .list_builds(application, cursor, environment, None)
+            .list_builds(application, cursor, environment, limit.map(i64::from))
             .data()
             .await
     }
