@@ -79,6 +79,15 @@ pub enum EventDetail {
         /// Which of the operation's steps the plan lists.
         coverage: crate::timeline::PlanCoverage,
     },
+    /// What a service's Swarm tasks are doing while an action waits for it
+    /// to roll out (`action_progressed`), recorded when that changes.
+    Rollout {
+        /// The tasks of this rollout: running and starting ones, and those
+        /// it stops.
+        tasks: Vec<crate::timeline::RolloutTask>,
+        /// How long Swarm watches each new task once it runs, in seconds.
+        monitor_seconds: u32,
+    },
 }
 
 /// Who caused an event: exactly one kind of actor.

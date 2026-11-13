@@ -1486,7 +1486,7 @@ pub(crate) fn image_name(reference: &str) -> &str {
 }
 
 /// Lifecycle state of an observed Docker task.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     /// The task has been created but not scheduled.
@@ -1524,12 +1524,32 @@ impl TaskState {
     pub fn is_live(&self) -> bool {
         matches!(self, Self::Starting | Self::Running)
     }
+
+    /// Whether the task is over: it completed, failed, was rejected, or was
+    /// shut down.
+    #[must_use]
+    pub const fn ended(self) -> bool {
+        matches!(
+            self,
+            Self::Complete | Self::Failed | Self::Rejected | Self::Shutdown
+        )
+    }
 }
 
 /// Sanitized observation of one Docker task.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedTask {
+    /// Docker task ID.
+    #[serde(default)]
+    pub id: String,
+    /// The replica slot the task fills.
+    #[serde(default)]
+    pub slot: Option<u64>,
+    /// Whether the task runs the service's current specification, rather
+    /// than one an update is replacing.
+    #[serde(default)]
+    pub current: bool,
     /// Current Docker task state.
     pub state: TaskState,
     /// Backend health result, when available.

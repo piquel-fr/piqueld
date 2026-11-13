@@ -839,8 +839,15 @@ infrastructure that the event history only shows with `system:read`.
 | `steps[].expected_ms` | The median duration of the same step in the environment's last five successful operations of the same kind |
 | `steps[].action_id` | The journaled action: filter events by it for its requests and retries |
 | `steps[].diagnostic` | Why the step failed, or why its latest request did |
+| `steps[].tasks` | While a step waits for a service (`wait_for_service`): its Swarm tasks, each with `id`, `slot`, whether it runs the new specification (`current`), and its `spans`, the Docker `state` (and health verdict) it moved through, each from when it was first observed |
+| `steps[].monitor_seconds` | How long Swarm watches each new task of that service once it runs |
 | `promoted_at_ms` | When the operation's target was promoted |
 | `cursor` | The newest event applied |
+
+While it waits for a service, an operation records an `action_progressed`
+event each time the service's tasks change state, whose `detail` lists them.
+A stop-first rollout shows when no task served requests: from the old task's
+shutdown to when the new one runs and passes its health check.
 
 Steps left come from the operation's latest recorded plan: a
 `plan_recorded` event whose `detail` lists the steps it plans next. It

@@ -1090,7 +1090,9 @@ before starting its replacement: tasks never overlap, at the cost of a short
 downtime. `start-first` starts the replacement first, so there is no downtime
 but the two tasks briefly run side by side. Use `stop-first` for a singleton
 worker that must not run twice, and `start-first` for a store that tolerates
-two writers.
+two writers. A deployment's [timeline](../dashboard.md#deployment-timelines)
+shows each rollout's tasks as they are replaced, and how long the service was
+down; so does [`piquelctl`](cli.md) while it waits for a deployment.
 
 Both fields are optional, and an empty or missing block keeps the defaults:
 the order is derived from the mounts (`stop-first` when any volume is mounted

@@ -152,8 +152,8 @@ export async function shoot(page: Page, name: string, through?: Locator, from?: 
 /** Steadies the deployment pages the specs show, whose steps the fake engine
  * runs in a few milliseconds, never the same number: each step lasts as long
  * as `durations` gives for its phase, `[took, usually]`, else 500 ms, and
- * the live events are recorded a second apart from a fixed time. Docker
- * names keep a fixed hash. */
+ * a rollout's tasks change state evenly over it, and the live events are
+ * recorded a second apart from a fixed time. Docker names keep a fixed hash. */
 export async function steadyDeployment(page: Page, durations: Record<string, [number, number]> = {}) {
   const named = (name?: string | null) => name?.replace(/-[0-9a-f]{12}$/, '-0123456789ab');
   // A stream the browser only connects to again long after its one message.
@@ -166,6 +166,10 @@ export async function steadyDeployment(page: Page, durations: Record<string, [nu
     for (const step of timeline.steps) {
       const [took, usual] = durations[step.phase] ?? [500, 500];
       Object.assign(step, { resource: named(step.resource), started_at_ms: at, finished_at_ms: at + took, expected_ms: usual });
+      // A rollout's tasks move through their states evenly over the step.
+      for (const task of step.tasks ?? []) {
+        task.spans.forEach((span: { from_ms: number }, index: number) => { span.from_ms = at + Math.round(took * index / task.spans.length); });
+      }
       at += took;
     }
     timeline.operation.finished_at_ms = at;

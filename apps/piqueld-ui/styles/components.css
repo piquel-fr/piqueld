@@ -1835,6 +1835,18 @@
         box-shadow: 0 0 0 1px var(--warn);
     }
 
+    /* When no task of a rolling-out service served requests. */
+    .step-down {
+        position: absolute;
+        top: calc(50% - 9px);
+        height: 18px;
+        min-width: 2px;
+        border: 1px solid var(--bad);
+        border-radius: 3px;
+        background: repeating-linear-gradient(-45deg, var(--bad-line) 0 4px, transparent 4px 8px);
+        transition: width 1s linear;
+    }
+
     @keyframes stripes {
         to {
             background-position: 17px 0;
@@ -1877,6 +1889,161 @@
 
     .step-detail-head .btn {
         margin-left: auto;
+    }
+
+    /* A rollout's Swarm tasks. The clock moves `--now`, which open
+       stretches reach through a transition. */
+    .rollout-tasks {
+        display: grid;
+        gap: 8px;
+    }
+
+    .rollout-monitor {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--ink-soft);
+        font-size: 12.5px;
+    }
+
+    .monitor-ring {
+        position: relative;
+        display: grid;
+        flex: none;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+    }
+
+    .monitor-ring svg {
+        position: absolute;
+        inset: 0;
+        transform: rotate(-90deg);
+    }
+
+    .monitor-ring circle {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 4;
+        stroke-dasharray: 100;
+        animation: monitor linear forwards;
+    }
+
+    .monitor-ring > span {
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    @keyframes monitor {
+        from {
+            stroke-dashoffset: 100;
+        }
+
+        to {
+            stroke-dashoffset: 0;
+        }
+    }
+
+    .task-lanes {
+        display: grid;
+        gap: 4px;
+    }
+
+    .task-lane {
+        display: grid;
+        grid-template-columns: 110px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+    }
+
+    .task-name {
+        overflow: hidden;
+        color: var(--ink-soft);
+        font-family: var(--font-mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .task-name em {
+        color: var(--muted);
+        font-style: normal;
+    }
+
+    .task-track {
+        position: relative;
+        height: 18px;
+        overflow: hidden;
+        border-radius: 3px;
+        background: var(--surface-muted);
+    }
+
+    .task-stretch {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        min-width: 3px;
+        overflow: hidden;
+        padding-left: 4px;
+        background: var(--look);
+        color: var(--page);
+        font-size: 10px;
+        font-weight: 600;
+        line-height: 18px;
+        white-space: nowrap;
+    }
+
+    .task-stretch.open {
+        transition: width 1s linear;
+    }
+
+    [data-look="preparing"] {
+        --look: var(--info);
+    }
+
+    [data-look="starting"] {
+        --look: var(--warn);
+    }
+
+    [data-look="running"] {
+        --look: var(--ok);
+    }
+
+    [data-look="monitor"] {
+        --look: repeating-linear-gradient(90deg, var(--ok) 0 6px, #6bbf8f 6px 12px);
+    }
+
+    [data-look="unhealthy"],
+    [data-look="failed"] {
+        --look: var(--bad);
+    }
+
+    [data-look="stopped"] {
+        --look: var(--muted);
+    }
+
+    .task-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        color: var(--muted);
+        font-size: 11px;
+    }
+
+    .task-legend li {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+    .task-legend li::before {
+        content: "";
+        width: 14px;
+        height: 6px;
+        border-radius: 2px;
+        background: var(--look);
     }
 
     .step-output-lines {

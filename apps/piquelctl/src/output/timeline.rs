@@ -4,10 +4,11 @@
 //!
 //! ```text
 //! ⠹ Deploying operation-01  ▕████████░░░░▏ 6/9  48.2 s  ~30.0 s left
-//!   ✓ Fetch manifest  412 ms
-//!   ✓ Build api       38.2 s  (usual 25.0 s)
-//!   ⠹ Update api      3.2 s
-//!   ○ Wait for api    ~30.0 s
+//!   ✓ Fetch manifest            412 ms
+//!   ✓ Build api                 38.2 s  (usual 25.0 s)
+//!   ✓ Update service api        1.1 s
+//!   ⠹ Wait for service api      9.3 s  1/2 new tasks running · monitor 4.2 s left
+//!   ○ Wait for service worker   ~30.0 s
 //! ```
 
 use super::{
@@ -20,9 +21,13 @@ use parking_lot::Mutex;
 use piqueld_client::{
     OperationKind, OperationState,
     observability::Elapsed,
-    timeline::{Step, StepState, Timeline},
+    timeline::{NewTasks, Step, StepState, Timeline},
 };
 use std::{collections::HashMap, fmt, io, sync::Arc, time::Duration};
+
+/// What a step was printed with in line modes: its state, its retries, and
+/// a rollout's new tasks.
+type Printed = (StepState, u64, Option<NewTasks>);
 
 /// Step rows a terminal shows at most: beyond them, the earliest steps that
 /// succeeded fold into one row, then the last steps left into another.
@@ -43,9 +48,9 @@ pub(crate) struct TimelineProgress {
     bar: Option<ProgressBar>,
     /// In line modes, the operation's state last printed.
     printed_state: Option<OperationState>,
-    /// In line modes, the state and retries each started step, by its
-    /// action, was last printed with.
-    printed: HashMap<String, (StepState, u64)>,
+    /// In line modes, how each started step, by its action, was last
+    /// printed.
+    printed: HashMap<String, Printed>,
     finished: bool,
 }
 
@@ -91,7 +96,8 @@ impl TimelineProgress {
 
     /// Shows the operation's latest timeline. In line modes, prints the
     /// operation's state when it changed and each step that started or
-    /// changed since last printed.
+    /// changed since last printed: its state, retries, or a rollout's new
+    /// tasks running.
     pub(crate) fn update(&mut self, timeline: &Timeline) {
         if self.finished {
             return;
@@ -107,7 +113,7 @@ impl TimelineProgress {
                 let Some(action) = &step.action_id else {
                     continue;
                 };
-                let shown = (step.state, step.retries);
+                let shown = (step.state, step.retries, step.new_tasks());
                 if self.printed.get(action) != Some(&shown) {
                     self.printed.insert(action.clone(), shown);
                     self.print(&label, step);
@@ -393,7 +399,10 @@ impl fmt::Display for StepLabel<'_> {
 
 /// How long a step took, or should take before it started, and how it
 /// went: `38.2 s  (usual 25.0 s)`, `retry 2: Docker is unavailable` or
-/// `~30.0 s`. With `now_ms`, also how long a step still running has run.
+/// `~30.0 s`. A rollout adds its new tasks while it runs and how long no
+/// task served: `12.0 s  1/2 new tasks running · down 3.2 s`. With
+/// `now_ms`, also how long a step still running has run, its open monitor
+/// window and its downtime so far.
 struct StepDetail<'a> {
     step: &'a Step,
     now_ms: Option<i64>,
@@ -423,6 +432,28 @@ impl fmt::Display for StepDetail<'_> {
                 "{gap}(usual {})",
                 Elapsed(Duration::from_millis(usual))
             )?;
+            gap = "  ";
+        }
+        // A rollout's new tasks while it runs, then how long it was down.
+        let mut parts = Vec::new();
+        if let Some(tasks) = step.new_tasks().filter(|_| step.state.running()) {
+            parts.push(tasks.to_string());
+        }
+        if let Some(left) = self
+            .now_ms
+            .and_then(|now_ms| Some(step.monitor(now_ms)?.left_ms(now_ms)))
+        {
+            parts.push(format!(
+                "monitor {} left",
+                Elapsed(Duration::from_millis(left))
+            ));
+        }
+        if let Some(down) = now_ms.and_then(|now_ms| step.downtime(now_ms)) {
+            parts.push(format!("down {}", Elapsed(Duration::from_millis(down.ms))));
+        }
+        if !parts.is_empty() {
+            write!(formatter, "{gap}{}", parts.join(" · "))?;
+            gap = "  ";
         }
         let summary = step
             .diagnostic

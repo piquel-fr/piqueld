@@ -381,8 +381,8 @@ they run: those done, the one running, and those left.
   ✓ Build api               38.2 s  (usual 25.0 s)
   ✓ Resolve image redis     900 ms
   ✓ Run job migrate         4.1 s
-  ⠹ Update service api      3.2 s
-  ○ Wait for service api    ~30.0 s
+  ✓ Update service api      1.1 s
+  ⠹ Wait for service api    9.3 s  1/2 new tasks running · monitor 4.2 s left
   ○ Update service web
 ```
 
@@ -391,17 +391,25 @@ takes, from the environment's last successful deployments. Steps left show
 how long they usually take, and the time left adds them up. A failed step
 shows why it failed, and a step retrying a request shows which retry it waits
 for. Below the steps, the command says what else it waits on, such as the
-daemon restarting or a failed attempt the daemon retries. Once the deployment ends, the command prints how long it took and, after
+daemon restarting or a failed attempt the daemon retries. While a service
+rolls out, its **Wait for service** step shows how many of its new tasks
+run, how long Docker still watches the newest one for failure (its
+[monitor window](manifest.md#rollout)), and, if no task served requests for
+a while, how long it was down: `down 3.2 s`. Once the deployment ends, the
+command prints how long it took and, after
 a clean run, how long its steps usually take, then the steps as they ended.
 That is every command that deploys and waits, `operation`, `env wait` and
 `preview wait`. Use `wait` to watch a deployment someone else started: Ctrl-C
 stops watching, never the deployment.
 
 Without a terminal, such as in CI, the command prints a line instead each time
-a step starts or changes:
+a step starts or changes, or one more of a rollout's new tasks runs. A
+rollout's last line says how long the service was down, if it was:
 
 ```text
 019a6f3e-…: Build api · succeeded · 38.2 s  (usual 25.0 s)
+019a6f3e-…: Wait for service web · running · 1/1 new task running
+019a6f3e-…: Wait for service web · succeeded · 8.0 s  down 3.2 s
 ```
 
 `--socket PATH` selects a Unix socket. `--url URL` selects an explicit
@@ -568,7 +576,8 @@ With `--json`, stderr is one JSON object per line too, keyed by its kind:
 `{"info":{"message":…}}`, `{"warning":{"message":…}}`,
 `{"progress":{"task":…,"message":…,"outcome":…}}` (`outcome` once the task
 finished), `{"step":{"task":…,…}}` with the fields of a timeline `Step` each
-time a step of an awaited operation starts or changes (see
+time a step of an awaited operation starts or changes, or one more of a
+rollout's new tasks runs (see
 [operation timelines](api.md#operation-timelines)), `{"prompt":{"message":…}}` for a confirmation asked on a terminal,
 and, when the command fails, exactly one
 `{"error":{"code":…,"message":…,"details":…,"request_id":…}}`. An API error keeps the

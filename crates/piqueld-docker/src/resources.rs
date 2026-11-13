@@ -298,6 +298,10 @@ impl BollardDocker {
                 if !Self::relevant(&name, &labels, application) {
                     return None;
                 }
+                let updated = service
+                    .update_status
+                    .as_ref()
+                    .and_then(|status| status.started_at.as_deref());
                 let tasks = all_tasks
                     .iter()
                     .filter(|task| task.service_id.as_deref() == Some(&id))
@@ -305,7 +309,7 @@ impl BollardDocker {
                         let healthy = Self::task_container(task).and_then(|container| {
                             health_by_container.get(container).copied().flatten()
                         });
-                        Self::observe_task(task, healthy)
+                        Self::observe_task(task, updated, healthy)
                     })
                     .collect::<Vec<_>>();
                 Some(Self::observe_service(

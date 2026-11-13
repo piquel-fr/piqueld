@@ -68,7 +68,7 @@ impl BollardDocker {
         let Some((_, task, container)) = tasks
             .into_iter()
             .filter_map(|task| {
-                let rank = Self::exec_rank(&Self::task_state(&task))?;
+                let rank = Self::exec_rank(Self::task_state(&task))?;
                 let container = Self::task_container(&task)?.to_owned();
                 Some((rank, task.id?, container))
             })
@@ -106,7 +106,7 @@ impl BollardDocker {
     /// its `state`: lower first, or `None` when its container doesn't run.
     /// Swarm reports a task as starting until its health check passes, but
     /// its container already runs; healthy tasks come first.
-    pub(super) const fn exec_rank(state: &TaskState) -> Option<u8> {
+    pub(super) const fn exec_rank(state: TaskState) -> Option<u8> {
         match state {
             TaskState::Running => Some(0),
             TaskState::Starting => Some(1),

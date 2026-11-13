@@ -48,7 +48,8 @@ pub struct FakeDocker {
     pub stall_convergence: Arc<AtomicBool>,
     /// Fails ensured services' rollouts.
     pub fail_convergence: Arc<AtomicBool>,
-    /// Logical services that stay updating for this many observations after an ensure.
+    /// Logical services that stay updating, their tasks starting, for this
+    /// many observations after an ensure.
     pub slow_services: Arc<Mutex<BTreeMap<String, usize>>>,
     /// Service ensures and convergences as `ensure name` / `converged name`, in order.
     pub rollout: Arc<Mutex<Vec<String>>>,
@@ -431,15 +432,17 @@ pub fn observed_service(desired: &DesiredService) -> ObservedService {
         rollout: Some(desired.rollout_policy()),
         telemetry: desired.telemetry.clone(),
         runtime_configuration_matches: true,
-        tasks: vec![
-            ObservedTask {
+        tasks: (1..=u64::from(desired.replicas))
+            .map(|slot| ObservedTask {
+                id: format!("{}.{slot}", desired.name),
+                slot: Some(slot),
+                current: true,
                 state: TaskState::Running,
                 healthy: Some(true),
                 desired_running: true,
                 diagnostic: None,
-            };
-            usize::from(desired.replicas)
-        ],
+            })
+            .collect(),
         convergence: Convergence::Converged,
     }
 }
@@ -605,7 +608,7 @@ impl DockerApi for FakeDocker {
             .iter()
             .enumerate()
             .filter(|(_, task)| task.desired_running)
-            .filter_map(|(slot, task)| Some((BollardDocker::exec_rank(&task.state)?, slot)))
+            .filter_map(|(slot, task)| Some((BollardDocker::exec_rank(task.state)?, slot)))
             .min()
             .map(|(_, slot)| super::Exec {
                 id: format!("exec-{}", service.name),
@@ -702,6 +705,10 @@ impl DockerApi for FakeDocker {
                 *remaining = remaining.saturating_sub(1);
                 if *remaining == 0 {
                     service.convergence = Convergence::Converged;
+                    for task in &mut service.tasks {
+                        task.state = TaskState::Running;
+                        task.healthy = Some(true);
+                    }
                     self.rollout.lock().await.push(format!("converged {name}"));
                 }
             }
@@ -804,7 +811,12 @@ impl DockerApi for FakeDocker {
         } else if self.stall_convergence.load(Ordering::SeqCst)
             || self.slow_services.lock().await.get(&logical) > Some(&0)
         {
+            // Its tasks start, and run once it converges.
             service.convergence = Convergence::Updating;
+            for task in &mut service.tasks {
+                task.state = TaskState::Starting;
+                task.healthy = None;
+            }
         }
         observed.services.push(service);
         self.rollout.lock().await.push(format!("ensure {logical}"));

@@ -519,7 +519,18 @@ briefly.
 The step running is shown below the steps: how long it usually takes and has
 taken, its attempt, how many requests it retried, and why it failed. A build
 or a job also shows the end of its output, read again every 2 seconds while
-it runs, with `logs:read`. Select another step to show it instead, and
+it runs, with `logs:read`.
+
+A **Wait for service** step shows the service's Swarm tasks as it rolls out:
+a lane per task, old and new, colored by state (preparing, starting while its
+health check runs, running, stopped). While Docker watches a new task for
+failure, during its [monitor window](reference/manifest.md#rollout), its lane
+is striped and a ring counts the window down. When no task of the service
+served requests, a red striped bar marks it on the step's row, and the detail
+says for how long. A `stop-first` rollout has this downtime. When an old task
+is seen serving until a new one does, as in a `start-first` rollout, the
+detail says there was none. piqueld looks at the tasks at least once a second,
+so a shorter downtime may not show. Select another step to show it instead, and
 **Follow live** to return to the running one. With `events:read`, **Live
 events** lists the deployment's events as they are recorded, newest first, and
 **All events** opens them on the Events page.

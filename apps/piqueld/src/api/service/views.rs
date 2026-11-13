@@ -208,12 +208,14 @@ mod tests {
                     healthy: None,
                     desired_running: false,
                     diagnostic: Some(TaskDiagnostic::Failed { exit_code: Some(1) }),
+                    ..ObservedTask::default()
                 },
                 ObservedTask {
                     state: TaskState::Rejected,
                     healthy: None,
                     desired_running: true,
                     diagnostic: Some(TaskDiagnostic::Rejected),
+                    ..ObservedTask::default()
                 },
             ],
             false,
@@ -232,6 +234,7 @@ mod tests {
             healthy: None,
             desired_running: true,
             diagnostic: None,
+            ..ObservedTask::default()
         };
         let mut service = service(vec![task], true);
 

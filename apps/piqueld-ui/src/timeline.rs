@@ -1,10 +1,10 @@
 //! Transport-independent layout of the dashboard's operation timelines:
-//! where each step's bars sit on a shared time axis, and how far the
-//! operation has come.
+//! where each step's bars sit on a shared time axis, where a rollout's Swarm
+//! tasks sit on their step's own, and how far the operation has come.
 
 use piqueld_client::observability::Elapsed;
-use piqueld_client::timeline::{Stage, Step, StepKey, StepState, Timeline};
-use piqueld_client::{OperationKind, OperationState};
+use piqueld_client::timeline::{Stage, Step, StepKey, StepState, TaskLane, TaskSpan, Timeline};
+use piqueld_client::{OperationKind, OperationState, TaskState};
 use std::collections::HashMap;
 
 /// Intervals the time axis ticks at, in milliseconds; the first giving at
@@ -126,6 +126,8 @@ pub struct Row {
     pub duration_ms: Option<u64>,
     /// Whether it took, or is taking, notably longer than usual.
     pub slow: bool,
+    /// When no task of a rolling-out service served requests.
+    pub down: Vec<Span>,
     /// The stage it opens, when it is the first step of its stage.
     pub stage: Option<Stage>,
 }
@@ -264,6 +266,12 @@ impl Waterfall {
                         .zip(time)
                         .filter(|_| step.expected_ms.is_some())
                         .map(|(axis, (start, _))| axis.span(start, start + expected(step))),
+                    down: axis.zip(time).map_or_default(|(axis, (_, end))| {
+                        step.gaps()
+                            .into_iter()
+                            .map(|gap| axis.span(gap.from_ms, gap.until(end)))
+                            .collect()
+                    }),
                     duration_ms,
                     slow,
                     stage: (stage.replace(opens) != Some(opens)).then_some(opens),
@@ -293,6 +301,179 @@ impl Waterfall {
             .find(|row| row.step.state.running())
             .or_else(|| self.rows.iter().rfind(|row| row.step.state.started()))
             .map(|row| &row.id)
+    }
+}
+
+/// How a Swarm task looks over a stretch of its lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskLook {
+    /// Waiting to start: scheduled, pulling its image, preparing.
+    Preparing,
+    /// Its container started, waiting on its health check.
+    Starting,
+    /// Serving requests.
+    Running,
+    /// Serving requests while Swarm watches it for failure.
+    Monitor,
+    /// Running, but its health check fails.
+    Unhealthy,
+    /// Shut down or completed.
+    Stopped,
+    /// Failed or rejected.
+    Failed,
+}
+
+impl TaskLook {
+    /// How a task in `span` looks.
+    fn of(span: TaskSpan) -> Self {
+        match span.state {
+            TaskState::Starting => Self::Starting,
+            TaskState::Running if span.serving() => Self::Running,
+            TaskState::Running => Self::Unhealthy,
+            TaskState::Complete | TaskState::Shutdown => Self::Stopped,
+            TaskState::Failed | TaskState::Rejected => Self::Failed,
+            TaskState::New
+            | TaskState::Pending
+            | TaskState::Assigned
+            | TaskState::Accepted
+            | TaskState::Preparing
+            | TaskState::Unknown => Self::Preparing,
+        }
+    }
+
+    /// Its name, which CSS colors it by and its stretch shows.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Monitor => "monitor",
+            Self::Unhealthy => "unhealthy",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A stretch of a task's lane, in hundredths of a percent of its axis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskStretch {
+    /// How the task looks over it.
+    pub look: TaskLook,
+    /// Where it starts.
+    pub left: u32,
+    /// How long it is; `None` while it lasts, up to now.
+    pub width: Option<u32>,
+}
+
+/// One Swarm task of a rollout, as one lane.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Lane {
+    /// The task as people tell it apart: its service and slot, such as
+    /// "web.1".
+    pub name: String,
+    /// Whether it runs the new specification.
+    pub current: bool,
+    /// Its states in order.
+    pub stretches: Vec<TaskStretch>,
+}
+
+/// A rollout's Swarm tasks on their step's own time axis, a lane each, old
+/// and new tasks of a slot together.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Lanes {
+    /// From when the step started to its end, or past now while it runs.
+    pub axis: Axis,
+    /// The lanes.
+    pub lanes: Vec<Lane>,
+}
+
+impl Lanes {
+    /// Lays `step`'s tasks out at `now_ms`; `None` when it recorded none.
+    /// While the step runs, each task's last state lasts up to now, which
+    /// the layout leaves open so it changes only with the step, its axis,
+    /// or a monitor window closing.
+    #[must_use]
+    pub fn new(step: &Step, now_ms: i64) -> Option<Self> {
+        let spans = step.tasks.iter().flat_map(|lane| &lane.spans);
+        let first = spans.clone().map(|span| span.from_ms).min()?;
+        let latest = spans.map(|span| span.from_ms).max().unwrap_or(first);
+        let origin = step.started_at_ms.unwrap_or(first).min(first);
+        let now_ms = now_ms.max(latest);
+        let end = step.finished_at_ms;
+        let axis = Axis::new(origin, end.unwrap_or(now_ms));
+        let service = step.key.resource.as_deref().unwrap_or("task");
+        let mut tasks: Vec<_> = step.tasks.iter().collect();
+        tasks.sort_by_key(|lane| (lane.task.slot, lane.task.current));
+        let lanes = tasks
+            .into_iter()
+            .map(|lane| Lane {
+                name: match lane.task.slot {
+                    Some(slot) => format!("{service}.{slot}"),
+                    None => lane.task.id.chars().take(12).collect(),
+                },
+                current: lane.task.current,
+                stretches: Self::stretches(lane, step.monitor_seconds, axis, end, now_ms),
+            })
+            .collect();
+        Some(Self { axis, lanes })
+    }
+
+    /// `lane`'s stretches on `axis`: a new task's first serving stretch
+    /// splits at the end of its monitor window. The last lasts to `end`,
+    /// or stays open while the step runs; a task that is over ends where it
+    /// stopped.
+    fn stretches(
+        lane: &TaskLane,
+        monitor_seconds: Option<u32>,
+        axis: Axis,
+        end: Option<i64>,
+        now_ms: i64,
+    ) -> Vec<TaskStretch> {
+        let window = monitor_seconds.and_then(|seconds| lane.monitor(seconds));
+        // Each look, from when, and until when if it ended; changes the
+        // lane doesn't show, such as a first health verdict, merge.
+        let mut times: Vec<(TaskLook, i64, Option<i64>)> = Vec::new();
+        for (index, span) in lane.spans.iter().enumerate() {
+            let look = TaskLook::of(*span);
+            let until = if span.state.ended() {
+                Some(span.from_ms)
+            } else {
+                lane.spans.get(index + 1).map(|next| next.from_ms).or(end)
+            };
+            match times.last_mut() {
+                Some(last) if last.0 == look => last.2 = until,
+                _ => times.push((look, span.from_ms, until)),
+            }
+        }
+        // Watched from when it first served until the window closed, then
+        // running.
+        let watched = window.and_then(|window| {
+            let index = times
+                .iter()
+                .position(|&(look, from, _)| look == TaskLook::Running && from == window.from_ms)?;
+            Some((window, index))
+        });
+        if let Some((window, index)) = watched {
+            let until = times[index].2;
+            times[index].0 = TaskLook::Monitor;
+            if until.unwrap_or(now_ms) >= window.to_ms {
+                times[index].2 = Some(window.to_ms);
+                times.insert(index + 1, (TaskLook::Running, window.to_ms, until));
+            }
+        }
+        times
+            .into_iter()
+            .map(|(look, from, until)| {
+                let left = axis.position(from);
+                TaskStretch {
+                    look,
+                    left,
+                    width: until.map(|until| axis.position(until).saturating_sub(left)),
+                }
+            })
+            .collect()
     }
 }
 
@@ -547,6 +728,101 @@ mod tests {
         assert_eq!(
             progress.outlook().as_deref(),
             Some("6.0 s faster than usual")
+        );
+    }
+
+    #[test]
+    fn rollout_lanes_leave_the_last_state_open_and_mark_the_monitor_window() {
+        use piqueld_client::timeline::{RolloutTask, TaskLane};
+        let lane = |id: &str, current: bool, spans: &[(TaskState, i64)]| TaskLane {
+            task: RolloutTask {
+                id: id.into(),
+                slot: Some(1),
+                current,
+                state: spans.last().unwrap().0,
+                healthy: None,
+            },
+            spans: spans
+                .iter()
+                .map(|&(state, from_ms)| TaskSpan {
+                    state,
+                    healthy: None,
+                    from_ms,
+                })
+                .collect(),
+        };
+        // Stop-first: the old task stops at 2 s, the new one runs at 4 s.
+        let step = Step {
+            tasks: vec![
+                lane(
+                    "new",
+                    true,
+                    &[(TaskState::Preparing, 2_000), (TaskState::Running, 4_000)],
+                ),
+                lane(
+                    "old",
+                    false,
+                    // Its health verdict at 1 s changes nothing the lane shows.
+                    &[
+                        (TaskState::Running, 0),
+                        (TaskState::Running, 1_000),
+                        (TaskState::Shutdown, 2_000),
+                    ],
+                ),
+            ],
+            monitor_seconds: Some(5),
+            ..ran(Phase::WaitForService, "web", 0, None, 10)
+        };
+        let looks = |now_ms| {
+            Lanes::new(&step, now_ms)
+                .unwrap()
+                .lanes
+                .into_iter()
+                .map(|lane| {
+                    let stretches = lane.stretches.iter().map(|s| (s.look, s.left, s.width));
+                    (lane.name, lane.current, stretches.collect::<Vec<_>>())
+                })
+                .collect::<Vec<_>>()
+        };
+        // At 6 s, on a 6 s axis, the new task is in its monitor window.
+        assert_eq!(
+            looks(6_000),
+            [
+                (
+                    "web.1".into(),
+                    false,
+                    vec![
+                        (TaskLook::Running, 0, Some(3333)),
+                        (TaskLook::Stopped, 3333, Some(0)),
+                    ]
+                ),
+                (
+                    "web.1".into(),
+                    true,
+                    vec![
+                        (TaskLook::Preparing, 3333, Some(3333)),
+                        (TaskLook::Monitor, 6666, None),
+                    ]
+                ),
+            ]
+        );
+        // At 10 s, on a 10 s axis, the window closed at 9 s.
+        assert_eq!(
+            looks(10_000)[1].2,
+            [
+                (TaskLook::Preparing, 2000, Some(2000)),
+                (TaskLook::Monitor, 4000, Some(5000)),
+                (TaskLook::Running, 9000, None),
+            ]
+        );
+        // No task served from 2 s to 4 s.
+        let waterfall = Waterfall::new(std::slice::from_ref(&step), Some(10_000));
+        assert_eq!(
+            waterfall.rows[0].down,
+            [Span {
+                left: 2000,
+                width: 2000
+            }]
         );
     }
 
