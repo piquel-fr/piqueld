@@ -178,8 +178,11 @@ impl<D: DockerApi> DockerApi for LimitedDocker<D> {
     ) -> Result<(), DockerError> {
         self.inner.remove_image(instance, id).await
     }
-    async fn prune_health_probes(&self) -> Result<(), DockerError> {
-        self.inner.prune_health_probes().await
+    async fn prune_health_probes(
+        &self,
+        instance: &piqueld_core::InstanceId,
+    ) -> Result<(), DockerError> {
+        self.inner.prune_health_probes(instance).await
     }
     async fn prune_files(&self, ownership: &BTreeMap<String, String>) -> Result<(), DockerError> {
         self.inner.prune_files(ownership).await

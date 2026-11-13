@@ -137,7 +137,10 @@ impl Ingress {
     /// Removes the serving, `-previous`, and `-next` gateway containers, the
     /// apps node and `cloudflared` in a single action when ingress is disabled. Every removal is
     /// attempted, so a failing one never keeps another serving; the first
-    /// failure is returned. Records nothing if none exist.
+    /// failure is returned. Once they are all gone, removes the edge network
+    /// they joined, as best-effort cleanup: ingress is disabled whether or
+    /// not it goes, so a failure, or a network another installation owns,
+    /// is only logged. Records nothing if none exist.
     pub(super) async fn stop_gateway(&self) -> Result<()> {
         let mut existing = Vec::new();
         let mut failure = None;
@@ -166,7 +169,36 @@ impl Ingress {
             }
             journal.finish(result).await?;
         }
-        failure.map_or(Ok(()), Err)
+        if let Some(failure) = failure {
+            return Err(failure);
+        }
+        if let Err(error) = self.remove_edge_network().await {
+            tracing::warn!(network=%self.name, error=format!("{error:#}"), "managed ingress edge network not removed");
+        }
+        Ok(())
+    }
+
+    /// Removes the edge network [`Self::ensure_edge_network`] created, in its
+    /// own action, which records a failure. Records nothing if it doesn't
+    /// exist, and refuses one this installation doesn't own.
+    async fn remove_edge_network(&self) -> Result<()> {
+        let Some(network) = self
+            .docker
+            .inspect(&format!("/networks/{}", self.name))
+            .await?
+        else {
+            return Ok(());
+        };
+        self.check_owner(&network["Labels"])?;
+        let id = network["Id"].as_str().context("network ID missing")?;
+        let journal = self.journal("ingress_remove_network", &self.name).await?;
+        let result = self
+            .docker
+            .send(&journal, Method::DELETE, &format!("/networks/{id}"), None)
+            .await;
+        journal.finish(result).await?;
+        tracing::info!(network=%self.name,"removed managed ingress edge network");
+        Ok(())
     }
 
     /// Removes a leftover container in its own action; used for best-effort cleanup.

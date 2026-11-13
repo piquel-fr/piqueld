@@ -560,7 +560,8 @@ impl DockerApi for BollardDocker {
         // attestations differ on every build and, with the containerd image
         // store, change that ID, so identical builds would never share a
         // release. Without them, `--iidfile` would hold the config digest,
-        // which that store does not know the image by.
+        // which that store does not know the image by. The build is then
+        // tagged (see `ImageBuild::tag`).
         use anyhow::Context;
         #[derive(serde::Deserialize)]
         struct Metadata {
@@ -591,8 +592,20 @@ impl DockerApi for BollardDocker {
                 .context("read build metadata")?;
             let metadata: Metadata =
                 serde_json::from_slice(&metadata).context("decode build metadata")?;
-            piqueld_core::resource::Sha256Digest::parse(metadata.image_id)
-                .context("validate built image ID")
+            let id = piqueld_core::resource::Sha256Digest::parse(metadata.image_id)
+                .context("validate built image ID")?;
+            let (repo, tag) = build.tag(&id);
+            self.client()?
+                .tag_image(
+                    id.as_str(),
+                    Some(bollard::query_parameters::TagImageOptions {
+                        repo: Some(repo),
+                        tag: Some(tag),
+                    }),
+                )
+                .await
+                .context("tag built image")?;
+            Ok(id)
         }
         .await;
         result.map_err(|source| DockerError::RequestSource {
@@ -617,9 +630,15 @@ impl DockerApi for BollardDocker {
             .await
     }
 
-    async fn prune_health_probes(&self) -> Result<(), DockerError> {
+    async fn prune_health_probes(
+        &self,
+        instance: &piqueld_core::InstanceId,
+    ) -> Result<(), DockerError> {
         DockerTimeout::Request
-            .run("prune health probes", self.remove_stale_health_probes())
+            .run(
+                "prune health probes",
+                self.remove_stale_health_probes(instance),
+            )
             .await
     }
 

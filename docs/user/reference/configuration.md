@@ -166,7 +166,13 @@ what every environment and preview runs or is deploying, plus each
 environment's last `keep_deployments` successful deployments, so their releases
 can be promoted again, and removes the rest one by one, by ID. Images other installations
 built on the same Docker Engine, images built by hand, and pulled registry
-images are never removed. See
+images are never removed. Builds are tagged `piqueld-build/<instance>:<image ID>`,
+where `<instance>` is the installation's ID that `piquelctl status` prints, so
+`docker image prune` leaves them. `docker image prune --all` still removes any
+that no container uses, and restoring or rolling back to one then fails with
+`image_unavailable`. Images built before piqueld tagged builds stay untagged,
+so `docker image prune` can still remove them until `keep_deployments` newer
+deployments replace them. See
 [image retention](../../dev/architecture/docker-reconciliation.md#image-retention).
 
 ```toml
@@ -473,7 +479,7 @@ stopping application management. Application images' own ports remain private.
 
 Restart after changing the TOML. With ingress enabled, stopping piqueld leaves
 Caddy serving independently and renewing the certificates it obtains itself.
-Restarting piqueld with ingress disabled removes the managed gateway container and its restart policy, closing public listeners while
+Restarting piqueld with ingress disabled removes the managed gateway container and its restart policy, and its network, closing public listeners while
 retaining route intent, reservations, and Caddy's certificates. While disabled,
 DNS-01 certificates are not renewed and are deleted once expired, and managed DNS
 records are deleted. Re-enabling restores deployed routes, including deployments
