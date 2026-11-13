@@ -117,8 +117,12 @@ pub(super) async fn kinds(
     let kinds = state.event_kinds(&visible).await?;
     Ok(ok(EventKinds { kinds }))
 }
+/// Least time between two reads of one live stream: a burst of writes, such
+/// as a deployment's, wakes a stream at most this often.
+pub(super) const PACE: std::time::Duration = std::time::Duration::from_millis(100);
+
 // The first batch is read before responding so request errors are still plain
-// JSON; afterwards the stream polls the store every second.
+// JSON; afterwards the stream reads the store again after each write to it.
 /// Streams structured events as server-sent events.
 ///
 /// Events arrive oldest first, resuming after the `Last-Event-ID` header or
@@ -167,6 +171,8 @@ pub(super) async fn stream(
     let filter = query.filter();
     let batch_size = query.limit.unwrap_or(piqueld_store::MAX_PAGE_SIZE);
     let admitted = state.admit(Expensive::EventStream)?;
+    // Subscribed first, so a write during the first read wakes the stream.
+    let written = state.written();
     // Validate before sending headers; all later errors explicitly terminate the stream.
     let (initial, checkpoint) = state
         .stream_events(&filter, &visible, after, batch_size)
@@ -174,6 +180,8 @@ pub(super) async fn stream(
     let follow = Follow {
         _admitted: admitted,
         lease: Lease::new(state.clone(), identity, source),
+        written,
+        read_at: tokio::time::Instant::now(),
         state,
         filter,
         visible,
@@ -196,6 +204,10 @@ struct Follow {
     _admitted: tokio::sync::OwnedSemaphorePermit,
     state: ApiState,
     lease: Lease,
+    /// Changes after each write to the store.
+    written: tokio::sync::watch::Receiver<()>,
+    /// When the store was last read.
+    read_at: tokio::time::Instant,
     filter: EventFilter,
     /// What the caller may read, updated whenever its access is rechecked.
     visible: Visibility,
@@ -268,7 +280,11 @@ impl Follow {
                 self.after = self.checkpoint;
                 return Some(ServerEvent::default().id(format!("v1:{}", self.after)));
             }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            // Woken for a recheck, the read is cheap; the loop rechecks
+            // before sending anything it reads.
+            self.lease.wait(self.written.changed()).await;
+            tokio::time::sleep_until(self.read_at + PACE).await;
+            self.read_at = tokio::time::Instant::now();
             match self
                 .state
                 .stream_events(&self.filter, &self.visible, self.after, self.batch_size)

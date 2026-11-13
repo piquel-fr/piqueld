@@ -10859,6 +10859,121 @@ impl Client {
             _ => Err(Error::UnexpectedResponse(response)),
         }
     }
+    /*Gets an operation's timeline
+
+    Its steps: those it ran and is running, from its events, then those
+    left, from its latest plan or, before it planned that far, from its
+    environment's previous successful operation. Each step has how long it
+    usually takes, from the environment's recent successful operations.
+
+    Sends a `GET` request to `/api/v1/operations/{id}/timeline`
+
+    */
+    pub async fn get_operation_timeline<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<
+        ResponseValue<piqueld_core::api::Envelope<piqueld_core::timeline::Timeline>>,
+        Error<piqueld_core::api::ErrorBody>,
+    > {
+        let url = format!(
+            "{}/api/v1/operations/{}/timeline",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self
+            .client
+            .get(url)
+            .header(
+                ::reqwest::header::ACCEPT,
+                ::reqwest::header::HeaderValue::from_static("application/json"),
+            )
+            .headers(header_map)
+            .build()?;
+        let info = OperationInfo {
+            operation_id: "get_operation_timeline",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => crate::client::decode_response(response).await,
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            410u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
+    /*Streams an operation's timeline as server-sent events
+
+    Sends a `timeline` message with the whole timeline at once, then again
+    each time one of the operation's events changes it, at most every 100 ms.
+    A running step's progress between messages is the time since it started.
+    The stream ends with a `stream_error` message when history can no longer
+    be read, with an `access_ended` message whose data is the `ErrorBody` of
+    the request that would now be refused once the caller loses access, and
+    without a message when the daemon shuts down. Reconnecting sends the
+    whole timeline again.
+
+    Sends a `GET` request to `/api/v1/operations/{id}/timeline/stream`
+
+    */
+    pub async fn stream_operation_timeline<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Result<ResponseValue<ByteStream>, Error<piqueld_core::api::ErrorBody>> {
+        let url = format!(
+            "{}/api/v1/operations/{}/timeline/stream",
+            self.baseurl,
+            encode_path(&id.to_string()),
+        );
+        let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+        header_map.append(
+            ::reqwest::header::HeaderName::from_static("api-version"),
+            ::reqwest::header::HeaderValue::from_static(Self::api_version()),
+        );
+        #[allow(unused_mut)]
+        let mut request = self.client.get(url).headers(header_map).build()?;
+        let info = OperationInfo {
+            operation_id: "stream_operation_timeline",
+        };
+        self.pre(&mut request, &info).await?;
+        let result = self.exec(request, &info).await;
+        self.post(&result, &info).await?;
+        let response = result?;
+        match response.status().as_u16() {
+            200u16 => Ok(ResponseValue::stream(response)),
+            403u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            404u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            410u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            503u16 => Err(Error::ErrorResponse(
+                crate::client::decode_response(response).await?,
+            )),
+            _ => Err(Error::UnexpectedResponse(response)),
+        }
+    }
     /*Gets a preview with its branch state
 
     Sends a `GET` request to `/api/v1/previews/{id}`

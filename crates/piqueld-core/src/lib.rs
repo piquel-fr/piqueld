@@ -28,6 +28,7 @@ pub mod resource;
 pub mod retention;
 pub mod sync;
 pub mod tailnet;
+pub mod timeline;
 pub mod toml_diagnostic;
 pub mod urls;
 

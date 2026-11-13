@@ -1,6 +1,8 @@
 //! Durable history, manifest export, and runtime logs.
 
 use super::{ApplicationError, ApplicationService};
+use piqueld_core::observability::EventFilter;
+use piqueld_core::timeline::Timeline;
 use piqueld_core::{
     ApplicationId, EnvironmentId, Operation,
     api::{
@@ -8,6 +10,7 @@ use piqueld_core::{
     },
 };
 use piqueld_store::StoreError;
+use piqueld_store::{MAX_PAGE_SIZE, Visibility};
 
 /// Saved configuration rendered for download or export.
 pub struct ManifestExport {
@@ -35,6 +38,53 @@ impl ApplicationService {
     /// Returns absence or storage errors.
     pub async fn operation(&self, id: &str) -> Result<Operation, ApplicationError> {
         Ok(self.store.operation(id).await?)
+    }
+
+    /// Operation `id`'s timeline as of now: its steps, from its events, and
+    /// what its environment's recent successful operations expect.
+    /// # Errors
+    /// Returns absence, expired history, or storage errors.
+    pub async fn timeline(&self, id: &str) -> Result<Timeline, ApplicationError> {
+        let operation = self.store.operation(id).await?;
+        let baseline = self.store.timeline_baseline(&operation).await?;
+        let mut timeline = Timeline::new(operation, baseline.forecast, baseline.expected);
+        self.advance_timeline(&mut timeline).await?;
+        Ok(timeline)
+    }
+
+    /// Applies the events of `timeline`'s operation newer than its cursor,
+    /// reading the operation again when there were any. A timeline shows
+    /// every step of an operation the caller may read, including failures
+    /// of shared infrastructure that history only shows `system:read`.
+    /// Returns whether it changed.
+    /// # Errors
+    /// Returns absence, expired history, or storage errors.
+    pub async fn advance_timeline(
+        &self,
+        timeline: &mut Timeline,
+    ) -> Result<bool, ApplicationError> {
+        let filter = EventFilter {
+            operation_id: Some(timeline.operation.id.clone()),
+            ..EventFilter::default()
+        };
+        let from = timeline.cursor;
+        loop {
+            let (events, _) = self
+                .store
+                .stream_events(&filter, &Visibility::ALL, timeline.cursor, MAX_PAGE_SIZE)
+                .await?;
+            for event in &events {
+                timeline.apply(event);
+            }
+            if events.len() < MAX_PAGE_SIZE {
+                break;
+            }
+        }
+        let advanced = timeline.cursor > from;
+        if advanced {
+            timeline.set_operation(self.store.operation(&timeline.operation.id).await?);
+        }
+        Ok(advanced)
     }
 
     /// Lists deployment snapshots, newest first, `limit` per page (up to

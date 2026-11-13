@@ -384,6 +384,8 @@ fn documented_router() -> OpenApiRouter<ApiState> {
         .routes(authenticated!(builds::list))
         .routes(granted!(App(LogsRead) => builds::logs))
         .routes(granted!(App(Read) => operations::get))
+        .routes(granted!(App(Read) => operations::timeline))
+        .routes(granted!(App(Read) => operations::stream_timeline))
         .routes(granted!(Global(SystemOperate) => secrets::recover_key))
         .routes(granted!(App(Read) => secrets::list))
         .routes(granted!(App(SecretsWrite) => secrets::delete))
